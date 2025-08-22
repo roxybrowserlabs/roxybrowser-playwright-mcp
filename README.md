@@ -454,6 +454,15 @@ http.createServer(async (req, res) => {
 
 <!-- NOTE: This has been generated via update-readme.js -->
 
+- **browser_connect_roxy**
+  - Title: Connect to RoxyBrowser
+  - Description: Connect to RoxyBrowser using CDP WebSocket endpoint
+  - Parameters:
+    - `cdpEndpoint` (string): The CDP WebSocket endpoint URL from RoxyBrowser (e.g., ws://127.0.0.1:59305/devtools/browser/4d876b0b-6adc-4e9f-b572-bb68ff02a199)
+  - Read-only: **false**
+
+<!-- NOTE: This has been generated via update-readme.js -->
+
 - **browser_console_messages**
   - Title: Get console messages
   - Description: Returns all console messages

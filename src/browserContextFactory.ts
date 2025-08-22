@@ -39,6 +39,10 @@ export function contextFactory(config: FullConfig): BrowserContextFactory {
   return new PersistentContextFactory(config);
 }
 
+export function createDynamicCdpContextFactory(config: FullConfig): DynamicCdpContextFactory {
+  return new DynamicCdpContextFactory(config);
+}
+
 export type ClientInfo = { name?: string, version?: string, rootPath?: string };
 
 export interface BrowserContextFactory {
@@ -133,6 +137,66 @@ class CdpContextFactory extends BaseContextFactory {
 
   protected override async _doCreateContext(browser: playwright.Browser): Promise<playwright.BrowserContext> {
     return this.config.browser.isolated ? await browser.newContext() : browser.contexts()[0];
+  }
+}
+
+export class DynamicCdpContextFactory extends BaseContextFactory {
+  private _currentCdpEndpoint: string | undefined;
+  private _reconnecting: boolean = false;
+
+  constructor(config: FullConfig) {
+    super('dynamic-cdp', config);
+  }
+
+  async reconnectToCDP(cdpEndpoint: string): Promise<void> {
+    if (this._currentCdpEndpoint === cdpEndpoint && this._browserPromise) {
+      testDebug(`Already connected to CDP endpoint: ${cdpEndpoint}`);
+      return; // Already connected to this endpoint
+    }
+
+    testDebug(`Reconnecting to CDP endpoint: ${cdpEndpoint}`);
+    this._reconnecting = true;
+
+    try {
+      // Set the endpoint first to avoid race conditions
+      this._currentCdpEndpoint = cdpEndpoint;
+      // Force browser reconnection by clearing the promise
+      this._browserPromise = undefined;
+    } finally {
+      this._reconnecting = false;
+    }
+  }
+
+  protected override async _doObtainBrowser(): Promise<playwright.Browser> {
+    const currentEndpoint = this._currentCdpEndpoint;
+
+    if (!currentEndpoint) {
+      testDebug(`No CDP endpoint set (reconnecting: ${this._reconnecting})`);
+      throw new Error(
+          'No CDP endpoint set. Use the browser_connect_roxy tool to connect to RoxyBrowser first. ' +
+        'Example: {"name": "browser_connect_roxy", "arguments": {"cdpEndpoint": "ws://127.0.0.1:PORT/devtools/browser/ID"}}'
+      );
+    }
+
+    testDebug(`Connecting to CDP endpoint: ${currentEndpoint} (reconnecting: ${this._reconnecting})`);
+    try {
+      const browser = await playwright.chromium.connectOverCDP(currentEndpoint);
+      testDebug(`Successfully connected to browser via CDP`);
+      return browser;
+    } catch (error: any) {
+      testDebug(`Failed to connect to CDP endpoint: ${error.message}`);
+      throw new Error(`Failed to connect to RoxyBrowser at ${currentEndpoint}: ${error.message}`);
+    }
+  }
+
+  protected override async _doCreateContext(browser: playwright.Browser): Promise<playwright.BrowserContext> {
+    const context = this.config.browser.isolated ? await browser.newContext() : browser.contexts()[0];
+    testDebug(`Created browser context (isolated: ${this.config.browser.isolated})`);
+    return context;
+  }
+
+  getCurrentCdpEndpoint(): string | undefined {
+    return this._currentCdpEndpoint;
   }
 }
 

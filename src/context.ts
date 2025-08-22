@@ -23,7 +23,7 @@ import { outputFile  } from './config.js';
 
 import type { FullConfig } from './config.js';
 import type { Tool } from './tools/tool.js';
-import type { BrowserContextFactory, ClientInfo } from './browserContextFactory.js';
+import type { BrowserContextFactory, ClientInfo, DynamicCdpContextFactory } from './browserContextFactory.js';
 import type * as actions from './actions.js';
 import type { SessionLog } from './sessionLog.js';
 
@@ -172,6 +172,25 @@ export class Context {
     this._abortController.abort('MCP context disposed');
     await this.closeBrowserContext();
     Context._allContexts.delete(this);
+  }
+
+  async reconnectToCDP(cdpEndpoint: string): Promise<void> {
+    // Check if the factory supports dynamic reconnection
+    if ('reconnectToCDP' in this._browserContextFactory) {
+      const dynamicFactory = this._browserContextFactory as DynamicCdpContextFactory;
+
+      // Close current browser context first
+      await this.closeBrowserContext();
+
+      // Update the factory with new endpoint
+      await dynamicFactory.reconnectToCDP(cdpEndpoint);
+
+      // Pre-establish browser context to ensure CDP connection is working
+      // This will validate the connection and create necessary browser context
+      await this._ensureBrowserContext();
+    } else {
+      throw new Error('Current browser context factory does not support dynamic CDP reconnection');
+    }
   }
 
   private async _setupRequestInterception(context: playwright.BrowserContext) {

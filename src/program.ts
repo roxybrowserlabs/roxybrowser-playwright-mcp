@@ -24,6 +24,7 @@ import { runLoopTools } from './loopTools/main.js';
 import { ProxyBackend } from './mcp/proxyBackend.js';
 import { BrowserServerBackend } from './browserServerBackend.js';
 import { ExtensionContextFactory } from './extension/extensionContextFactory.js';
+import { createDynamicCdpContextFactory } from './browserContextFactory.js';
 
 import { runVSCodeTools } from './vscode/host.js';
 import type { MCPProvider } from './mcp/proxyBackend.js';
@@ -58,6 +59,7 @@ program
     .option('--user-data-dir <path>', 'path to the user data directory. If not specified, a temporary directory will be created.')
     .option('--viewport-size <size>', 'specify browser viewport size in pixels, for example "1280, 720"')
     .addOption(new Option('--connect-tool', 'Allow to switch between different browser connection methods.').hideHelp())
+    .addOption(new Option('--roxy-mode', 'Enable RoxyBrowser dynamic connection mode').hideHelp())
     .addOption(new Option('--vscode', 'VS Code tools.').hideHelp())
     .addOption(new Option('--loop-tools', 'Run loop tools').hideHelp())
     .addOption(new Option('--vision', 'Legacy option, use --caps=vision instead').hideHelp())
@@ -92,6 +94,18 @@ program
 
       if (options.loopTools) {
         await runLoopTools(config);
+        return;
+      }
+
+      if (options.roxyMode) {
+        const dynamicContextFactory = createDynamicCdpContextFactory(config);
+        const factory: mcpServer.ServerBackendFactory = {
+          name: 'Playwright w/ RoxyBrowser',
+          nameInConfig: 'playwright-roxy',
+          version: packageJSON.version,
+          create: () => new BrowserServerBackend(config, dynamicContextFactory)
+        };
+        await mcpServer.start(factory, config.server);
         return;
       }
 
