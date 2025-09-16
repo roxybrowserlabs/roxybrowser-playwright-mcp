@@ -59,7 +59,7 @@ program
     .option('--user-data-dir <path>', 'path to the user data directory. If not specified, a temporary directory will be created.')
     .option('--viewport-size <size>', 'specify browser viewport size in pixels, for example "1280, 720"')
     .addOption(new Option('--connect-tool', 'Allow to switch between different browser connection methods.').hideHelp())
-    .addOption(new Option('--roxy-mode', 'Enable RoxyBrowser dynamic connection mode').hideHelp())
+    .addOption(new Option('--roxy-mode', 'Enable RoxyBrowser dynamic connection mode').default(true).hideHelp())
     .addOption(new Option('--vscode', 'VS Code tools.').hideHelp())
     .addOption(new Option('--loop-tools', 'Run loop tools').hideHelp())
     .addOption(new Option('--vision', 'Legacy option, use --caps=vision instead').hideHelp())
