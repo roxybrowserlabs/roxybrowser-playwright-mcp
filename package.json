@@ -1,11 +1,11 @@
 {
   "name": "@roxybrowser/playwright-mcp",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Playwright Tools for MCP",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/microsoft/playwright-mcp.git"
+    "url": "git+https://github.com/roxybrowserlabs/roxybrowser-playwright-mcp"
   },
   "homepage": "https://playwright.dev",
   "engines": {
@@ -28,7 +28,9 @@
     "wtest": "playwright test --project=webkit",
     "run-server": "node lib/browserServer.js",
     "clean": "npx rimraf lib",
-    "npm-publish": "npm run clean && npm run build && npm publish"
+    "npm-publish": "npm run clean && npm run build && npm publish",
+    "publish:release": "npm run clean && npm version patch --no-git-tag-version && npm run build && npm publish",
+    "publish:beta": "npm version prerelease --preid=beta --no-git-tag-version && npm run build && npm publish --tag beta"
   },
   "publishConfig": {
     "access": "public",
