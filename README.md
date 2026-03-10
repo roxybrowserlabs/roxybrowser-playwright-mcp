@@ -23,16 +23,32 @@ node utils/generate-links.js
 
 First, install the Playwright MCP server with your client.
 
-**Standard config** works in most of the tools:
+**推荐：使用本包（含 Roxy 连接等扩展）**
 
-```js
+```json
 {
   "mcpServers": {
-    "playwright": {
+    "roxybrowser-playwright-mcp": {
       "command": "npx",
       "args": [
-        "@playwright/mcp@latest"
+        "@roxybrowser/playwright-mcp@latest"
       ]
+    }
+  }
+}
+```
+
+如需 HTTP（Studio 协议）连接，可先启动服务再在配置里填 URL：
+
+```bash
+npx @roxybrowser/playwright-mcp --port 9324
+```
+
+```json
+{
+  "mcpServers": {
+    "roxybrowser-playwright-mcp": {
+      "url": "http://localhost:9324/mcp"
     }
   }
 }
@@ -360,6 +376,78 @@ npx @playwright/mcp@latest --config path/to/config.json
 }
 ```
 </details>
+
+### 第三方集成与程序化调用
+
+本包支持三种使用方式，便于接入 Cursor/IDE 或自建应用。
+
+#### 1. CLI 快速启动（stdio）
+
+在 MCP 客户端配置中指定 command，由客户端拉起进程、通过 stdio 通信：
+
+```json
+{
+  "mcpServers": {
+    "roxybrowser-playwright-mcp": {
+      "command": "npx",
+      "args": ["@roxybrowser/playwright-mcp@latest"]
+    }
+  }
+}
+```
+
+#### 2. Studio 协议（HTTP/SSE）
+
+通过代码启动 HTTP 服务，第三方应用用 URL 连接（如 Studio、自研前端）：
+
+```js
+import { startServer } from '@roxybrowser/playwright-mcp';
+
+const { url } = await startServer({ port: 9324, host: 'localhost' });
+console.log('MCP URL:', url); // http://localhost:9324/mcp
+// 进程持续运行，客户端连接 url 即可
+```
+
+也可直接用 CLI 起 HTTP 服务，再在客户端填 URL：
+
+```bash
+npx @roxybrowser/playwright-mcp --port 9324
+```
+
+```json
+{ "mcpServers": { "roxybrowser-playwright-mcp": { "url": "http://localhost:9324/mcp" } } }
+```
+
+#### 3. 程序化 createConnection（自管 transport）
+
+在进程内创建 MCP Server，自行连接 stdio 或自定义 transport，便于嵌入到其他应用：
+
+```js
+import { createConnection } from '@roxybrowser/playwright-mcp';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+
+const server = await createConnection(); // 可选：传入 config 或 contextGetter
+await server.connect(new StdioServerTransport());
+```
+
+#### 4. 导出工具类（扩展或二次封装）
+
+如需继承 Backend、增加自定义工具或复用 Roxy 连接逻辑，可从主入口引用：
+
+```js
+import {
+  createConnection,
+  startServer,
+  CustomBackend,
+  DynamicCdpContextFactory,
+  defineExtraTool,
+  extraToolToMcp,
+} from '@roxybrowser/playwright-mcp';
+```
+
+- **CustomBackend**：在 Playwright 官方工具基础上增加 `browser_connect_roxy` 等，可子类化继续加工具。
+- **DynamicCdpContextFactory**：支持 `reconnectToCDP(endpoint)` 的 context 工厂，用于 Roxy/CDP 连接。
+- **defineExtraTool** / **extraToolToMcp**：定义额外 MCP 工具并转为 listTools 格式的辅助函数。
 
 ### Standalone MCP server
 

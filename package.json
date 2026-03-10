@@ -1,6 +1,6 @@
 {
   "name": "@roxybrowser/playwright-mcp",
-  "version": "0.0.5",
+  "version": "0.0.6-beta.4",
   "description": "Playwright Tools for MCP",
   "type": "module",
   "repository": {
@@ -16,6 +16,9 @@
   },
   "license": "Apache-2.0",
   "scripts": {
+    "start": "node cli.js",
+    "dev": "node --inspect cli.js",
+    "dev:http": "node --inspect cli.js --port 9324",
     "build": "tsc",
     "lint": "npm run update-readme && npm run check-deps && eslint . && tsc --noEmit",
     "lint-fix": "eslint . --fix",
@@ -30,12 +33,20 @@
     "clean": "npx rimraf lib",
     "npm-publish": "npm run clean && npm run build && npm publish",
     "publish:release": "npm run clean && npm version patch --no-git-tag-version && npm run build && npm publish",
-    "publish:beta": "npm version prerelease --preid=beta --no-git-tag-version && npm run build && npm publish --tag beta"
+    "publish:beta": "npm version prerelease --preid=beta --no-git-tag-version && npm publish --tag beta"
   },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
+  "files": [
+    "package.json",
+    "cli.js",
+    "index.js",
+    "index.d.ts",
+    "customBackend.js",
+    "patches"
+  ],
   "exports": {
     "./package.json": "./package.json",
     ".": {
@@ -49,8 +60,8 @@
     "debug": "^4.4.1",
     "dotenv": "^17.2.0",
     "mime": "^4.0.7",
-    "playwright": "1.55.0",
-    "playwright-core": "1.55.0",
+    "playwright": "1.58.2",
+    "playwright-core": "1.58.2",
     "ws": "^8.18.1",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.24.4"
@@ -76,6 +87,11 @@
     "rimraf": "^6.0.1"
   },
   "bin": {
-    "roxybrowser-mcp-server-playwright": "cli.js"
+    "roxybrowser-mcp-playwright": "cli.js"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "playwright@1.58.2": "patches/playwright@1.58.2.patch"
+    }
   }
 }
