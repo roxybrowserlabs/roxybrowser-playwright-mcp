@@ -5,11 +5,8 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  playwright-core@1.58.2:
-    hash: 7760499e0191881ceb20d9e1584af4c849856c8f8d886ad9ead9c3e4039eadd3
-    path: patches/playwright-core@1.58.2.patch
   playwright@1.58.2:
-    hash: 3e2ca7cb1746c76d17081058e8cc7adeaa015a9d48b73f58c768486cd93c6508
+    hash: 5960833c0ded9aa0192be4468ba7e49f7154c888b90c7a75e12e1d6bc6af59c5
     path: patches/playwright@1.58.2.patch
 
 importers:
@@ -31,10 +28,10 @@ importers:
         version: 0.20.2
       playwright:
         specifier: 1.58.2
-        version: 1.58.2(patch_hash=3e2ca7cb1746c76d17081058e8cc7adeaa015a9d48b73f58c768486cd93c6508)
+        version: 1.58.2(patch_hash=5960833c0ded9aa0192be4468ba7e49f7154c888b90c7a75e12e1d6bc6af59c5)
       playwright-core:
         specifier: 1.58.2
-        version: 1.58.2(patch_hash=7760499e0191881ceb20d9e1584af4c849856c8f8d886ad9ead9c3e4039eadd3)
+        version: 1.58.2
       rimraf:
         specifier: ^6.0.1
         version: 6.1.3
@@ -1172,11 +1169,11 @@ snapshots:
     dependencies:
       find-up: 4.1.0
 
-  playwright-core@1.58.2(patch_hash=7760499e0191881ceb20d9e1584af4c849856c8f8d886ad9ead9c3e4039eadd3): {}
+  playwright-core@1.58.2: {}
 
-  playwright@1.58.2(patch_hash=3e2ca7cb1746c76d17081058e8cc7adeaa015a9d48b73f58c768486cd93c6508):
+  playwright@1.58.2(patch_hash=5960833c0ded9aa0192be4468ba7e49f7154c888b90c7a75e12e1d6bc6af59c5):
     dependencies:
-      playwright-core: 1.58.2(patch_hash=7760499e0191881ceb20d9e1584af4c849856c8f8d886ad9ead9c3e4039eadd3)
+      playwright-core: 1.58.2
     optionalDependencies:
       fsevents: 2.3.2
 

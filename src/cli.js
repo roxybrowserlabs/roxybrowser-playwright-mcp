@@ -15,10 +15,17 @@ import { program } from 'commander';
 const require = createRequire(import.meta.url);
 const pkg = { version: typeof __VERSION__ !== 'undefined' ? __VERSION__ : require('../package.json').version };
 
+// 子进程 stdio 模式下，未捕获的 rejection 会导致进程静默退出；打到 stderr 便于 MCP 客户端侧排查 Connection closed
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[roxybrowser-playwright-mcp] unhandledRejection:', reason);
+});
+
 program
   .name('roxybrowser-mcp-server-playwright')
   .description('Playwright MCP server with RoxyBrowser custom tools')
-  .version(pkg.version);
+  .version(pkg.version)
+  // Commander v13+ 默认不允许多余参数；MCP 客户端可能传入 server 名等，允许以免进程直接退出导致 Connection closed
+  .allowExcessArguments(true);
 
 decorateCommand(program, pkg.version);
 
@@ -40,4 +47,8 @@ program.action(async (options) => {
   await start(serverBackendFactory, config.server);
 });
 
-program.parse();
+// 必须用 parseAsync 并 await，否则 async action 未跑完进程就退出，导致 MCP 客户端报 Connection closed
+await program.parseAsync(process.argv).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

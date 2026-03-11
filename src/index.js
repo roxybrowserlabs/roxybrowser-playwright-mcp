@@ -18,6 +18,7 @@ import {
 import { createServer, start } from 'playwright/lib/mcp/sdk/exports';
 import { resolveConfig } from 'playwright/lib/mcp/browser/config';
 import { contextFactory } from 'playwright/lib/mcp/browser/browserContextFactory';
+import mcpBundle from 'playwright-core/lib/mcpBundle';
 
 const require = createRequire(import.meta.url);
 const pkg = { version: typeof __VERSION__ !== 'undefined' ? __VERSION__ : require('../package.json').version };
@@ -45,12 +46,13 @@ export async function createConnection(userConfig = {}, contextGetter) {
       }
     : contextFactory(config);
   const backend = new CustomBackend(config, factory);
-  return createServer(
+  const server = await createServer(
     'Playwright+Roxy',
     pkg.version,
     backend,
     false
   );
+  await server.connect(new mcpBundle.StdioServerTransport());
 }
 
 /**
@@ -88,5 +90,5 @@ export {
   CustomBackend,
   DynamicCdpContextFactory,
   defineExtraTool,
-  extraToolToMcp,
+  extraToolToMcp
 };
