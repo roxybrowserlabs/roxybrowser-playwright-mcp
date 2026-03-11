@@ -15,13 +15,12 @@ import {
   defineExtraTool,
   extraToolToMcp,
 } from './customBackend.js';
+import { createServer, start } from 'playwright/lib/mcp/sdk/exports';
+import { resolveConfig } from 'playwright/lib/mcp/browser/config';
+import { contextFactory } from 'playwright/lib/mcp/browser/browserContextFactory';
 
 const require = createRequire(import.meta.url);
-const pkg = require('./package.json');
-
-const { createServer, start } = require('playwright/lib/mcp/sdk/exports');
-const { resolveConfig } = require('playwright/lib/mcp/browser/config');
-const { contextFactory } = require('playwright/lib/mcp/browser/browserContextFactory');
+const pkg = { version: typeof __VERSION__ !== 'undefined' ? __VERSION__ : require('../package.json').version };
 
 /**
  * 创建 MCP 服务端实例（未连接 transport）。

@@ -1,0 +1,152 @@
+diff --git a/lib/cli/program.js b/lib/cli/program.js
+index 560bf7fb276c06b1b85576c774ac0be1a391add8..5a316c8d7eb12c45bde041890d14a44d9a5ccf52 100644
+--- a/lib/cli/program.js
++++ b/lib/cli/program.js
+@@ -43,8 +43,8 @@ var import_utils2 = require("../utils");
+ var import_ascii = require("../server/utils/ascii");
+ var import_utilsBundle = require("../utilsBundle");
+ var import_utilsBundle2 = require("../utilsBundle");
+-const packageJSON = require("../../package.json");
+-import_utilsBundle.program.version("Version " + (process.env.PW_CLI_DISPLAY_VERSION || packageJSON.version)).name(buildBasePlaywrightCLICommand(process.env.PW_LANG_NAME));
++// const packageJSON = require("../../package.json");
++// import_utilsBundle.program.version("Version " + (process.env.PW_CLI_DISPLAY_VERSION || packageJSON.version)).name(buildBasePlaywrightCLICommand(process.env.PW_LANG_NAME));
+ import_utilsBundle.program.command("mark-docker-image [dockerImageNameTemplate]", { hidden: true }).description("mark docker image").allowUnknownOption(true).action(function(dockerImageNameTemplate) {
+   (0, import_utils2.assert)(dockerImageNameTemplate, "dockerImageNameTemplate is required");
+   (0, import_server.writeDockerVersion)(dockerImageNameTemplate).catch(logErrorAndExit);
+@@ -91,9 +91,9 @@ function printGroupedByPlaywrightVersion(browsers2) {
+   for (const browser of browsers2) {
+     if (dirToVersion.has(browser.referenceDir))
+       continue;
+-    const packageJSON2 = require(import_path.default.join(browser.referenceDir, "package.json"));
+-    const version = packageJSON2.version;
+-    dirToVersion.set(browser.referenceDir, version);
++    // const packageJSON2 = require(import_path.default.join(browser.referenceDir, "package.json"));
++    // const version = packageJSON2.version;
++    // dirToVersion.set(browser.referenceDir, version);
+   }
+   const groupedByPlaywrightMinorVersion = /* @__PURE__ */ new Map();
+   for (const browser of browsers2) {
+diff --git a/lib/server/bidi/bidiOverCdp.js b/lib/server/bidi/bidiOverCdp.js
+index af403198ec181822faa78f0e308b66550d3bb595..8105d62dc16038fd842c842e8b2838526b3b7661 100644
+--- a/lib/server/bidi/bidiOverCdp.js
++++ b/lib/server/bidi/bidiOverCdp.js
+@@ -31,29 +31,29 @@ __export(bidiOverCdp_exports, {
+   connectBidiOverCdp: () => connectBidiOverCdp
+ });
+ module.exports = __toCommonJS(bidiOverCdp_exports);
+-var bidiMapper = __toESM(require("chromium-bidi/lib/cjs/bidiMapper/BidiMapper"));
+-var bidiCdpConnection = __toESM(require("chromium-bidi/lib/cjs/cdp/CdpConnection"));
++// var bidiMapper = __toESM(require("chromium-bidi/lib/cjs/bidiMapper/BidiMapper"));
++// var bidiCdpConnection = __toESM(require("chromium-bidi/lib/cjs/cdp/CdpConnection"));
+ var import_debugLogger = require("../utils/debugLogger");
+ const bidiServerLogger = (prefix, ...args) => {
+   import_debugLogger.debugLogger.log(prefix, args);
+ };
+ async function connectBidiOverCdp(cdp) {
+-  let server = void 0;
+-  const bidiTransport = new BidiTransportImpl();
+-  const bidiConnection = new BidiConnection(bidiTransport, () => server?.close());
+-  const cdpTransportImpl = new CdpTransportImpl(cdp);
+-  const cdpConnection = new bidiCdpConnection.MapperCdpConnection(cdpTransportImpl, bidiServerLogger);
+-  cdp.onclose = () => bidiConnection.onclose?.();
+-  server = await bidiMapper.BidiServer.createAndStart(
+-    bidiTransport,
+-    cdpConnection,
+-    await cdpConnection.createBrowserSession(),
+-    /* selfTargetId= */
+-    "",
+-    void 0,
+-    bidiServerLogger
+-  );
+-  return bidiConnection;
++  // let server = void 0;
++  // const bidiTransport = new BidiTransportImpl();
++  // const bidiConnection = new BidiConnection(bidiTransport, () => server?.close());
++  // const cdpTransportImpl = new CdpTransportImpl(cdp);
++  // const cdpConnection = new bidiCdpConnection.MapperCdpConnection(cdpTransportImpl, bidiServerLogger);
++  // cdp.onclose = () => bidiConnection.onclose?.();
++  // server = await bidiMapper.BidiServer.createAndStart(
++  //   bidiTransport,
++  //   cdpConnection,
++  //   await cdpConnection.createBrowserSession(),
++  //   /* selfTargetId= */
++  //   "",
++  //   void 0,
++  //   bidiServerLogger
++  // );
++  // return bidiConnection;
+ }
+ class BidiTransportImpl {
+   setOnMessage(handler) {
+diff --git a/lib/server/registry/dependencies.js b/lib/server/registry/dependencies.js
+index 6d24feae7024dd1d448e507d8dcb8a0ebb6a31c3..35e8e854b2c57b50969214c4e9435b785ee2d1a6 100644
+--- a/lib/server/registry/dependencies.js
++++ b/lib/server/registry/dependencies.js
+@@ -49,7 +49,7 @@ var import_spawnAsync = require("../utils/spawnAsync");
+ var import_userAgent = require("../utils/userAgent");
+ var import__ = require(".");
+ const BIN_DIRECTORY = import_path.default.join(__dirname, "..", "..", "..", "bin");
+-const languageBindingVersion = process.env.PW_CLI_DISPLAY_VERSION || require("../../../package.json").version;
++// const languageBindingVersion = process.env.PW_CLI_DISPLAY_VERSION || require("../../../package.json").version;
+ const dockerVersionFilePath = "/ms-playwright/.docker-info";
+ async function writeDockerVersion(dockerImageNameTemplate) {
+   await import_fs.default.promises.mkdir(import_path.default.dirname(dockerVersionFilePath), { recursive: true });
+@@ -58,8 +58,8 @@ async function writeDockerVersion(dockerImageNameTemplate) {
+ }
+ function dockerVersion(dockerImageNameTemplate) {
+   return {
+-    driverVersion: languageBindingVersion,
+-    dockerImageName: dockerImageNameTemplate.replace("%version%", languageBindingVersion)
++    driverVersion: '',
++    dockerImageName: ''
+   };
+ }
+ function readDockerVersionSync() {
+diff --git a/lib/server/utils/nodePlatform.js b/lib/server/utils/nodePlatform.js
+index d42f60ce9213306fa97a88471aa7344ee7520b63..11359d81b0fbd24c28bab7b268a1aa63b9013b98 100644
+--- a/lib/server/utils/nodePlatform.js
++++ b/lib/server/utils/nodePlatform.js
+@@ -65,13 +65,12 @@ let boxedStackPrefixes = [];
+ function setBoxedStackPrefixes(prefixes) {
+   boxedStackPrefixes = prefixes;
+ }
+-const coreDir = import_path.default.dirname(require.resolve("../../../package.json"));
+ const nodePlatform = {
+   name: "node",
+   boxedStackPrefixes: () => {
+     if (process.env.PWDEBUGIMPL)
+       return [];
+-    return [coreDir, ...boxedStackPrefixes];
++    return [process.cwd(), ...boxedStackPrefixes];
+   },
+   calculateSha1: (text) => {
+     const sha1 = import_crypto.default.createHash("sha1");
+@@ -79,7 +78,7 @@ const nodePlatform = {
+     return Promise.resolve(sha1.digest("hex"));
+   },
+   colors: import_utilsBundle.colors,
+-  coreDir,
++  coreDir: process.cwd(),
+   createGuid: () => import_crypto.default.randomBytes(16).toString("hex"),
+   defaultMaxListeners: () => import_events.EventEmitter.defaultMaxListeners,
+   fs: () => import_fs.default,
+diff --git a/lib/server/utils/userAgent.js b/lib/server/utils/userAgent.js
+index 66463a755f6bb4284f2203d32242b95cabd328b8..6004ea83757cea0e743ae2b4189d1867bf67153f 100644
+--- a/lib/server/utils/userAgent.js
++++ b/lib/server/utils/userAgent.js
+@@ -87,7 +87,14 @@ function getEmbedderName() {
+   return { embedderName, embedderVersion };
+ }
+ function getPlaywrightVersion(majorMinorOnly = false) {
+-  const version = process.env.PW_VERSION_OVERRIDE || require("./../../../package.json").version;
++  let version = process.env.PW_VERSION_OVERRIDE;
++  if (!version) {
++    try {
++      version = require("./../../../package.json").version;
++    } catch (_) {
++      version = "1.58.2";
++    }
++  }
+   return majorMinorOnly ? version.split(".").slice(0, 2).join(".") : version;
+ }
+ // Annotate the CommonJS export names for ESM import in node:

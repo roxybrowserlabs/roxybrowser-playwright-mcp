@@ -6,16 +6,14 @@
  */
 import { createRequire } from 'node:module';
 import { CustomBackend } from './customBackend.js';
+import { decorateCommand } from 'playwright/lib/mcp/program';
+import { start } from 'playwright/lib/mcp/sdk/exports';
+import { resolveCLIConfig } from 'playwright/lib/mcp/browser/config';
+import { contextFactory } from 'playwright/lib/mcp/browser/browserContextFactory';
+import { program } from 'commander';
 
 const require = createRequire(import.meta.url);
-const pkg = require('./package.json');
-
-const { decorateCommand } = require('playwright/lib/mcp/program');
-const { start } = require('playwright/lib/mcp/sdk/exports');
-const { resolveCLIConfig } = require('playwright/lib/mcp/browser/config');
-const { contextFactory } = require('playwright/lib/mcp/browser/browserContextFactory');
-
-const { program } = require('commander');
+const pkg = { version: typeof __VERSION__ !== 'undefined' ? __VERSION__ : require('../package.json').version };
 
 program
   .name('roxybrowser-mcp-server-playwright')

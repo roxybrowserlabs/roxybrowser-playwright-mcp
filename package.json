@@ -1,6 +1,6 @@
 {
   "name": "@roxybrowser/playwright-mcp",
-  "version": "0.0.6-beta.4",
+  "version": "0.0.6-beta.6",
   "description": "Playwright Tools for MCP",
   "type": "module",
   "repository": {
@@ -16,21 +16,13 @@
   },
   "license": "Apache-2.0",
   "scripts": {
-    "start": "node cli.js",
-    "dev": "node --inspect cli.js",
-    "dev:http": "node --inspect cli.js --port 9324",
-    "build": "tsc",
-    "lint": "npm run update-readme && npm run check-deps && eslint . && tsc --noEmit",
-    "lint-fix": "eslint . --fix",
-    "check-deps": "node utils/check-deps.js",
-    "update-readme": "node utils/update-readme.js",
-    "watch": "tsc --watch",
-    "test": "playwright test",
-    "ctest": "playwright test --project=chrome",
-    "ftest": "playwright test --project=firefox",
-    "wtest": "playwright test --project=webkit",
-    "run-server": "node lib/browserServer.js",
-    "clean": "npx rimraf lib",
+    "start": "node src/cli.js",
+    "dev": "node --inspect src/cli.js",
+    "dev:http": "node --inspect src/cli.js --port 9324",
+    "build:esbuild": "node build.mjs",
+    "build:webpack": "npm run clean && webpack --config webpack.config.mjs",
+    "build": "npm run build:webpack",
+    "clean": "npx rimraf dist",
     "npm-publish": "npm run clean && npm run build && npm publish",
     "publish:release": "npm run clean && npm version patch --no-git-tag-version && npm run build && npm publish",
     "publish:beta": "npm version prerelease --preid=beta --no-git-tag-version && npm publish --tag beta"
@@ -39,59 +31,37 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
+  "main": "dist/index.mjs",
   "files": [
     "package.json",
-    "cli.js",
-    "index.js",
-    "index.d.ts",
-    "customBackend.js",
-    "patches"
+    "dist",
+    "index.d.ts"
   ],
   "exports": {
     "./package.json": "./package.json",
     ".": {
       "types": "./index.d.ts",
-      "default": "./index.js"
+      "default": "./dist/index.mjs"
     }
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.18.0",
     "commander": "^13.1.0",
-    "debug": "^4.4.1",
-    "dotenv": "^17.2.0",
-    "mime": "^4.0.7",
-    "playwright": "1.58.2",
-    "playwright-core": "1.58.2",
-    "ws": "^8.18.1",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.24.4"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.57.0",
-    "@eslint/eslintrc": "^3.2.0",
-    "@eslint/js": "^9.19.0",
-    "@playwright/test": "1.55.0",
-    "@stylistic/eslint-plugin": "^3.0.1",
-    "@types/debug": "^4.1.12",
-    "@types/node": "^22.13.10",
-    "@types/ws": "^8.18.1",
-    "@typescript-eslint/eslint-plugin": "^8.26.1",
-    "@typescript-eslint/parser": "^8.26.1",
-    "@typescript-eslint/utils": "^8.26.1",
     "esbuild": "^0.20.1",
-    "eslint": "^9.19.0",
-    "eslint-plugin-import": "^2.31.0",
-    "eslint-plugin-notice": "^1.0.0",
-    "openai": "^5.10.2",
-    "typescript": "^5.9.2",
-    "rimraf": "^6.0.1"
+    "playwright": "1.58.2",
+    "playwright-core": "1.58.2",
+    "rimraf": "^6.0.1",
+    "webpack": "^5.105.4",
+    "webpack-cli": "^5.1.4"
   },
-  "bin": {
-    "roxybrowser-mcp-playwright": "cli.js"
-  },
+  "bin": "dist/cli.mjs",
   "pnpm": {
     "patchedDependencies": {
-      "playwright@1.58.2": "patches/playwright@1.58.2.patch"
+      "playwright@1.58.2": "patches/playwright@1.58.2.patch",
+      "playwright-core@1.58.2": "patches/playwright-core@1.58.2.patch"
     }
   }
 }

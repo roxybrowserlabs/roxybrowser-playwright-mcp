@@ -5,7 +5,7 @@
       "name": "Debug MCP Server (stdio)",
       "type": "node",
       "request": "launch",
-      "program": "${workspaceFolder}/cli.js",
+      "program": "${workspaceFolder}/src/cli.js",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "skipFiles": ["<node_internals>/**", "**/node_modules/**"]
@@ -14,7 +14,7 @@
       "name": "Debug MCP Server (HTTP :9324)",
       "type": "node",
       "request": "launch",
-      "program": "${workspaceFolder}/cli.js",
+      "program": "${workspaceFolder}/src/cli.js",
       "args": ["--port", "9324"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",

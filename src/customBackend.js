@@ -2,13 +2,10 @@
  * CustomBackend：在 Playwright 官方 BrowserServerBackend 基础上增加自定义工具。
  * 连接 RoxyBrowser 的逻辑与 src/tools/roxy.ts + src/browserContextFactory.ts (DynamicCdpContextFactory) 一致。
  */
-import { createRequire } from 'node:module';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-
-const require = createRequire(import.meta.url);
-const { BrowserServerBackend } = require('playwright/lib/mcp/browserServerBackend');
-const playwright = require('playwright-core');
+import playwright from 'playwright-core';
+import { BrowserServerBackend } from 'playwright/lib/mcp/browserServerBackend';
 
 /** 与 src/browserContextFactory.ts 中 DynamicCdpContextFactory 行为一致：支持 reconnectToCDP，后续 createContext 连到该 CDP */
 class DynamicCdpContextFactory {
