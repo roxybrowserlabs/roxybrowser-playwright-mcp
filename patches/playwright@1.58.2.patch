@@ -1,139 +1,16 @@
-diff --git a/lib/mcp/browser/tools/evaluate.js b/lib/mcp/browser/tools/evaluate.js
-index e2bcc8a43887d4abea8a241f864d814beacf1711..ea9e7ce8eb7bbfc89d29dfe5e479359076bfe8c4 100644
---- a/lib/mcp/browser/tools/evaluate.js
-+++ b/lib/mcp/browser/tools/evaluate.js
-@@ -42,18 +42,24 @@ const evaluate = (0, import_tool.defineTabTool)({
-   handle: async (tab, params, response) => {
-     response.setIncludeSnapshot();
-     let locator;
--    if (params.ref && params.element) {
--      locator = await tab.refLocator({ ref: params.ref, element: params.element });
--      response.addCode(`await page.${locator.resolved}.evaluate(${(0, import_utils.escapeWithQuotes)(params.function)});`);
--    } else {
--      response.addCode(`await page.evaluate(${(0, import_utils.escapeWithQuotes)(params.function)});`);
-+    try {
-+      if (params.ref && params.element) {
-+        locator = await tab.refLocator({ ref: params.ref, element: params.element });
-+        response.addCode(`await page.${locator.resolved}.evaluate(${(0, import_utils.escapeWithQuotes)(params.function)});`);
-+      } else {
-+        response.addCode(`await page.evaluate(${(0, import_utils.escapeWithQuotes)(params.function)});`);
-+      }
-+      await tab.waitForCompletion(async () => {
-+        const receiver = locator?.locator ?? tab.page;
-+        const result = await receiver._evaluateFunction(params.function);
-+        const text = JSON.stringify(result, null, 2) || "undefined";
-+        await response.addResult({ text, suggestedFilename: params.filename });
-+      });
-+    } catch (e) {
-+      const message = e?.message ?? String(e);
-+      const stack = e?.stack ? `\n${e.stack}` : "";
-+      response.addError(`browser_evaluate failed: ${message}${stack}`);
+diff --git a/lib/mcp/sdk/server.js b/lib/mcp/sdk/server.js
+index c7bba4af2f838ade7fdaa9709dcb069926420ab2..fdb467a249976e11289a266fff542310b84e71a7 100644
+--- a/lib/mcp/sdk/server.js
++++ b/lib/mcp/sdk/server.js
+@@ -99,7 +99,7 @@ function createServer(name, version, backend, runHeartbeat) {
+     } catch (error) {
+       return {
+         content: [{ type: "text", text: "### Result\n" + String(error) }],
+-        isError: true
++        // isError: true
+       };
      }
--    await tab.waitForCompletion(async () => {
--      const receiver = locator?.locator ?? tab.page;
--      const result = await receiver._evaluateFunction(params.function);
--      const text = JSON.stringify(result, null, 2) || "undefined";
--      await response.addResult({ text, suggestedFilename: params.filename });
--    });
-   }
- });
- var evaluate_default = [
-diff --git a/lib/mcp/browser/tools/keyboard.js b/lib/mcp/browser/tools/keyboard.js
-index dcd82e9eb4dea1b15bf784d7cc1e3fe41494a7d4..5a28815e1cd7635647a649489f98b714eedb9254 100644
---- a/lib/mcp/browser/tools/keyboard.js
-+++ b/lib/mcp/browser/tools/keyboard.js
-@@ -81,23 +81,29 @@ const type = (0, import_tool.defineTabTool)({
-     type: "input"
-   },
-   handle: async (tab, params, response) => {
--    const { locator, resolved } = await tab.refLocator(params);
--    const secret = tab.context.lookupSecret(params.text);
--    await tab.waitForCompletion(async () => {
--      if (params.slowly) {
--        response.setIncludeSnapshot();
--        response.addCode(`await page.${resolved}.pressSequentially(${secret.code});`);
--        await locator.pressSequentially(secret.value);
--      } else {
--        response.addCode(`await page.${resolved}.fill(${secret.code});`);
--        await locator.fill(secret.value);
--      }
--      if (params.submit) {
--        response.setIncludeSnapshot();
--        response.addCode(`await page.${resolved}.press('Enter');`);
--        await locator.press("Enter");
--      }
--    });
-+    try {
-+      const { locator, resolved } = await tab.refLocator(params);
-+      const secret = tab.context.lookupSecret(params.text);
-+      await tab.waitForCompletion(async () => {
-+        if (params.slowly) {
-+          response.setIncludeSnapshot();
-+          response.addCode(`await page.${resolved}.pressSequentially(${secret.code});`);
-+          await locator.pressSequentially(secret.value);
-+        } else {
-+          response.addCode(`await page.${resolved}.fill(${secret.code});`);
-+          await locator.fill(secret.value);
-+        }
-+        if (params.submit) {
-+          response.setIncludeSnapshot();
-+          response.addCode(`await page.${resolved}.press('Enter');`);
-+          await locator.press("Enter");
-+        }
-+      });
-+    } catch (e) {
-+      const message = e?.message ?? String(e);
-+      const stack = e?.stack ? `\n${e.stack}` : "";
-+      response.addError(`browser_type failed: ${message}${stack}`);
-+    }
-   }
- });
- var keyboard_default = [
-diff --git a/lib/mcp/browser/tools/runCode.js b/lib/mcp/browser/tools/runCode.js
-index e8a03d10b0868ecc33ab94a359f1321dd534184b..30b5f223f050e3ee5d770cd726becc537d31a433 100644
---- a/lib/mcp/browser/tools/runCode.js
-+++ b/lib/mcp/browser/tools/runCode.js
-@@ -57,20 +57,26 @@ const runCode = (0, import_tool.defineTabTool)({
-       __end__
-     };
-     import_vm.default.createContext(context);
--    await tab.waitForCompletion(async () => {
--      const snippet = `(async () => {
--        try {
--          const result = await (${params.code})(page);
--          __end__.resolve(JSON.stringify(result));
--        } catch (e) {
--          __end__.reject(e);
--        }
--      })()`;
--      await import_vm.default.runInContext(snippet, context);
--      const result = await __end__;
--      if (typeof result === "string")
--        await response.addResult({ text: result, suggestedFilename: params.filename });
--    });
-+    try {
-+      await tab.waitForCompletion(async () => {
-+        const snippet = `(async () => {
-+          try {
-+            const result = await (${params.code})(page);
-+            __end__.resolve(JSON.stringify(result));
-+          } catch (e) {
-+            __end__.reject(e);
-+          }
-+        })()`;
-+        await import_vm.default.runInContext(snippet, context);
-+        const result = await __end__;
-+        if (typeof result === "string")
-+          await response.addResult({ text: result, suggestedFilename: params.filename });
-+      });
-+    } catch (e) {
-+      const message = e?.message ?? String(e);
-+      const stack = e?.stack ? `\n${e.stack}` : "";
-+      response.addError(`browser_run_code failed: ${message}${stack}`);
-+    }
-   }
- });
- var runCode_default = [
+   });
 diff --git a/package.json b/package.json
 index 8f807f632325f595dbf7f59788b864818f117f92..e1048044e26347cf5dec6a829d71b5a576c6cad1 100644
 --- a/package.json

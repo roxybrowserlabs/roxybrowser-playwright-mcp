@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   playwright@1.58.2:
-    hash: 5960833c0ded9aa0192be4468ba7e49f7154c888b90c7a75e12e1d6bc6af59c5
+    hash: 0899fe7d2dd6000434b23cc9957ef0a1ecd8caf8f8738b1ab4d4aa9a96b5bbb7
     path: patches/playwright@1.58.2.patch
 
 importers:
@@ -28,7 +28,7 @@ importers:
         version: 0.20.2
       playwright:
         specifier: 1.58.2
-        version: 1.58.2(patch_hash=5960833c0ded9aa0192be4468ba7e49f7154c888b90c7a75e12e1d6bc6af59c5)
+        version: 1.58.2(patch_hash=0899fe7d2dd6000434b23cc9957ef0a1ecd8caf8f8738b1ab4d4aa9a96b5bbb7)
       playwright-core:
         specifier: 1.58.2
         version: 1.58.2
@@ -1171,7 +1171,7 @@ snapshots:
 
   playwright-core@1.58.2: {}
 
-  playwright@1.58.2(patch_hash=5960833c0ded9aa0192be4468ba7e49f7154c888b90c7a75e12e1d6bc6af59c5):
+  playwright@1.58.2(patch_hash=0899fe7d2dd6000434b23cc9957ef0a1ecd8caf8f8738b1ab4d4aa9a96b5bbb7):
     dependencies:
       playwright-core: 1.58.2
     optionalDependencies:
