@@ -83,45 +83,18 @@ const BROWSER_CONNECT_ROXY = defineExtraTool(
   },
   async (context, args) => {
     const { cdpEndpoint } = args;
-    if (
-      !cdpEndpoint.startsWith('ws://') &&
-      !cdpEndpoint.startsWith('wss://')
-    ) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `### Error\nInvalid CDP endpoint. Expected WebSocket URL (ws:// or wss://), got: ${cdpEndpoint}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    try {
-      await context.closeBrowserContext();
-      const factory = new DynamicCdpContextFactory(context.config, cdpEndpoint);
-      context._browserContextFactory = factory;
-      await context.ensureTab();
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `### Result\nSuccessfully connected to RoxyBrowser at ${cdpEndpoint}\nSubsequent browser actions will run in this window.`,
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `### Error\nFailed to connect to RoxyBrowser: ${String(err?.message ?? err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
+    await context.closeBrowserContext();
+    const factory = new DynamicCdpContextFactory(context.config, cdpEndpoint);
+    context._browserContextFactory = factory;
+    await context.ensureTab();
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `### Result\nSuccessfully connected to RoxyBrowser at ${cdpEndpoint}\nSubsequent browser actions will run in this window.`,
+        },
+      ],
+    };
   }
 );
 
