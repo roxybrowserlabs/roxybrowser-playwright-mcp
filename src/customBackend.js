@@ -125,10 +125,16 @@ export class CustomBackend extends BrowserServerBackend {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `### Error\n${String(err)}` }],
-          isError: true,
+          isError: false,
         };
       }
     }
-    return super.callTool(name, rawArguments, progress);
+    const result = await super.callTool(name, rawArguments, progress);
+    // 工具执行错误（如超时、元素被遮挡）时，不设 isError，让客户端把结果当正常返回交给 LLM，
+    // 这样 agent 可以总结错误信息再回复用户，而不是被客户端直接中断。
+    if (result && result.isError && result.content) {
+      return { ...result, isError: false };
+    }
+    return result;
   }
 }
