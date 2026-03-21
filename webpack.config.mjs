@@ -28,6 +28,10 @@ export default {
   },
   resolve: {
     extensions: ['.js', '.mjs', '.json'],
+    alias: {
+      'chromium-bidi/lib/cjs/bidiMapper/BidiMapper': path.join(__dirname, 'src/stubs/empty.js'),
+      'chromium-bidi/lib/cjs/cdp/CdpConnection': path.join(__dirname, 'src/stubs/empty.js'),
+    },
   },
   externals: [
     ({ request }, callback) => {

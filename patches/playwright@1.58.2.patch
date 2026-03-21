@@ -2,10 +2,12 @@ diff --git a/package.json b/package.json
 index 8f807f632325f595dbf7f59788b864818f117f92..e1048044e26347cf5dec6a829d71b5a576c6cad1 100644
 --- a/package.json
 +++ b/package.json
-@@ -26,6 +26,7 @@
+@@ -26,6 +26,9 @@
      "./lib/mcp/program": "./lib/mcp/program.js",
      "./lib/mcp/sdk/bundle": "./lib/mcp/sdk/bundle.js",
      "./lib/mcp/sdk/exports": "./lib/mcp/sdk/exports.js",
++    "./lib/mcp/browser/config": "./lib/mcp/browser/config.js",
++    "./lib/mcp/browser/browserContextFactory": "./lib/mcp/browser/browserContextFactory.js",
 +    "./lib/mcp/browserServerBackend": "./lib/mcp/browser/browserServerBackend.js",
      "./lib/program": "./lib/program.js",
      "./lib/reporters/base": "./lib/reporters/base.js",
