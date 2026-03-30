@@ -73,6 +73,9 @@ export function isBrowserSessionReadyForTools(context) {
   return f instanceof DynamicCdpContextFactory && Boolean(f._currentCdpEndpoint);
 }
 
+/** 从 Playwright 官方 MCP 中排除的工具名（例如 RoxyBrowser 由外部提供浏览器，无需 browser_install）。 */
+const EXCLUDED_PLAYWRIGHT_TOOL_NAMES = new Set(['browser_install', 'browser_close']);
+
 function notConnectedToolResult(toolName) {
   return {
     content: [
@@ -137,7 +140,9 @@ export class CustomBackend extends BrowserServerBackend {
   }
 
   async listTools() {
-    const baseTools = await super.listTools();
+    const baseTools = (await super.listTools()).filter(
+      (t) => !EXCLUDED_PLAYWRIGHT_TOOL_NAMES.has(t.name)
+    );
     const extraMcp = this._extraTools.map((t) => extraToolToMcp(t.schema));
     return [...baseTools, ...extraMcp];
   }
@@ -154,6 +159,21 @@ export class CustomBackend extends BrowserServerBackend {
           isError: false,
         };
       }
+    }
+    if (EXCLUDED_PLAYWRIGHT_TOOL_NAMES.has(name)) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: [
+              '### Tool unavailable',
+              '',
+              `The tool \`${name}\` is not exposed by this MCP server (browser is provided externally; use RoxyBrowser / CDP connection instead).`,
+            ].join('\n'),
+          },
+        ],
+        isError: true,
+      };
     }
     if (!isBrowserSessionReadyForTools(this._context))
       return notConnectedToolResult(name);
