@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import playwright from 'playwright-core';
+import { chromium } from 'playwright';
 import { BrowserServerBackend } from 'playwright/lib/mcp/browserServerBackend';
 
 /** 与 src/browserContextFactory.ts 中 DynamicCdpContextFactory 行为一致：支持 reconnectToCDP，后续 createContext 连到该 CDP */
@@ -30,7 +30,7 @@ class DynamicCdpContextFactory {
       );
     }
     if (!this._browserPromise) {
-      this._browserPromise = playwright.chromium.connectOverCDP(endpoint, { timeout: 30000 });
+      this._browserPromise = chromium.connectOverCDP(endpoint, { timeout: 30000 });
       this._browserPromise.catch(() => {
         this._browserPromise = undefined;
       });
