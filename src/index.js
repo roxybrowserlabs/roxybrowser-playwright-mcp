@@ -14,7 +14,7 @@ import {
   DynamicCdpContextFactory,
   defineExtraTool,
   extraToolToMcp,
-} from './customBackend.js';
+} from './backend/index.js';
 import { createServer, start } from 'playwright/lib/mcp/sdk/exports';
 import { resolveConfig, configFromEnv } from 'playwright/lib/mcp/browser/config';
 import { contextFactory } from 'playwright/lib/mcp/browser/browserContextFactory';

@@ -5,7 +5,7 @@
  * 使用 pnpm patch 暴露的 playwright MCP 模块；CLI 沿用官方选项，backend 替换为 CustomBackend。
  */
 import { createRequire } from 'node:module';
-import { CustomBackend } from './customBackend.js';
+import { CustomBackend } from './backend/index.js';
 import { decorateCommand } from 'playwright/lib/mcp/program';
 import { start } from 'playwright/lib/mcp/sdk/exports';
 import { resolveCLIConfig } from 'playwright/lib/mcp/browser/config';
