@@ -86,6 +86,81 @@ export async function startServer(options = {}) {
   return { url };
 }
 
+import os from 'os';
+
+export class RoxyBrowserPlaywrightMCPServer {
+  server
+  constructor(userConfig = {}) {
+    const config = Object.assign({
+      browser: {
+        browserName: "chromium",
+        launchOptions: {
+          channel: "chrome",
+          headless: os.platform() === "linux" && !process.env.DISPLAY,
+          chromiumSandbox: true
+        },
+        contextOptions: {
+          viewport: null
+        }
+      },
+      console: {
+        level: "info"
+      },
+      network: {
+        allowedOrigins: void 0,
+        blockedOrigins: void 0
+      },
+      server: {},
+      saveTrace: false,
+      snapshot: {
+        mode: "incremental",
+        output: "stdout"
+      },
+      timeouts: {
+        action: 5e3,
+        navigation: 6e4
+      }
+    }, userConfig);
+    const factory = contextFactory(config);
+    const backend = new CustomBackend(config, factory);
+    this.server = createServer(
+      'roxybrowser-playwright-mcp',
+      pkg.version,
+      backend,
+      false
+    );
+  }
+
+  /**
+   * 连接 transport（stdio / InMemoryTransport 等）
+   * @param {object} transport - 符合 MCP Transport 接口的对象
+   */
+  async connect(transport) {
+    if (!this.server)
+      throw new Error('Server not created. Call createServer() before connect().');
+    await this.server.connect(transport);
+  }
+
+  /**
+   * 按模式运行 server
+   * @param {'stdio'} mode - 运行模式
+   * @param {object} [transport] - 可选的自定义 transport（忽略 mode）
+   */
+  async run(mode, transport) {
+    if (!this.server)
+      throw new Error('Server not created. Call createServer() before run().');
+    if (transport) {
+      return this.server.connect(transport);
+    }
+    switch(mode) {
+      case "stdio":
+        return this.server.connect(new mcpBundle.StdioServerTransport());
+      default:
+        return this.server.connect(new mcpBundle.StdioServerTransport());
+    }
+  }
+}
+
 export {
   CustomBackend,
   DynamicCdpContextFactory,
