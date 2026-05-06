@@ -35,15 +35,6 @@ export default {
   },
   externals: [
     ({ request }, callback) => {
-      if (
-        request === 'electron' ||
-        request === 'electron/index.js' ||
-        request === 'bufferutil' ||
-        request === 'utf-8-validate' ||
-        request === 'fsevents'
-      ) {
-        return callback(null, 'commonjs ' + request);
-      }
       callback();
     },
   ],
@@ -77,6 +68,12 @@ export default {
         });
       },
     },
+    // 替换可选原生依赖为 throw stub，避免产物中出现 require() 调用
+    // 这些包（ws、chokidar 等）内部有 try-catch，load 失败会 fallback 到纯 JS 实现
+    new webpack.NormalModuleReplacementPlugin(
+      /^(utf-8-validate|bufferutil|fsevents|electron|electron\/index\.js)$/,
+      path.join(__dirname, 'src/stubs/throw.js')
+    ),
     // 只处理 TypeScript 和 JavaScript 文件，忽略其他所有文件类型
     new webpack.IgnorePlugin({
       checkResource(resource) {

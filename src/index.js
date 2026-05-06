@@ -3,7 +3,7 @@
  *
  * 提供两种使用方式：
  * 1. CLI：npx @roxybrowser/playwright-mcp [--port 9324]
- * 2. 程序化：createConnection（stdio/自定义 transport）、startServer（HTTP/SSE，Studio 协议）
+ * 2. 程序化：createConnection（stdio/自定义 transport）、startServer（HTTP，Studio 协议）
  *
  * 工具类导出供第三方扩展或嵌入。
  */
@@ -19,6 +19,7 @@ import { createServer, start } from 'playwright/lib/mcp/sdk/exports';
 import { resolveConfig, configFromEnv } from 'playwright/lib/mcp/browser/config';
 import { contextFactory } from 'playwright/lib/mcp/browser/browserContextFactory';
 import mcpBundle from 'playwright-core/lib/mcpBundle';
+import os from 'os';
 
 const require = createRequire(import.meta.url);
 const pkg = { version: typeof __VERSION__ !== 'undefined' ? __VERSION__ : require('../package.json').version };
@@ -85,8 +86,6 @@ export async function startServer(options = {}) {
   const url = `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/mcp`;
   return { url };
 }
-
-import os from 'os';
 
 export class RoxyBrowserPlaywrightMCPServer {
   server
