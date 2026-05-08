@@ -1,6 +1,6 @@
 {
   "name": "@roxybrowser/playwright-mcp",
-  "version": "0.0.8-beta.0",
+  "version": "0.0.8-beta.1",
   "description": "Playwright Tools for MCP",
   "type": "module",
   "repository": {
@@ -16,13 +16,13 @@
   },
   "license": "Apache-2.0",
   "scripts": {
-    "start": "node src/cli.js",
-    "dev": "node --inspect src/cli.js",
-    "dev:http": "node --inspect src/cli.js --port 9324",
-    "build:esbuild": "node build.mjs",
-    "build:webpack": "npm run clean && webpack --config webpack.config.mjs",
+    "start": "tsx src/cli.ts",
+    "dev": "tsx --inspect src/cli.ts",
+    "dev:http": "tsx --inspect src/cli.ts --port 9324",
+    "build:ts": "tsc -p tsconfig.build.json && node ./scripts/prepare-build.mjs",
+    "build:webpack": "npm run clean && npm run build:ts && webpack --config webpack.config.mjs && node ./scripts/prepare-dist-types.mjs",
     "build": "npm run build:webpack",
-    "clean": "npx rimraf dist",
+    "clean": "rimraf dist .build",
     "npm-publish": "npm run clean && npm run build && npm publish",
     "publish:release": "npm run clean && npm version patch --no-git-tag-version && npm run build && npm publish",
     "publish:beta": "npm version prerelease --preid=beta --no-git-tag-version && npm publish --tag beta"
@@ -32,28 +32,32 @@
     "registry": "https://registry.npmjs.org/"
   },
   "main": "dist/index.mjs",
+  "types": "dist/index.d.ts",
   "files": [
     "package.json",
-    "dist",
-    "index.d.ts"
+    "dist"
   ],
   "exports": {
     "./package.json": "./package.json",
     ".": {
-      "types": "./index.d.ts",
+      "types": "./dist/index.d.ts",
       "default": "./dist/index.mjs"
     }
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^13.1.0",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.24.4"
   },
   "devDependencies": {
+    "@types/node": "^25.6.2",
     "esbuild": "^0.20.1",
     "playwright": "1.58.2",
     "playwright-core": "1.58.2",
     "rimraf": "^6.0.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
     "webpack": "^5.105.4",
     "webpack-cli": "^5.1.4"
   },

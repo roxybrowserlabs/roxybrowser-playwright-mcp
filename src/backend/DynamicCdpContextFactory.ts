@@ -1,20 +1,33 @@
 import { chromium } from 'playwright';
+import type { Browser, BrowserContext } from 'playwright';
+import type { BrowserContextFactory } from 'playwright/lib/mcp/browser/browserContextFactory';
+import type { Config } from 'playwright/lib/mcp/browser/config';
 
 /** 与 src/browserContextFactory.ts 中 DynamicCdpContextFactory 行为一致：支持 reconnectToCDP，后续 createContext 连到该 CDP */
-export class DynamicCdpContextFactory {
-  constructor(config, initialCdpEndpoint = undefined) {
+export class DynamicCdpContextFactory implements BrowserContextFactory {
+  readonly config: Config;
+  _currentCdpEndpoint: string | undefined;
+  _browserPromise: Promise<Browser> | undefined;
+
+  constructor(config: Config, initialCdpEndpoint: string | undefined = undefined) {
     this.config = config;
     this._currentCdpEndpoint = initialCdpEndpoint;
     this._browserPromise = undefined;
   }
 
-  reconnectToCDP(cdpEndpoint) {
+  reconnectToCDP(cdpEndpoint: string) {
     if (this._currentCdpEndpoint === cdpEndpoint && this._browserPromise) return;
     this._currentCdpEndpoint = cdpEndpoint;
     this._browserPromise = undefined;
   }
 
-  async createContext(clientInfo, _abortSignal, options = {}) {
+  async createContext(
+    clientInfo: unknown,
+    _abortSignal?: AbortSignal,
+    options: Record<string, unknown> = {}
+  ): Promise<{ browserContext: BrowserContext; close: () => Promise<void> }> {
+    void clientInfo;
+    void options;
     const endpoint = this._currentCdpEndpoint;
     if (!endpoint) {
       throw new Error(

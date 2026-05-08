@@ -7,7 +7,7 @@
 import { createRequire } from 'node:module';
 import { CustomBackend } from './backend/index.js';
 import { decorateCommand } from 'playwright/lib/mcp/program';
-import { start } from 'playwright/lib/mcp/sdk/exports';
+import { connectStdio, createMcpServer, startHttpTransport } from './mcp/service.js';
 import { resolveCLIConfig } from 'playwright/lib/mcp/browser/config';
 import { contextFactory } from 'playwright/lib/mcp/browser/browserContextFactory';
 import { program } from 'commander';
@@ -36,15 +36,35 @@ program.action(async (options) => {
   }
   const config = await resolveCLIConfig(options);
   const browserContextFactory = contextFactory(config);
-
-  const serverBackendFactory = {
+  const createServer = () => createMcpServer({
     name: 'Playwright+Roxy',
-    nameInConfig: 'playwright',
     version: pkg.version,
-    create: () => new CustomBackend(config, browserContextFactory),
-  };
+    createBackend: () => new CustomBackend(config, browserContextFactory),
+    runHeartbeat: options.port !== undefined,
+  });
 
-  await start(serverBackendFactory, config.server);
+  if (config.server?.port === undefined) {
+    await connectStdio(createServer);
+    return;
+  }
+
+  const result = await startHttpTransport(createServer, {
+    host: config.server.host,
+    port: config.server.port,
+    allowedHosts: options.allowedHosts,
+  });
+  console.error([
+    `Listening on ${result.baseUrl}`,
+    'Put this in your client config:',
+    JSON.stringify({
+      mcpServers: {
+        playwright: {
+          url: result.url,
+        },
+      },
+    }, null, 2),
+    `Legacy SSE endpoint: ${result.baseUrl}${result.ssePath}`,
+  ].join('\n'));
 });
 
 // 必须用 parseAsync 并 await，否则 async action 未跑完进程就退出，导致 MCP 客户端报 Connection closed

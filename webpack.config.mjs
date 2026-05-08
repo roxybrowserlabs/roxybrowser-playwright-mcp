@@ -11,10 +11,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
 
 export default {
+  mode: 'production',
   target: 'node18',
   entry: {
-    cli: './src/cli.js',
-    index: './src/index.js',
+    cli: './.build/ts/cli.js',
+    index: './.build/ts/index.js',
   },
   output: {
     path: path.join(__dirname, 'dist'),

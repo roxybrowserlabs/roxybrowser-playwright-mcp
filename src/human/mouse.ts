@@ -1,9 +1,30 @@
+import type { Locator } from 'playwright';
+import type { PlaywrightMcpTab } from './types.js';
+
+type MousePoint = {
+  x: number;
+  y: number;
+  pause: number;
+};
+
+type HumanClickParams = {
+  button?: 'left' | 'right' | 'middle';
+  modifiers?: Array<'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift'>;
+  doubleClick?: boolean;
+};
+
 /**
  * 生成拟人化的鼠标轨迹点
  * 使用贝塞尔曲线和轻微随机化模拟人类鼠标移动
  */
-export function generateHumanMousePath(startX, startY, endX, endY, steps = 20) {
-  const points = [];
+export function generateHumanMousePath(
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  steps = 20
+): MousePoint[] {
+  const points: MousePoint[] = [];
 
   // 生成控制点（创建轻微的弧形轨迹）
   const midX = (startX + endX) / 2;
@@ -41,7 +62,11 @@ export function generateHumanMousePath(startX, startY, endX, endY, steps = 20) {
 /**
  * 执行拟人化的点击操作
  */
-export async function humanClick(tab, locator, params) {
+export async function humanClick(
+  tab: PlaywrightMcpTab,
+  locator: Locator,
+  params: HumanClickParams
+): Promise<void> {
   // 首先确保元素可见并滚动到视图中
   await locator.scrollIntoViewIfNeeded();
 
@@ -66,13 +91,17 @@ export async function humanClick(tab, locator, params) {
   const targetY = box.y + box.height / 2 + (Math.random() - 0.5) * Math.min(box.height * 0.3, 10);
 
   // 获取当前鼠标位置，或从一个合理的位置开始
-  let startX, startY;
+  let startX: number;
+  let startY: number;
   try {
-    startX = await page.evaluate(() => window.__lastMouseX);
-    startY = await page.evaluate(() => window.__lastMouseY);
-    if (typeof startX !== 'number' || typeof startY !== 'number') {
+    const lastMouseX = await page.evaluate(() => window.__lastMouseX ?? null);
+    const lastMouseY = await page.evaluate(() => window.__lastMouseY ?? null);
+    if (typeof lastMouseX !== 'number' || typeof lastMouseY !== 'number') {
       startX = 100 + Math.random() * 300;
       startY = 100 + Math.random() * 300;
+    } else {
+      startX = lastMouseX;
+      startY = lastMouseY;
     }
   } catch {
     startX = 100 + Math.random() * 300;
@@ -90,10 +119,11 @@ export async function humanClick(tab, locator, params) {
 
   // 保存最后的鼠标位置
   try {
-    await page.evaluate((x, y) => {
+    await page.evaluate((point: number[]) => {
+      const [x, y] = point;
       window.__lastMouseX = x;
       window.__lastMouseY = y;
-    }, targetX, targetY);
+    }, [targetX, targetY]);
   } catch {
     // 忽略错误
   }

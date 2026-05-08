@@ -7,4 +7,5 @@ playwright-report/
 .idea
 .DS_Store
 .env
+.build
 sessions/

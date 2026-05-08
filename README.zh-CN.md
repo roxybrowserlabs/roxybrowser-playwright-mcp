@@ -1,16 +1,16 @@
 # `@roxybrowser/playwright-mcp`
 
-RoxyBrowser customized Playwright MCP Server.
+RoxyBrowser 定制版 Playwright MCP Server。
 
-[中文说明](./README.zh-CN.md)
+[English](./README.md)
 
-## Installation
+## 安装
 
 ```bash
 pnpm install @roxybrowser/playwright-mcp
 ```
 
-## Exports
+## 导出方法
 
 ```ts
 import {
@@ -23,21 +23,21 @@ import {
 
 ### `connectStdio()`
 
-Starts and connects a `stdio` transport.
+启动并连接 `stdio` transport。
 
 ### `startServer()`
 
-Starts an HTTP server and returns the MCP endpoint.
+启动 HTTP 服务并返回 MCP 地址。
 
 ### `connectMemory()`
 
-Starts an in-memory transport for in-process integrations.
+启动内存 transport，适合进程内集成。
 
 ### `createConnection()`
 
-Creates a `Server` only. Transport is managed by the caller.
+仅创建 `Server`，由调用方自己管理 transport。
 
-## Example
+## 示例
 
 ```ts
 import { startServer } from '@roxybrowser/playwright-mcp';
@@ -50,9 +50,9 @@ const server = await startServer({
 console.log(server.url);
 ```
 
-## MCP Client Config Example
+## MCP 客户端配置示例
 
-Some MCP clients can use this package directly:
+部分客户端可以直接使用这个 MCP 服务：
 
 ```json
 {
