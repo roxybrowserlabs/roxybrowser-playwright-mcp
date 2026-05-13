@@ -4,6 +4,8 @@ import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { BrowserContext, BrowserContextOptions, LaunchOptions } from 'playwright';
+export type { BrowserType } from 'playwright'
+export { chromium, firefox } from 'playwright'
 
 export type ToolCapability = 'core' | 'core-tabs' | 'core-install' | 'vision' | 'pdf';
 

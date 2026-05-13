@@ -25,6 +25,8 @@ import {
 import { resolveConfig } from 'playwright/lib/mcp/browser/config';
 import { contextFactory } from 'playwright/lib/mcp/browser/browserContextFactory';
 
+export { chromium, firefox } from 'playwright';
+
 const require = createRequire(import.meta.url);
 const pkg = {
   version:
@@ -81,7 +83,7 @@ export async function createConnection(
  * Starts a stdio MCP server and connects it immediately.
  */
 export async function connectStdio(
-  options: ConnectionOptions = {}
+  options: ConnectionOptions
 ): Promise<StdioConnection>;
 export async function connectStdio(
   userConfig?: ConfigInput,
@@ -141,7 +143,7 @@ export async function startServer(options: HttpServerOptions): Promise<HttpConne
  * Starts an in-memory MCP server and returns the client-side transport.
  */
 export async function connectMemory(
-  options: ConnectionOptions = {}
+  options: ConnectionOptions
 ): Promise<MemoryConnection>;
 export async function connectMemory(
   userConfig?: ConfigInput,
@@ -173,11 +175,12 @@ export async function connectMemory(
 function normalizeConnectionOptions(
   optionsOrConfig: ConnectionOptions | ConfigInput,
   contextGetter?: () => Promise<BrowserContext>
-): Required<ConnectionOptions> {
+): { config: ConfigInput; contextGetter?: () => Promise<BrowserContext> } {
   if ('config' in optionsOrConfig || 'contextGetter' in optionsOrConfig) {
+    const opts = optionsOrConfig as ConnectionOptions;
     return {
-      config: optionsOrConfig.config ?? {},
-      contextGetter: optionsOrConfig.contextGetter,
+      config: opts.config ?? ({} as ConfigInput),
+      contextGetter: opts.contextGetter,
     };
   }
   return {
