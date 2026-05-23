@@ -1,4 +1,4 @@
-export { chromium } from "./browserType.js";
+export { chromium, firefox } from "./browserType.js";
 
 export type {
   Browser,
@@ -11,12 +11,15 @@ export type {
 export type {
   BrowserContextOptions,
   ClickOptions,
+  ConnectOverCDPOptions,
+  ChromiumChannel,
   FillOptions,
+  HeadersArray,
   HoverOptions,
   HumanizationOptions,
   LaunchOptions,
   PageGotoOptions,
   PressOptions,
+  Progress,
   TypeOptions
 } from "./types/options.js";
-

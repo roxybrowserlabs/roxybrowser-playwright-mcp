@@ -20,11 +20,16 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "example:launch": "pnpm build && node ./examples/launch-local-browser.mjs",
+    "example:connect-cdp": "pnpm build && node ./examples/connect-over-cdp.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "chrome-remote-interface": "^0.33.3"
+    "chrome-remote-interface": "^0.33.3",
+    "webdriver": "^9.27.1"
   },
   "devDependencies": {
     "@types/chrome-remote-interface": "^0.34.0",

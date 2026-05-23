@@ -5,4 +5,8 @@ describe("index exports", () => {
   it("exports the chromium browser type", () => {
     expect(library.chromium).toBeDefined();
   });
+
+  it("exports the firefox browser type", () => {
+    expect(library.firefox).toBeDefined();
+  });
 });

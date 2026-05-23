@@ -51,6 +51,7 @@ describe("RoxyLocator", () => {
     expect(rootAdapter.locator).toHaveBeenNthCalledWith(2, {
       strategy: "role",
       value: "button",
+      name: "send",
       exact: false,
       nameIsRegex: true,
       nameRegexFlags: "i"

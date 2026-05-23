@@ -54,6 +54,7 @@ export class RoxyLocator implements Locator {
       ...(typeof options?.name === "string" ? { name: options.name } : {}),
       ...(options?.name instanceof RegExp
         ? {
+            name: options.name.source,
             nameIsRegex: true,
             nameRegexFlags: options.name.flags
           }

@@ -1,4 +1,5 @@
 import type {
+  BrowserConnectOptions,
   BrowserContextOptions,
   ClickOptions,
   FillOptions,
@@ -26,11 +27,11 @@ export interface LocatorSelector {
 }
 
 export interface ProtocolBrowserAdapterFactory {
-  create(options: LaunchOptions): ProtocolBrowserAdapter;
+  create(options: BrowserConnectOptions): ProtocolBrowserAdapter;
 }
 
 export interface ProtocolBrowserAdapter {
-  readonly protocol: LaunchOptions["protocol"];
+  readonly protocol: BrowserConnectOptions["protocol"];
   readonly capabilities: ProtocolCapabilities;
   connect(): Promise<void>;
   browser(): Promise<ProtocolBrowserSession>;

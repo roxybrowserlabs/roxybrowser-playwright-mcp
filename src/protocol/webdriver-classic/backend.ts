@@ -1,5 +1,9 @@
 import { NotImplementedInProtocolError } from "../../errors.js";
-import type { BrowserContextOptions, LaunchOptions, PageGotoOptions } from "../../types/options.js";
+import type {
+  BrowserConnectOptions,
+  BrowserContextOptions,
+  PageGotoOptions
+} from "../../types/options.js";
 import type {
   LocatorSelector,
   ProtocolBrowserAdapter,
@@ -21,30 +25,30 @@ const WEBDRIVER_CAPABILITIES: ProtocolCapabilities = {
   supportsTracing: false
 };
 
-export class WebDriverBrowserAdapterFactory implements ProtocolBrowserAdapterFactory {
-  create(options: LaunchOptions): ProtocolBrowserAdapter {
-    return new WebDriverBrowserAdapter(options);
+export class ClassicWebDriverBrowserAdapterFactory implements ProtocolBrowserAdapterFactory {
+  create(options: BrowserConnectOptions): ProtocolBrowserAdapter {
+    return new ClassicWebDriverBrowserAdapter(options);
   }
 }
 
-class WebDriverBrowserAdapter implements ProtocolBrowserAdapter {
+class ClassicWebDriverBrowserAdapter implements ProtocolBrowserAdapter {
   readonly protocol = "webdriver" as const;
   readonly capabilities = WEBDRIVER_CAPABILITIES;
 
-  constructor(private readonly options: LaunchOptions) {}
+  constructor(private readonly options: BrowserConnectOptions) {}
 
   async connect(): Promise<void> {
     void this.options;
   }
 
   async browser(): Promise<ProtocolBrowserSession> {
-    return new WebDriverBrowserSession();
+    return new ClassicWebDriverBrowserSession();
   }
 
   async close(): Promise<void> {}
 }
 
-class WebDriverBrowserSession implements ProtocolBrowserSession {
+class ClassicWebDriverBrowserSession implements ProtocolBrowserSession {
   async version(): Promise<string> {
     return "webdriver-pending";
   }
@@ -52,21 +56,21 @@ class WebDriverBrowserSession implements ProtocolBrowserSession {
   async newContext(
     _options?: BrowserContextOptions
   ): Promise<ProtocolBrowserContextAdapter> {
-    return new WebDriverBrowserContextAdapter();
+    return new ClassicWebDriverBrowserContextAdapter();
   }
 
   async close(): Promise<void> {}
 }
 
-class WebDriverBrowserContextAdapter implements ProtocolBrowserContextAdapter {
+class ClassicWebDriverBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   async newPage(): Promise<ProtocolPageAdapter> {
-    return new WebDriverPageAdapter();
+    return new ClassicWebDriverPageAdapter();
   }
 
   async close(): Promise<void> {}
 }
 
-class WebDriverPageAdapter implements ProtocolPageAdapter {
+class ClassicWebDriverPageAdapter implements ProtocolPageAdapter {
   async goto(_url: string, _options?: PageGotoOptions): Promise<void> {
     throw new NotImplementedInProtocolError("webdriver", "page.goto");
   }
@@ -92,18 +96,18 @@ class WebDriverPageAdapter implements ProtocolPageAdapter {
   }
 
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
-    return new WebDriverLocatorAdapter(selector);
+    return new ClassicWebDriverLocatorAdapter(selector);
   }
 
   getByText(text: string | RegExp): ProtocolLocatorAdapter {
-    return new WebDriverLocatorAdapter({
+    return new ClassicWebDriverLocatorAdapter({
       strategy: "text",
       value: text instanceof RegExp ? text.source : text
     });
   }
 
   getByRole(role: string): ProtocolLocatorAdapter {
-    return new WebDriverLocatorAdapter({
+    return new ClassicWebDriverLocatorAdapter({
       strategy: "role",
       value: role
     });
@@ -112,12 +116,12 @@ class WebDriverPageAdapter implements ProtocolPageAdapter {
   async close(): Promise<void> {}
 }
 
-class WebDriverLocatorAdapter implements ProtocolLocatorAdapter {
+class ClassicWebDriverLocatorAdapter implements ProtocolLocatorAdapter {
   constructor(private readonly selector: LocatorSelector) {}
 
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
     void this.selector;
-    return new WebDriverLocatorAdapter(selector);
+    return new ClassicWebDriverLocatorAdapter(selector);
   }
 
   first(): ProtocolLocatorAdapter {

@@ -1,5 +1,6 @@
 import { LocatorError, TimeoutError } from "../../errors.js";
 import type {
+  BrowserConnectOptions,
   BrowserContextOptions,
   ClickOptions,
   FillOptions,
@@ -329,7 +330,7 @@ function locatorOperation(payload: LocatorPayload) {
 const LOCATOR_OPERATION_SOURCE = locatorOperation.toString();
 
 export class CdpBrowserAdapterFactory implements ProtocolBrowserAdapterFactory {
-  create(options: LaunchOptions): ProtocolBrowserAdapter {
+  create(options: BrowserConnectOptions): ProtocolBrowserAdapter {
     return new CdpBrowserAdapter(options);
   }
 }
@@ -340,7 +341,7 @@ export class CdpBrowserAdapter implements ProtocolBrowserAdapter {
 
   private state: CdpBrowserState | undefined;
 
-  constructor(private readonly options: LaunchOptions) {}
+  constructor(private readonly options: BrowserConnectOptions) {}
 
   async connect(): Promise<void> {
     if (this.state) {
@@ -354,7 +355,8 @@ export class CdpBrowserAdapter implements ProtocolBrowserAdapter {
       port: connection.port
     });
     const browserClient = await cdp({
-      target: connection.browserWsEndpoint
+      target: connection.browserWsEndpoint,
+      local: this.options.isLocal
     });
 
     this.state = {
@@ -652,13 +654,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           strategy: "role",
           value: role,
           ...(options?.exact !== undefined ? { exact: options.exact } : {}),
-          ...(typeof options?.name === "string" ? { name: options.name } : {}),
-          ...(options?.name instanceof RegExp
-            ? {
-                nameIsRegex: true,
-                nameRegexFlags: options.name.flags
-              }
-            : {})
+      ...(typeof options?.name === "string" ? { name: options.name } : {}),
+      ...(options?.name instanceof RegExp
+        ? {
+            name: options.name.source,
+            nameIsRegex: true,
+            nameRegexFlags: options.name.flags
+          }
+        : {})
         }
       ]
     });
@@ -1059,9 +1062,7 @@ async function launchBrowser(options: LaunchOptions): Promise<CdpConnectionDetai
   ]);
 
   const userDataDir = await mkdtemp(join(tmpdir(), "roxybrowser-cdp-"));
-  const executableCandidates = options.executablePath
-    ? [options.executablePath]
-    : defaultExecutableCandidates();
+  const executableCandidates = resolveExecutableCandidates(options);
 
   const args = [
     `--user-data-dir=${userDataDir}`,
@@ -1205,29 +1206,118 @@ function buildConnectionFromWsEndpoint(browserWsEndpoint: string): CdpConnection
   };
 }
 
-function defaultExecutableCandidates(): string[] {
-  const platform =
-    (globalThis as typeof globalThis & { process?: { platform?: string } }).process?.platform ??
-    "unknown";
-
-  if (platform === "darwin") {
-    return [
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      "/Applications/Chromium.app/Contents/MacOS/Chromium",
-      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
-    ];
-  }
-
-  if (platform === "win32") {
-    return [
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
-    ];
-  }
-
-  return ["google-chrome", "chromium", "chromium-browser", "chrome"];
+function defaultExecutableCandidates(platform = currentPlatform()): string[] {
+  return executableCandidatesForChannel("chrome", platform).concat(
+    executableCandidatesForChannel("chromium", platform),
+    executableCandidatesForChannel("msedge", platform)
+  );
 }
+
+function currentPlatform(): string {
+  return (
+    (globalThis as typeof globalThis & { process?: { platform?: string } }).process?.platform ??
+    "unknown"
+  );
+}
+
+export function resolveExecutableCandidates(
+  options: Pick<LaunchOptions, "channel" | "executablePath">,
+  platform = currentPlatform()
+): string[] {
+  if (options.executablePath) {
+    return [options.executablePath];
+  }
+
+  if (options.channel) {
+    return executableCandidatesForChannel(options.channel, platform);
+  }
+
+  return defaultExecutableCandidates(platform);
+}
+
+function executableCandidatesForChannel(
+  channel: NonNullable<LaunchOptions["channel"]>,
+  platform: string
+): string[] {
+  const candidates = CHANNEL_EXECUTABLE_CANDIDATES[channel]?.[platform];
+  if (!candidates?.length) {
+    throw new Error(`Unsupported browser channel "${channel}" for platform "${platform}".`);
+  }
+
+  return candidates;
+}
+
+const CHANNEL_EXECUTABLE_CANDIDATES: Record<
+  NonNullable<LaunchOptions["channel"]>,
+  Partial<Record<string, string[]>>
+> = {
+  chromium: {
+    darwin: ["/Applications/Chromium.app/Contents/MacOS/Chromium"],
+    win32: [
+      "C:\\Program Files\\Chromium\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe"
+    ],
+    linux: ["chromium", "chromium-browser"]
+  },
+  chrome: {
+    darwin: ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+    win32: [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+    ],
+    linux: ["google-chrome", "chrome"]
+  },
+  "chrome-beta": {
+    darwin: ["/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"],
+    win32: [
+      "C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome Beta\\Application\\chrome.exe"
+    ],
+    linux: ["google-chrome-beta"]
+  },
+  "chrome-dev": {
+    darwin: ["/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev"],
+    win32: [
+      "C:\\Program Files\\Google\\Chrome Dev\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome Dev\\Application\\chrome.exe"
+    ],
+    linux: ["google-chrome-unstable"]
+  },
+  "chrome-canary": {
+    darwin: ["/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"],
+    win32: ["C:\\Users\\%USERNAME%\\AppData\\Local\\Google\\Chrome SxS\\Application\\chrome.exe"]
+  },
+  msedge: {
+    darwin: ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+    win32: [
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+    ],
+    linux: ["microsoft-edge"]
+  },
+  "msedge-beta": {
+    darwin: ["/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta"],
+    win32: [
+      "C:\\Program Files\\Microsoft\\Edge Beta\\Application\\msedge.exe",
+      "C:\\Program Files (x86)\\Microsoft\\Edge Beta\\Application\\msedge.exe"
+    ],
+    linux: ["microsoft-edge-beta"]
+  },
+  "msedge-dev": {
+    darwin: ["/Applications/Microsoft Edge Dev.app/Contents/MacOS/Microsoft Edge Dev"],
+    win32: [
+      "C:\\Program Files\\Microsoft\\Edge Dev\\Application\\msedge.exe",
+      "C:\\Program Files (x86)\\Microsoft\\Edge Dev\\Application\\msedge.exe"
+    ],
+    linux: ["microsoft-edge-dev"]
+  },
+  "msedge-canary": {
+    darwin: ["/Applications/Microsoft Edge Canary.app/Contents/MacOS/Microsoft Edge Canary"],
+    win32: [
+      "C:\\Users\\%USERNAME%\\AppData\\Local\\Microsoft\\Edge SxS\\Application\\msedge.exe"
+    ]
+  }
+};
 
 async function loadCdp(): Promise<typeof CDP> {
   const module = await import("chrome-remote-interface");

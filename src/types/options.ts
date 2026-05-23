@@ -1,7 +1,29 @@
 export type SupportedProtocol = "cdp" | "bidi" | "webdriver";
+export type BrowserName = "chromium" | "firefox";
+export type ChromiumChannel =
+  | "chromium"
+  | "chrome"
+  | "chrome-beta"
+  | "chrome-dev"
+  | "chrome-canary"
+  | "msedge"
+  | "msedge-beta"
+  | "msedge-dev"
+  | "msedge-canary";
 export type WaitUntilState = "load" | "domcontentloaded" | "networkidle" | "commit";
 export type MouseButton = "left" | "right" | "middle";
 export type HumanProfileName = "cautious" | "balanced" | "fast";
+
+export interface Header {
+  name: string;
+  value: string;
+}
+
+export type HeadersArray = Header[];
+
+export interface Progress {
+  log?(message: string): void | Promise<void>;
+}
 
 export interface ViewportSize {
   width: number;
@@ -25,8 +47,10 @@ export interface HumanizationOptions {
 }
 
 export interface LaunchOptions {
+  browserName?: BrowserName;
   protocol?: SupportedProtocol;
   headless?: boolean;
+  channel?: ChromiumChannel;
   executablePath?: string;
   args?: string[];
   wsEndpoint?: string;
@@ -34,6 +58,15 @@ export interface LaunchOptions {
   port?: number;
   human?: HumanizationOptions;
 }
+
+export interface ConnectOverCDPOptions {
+  slowMo?: number;
+  headers?: HeadersArray;
+  isLocal?: boolean;
+  noDefaults?: boolean;
+}
+
+export interface BrowserConnectOptions extends LaunchOptions, ConnectOverCDPOptions {}
 
 export interface BrowserContextOptions {
   viewport?: ViewportSize;
@@ -86,4 +119,3 @@ export interface GetByRoleOptions {
   exact?: boolean;
   name?: string | RegExp;
 }
-

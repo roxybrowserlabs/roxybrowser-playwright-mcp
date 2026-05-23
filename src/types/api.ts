@@ -1,6 +1,7 @@
 import type {
   BrowserContextOptions,
   ClickOptions,
+  ConnectOverCDPOptions,
   FillOptions,
   GetByRoleOptions,
   GetByTextOptions,
@@ -13,6 +14,10 @@ import type {
 
 export interface BrowserType {
   launch(options?: LaunchOptions): Promise<Browser>;
+  connectOverCDP(
+    endpointURL: string,
+    options?: ConnectOverCDPOptions
+  ): Promise<Browser>;
 }
 
 export interface Browser {
@@ -59,4 +64,3 @@ export interface Locator {
   textContent(): Promise<string | null>;
   isVisible(): Promise<boolean>;
 }
-
