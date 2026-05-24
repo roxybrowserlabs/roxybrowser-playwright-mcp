@@ -75,6 +75,16 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
     setContent: vi.fn(async () => {}),
     evaluate: vi.fn(async <TResult>() => ({ ok: true } as TResult)),
     waitForLoadState: vi.fn(async () => {}),
+    ariaSnapshot: vi.fn(async () => '- document\n  - button "Example"'),
+    resolveAriaRef: vi.fn(async (ref: string) => ({
+      ref,
+      selector: "#example",
+      xpath: '//*[@id="example"]',
+      querySelector: 'document.querySelector("#example")',
+      querySelectorChain: 'document.querySelector("#example")',
+      framePath: [],
+      inShadowTree: false
+    })),
     screenshot: vi.fn(async () => Buffer.from("fake-screenshot")),
     on: vi.fn(<K extends PageEventName>(event: K, listener: PageEventListener<K>) => {
       const eventListeners =

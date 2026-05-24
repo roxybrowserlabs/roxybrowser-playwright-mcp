@@ -5,10 +5,17 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "roxybrowser-mcp": "./dist/bin/roxybrowser-mcp.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
     }
   },
   "files": [
@@ -29,8 +36,10 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "chrome-remote-interface": "^0.33.3",
-    "webdriver": "^9.27.1"
+    "webdriver": "^9.27.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/chrome-remote-interface": "^0.34.0",

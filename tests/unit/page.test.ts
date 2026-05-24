@@ -26,6 +26,16 @@ describe("RoxyPage", () => {
     await page.setContent("<div>ok</div>");
     expect(await page.evaluate<{ ok: boolean }>("() => ({ ok: true })")).toEqual({ ok: true });
     await page.waitForLoadState("load");
+    expect(await page.ariaSnapshot({ mode: "ai", depth: 2 })).toBe('- document\n  - button "Example"');
+    expect(await page.resolveAriaRef("r1")).toEqual({
+      ref: "r1",
+      selector: "#example",
+      xpath: '//*[@id="example"]',
+      querySelector: 'document.querySelector("#example")',
+      querySelectorChain: 'document.querySelector("#example")',
+      framePath: [],
+      inShadowTree: false
+    });
     expect(await page.screenshot({ type: "png" })).toEqual(Buffer.from("fake-screenshot"));
     await page.close();
 
@@ -34,6 +44,8 @@ describe("RoxyPage", () => {
     });
     expect(adapter.setContent).toHaveBeenCalledWith("<div>ok</div>");
     expect(adapter.waitForLoadState).toHaveBeenCalledWith("load");
+    expect(adapter.ariaSnapshot).toHaveBeenCalledWith({ mode: "ai", depth: 2 });
+    expect(adapter.resolveAriaRef).toHaveBeenCalledWith("r1");
     expect(adapter.screenshot).toHaveBeenCalledWith({ type: "png" });
     expect(adapter.close).toHaveBeenCalledTimes(1);
   });

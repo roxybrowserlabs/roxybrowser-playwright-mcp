@@ -1,0 +1,132 @@
+# RoxyBrowser MCP v1 落地方案
+
+## Summary
+- 在现有浏览器库之上新增一层 MCP 服务，统一使用 `@modelcontextprotocol/sdk` 建立服务，统一使用 `zod` 做工具参数校验。
+- 包对外同时保留两类能力：
+  - 现有库 API：`chromium`、`firefox` 等保持不变。
+  - 新增 MCP API：`createRoxyBrowserMcpServer`、`startRoxyBrowserMcpStdio`、`startRoxyBrowserMcpHttp`、`createRoxyBrowserMcpInMemory`。
+- v1 只注册 5 个工具：`roxy_browser_connect`、`browser_tabs`、`browser_snapshot`、`browser_click`、`browser_hover`。
+- 运行时隔离策略：
+  - `stdio` 和 `InMemoryTransport` 各自对应单一 MCP 会话。
+  - `http` 使用 Streamable HTTP，并按 MCP session 隔离浏览器连接、tab 状态和 snapshot/ref 缓存。
+
+## Public API / Interfaces
+- `package.json`
+  - 新增依赖：`@modelcontextprotocol/sdk`、`zod`。
+  - 保留主入口 `.`，新增 `exports["./mcp"]` 指向 MCP 启动入口。
+  - 新增 `bin` 命令，默认启动 `stdio` MCP 服务。
+- 主入口继续导出当前浏览器 API，同时追加导出 MCP API；`./mcp` 子路径导出同一套 MCP API。
+- MCP 工厂与启动接口固定为：
+  - `createRoxyBrowserMcpServer(options?)`
+    - 返回 `{ server, runtimeManager, close }`。
+    - `server` 为已注册工具的 SDK server，不自动绑定 transport。
+    - `runtimeManager` 负责按 session 取 runtime。
+  - `startRoxyBrowserMcpStdio(options?)`
+    - 创建 server 并绑定 SDK stdio transport。
+    - 返回 `{ server, transport, close }`。
+  - `startRoxyBrowserMcpHttp({ host?, port, path? })`
+    - 使用 Streamable HTTP transport，默认 `host = "127.0.0.1"`、`path = "/mcp"`。
+    - 返回 `{ server, httpServer, close }`。
+    - `/mcp` 作为 MCP transport 路径，按 SDK transport 需要处理其支持的方法；额外暴露 `GET /health`。
+  - `createRoxyBrowserMcpInMemory(options?)`
+    - 创建 server，并返回成对的内存 transport。
+    - 返回 `{ server, serverTransport, clientTransport, close }`。
+- 工具输入/输出接口
+  - `roxy_browser_connect`
+    - 入参：`{ protocol: "cdp" | "bidi", endpoint: string, browser?: "chromium" | "firefox" }`
+    - `cdp` 接受 `http(s)` discovery endpoint 或 `ws(s)` browser endpoint。
+    - `bidi` v1 只接受 `ws(s)` endpoint。
+    - 输出：浏览器信息、协议、tab 列表、活动 tab、活动 tab 初始 snapshot。
+  - `browser_tabs`
+    - 入参：`{ action: "list" | "new" | "select" | "close", index?: number, url?: string }`
+    - `list` 返回 tab 列表。
+    - `new/select/close` 返回 tab 列表，且有活动 tab 时同时返回该 tab 的 snapshot。
+  - `browser_snapshot`
+    - 无必填入参，始终针对当前活动 tab。
+    - 输出 Playwright MCP 风格文本树，不返回 HTML。
+  - `browser_click` / `browser_hover`
+    - 入参：`{ ref: string }`
+    - 仅操作最近一次活动 tab snapshot 中的 `ref`。
+
+## Key Changes
+- 新增 `src/mcp/` 模块，最少拆成：
+  - `server.ts`：基于 `@modelcontextprotocol/sdk` 创建 server、注册工具、统一工具包装。
+  - `schemas.ts`：全部 `zod` schema。
+  - `runtime.ts`：单会话 runtime、runtime manager、连接守卫、snapshot/ref 缓存、错误封装。
+  - `transports/*`：`stdio`、`http`、`in-memory` 三种启动封装。
+- MCP runtime 设计
+  - `McpRuntimeManager`
+    - `stdio` / `in-memory` 返回固定 runtime。
+    - `http` 通过 MCP session id 按需创建和回收 runtime。
+  - `McpRuntime`
+    - 保存 `connection`、`tabs`、`activeTabId`、`snapshotCache`、`refMap`。
+    - 提供 `requireConnected()`、`requireActiveTab()`、`invalidateSnapshot()`。
+    - `close()` 时关闭协议连接并释放 transport 关联资源。
+- 工具注册方式
+  - 每个工具都走统一 helper：
+    - `zod` 解析输入。
+    - 获取当前 session runtime。
+    - 执行守卫。
+    - 将结果转成 MCP 文本响应。
+    - 错误统一映射为结构化消息，至少覆盖：
+      - `not_connected`
+      - `no_active_tab`
+      - `invalid_tab_index`
+      - `stale_ref`
+      - `unsupported_protocol_input`
+- 协议层扩展
+  - 在现有 `cdp` / `bidi` 抽象旁新增“已连接浏览器会话”能力，供 MCP 使用，不替换原有 `newContext/newPage` 路径。
+  - 这层能力必须固定支持：
+    - 枚举现有顶层 tab
+    - 新建 tab
+    - 激活 tab
+    - 关闭 tab
+    - 附着到指定 tab
+    - 获取 tab snapshot
+    - 通过 snapshot `ref` 执行 click/hover
+- CDP 实现
+  - 通过 `Target.getTargets` 枚举顶层 `page` 目标，过滤掉 devtools 和非顶层页面。
+  - 通过 `Target.createTarget` / `Target.activateTarget` / `Target.closeTarget` 管理 tab。
+  - 对活动 tab 建立 page 级 client。
+  - `browser_snapshot` 优先使用 Chromium accessibility tree，再归一化为统一文本树；`ref` 绑定到可再次定位的 CDP 节点标识。
+- BiDi 实现
+  - 新增 attach-by-websocket 模式，不再只支持内部 `newSession`。
+  - 通过 `browsingContext.getTree` 枚举 tab，`browsingContext.create` / `activate` / `close` 管理 tab。
+  - snapshot 通过页内 DOM/ARIA walker 生成统一文本树；`ref` 绑定到可再次解析的 BiDi 节点标识。
+- Snapshot 语义
+  - 每次 `browser_snapshot` 重新生成文本树和 `refMap`。
+  - `browser_click` / `browser_hover` 成功后立即失效当前 snapshot。
+  - 切 tab、关 tab、主文档导航后失效当前 snapshot。
+  - 使用失效 `ref` 时返回 `stale_ref`，并明确提示先重新调用 `browser_snapshot`。
+- HTTP 模式
+  - 使用 `@modelcontextprotocol/sdk` 的 Streamable HTTP transport。
+  - 每个 MCP session 独立 runtime，不共享浏览器连接和 snapshot。
+  - 服务关闭时，遍历关闭所有 runtime。
+
+## Test Plan
+- 单元测试
+  - 5 个工具的 `zod` schema 校验。
+  - 未连接调用动作工具时返回 `not_connected`。
+  - `browser_tabs` 的非法索引、无 tab、关闭最后一个 tab 的行为。
+  - `browser_snapshot` 的文本归一化和 `ref` 生成稳定性。
+  - `click/hover` 后 snapshot 失效，旧 `ref` 再调用返回 `stale_ref`。
+- MCP 层测试
+  - `createRoxyBrowserMcpServer()` 注册全部工具。
+  - `startRoxyBrowserMcpStdio()` 能建立和关闭 transport。
+  - `createRoxyBrowserMcpInMemory()` 能完成 connect -> tabs -> snapshot -> hover/click 的进程内调用链。
+  - `startRoxyBrowserMcpHttp()` 能通过 HTTP 建立独立 session；两个 session 的 runtime 状态互不污染。
+- 协议层测试
+  - CDP attach 后可枚举现有 tab、切换、新建、关闭。
+  - BiDi attach 后可枚举现有 tab、切换、新建、关闭。
+  - 导航或 tab 切换会触发 snapshot 失效。
+- e2e 场景
+  - 真实浏览器上执行：`roxy_browser_connect -> browser_tabs list/select -> browser_snapshot -> browser_hover -> browser_click`。
+  - 验证 click/hover 后必须重新 snapshot。
+  - 验证关闭当前 tab 后自动选择邻近 tab，并返回更新后的 snapshot。
+
+## Assumptions
+- 保留现有库 API 的主入口导出，不做破坏性迁移。
+- `./mcp` 子路径与主入口导出同一套 MCP API，便于显式按用途引用。
+- `http` 模式按 MCP session 隔离 runtime；`stdio` 和 `in-memory` 维持单 runtime。
+- v1 不实现 SSE，不负责启动远程浏览器，只负责 attach 到现有 CDP/BiDi endpoint。
+- `browser_snapshot` 对外只返回文本树；内部可保留结构化中间表示，但不作为工具输出协议的一部分。

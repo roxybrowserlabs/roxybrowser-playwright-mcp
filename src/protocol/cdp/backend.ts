@@ -3,8 +3,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as cdpModule from "chrome-remote-interface";
+import {
+  ARIA_REF_SELECTOR_EVALUATE_SOURCE,
+  ARIA_SNAPSHOT_EVALUATE_SOURCE,
+  type ResolvedAriaRefResult,
+  normalizeAriaSnapshotOptions,
+  withOptionalTimeout
+} from "../../ariaSnapshot.js";
 import { LocatorError, TimeoutError } from "../../errors.js";
+import type { ResolvedAriaRef } from "../../types/api.js";
 import type {
+  AriaSnapshotOptions,
   BrowserConnectOptions,
   BrowserContextOptions,
   ClickOptions,
@@ -680,6 +689,40 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.stateWaiters.add(waiter);
       this.flushWaiters();
     });
+  }
+
+  async ariaSnapshot(options: AriaSnapshotOptions = {}): Promise<string> {
+    const normalizedOptions = normalizeAriaSnapshotOptions(options);
+    const result = await withOptionalTimeout(
+      this.evaluateFunction<{ text: string }>(ARIA_SNAPSHOT_EVALUATE_SOURCE, {
+        options: normalizedOptions
+      }),
+      normalizedOptions.timeout,
+      'Timed out while generating page.ariaSnapshot().'
+    );
+    return result.text;
+  }
+
+  async resolveAriaRef(ref: string): Promise<ResolvedAriaRef> {
+    const result = await this.evaluateFunction<ResolvedAriaRefResult>(
+      ARIA_REF_SELECTOR_EVALUATE_SOURCE,
+      { ref }
+    );
+    if (!result.ok) {
+      throw new Error(
+        `Ref "${ref}" is not available on this page. Call page.ariaSnapshot({ mode: "ai" }) again first.`
+      );
+    }
+
+    return {
+      ref: result.ref ?? ref,
+      selector: result.selector ?? null,
+      xpath: result.xpath ?? null,
+      querySelector: result.querySelector ?? null,
+      querySelectorChain: result.querySelectorChain ?? null,
+      framePath: result.framePath ?? [],
+      inShadowTree: Boolean(result.inShadowTree)
+    };
   }
 
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {

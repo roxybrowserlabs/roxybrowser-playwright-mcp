@@ -1,0 +1,234 @@
+import { connectBrowserSession } from "./connectedBrowser.js";
+import { McpToolError } from "./errors.js";
+import type {
+  BrowserSessionFactory,
+  BrowserSnapshot,
+  BrowserTab,
+  CreateRoxyBrowserMcpServerOptions,
+  SnapshotCacheEntry
+} from "./types.js";
+
+export class McpRuntime {
+  private connection:
+    | {
+        session: Awaited<ReturnType<BrowserSessionFactory>>;
+      }
+    | undefined;
+  private tabs: BrowserTab[] = [];
+  private snapshotCache: SnapshotCacheEntry | undefined;
+
+  constructor(private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession) {}
+
+  async connect(args: Parameters<BrowserSessionFactory>[0]): Promise<{
+    browserName: string;
+    protocol: string;
+    version: string;
+    tabs: BrowserTab[];
+    snapshot?: BrowserSnapshot;
+  }> {
+    await this.close();
+    const session = await this.sessionFactory(args);
+    this.connection = {
+      session
+    };
+    this.tabs = await session.listTabs();
+    const version = await session.version();
+    const snapshot = this.tabs.some((tab) => tab.active)
+      ? await this.snapshot()
+      : undefined;
+
+    return {
+      browserName: session.browserName,
+      protocol: session.protocol,
+      version,
+      tabs: this.tabs,
+      ...(snapshot ? { snapshot } : {})
+    };
+  }
+
+  async listTabs(): Promise<BrowserTab[]> {
+    const session = this.requireConnected();
+    this.tabs = await session.listTabs();
+    if (!this.tabs.some((tab) => tab.active)) {
+      this.invalidateSnapshot();
+    }
+    return this.tabs;
+  }
+
+  async newTab(url?: string): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
+    const session = this.requireConnected();
+    this.invalidateSnapshot();
+    this.tabs = await session.newTab(url);
+    const snapshot = this.tabs.some((tab) => tab.active)
+      ? await this.snapshot()
+      : undefined;
+    return snapshot
+      ? {
+          tabs: this.tabs,
+          snapshot
+        }
+      : {
+          tabs: this.tabs
+        };
+  }
+
+  async selectTab(index: number): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
+    const session = this.requireConnected();
+    const tabs = await this.listTabs();
+    const tab = tabs[index];
+    if (!tab) {
+      throw new McpToolError("invalid_tab_index", `Tab index ${index} does not exist.`);
+    }
+    this.invalidateSnapshot();
+    this.tabs = await session.selectTab(tab.id);
+    const snapshot = await this.snapshot();
+    return {
+      tabs: this.tabs,
+      snapshot
+    };
+  }
+
+  async closeTab(index: number): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
+    const session = this.requireConnected();
+    const tabs = await this.listTabs();
+    const tab = tabs[index];
+    if (!tab) {
+      throw new McpToolError("invalid_tab_index", `Tab index ${index} does not exist.`);
+    }
+    this.invalidateSnapshot();
+    this.tabs = await session.closeTab(tab.id);
+    const snapshot = this.tabs.some((candidate) => candidate.active)
+      ? await this.snapshot()
+      : undefined;
+    return snapshot
+      ? {
+          tabs: this.tabs,
+          snapshot
+        }
+      : {
+          tabs: this.tabs
+        };
+  }
+
+  async snapshot(): Promise<BrowserSnapshot> {
+    const session = this.requireConnected();
+    const activeTab = this.requireActiveTab();
+    if (this.snapshotCache && this.snapshotCache.tabId === activeTab.id) {
+      return {
+        text: this.snapshotCache.text,
+        refs: { ...this.snapshotCache.refs },
+        title: activeTab.title,
+        url: activeTab.url
+      };
+    }
+
+    const snapshot = await session.snapshot();
+    this.snapshotCache = {
+      tabId: activeTab.id,
+      text: snapshot.text,
+      refs: { ...snapshot.refs }
+    };
+    return snapshot;
+  }
+
+  async click(ref: string): Promise<void> {
+    const session = this.requireConnected();
+    const refToken = this.resolveRef(ref);
+    await session.click(refToken);
+    this.invalidateSnapshot();
+  }
+
+  async hover(ref: string): Promise<void> {
+    const session = this.requireConnected();
+    const refToken = this.resolveRef(ref);
+    await session.hover(refToken);
+    this.invalidateSnapshot();
+  }
+
+  invalidateSnapshot(): void {
+    this.snapshotCache = undefined;
+  }
+
+  async close(): Promise<void> {
+    this.invalidateSnapshot();
+    this.tabs = [];
+    if (!this.connection) {
+      return;
+    }
+
+    const session = this.connection.session;
+    this.connection = undefined;
+    await session.close();
+  }
+
+  requireConnected() {
+    if (!this.connection) {
+      throw new McpToolError(
+        "not_connected",
+        'No browser is connected. Call "roxy_browser_connect" first.'
+      );
+    }
+    return this.connection.session;
+  }
+
+  requireActiveTab(): BrowserTab {
+    const activeTab = this.tabs.find((tab) => tab.active);
+    if (!activeTab) {
+      throw new McpToolError("no_active_tab", "No active tab is available.");
+    }
+    return activeTab;
+  }
+
+  private resolveRef(ref: string): string {
+    const activeTab = this.requireActiveTab();
+    if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
+      throw new McpToolError(
+        "stale_ref",
+        'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
+      );
+    }
+
+    const token = this.snapshotCache.refs[ref];
+    if (!token) {
+      throw new McpToolError(
+        "stale_ref",
+        `Ref "${ref}" is no longer valid. Call "browser_snapshot" again.`
+      );
+    }
+
+    return token;
+  }
+}
+
+export class McpRuntimeManager {
+  private readonly runtimes = new Map<string, McpRuntime>();
+
+  constructor(private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"]) {}
+
+  getRuntime(sessionId = "default"): McpRuntime {
+    const existing = this.runtimes.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+
+    const runtime = new McpRuntime(this.sessionFactory);
+    this.runtimes.set(sessionId, runtime);
+    return runtime;
+  }
+
+  async closeRuntime(sessionId = "default"): Promise<void> {
+    const runtime = this.runtimes.get(sessionId);
+    if (!runtime) {
+      return;
+    }
+
+    this.runtimes.delete(sessionId);
+    await runtime.close();
+  }
+
+  async closeAll(): Promise<void> {
+    const runtimes = Array.from(this.runtimes.values());
+    this.runtimes.clear();
+    await Promise.all(runtimes.map(async (runtime) => runtime.close()));
+  }
+}

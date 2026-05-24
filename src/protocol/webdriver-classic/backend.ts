@@ -1,5 +1,7 @@
 import { NotImplementedInProtocolError } from "../../errors.js";
+import type { ResolvedAriaRef } from "../../types/api.js";
 import type {
+  AriaSnapshotOptions,
   BrowserConnectOptions,
   BrowserContextOptions,
   PageGotoOptions,
@@ -95,6 +97,14 @@ class ClassicWebDriverPageAdapter implements ProtocolPageAdapter {
 
   async waitForLoadState(_state?: PageGotoOptions["waitUntil"]): Promise<void> {
     throw new NotImplementedInProtocolError("webdriver", "page.waitForLoadState");
+  }
+
+  async ariaSnapshot(_options?: AriaSnapshotOptions): Promise<string> {
+    throw new NotImplementedInProtocolError("webdriver", "page.ariaSnapshot");
+  }
+
+  async resolveAriaRef(_ref: string): Promise<ResolvedAriaRef> {
+    throw new NotImplementedInProtocolError("webdriver", "page.resolveAriaRef");
   }
 
   async screenshot(_options?: ScreenshotOptions): Promise<Buffer> {

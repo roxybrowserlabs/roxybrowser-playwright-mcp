@@ -128,3 +128,10 @@ export interface ScreenshotOptions {
   quality?: number;
   type?: ScreenshotType;
 }
+
+export interface AriaSnapshotOptions {
+  boxes?: boolean;
+  depth?: number;
+  mode?: "ai" | "default";
+  timeout?: number;
+}

@@ -9,8 +9,9 @@ import type {
   PageEventMap,
   PageEventName
 } from "./types/events.js";
-import type { Locator, Page } from "./types/api.js";
+import type { Locator, Page, ResolvedAriaRef } from "./types/api.js";
 import type {
+  AriaSnapshotOptions,
   ClickOptions,
   FillOptions,
   GetByRoleOptions,
@@ -62,6 +63,14 @@ export class RoxyPage implements Page {
 
   async waitForLoadState(state?: PageGotoOptions["waitUntil"]): Promise<void> {
     await this.adapter.waitForLoadState(state);
+  }
+
+  async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
+    return this.adapter.ariaSnapshot(options);
+  }
+
+  async resolveAriaRef(ref: string): Promise<ResolvedAriaRef> {
+    return this.adapter.resolveAriaRef(ref);
   }
 
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {

@@ -1,4 +1,5 @@
 import type {
+  AriaSnapshotOptions,
   BrowserContextOptions,
   ClickOptions,
   ConnectOverCDPOptions,
@@ -33,6 +34,21 @@ export interface BrowserContext {
   close(): Promise<void>;
 }
 
+export interface AriaRefFrameLocator {
+  selector: string | null;
+  xpath: string | null;
+}
+
+export interface ResolvedAriaRef {
+  ref: string;
+  selector: string | null;
+  xpath: string | null;
+  querySelector: string | null;
+  querySelectorChain: string | null;
+  framePath: AriaRefFrameLocator[];
+  inShadowTree: boolean;
+}
+
 export interface Page {
   goto(url: string, options?: PageGotoOptions): Promise<void>;
   title(): Promise<string>;
@@ -40,6 +56,8 @@ export interface Page {
   setContent(html: string): Promise<void>;
   evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult>;
   waitForLoadState(state?: PageGotoOptions["waitUntil"]): Promise<void>;
+  ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
+  resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   on<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   once<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;

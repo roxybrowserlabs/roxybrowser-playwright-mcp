@@ -1,5 +1,14 @@
+import {
+  ARIA_REF_SELECTOR_EVALUATE_SOURCE,
+  ARIA_SNAPSHOT_EVALUATE_SOURCE,
+  type ResolvedAriaRefResult,
+  normalizeAriaSnapshotOptions,
+  withOptionalTimeout
+} from "../../ariaSnapshot.js";
 import { NotImplementedInProtocolError } from "../../errors.js";
+import type { ResolvedAriaRef } from "../../types/api.js";
 import type {
+  AriaSnapshotOptions,
   ClickOptions,
   BrowserConnectOptions,
   BrowserContextOptions,
@@ -498,6 +507,40 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async waitForLoadState(_state?: PageGotoOptions["waitUntil"]): Promise<void> {}
+
+  async ariaSnapshot(options: AriaSnapshotOptions = {}): Promise<string> {
+    const normalizedOptions = normalizeAriaSnapshotOptions(options);
+    const result = await withOptionalTimeout(
+      this.evaluateFunction<{ text: string }>(ARIA_SNAPSHOT_EVALUATE_SOURCE, {
+        options: normalizedOptions
+      }),
+      normalizedOptions.timeout,
+      'Timed out while generating page.ariaSnapshot().'
+    );
+    return result.text;
+  }
+
+  async resolveAriaRef(ref: string): Promise<ResolvedAriaRef> {
+    const result = await this.evaluateFunction<ResolvedAriaRefResult>(
+      ARIA_REF_SELECTOR_EVALUATE_SOURCE,
+      { ref }
+    );
+    if (!result.ok) {
+      throw new Error(
+        `Ref "${ref}" is not available on this page. Call page.ariaSnapshot({ mode: "ai" }) again first.`
+      );
+    }
+
+    return {
+      ref: result.ref ?? ref,
+      selector: result.selector ?? null,
+      xpath: result.xpath ?? null,
+      querySelector: result.querySelector ?? null,
+      querySelectorChain: result.querySelectorChain ?? null,
+      framePath: result.framePath ?? [],
+      inShadowTree: Boolean(result.inShadowTree)
+    };
+  }
 
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
     const response = await this.client.browsingContextCaptureScreenshot({

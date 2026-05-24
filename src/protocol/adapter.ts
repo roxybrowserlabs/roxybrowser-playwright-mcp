@@ -1,4 +1,5 @@
 import type {
+  AriaSnapshotOptions,
   BrowserConnectOptions,
   BrowserContextOptions,
   ClickOptions,
@@ -13,6 +14,7 @@ import type {
   TypeOptions
 } from "../types/options.js";
 import type { PageEventListener, PageEventName } from "../types/events.js";
+import type { ResolvedAriaRef } from "../types/api.js";
 import type { ProtocolCapabilities } from "./capabilities.js";
 
 export type LocatorStrategy = "css" | "text" | "role";
@@ -58,6 +60,8 @@ export interface ProtocolPageAdapter {
   setContent(html: string): Promise<void>;
   evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult>;
   waitForLoadState(state?: PageGotoOptions["waitUntil"]): Promise<void>;
+  ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
+  resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   on<K extends PageEventName>(event: K, listener: PageEventListener<K>): () => void;
   locator(selector: LocatorSelector): ProtocolLocatorAdapter;
