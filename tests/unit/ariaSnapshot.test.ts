@@ -33,7 +33,7 @@ function createWindow(html: string) {
 function createSnapshotHelpers(window: Window) {
   return {
     snapshot: window.eval(`(${ARIA_SNAPSHOT_EVALUATE_SOURCE})`) as (payload: {
-      options: { mode: "ai" };
+      options: { mode: "ai" | "default"; depth?: number; boxes?: boolean; timeout?: number };
     }) => AriaSnapshotResult,
     resolveRef: window.eval(`(${ARIA_REF_SELECTOR_EVALUATE_SOURCE})`) as (payload: {
       ref: string;
@@ -147,6 +147,53 @@ describe("aria snapshot helpers", () => {
     });
   });
 
+  it("does not expose refs for default snapshots", () => {
+    const window = createWindow("<!doctype html><html><body><button id=\"plain\">Click</button></body></html>");
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({
+      options: {
+        mode: "default"
+      }
+    });
+
+    expect(result.text).not.toContain("[ref=");
+    expect(result.refs).toEqual({});
+    expect(resolveRef({ ref: "r1" })).toEqual({
+      ok: false,
+      reason: "stale"
+    });
+  });
+
+  it("invalidates prior ai refs after a default snapshot clears ref state", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <button id="first">First</button>
+        </body>
+      </html>
+    `);
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+
+    const aiSnapshot = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const ref = refForLine(aiSnapshot, 'button "First"');
+
+    snapshot({
+      options: {
+        mode: "default"
+      }
+    });
+
+    expect(resolveRef({ ref })).toEqual({
+      ok: false,
+      reason: "stale"
+    });
+  });
+
   it("builds stable nth-of-type selector and xpath when the target has no id", () => {
     const window = createWindow(`
       <!doctype html>
@@ -204,6 +251,56 @@ describe("aria snapshot helpers", () => {
     expect(resolveXpath(window.document, resolved.xpath ?? null)).toBe(button);
   });
 
+  it("escapes numeric-leading ids so querySelector remains valid", () => {
+    const window = createWindow("<!doctype html><html><body></body></html>");
+    const button = window.document.createElement("button");
+    button.id = "123checkout";
+    button.textContent = "Pay";
+    window.document.body.append(button);
+
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const ref = refForLine(result, 'button "Pay"');
+    const resolved = resolveRef({ ref });
+
+    expect(resolved.selector).toBe(String.raw`#\31 23checkout`);
+    expect(resolveTopLevelQuerySelector(window, resolved.querySelector ?? null)).toBe(button);
+    expect(resolveXpath(window.document, resolved.xpath ?? null)).toBe(button);
+  });
+
+  it("falls back to structural selectors when duplicate ids are present", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <section id="shell">
+            <button id="duplicate">First action</button>
+            <div>
+              <button id="duplicate">Second action</button>
+            </div>
+          </section>
+        </body>
+      </html>
+    `);
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const ref = refForLine(result, 'button "Second action"');
+    const resolved = resolveRef({ ref });
+    const target = window.document.querySelector("#shell > div:nth-of-type(1) > button:nth-of-type(1)");
+
+    expect(resolved.selector).toBe("#shell > div:nth-of-type(1) > button:nth-of-type(1)");
+    expect(resolveTopLevelQuerySelector(window, resolved.querySelector ?? null)).toBe(target);
+    expect(resolveXpath(window.document, resolved.xpath ?? null)).toBe(target);
+  });
+
   it("returns frame-aware locator metadata for refs inside an iframe", () => {
     const window = createWindow(`
       <!doctype html>
@@ -253,6 +350,147 @@ describe("aria snapshot helpers", () => {
     expect(resolveXpath(frameWindow.document, resolved.xpath ?? null)).toBe(target);
   });
 
+  it("keeps slotted light DOM nodes query-selectable", () => {
+    const window = createWindow("<!doctype html><html><body><div id=\"host\"></div></body></html>");
+    const host = window.document.getElementById("host")!;
+    const shadowRoot = host.attachShadow({ mode: "open" });
+    const slot = window.document.createElement("slot");
+    shadowRoot.append(slot);
+
+    const button = window.document.createElement("button");
+    button.textContent = "Slotted checkout";
+    host.append(button);
+
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const ref = refForLine(result, 'button "Slotted checkout"');
+    const resolved = resolveRef({ ref });
+
+    expect(resolved).toEqual({
+      ok: true,
+      ref,
+      selector: "#host > button:nth-of-type(1)",
+      xpath: "/html[1]/body[1]/div[1]/button[1]",
+      querySelector: 'document.querySelector("#host > button:nth-of-type(1)")',
+      querySelectorChain: 'document.querySelector("#host > button:nth-of-type(1)")',
+      framePath: [],
+      inShadowTree: false
+    });
+    expect(resolveTopLevelQuerySelector(window, resolved.querySelector ?? null)).toBe(button);
+    expect(resolveXpath(window.document, resolved.xpath ?? null)).toBe(button);
+  });
+
+  it("reports unresolved frame selectors when an iframe lives inside shadow DOM", () => {
+    const window = createWindow("<!doctype html><html><body><div id=\"shadow-host\"></div></body></html>");
+    const host = window.document.getElementById("shadow-host")!;
+    const shadowRoot = host.attachShadow({ mode: "open" });
+    const iframe = window.document.createElement("iframe");
+    iframe.id = "payments-frame";
+    shadowRoot.append(iframe);
+
+    const frameWindow = attachIframeWindow(
+      iframe,
+      `
+        <!doctype html>
+        <html>
+          <body>
+            <button id="pay-inside-shadow-frame">Pay inside shadow frame</button>
+          </body>
+        </html>
+      `
+    );
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const ref = refForLine(result, 'button "Pay inside shadow frame"');
+    const resolved = resolveRef({ ref });
+
+    expect(resolved.selector).toBe("#pay-inside-shadow-frame");
+    expect(resolved.xpath).toBe('//*[@id="pay-inside-shadow-frame"]');
+    expect(resolved.querySelector).toBeNull();
+    expect(resolved.querySelectorChain).toBeNull();
+    expect(resolved.framePath).toEqual([
+      {
+        selector: null,
+        xpath: null
+      }
+    ]);
+    expect(resolveXpath(frameWindow.document, resolved.xpath ?? null)).toBe(
+      frameWindow.document.getElementById("pay-inside-shadow-frame")
+    );
+  });
+
+  it("builds nested frame querySelector chains for multi-level iframes", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <main id="app">
+            <iframe></iframe>
+          </main>
+        </body>
+      </html>
+    `);
+    const outerFrame = window.document.querySelector("iframe") as HTMLIFrameElement;
+    const outerWindow = attachIframeWindow(
+      outerFrame,
+      `
+        <!doctype html>
+        <html>
+          <body>
+            <section id="outer-shell">
+              <iframe></iframe>
+            </section>
+          </body>
+        </html>
+      `
+    );
+    const innerFrame = outerWindow.document.querySelector("iframe") as HTMLIFrameElement;
+    const innerWindow = attachIframeWindow(
+      innerFrame,
+      `
+        <!doctype html>
+        <html>
+          <body>
+            <button>Nested checkout</button>
+          </body>
+        </html>
+      `
+    );
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const ref = refForLine(result, 'button "Nested checkout"');
+    const resolved = resolveRef({ ref });
+    const target = innerWindow.document.querySelector("button");
+
+    expect(resolved.selector).toBe("html > body:nth-of-type(1) > button:nth-of-type(1)");
+    expect(resolved.framePath).toEqual([
+      {
+        selector: "#app > iframe:nth-of-type(1)",
+        xpath: "/html[1]/body[1]/main[1]/iframe[1]"
+      },
+      {
+        selector: "#outer-shell > iframe:nth-of-type(1)",
+        xpath: "/html[1]/body[1]/section[1]/iframe[1]"
+      }
+    ]);
+    expect(resolved.querySelectorChain).toBe(
+      'document.querySelector("#app > iframe:nth-of-type(1)")?.contentDocument.querySelector("#outer-shell > iframe:nth-of-type(1)")?.contentDocument.querySelector("html > body:nth-of-type(1) > button:nth-of-type(1)")'
+    );
+    expect(resolveTopLevelQuerySelector(window, resolved.querySelectorChain ?? null)).toBe(target);
+  });
+
   it("marks shadow DOM refs as non-query-selectable from document scope", () => {
     const window = createWindow("<!doctype html><html><body><div id=\"host\"></div></body></html>");
     const host = window.document.getElementById("host")!;
@@ -297,5 +535,77 @@ describe("aria snapshot helpers", () => {
       ok: false,
       reason: "stale"
     });
+  });
+
+  it("recomputes selector and xpath after the same node is moved in the DOM", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <section id="source">
+            <button>Keep</button>
+            <button>Move me</button>
+          </section>
+          <section id="target"></section>
+        </body>
+      </html>
+    `);
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const ref = refForLine(result, 'button "Move me"');
+    const movedButton = window.document.querySelector("#source > button:nth-of-type(2)")!;
+    window.document.getElementById("target")!.append(movedButton);
+
+    const resolved = resolveRef({ ref });
+
+    expect(resolved.selector).toBe("#target > button:nth-of-type(1)");
+    expect(resolved.querySelector).toBe('document.querySelector("#target > button:nth-of-type(1)")');
+    expect(resolved.querySelectorChain).toBe(
+      'document.querySelector("#target > button:nth-of-type(1)")'
+    );
+    expect(resolveTopLevelQuerySelector(window, resolved.querySelector ?? null)).toBe(movedButton);
+    expect(resolveXpath(window.document, resolved.xpath ?? null)).toBe(movedButton);
+  });
+
+  it("invalidates old refs after a new ai snapshot is generated", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <button id="before">Before rerender</button>
+        </body>
+      </html>
+    `);
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+
+    const firstSnapshot = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const firstRef = refForLine(firstSnapshot, 'button "Before rerender"');
+    window.document.body.innerHTML = '<button id="after">After rerender</button>';
+
+    const secondSnapshot = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const secondRef = refForLine(secondSnapshot, 'button "After rerender"');
+    const secondResolved = resolveRef({ ref: secondRef });
+
+    expect(resolveRef({ ref: firstRef })).toEqual({
+      ok: false,
+      reason: "stale"
+    });
+    expect(secondRef).not.toBe(firstRef);
+    expect(secondResolved.selector).toBe("#after");
+    expect(resolveTopLevelQuerySelector(window, secondResolved.querySelector ?? null)).toBe(
+      window.document.getElementById("after")
+    );
   });
 });

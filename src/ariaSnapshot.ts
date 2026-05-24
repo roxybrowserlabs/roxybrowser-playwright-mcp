@@ -37,8 +37,6 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
   };
   globalState.elements = new Map();
   globalState.refs = new Map();
-  globalState.nextRefId = 1;
-  globalState.nextNodeId = 1;
   globalThis.__roxyMcpState = globalState;
 
   const interactiveRoles = new Set([
@@ -383,10 +381,51 @@ export const ARIA_REF_SELECTOR_EVALUATE_SOURCE = String.raw`(payload) => {
   }
 
   function cssEscape(value) {
+    const input = String(value);
     if (globalThis.CSS && typeof globalThis.CSS.escape === "function") {
-      return globalThis.CSS.escape(value);
+      return globalThis.CSS.escape(input);
     }
-    return String(value).replace(/[^a-zA-Z0-9_\u00A0-\uFFFF-]/g, "\\$&");
+
+    let output = "";
+    for (let index = 0; index < input.length; index += 1) {
+      const character = input.charCodeAt(index);
+      const symbol = input.charAt(index);
+
+      if (character === 0x0000) {
+        output += "\uFFFD";
+        continue;
+      }
+
+      const isControlCharacter =
+        (character >= 0x0001 && character <= 0x001f) || character === 0x007f;
+      const isLeadingDigit = index === 0 && character >= 0x0030 && character <= 0x0039;
+      const isSecondDigitAfterLeadingHyphen =
+        index === 1 &&
+        character >= 0x0030 &&
+        character <= 0x0039 &&
+        input.charCodeAt(0) === 0x002d;
+      if (isControlCharacter || isLeadingDigit || isSecondDigitAfterLeadingHyphen) {
+        output += "\\" + character.toString(16) + " ";
+        continue;
+      }
+
+      if (index === 0 && input.length === 1 && symbol === "-") {
+        output += "\\-";
+        continue;
+      }
+
+      const isIdentifierCharacter =
+        character >= 0x0080 ||
+        character === 0x002d ||
+        character === 0x005f ||
+        (character >= 0x0030 && character <= 0x0039) ||
+        (character >= 0x0041 && character <= 0x005a) ||
+        (character >= 0x0061 && character <= 0x007a);
+
+      output += isIdentifierCharacter ? symbol : "\\" + symbol;
+    }
+
+    return output;
   }
 
   function stringLiteral(value) {
@@ -425,6 +464,16 @@ export const ARIA_REF_SELECTOR_EVALUATE_SOURCE = String.raw`(payload) => {
     return index;
   }
 
+  function hasUniqueIdInDocument(target) {
+    if (!target || !target.ownerDocument || !target.id || isInShadowTree(target)) {
+      return false;
+    }
+
+    const selector = "#" + cssEscape(target.id);
+    const matches = target.ownerDocument.querySelectorAll(selector);
+    return matches.length === 1 && matches[0] === target;
+  }
+
   function isInShadowTree(node) {
     if (!node || typeof node.getRootNode !== "function") {
       return false;
@@ -439,22 +488,18 @@ export const ARIA_REF_SELECTOR_EVALUATE_SOURCE = String.raw`(payload) => {
     }
 
     const document = target.ownerDocument;
-    if (target.id) {
+    if (hasUniqueIdInDocument(target)) {
       const selector = "#" + cssEscape(target.id);
-      if (document.querySelector(selector) === target) {
-        return selector;
-      }
+      return selector;
     }
 
     const segments = [];
     let current = target;
     while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.documentElement) {
-      if (current.id) {
+      if (hasUniqueIdInDocument(current)) {
         const selector = "#" + cssEscape(current.id);
-        if (document.querySelector(selector) === current) {
-          segments.unshift(selector);
-          break;
-        }
+        segments.unshift(selector);
+        break;
       }
 
       const tagName = current.tagName.toLowerCase();
@@ -477,7 +522,7 @@ export const ARIA_REF_SELECTOR_EVALUATE_SOURCE = String.raw`(payload) => {
       return null;
     }
 
-    if (target.id) {
+    if (hasUniqueIdInDocument(target)) {
       return "//*[@id=" + xpathLiteral(target.id) + "]";
     }
 
