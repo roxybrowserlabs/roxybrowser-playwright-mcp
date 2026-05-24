@@ -9,8 +9,10 @@ import type {
   LaunchOptions,
   PageGotoOptions,
   PressOptions,
+  ScreenshotOptions,
   TypeOptions
 } from "../types/options.js";
+import type { PageEventListener, PageEventName } from "../types/events.js";
 import type { ProtocolCapabilities } from "./capabilities.js";
 
 export type LocatorStrategy = "css" | "text" | "role";
@@ -56,6 +58,8 @@ export interface ProtocolPageAdapter {
   setContent(html: string): Promise<void>;
   evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult>;
   waitForLoadState(state?: PageGotoOptions["waitUntil"]): Promise<void>;
+  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  on<K extends PageEventName>(event: K, listener: PageEventListener<K>): () => void;
   locator(selector: LocatorSelector): ProtocolLocatorAdapter;
   getByText(text: string | RegExp, options?: GetByTextOptions): ProtocolLocatorAdapter;
   getByRole(role: string, options?: GetByRoleOptions): ProtocolLocatorAdapter;

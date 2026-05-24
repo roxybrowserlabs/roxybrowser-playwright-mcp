@@ -2,7 +2,8 @@ import { NotImplementedInProtocolError } from "../../errors.js";
 import type {
   BrowserConnectOptions,
   BrowserContextOptions,
-  PageGotoOptions
+  PageGotoOptions,
+  ScreenshotOptions
 } from "../../types/options.js";
 import type {
   LocatorSelector,
@@ -14,6 +15,7 @@ import type {
   ProtocolPageAdapter
 } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
+import type { PageEventListener, PageEventName } from "../../types/events.js";
 
 const WEBDRIVER_CAPABILITIES: ProtocolCapabilities = {
   protocol: "webdriver",
@@ -93,6 +95,14 @@ class ClassicWebDriverPageAdapter implements ProtocolPageAdapter {
 
   async waitForLoadState(_state?: PageGotoOptions["waitUntil"]): Promise<void> {
     throw new NotImplementedInProtocolError("webdriver", "page.waitForLoadState");
+  }
+
+  async screenshot(_options?: ScreenshotOptions): Promise<Buffer> {
+    throw new NotImplementedInProtocolError("webdriver", "page.screenshot");
+  }
+
+  on<K extends PageEventName>(_event: K, _listener: PageEventListener<K>): () => void {
+    throw new NotImplementedInProtocolError("webdriver", `page.on(${String(_event)})`);
   }
 
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {

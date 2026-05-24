@@ -1,3 +1,6 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { RoxyLocator } from "../../src/locator.js";
 import { RoxyPage } from "../../src/page.js";
@@ -23,6 +26,7 @@ describe("RoxyPage", () => {
     await page.setContent("<div>ok</div>");
     expect(await page.evaluate<{ ok: boolean }>("() => ({ ok: true })")).toEqual({ ok: true });
     await page.waitForLoadState("load");
+    expect(await page.screenshot({ type: "png" })).toEqual(Buffer.from("fake-screenshot"));
     await page.close();
 
     expect(adapter.goto).toHaveBeenCalledWith("https://example.com", {
@@ -30,7 +34,33 @@ describe("RoxyPage", () => {
     });
     expect(adapter.setContent).toHaveBeenCalledWith("<div>ok</div>");
     expect(adapter.waitForLoadState).toHaveBeenCalledWith("load");
+    expect(adapter.screenshot).toHaveBeenCalledWith({ type: "png" });
     expect(adapter.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes screenshot data to disk when a path is provided", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const directory = await mkdtemp(join(tmpdir(), "roxy-page-test-"));
+    const outputPath = join(directory, "page.jpg");
+
+    const screenshot = await page.screenshot({ path: outputPath });
+
+    expect(adapter.screenshot).toHaveBeenCalledWith({
+      path: outputPath,
+      type: "jpeg"
+    });
+    expect(screenshot).toEqual(Buffer.from("fake-screenshot"));
+    expect(await readFile(outputPath)).toEqual(Buffer.from("fake-screenshot"));
   });
 
   it("creates locator wrappers from selector, text and role helpers", () => {
@@ -97,5 +127,68 @@ describe("RoxyPage", () => {
     expect(typeSpy).toHaveBeenCalledWith("def", undefined);
     expect(pressSpy).toHaveBeenCalledWith("Enter", undefined);
   });
-});
 
+  it("subscribes, unsubscribes, and deduplicates adapter listeners for page events", () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const logRequest = vi.fn();
+    const secondRequestListener = vi.fn();
+    const onLoad = vi.fn();
+
+    page.on("request", logRequest);
+    page.on("request", secondRequestListener);
+    page.once("load", onLoad);
+
+    expect(adapter.on).toHaveBeenCalledTimes(2);
+    expect(adapter.on).toHaveBeenNthCalledWith(1, "request", expect.any(Function));
+    expect(adapter.on).toHaveBeenNthCalledWith(2, "load", expect.any(Function));
+
+    adapter.emit("request", {
+      headers: [{ name: "accept", value: "*/*" }],
+      method: "GET",
+      url: "https://example.com/data"
+    });
+    adapter.emit("load", undefined);
+    adapter.emit("load", undefined);
+
+    expect(logRequest).toHaveBeenCalledWith({
+      headers: [{ name: "accept", value: "*/*" }],
+      method: "GET",
+      url: "https://example.com/data"
+    });
+    expect(secondRequestListener).toHaveBeenCalledTimes(1);
+    expect(onLoad).toHaveBeenCalledTimes(1);
+
+    page.removeListener("request", logRequest);
+    adapter.emit("request", {
+      headers: [],
+      method: "POST",
+      url: "https://example.com/submit"
+    });
+
+    expect(logRequest).toHaveBeenCalledTimes(1);
+    expect(secondRequestListener).toHaveBeenCalledWith({
+      headers: [],
+      method: "POST",
+      url: "https://example.com/submit"
+    });
+
+    page.removeListener("request", secondRequestListener);
+    adapter.emit("request", {
+      headers: [],
+      method: "DELETE",
+      url: "https://example.com/delete"
+    });
+
+    expect(secondRequestListener).toHaveBeenCalledTimes(2);
+  });
+});

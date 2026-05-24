@@ -9,34 +9,47 @@ if (!endpointURL) {
   );
 }
 
-const fixture = await createExampleFixture();
-
-try {
-  const browser = await chromium.connectOverCDP(endpointURL);
+async function closeQuietly(resource, label) {
+  if (!resource) {
+    return;
+  }
 
   try {
-    const context = await browser.newContext();
-
-    try {
-      const page = await context.newPage();
-
-      try {
-        await page.goto(fixture.url);
-        await page.fill("#name", "CDP");
-        await page.getByRole("button", { name: "Send" }).click();
-
-        console.log("Browser version:", await browser.version());
-        console.log("Page title:", await page.title());
-        console.log("Status text:", await page.locator("#status").textContent());
-      } finally {
-        await page.close();
-      }
-    } finally {
-      await context.close();
-    }
-  } finally {
-    await browser.close();
+    await resource.close();
+  } catch (error) {
+    console.error(`Failed to close ${label}.`);
+    console.error(error);
   }
-} finally {
-  await fixture.close();
 }
+
+async function run() {
+  const fixture = await createExampleFixture();
+  let browser;
+  let context;
+  let page;
+
+  try {
+    browser = await chromium.connectOverCDP(endpointURL);
+    context = await browser.newContext();
+    page = await context.newPage();
+
+    await page.goto(fixture.url);
+    await page.fill("#name", "CDP");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    console.log("Browser version:", await browser.version());
+    console.log("Page title:", await page.title());
+    console.log("Status text:", await page.locator("#status").textContent());
+  } finally {
+    await closeQuietly(page, "page");
+    await closeQuietly(context, "context");
+    await closeQuietly(browser, "browser");
+    await closeQuietly(fixture, "fixture");
+  }
+}
+
+run().catch((error) => {
+  console.error("Example failed.");
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -1,3 +1,8 @@
+import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as cdpModule from "chrome-remote-interface";
 import { LocatorError, TimeoutError } from "../../errors.js";
 import type {
   BrowserConnectOptions,
@@ -10,9 +15,15 @@ import type {
   MouseButton,
   PageGotoOptions,
   PressOptions,
+  ScreenshotOptions,
   TypeOptions,
   WaitUntilState
 } from "../../types/options.js";
+import type {
+  PageEventListener,
+  PageEventMap,
+  PageEventName
+} from "../../types/events.js";
 import type {
   LocatorSelector,
   ProtocolBrowserAdapter,
@@ -24,6 +35,13 @@ import type {
 } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
 import type CDP from "chrome-remote-interface";
+
+const chromeRemoteInterface = ("default" in cdpModule
+  ? cdpModule.default
+  : cdpModule) as unknown as {
+  (options?: CDP.Options): Promise<CDP.Client>;
+  Version(options?: CDP.BaseOptions): Promise<CDP.VersionResult>;
+};
 
 const CDP_CAPABILITIES: ProtocolCapabilities = {
   protocol: "cdp",
@@ -349,12 +367,11 @@ export class CdpBrowserAdapter implements ProtocolBrowserAdapter {
     }
 
     const connection = await resolveConnectionDetails(this.options);
-    const cdp = await loadCdp();
-    const version = await cdp.Version({
+    const version = await chromeRemoteInterface.Version({
       host: connection.host,
       port: connection.port
     });
-    const browserClient = await cdp({
+    const browserClient = await chromeRemoteInterface({
       target: connection.browserWsEndpoint,
       local: this.options.isLocal
     });
@@ -468,6 +485,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private closed = false;
   private networkIdleTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly stateWaiters = new Set<StateWaiter>();
+  private readonly eventListeners = new Map<PageEventName, Set<PageEventListener<PageEventName>>>();
+  private readonly requestMetadata = new Map<string, { method: string; url: string }>();
 
   static async create(options: {
     browserClient: CdpClient;
@@ -491,8 +510,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   ) {
     this.options.client.on("disconnect", () => {
+      if (this.closed) {
+        return;
+      }
+
       this.closed = true;
       this.rejectWaiters(new Error("Page disconnected."));
+      this.emit("close", undefined);
       this.options.onClosed(this.options.targetId);
     });
   }
@@ -509,26 +533,61 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client.Page.domContentEventFired(() => {
       this.domContentLoaded = true;
       this.flushWaiters();
+      this.emit("domcontentloaded", undefined);
     });
 
     client.Page.loadEventFired(() => {
       this.loadFired = true;
       this.flushWaiters();
+      this.emit("load", undefined);
     });
 
-    client.Network.requestWillBeSent(() => {
+    client.Network.requestWillBeSent((event) => {
       this.activeRequests += 1;
       this.networkIdleReached = false;
       this.clearNetworkIdleTimer();
+      this.requestMetadata.set(event.requestId, {
+        method: event.request.method,
+        url: event.request.url
+      });
+      this.emit("request", {
+        headers: mapCdpHeaders(event.request.headers),
+        method: event.request.method,
+        url: event.request.url
+      });
     });
 
-    const onRequestSettled = () => {
+    const onRequestSettled = (requestId?: string) => {
       this.activeRequests = Math.max(0, this.activeRequests - 1);
+      if (requestId) {
+        this.requestMetadata.delete(requestId);
+      }
       this.maybeArmNetworkIdleTimer();
     };
 
-    client.Network.loadingFinished(onRequestSettled);
-    client.Network.loadingFailed(onRequestSettled);
+    client.Network.responseReceived((event) => {
+      this.emit("response", {
+        fromCache: Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache),
+        headers: mapCdpHeaders(event.response.headers),
+        mimeType: event.response.mimeType,
+        status: event.response.status,
+        statusText: event.response.statusText,
+        url: event.response.url
+      });
+    });
+
+    client.Network.loadingFinished((event) => {
+      onRequestSettled(event.requestId);
+    });
+    client.Network.loadingFailed((event) => {
+      const request = this.requestMetadata.get(event.requestId);
+      onRequestSettled(event.requestId);
+      this.emit("requestfailed", {
+        errorText: event.errorText,
+        method: request?.method ?? "UNKNOWN",
+        url: request?.url ?? "unknown://request"
+      });
+    });
 
     await this.applyContextOptions();
     this.maybeArmNetworkIdleTimer();
@@ -623,6 +682,35 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
+    const format = options.type ?? "png";
+    const response = await this.options.client.Page.captureScreenshot({
+      captureBeyondViewport: options.fullPage ?? false,
+      ...(format === "jpeg"
+        ? {
+            format,
+            ...(options.quality !== undefined ? { quality: options.quality } : {})
+          }
+        : { format })
+    });
+    return Buffer.from(response.data, "base64");
+  }
+
+  on<K extends PageEventName>(event: K, listener: PageEventListener<K>): () => void {
+    const listeners =
+      this.eventListeners.get(event) ?? new Set<PageEventListener<PageEventName>>();
+    listeners.add(listener as PageEventListener<PageEventName>);
+    this.eventListeners.set(event, listeners);
+
+    return () => {
+      const registeredListeners = this.eventListeners.get(event);
+      registeredListeners?.delete(listener as PageEventListener<PageEventName>);
+      if (registeredListeners?.size === 0) {
+        this.eventListeners.delete(event);
+      }
+    };
+  }
+
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
     return new CdpLocatorAdapter(this, {
       chain: [selector]
@@ -675,6 +763,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.closed = true;
     this.clearNetworkIdleTimer();
     this.rejectWaiters(new Error("Page closed."));
+    this.emit("close", undefined);
 
     try {
       await this.options.browserClient.Target.closeTarget({
@@ -955,6 +1044,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
     this.stateWaiters.clear();
   }
+
+  private emit<K extends PageEventName>(event: K, payload: PageEventMap[K]): void {
+    const listeners = this.eventListeners.get(event);
+    if (!listeners) {
+      return;
+    }
+
+    for (const listener of Array.from(listeners)) {
+      if (payload === undefined) {
+        (listener as () => void)();
+        continue;
+      }
+
+      (listener as (eventPayload: PageEventMap[K]) => void)(payload);
+    }
+  }
 }
 
 class CdpLocatorAdapter implements ProtocolLocatorAdapter {
@@ -1023,8 +1128,7 @@ async function connectToTarget(
   connection: CdpConnectionDetails,
   targetId: string
 ): Promise<CdpClient> {
-  const cdp = await loadCdp();
-  return cdp({
+  return chromeRemoteInterface({
     host: connection.host,
     port: connection.port,
     target: targetId
@@ -1039,10 +1143,9 @@ async function resolveConnectionDetails(
   }
 
   if (options.host || options.port) {
-    const cdp = await loadCdp();
     const host = options.host ?? "127.0.0.1";
     const port = options.port ?? 9222;
-    const version = await cdp.Version({ host, port });
+    const version = await chromeRemoteInterface.Version({ host, port });
     return {
       browserWsEndpoint: version.webSocketDebuggerUrl,
       host,
@@ -1054,25 +1157,9 @@ async function resolveConnectionDetails(
 }
 
 async function launchBrowser(options: LaunchOptions): Promise<CdpConnectionDetails> {
-  const [{ spawn }, { mkdtemp, rm }, { tmpdir }, { join }] = await Promise.all([
-    import("node:child_process"),
-    import("node:fs/promises"),
-    import("node:os"),
-    import("node:path")
-  ]);
-
   const userDataDir = await mkdtemp(join(tmpdir(), "roxybrowser-cdp-"));
   const executableCandidates = resolveExecutableCandidates(options);
-
-  const args = [
-    `--user-data-dir=${userDataDir}`,
-    "--remote-debugging-port=0",
-    "--no-first-run",
-    "--no-default-browser-check",
-    ...(options.headless === false ? [] : ["--headless=new"]),
-    ...(options.args ?? []),
-    "about:blank"
-  ];
+  const args = buildChromiumLaunchArgs(options, userDataDir);
 
   let lastError: unknown;
 
@@ -1130,7 +1217,6 @@ async function cleanupConnection(connection: CdpConnectionDetails): Promise<void
   }
 
   if (userDataDir) {
-    const { rm } = await import("node:fs/promises");
     await rm(userDataDir, {
       force: true,
       recursive: true
@@ -1235,6 +1321,21 @@ export function resolveExecutableCandidates(
   return defaultExecutableCandidates(platform);
 }
 
+export function buildChromiumLaunchArgs(
+  options: Pick<LaunchOptions, "args" | "headless">,
+  userDataDir: string
+): string[] {
+  return [
+    `--user-data-dir=${userDataDir}`,
+    "--remote-debugging-port=0",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--no-startup-window",
+    ...(options.headless === false ? [] : ["--headless=new"]),
+    ...(options.args ?? [])
+  ];
+}
+
 function executableCandidatesForChannel(
   channel: NonNullable<LaunchOptions["channel"]>,
   platform: string
@@ -1319,9 +1420,14 @@ const CHANNEL_EXECUTABLE_CANDIDATES: Record<
   }
 };
 
-async function loadCdp(): Promise<typeof CDP> {
-  const module = await import("chrome-remote-interface");
-  return (module.default ?? module) as typeof CDP;
+function mapCdpHeaders(headers: Record<string, string | number | boolean>): Array<{
+  name: string;
+  value: string;
+}> {
+  return Object.entries(headers).map(([name, value]) => ({
+    name,
+    value: String(value)
+  }));
 }
 
 async function safelyCloseClient(client: CdpClient): Promise<void> {

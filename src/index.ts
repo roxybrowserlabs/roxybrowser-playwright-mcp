@@ -9,6 +9,15 @@ export type {
 } from "./types/api.js";
 
 export type {
+  PageEventListener,
+  PageEventMap,
+  PageEventName,
+  PageRequest,
+  PageRequestFailure,
+  PageResponse
+} from "./types/events.js";
+
+export type {
   BrowserContextOptions,
   ClickOptions,
   ConnectOverCDPOptions,
@@ -21,5 +30,7 @@ export type {
   PageGotoOptions,
   PressOptions,
   Progress,
+  ScreenshotOptions,
+  ScreenshotType,
   TypeOptions
 } from "./types/options.js";

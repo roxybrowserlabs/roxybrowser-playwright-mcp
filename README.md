@@ -58,6 +58,8 @@ The [`examples`](/Users/macos/code/roxy-company/roxybrowser-playwright-mcp/examp
   Launches a locally installed browser, opens a temporary `file://` fixture, and prints the result.
 - `pnpm example:connect-cdp`
   Connects to an existing CDP WebSocket endpoint from `ROXY_CDP_WS_ENDPOINT` and runs the same flow.
+- `pnpm example:page-events`
+  Launches a local browser, starts a temporary HTTP fixture, logs `page.on(...)` events, removes a `request` listener, and writes a screenshot to a temporary file.
 
 Useful environment variables:
 

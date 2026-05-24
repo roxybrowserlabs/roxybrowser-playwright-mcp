@@ -9,8 +9,10 @@ import type {
   LaunchOptions,
   PageGotoOptions,
   PressOptions,
+  ScreenshotOptions,
   TypeOptions
 } from "./options.js";
+import type { PageEventListener, PageEventName } from "./events.js";
 
 export interface BrowserType {
   launch(options?: LaunchOptions): Promise<Browser>;
@@ -38,6 +40,10 @@ export interface Page {
   setContent(html: string): Promise<void>;
   evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult>;
   waitForLoadState(state?: PageGotoOptions["waitUntil"]): Promise<void>;
+  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  on<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
+  once<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
+  removeListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   locator(selector: string): Locator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
   getByRole(role: string, options?: GetByRoleOptions): Locator;

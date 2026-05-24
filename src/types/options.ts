@@ -119,3 +119,12 @@ export interface GetByRoleOptions {
   exact?: boolean;
   name?: string | RegExp;
 }
+
+export type ScreenshotType = "jpeg" | "png";
+
+export interface ScreenshotOptions {
+  fullPage?: boolean;
+  path?: string;
+  quality?: number;
+  type?: ScreenshotType;
+}

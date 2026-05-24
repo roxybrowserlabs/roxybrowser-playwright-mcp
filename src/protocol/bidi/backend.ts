@@ -8,8 +8,14 @@ import type {
   MouseButton,
   PageGotoOptions,
   PressOptions,
+  ScreenshotOptions,
   TypeOptions
 } from "../../types/options.js";
+import type {
+  PageEventListener,
+  PageEventMap,
+  PageEventName
+} from "../../types/events.js";
 import type {
   LocatorSelector,
   ProtocolBrowserAdapter,
@@ -401,8 +407,7 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       userContext: this.userContext
     });
 
-    const page = new BidiPageAdapter(this.client, response.context, this.options);
-    await page.applyContextOptions();
+    const page = await BidiPageAdapter.create(this.client, response.context, this.options);
     return page;
   }
 
@@ -414,11 +419,41 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 }
 
 class BidiPageAdapter implements ProtocolPageAdapter {
-  constructor(
+  private closed = false;
+  private readonly eventListeners = new Map<PageEventName, Set<PageEventListener<PageEventName>>>();
+  private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
+
+  static async create(
+    client: WebDriverClient,
+    contextId: string,
+    contextOptions: BrowserContextOptions
+  ): Promise<BidiPageAdapter> {
+    const page = new BidiPageAdapter(client, contextId, contextOptions);
+    await page.initialize();
+    return page;
+  }
+
+  private constructor(
     private readonly client: WebDriverClient,
     private readonly contextId: string,
     private readonly contextOptions: BrowserContextOptions
   ) {}
+
+  private async initialize(): Promise<void> {
+    await this.client.sessionSubscribe({
+      contexts: [this.contextId],
+      events: [
+        "browsingContext.contextDestroyed",
+        "browsingContext.domContentLoaded",
+        "browsingContext.load",
+        "network.beforeRequestSent",
+        "network.fetchError",
+        "network.responseStarted"
+      ]
+    });
+    this.attachBiDiListeners();
+    await this.applyContextOptions();
+  }
 
   async goto(url: string, options: PageGotoOptions = {}): Promise<void> {
     await this.client.browsingContextNavigate({
@@ -463,6 +498,33 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async waitForLoadState(_state?: PageGotoOptions["waitUntil"]): Promise<void> {}
+
+  async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
+    const response = await this.client.browsingContextCaptureScreenshot({
+      context: this.contextId,
+      ...(options.fullPage ? { origin: "document" } : {}),
+      format: {
+        type: options.type ?? "png",
+        ...(options.quality !== undefined ? { quality: options.quality } : {})
+      }
+    });
+    return Buffer.from(response.data, "base64");
+  }
+
+  on<K extends PageEventName>(event: K, listener: PageEventListener<K>): () => void {
+    const listeners =
+      this.eventListeners.get(event) ?? new Set<PageEventListener<PageEventName>>();
+    listeners.add(listener as PageEventListener<PageEventName>);
+    this.eventListeners.set(event, listeners);
+
+    return () => {
+      const registeredListeners = this.eventListeners.get(event);
+      registeredListeners?.delete(listener as PageEventListener<PageEventName>);
+      if (registeredListeners?.size === 0) {
+        this.eventListeners.delete(event);
+      }
+    };
+  }
 
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
     return new BidiLocatorAdapter(this, {
@@ -509,9 +571,17 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
+    this.closed = true;
+
     await this.client.browsingContextClose({
       context: this.contextId
     });
+    this.emit("close", undefined);
+    await this.cleanupBiDiListeners();
   }
 
   async applyContextOptions(): Promise<void> {
@@ -716,6 +786,143 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       pick: locator.pick
     });
   }
+
+  private attachBiDiListeners(): void {
+    this.attachBiDiListener("browsingContext.domContentLoaded", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+
+      this.emit("domcontentloaded", undefined);
+    });
+
+    this.attachBiDiListener("browsingContext.load", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+
+      this.emit("load", undefined);
+    });
+
+    this.attachBiDiListener("network.beforeRequestSent", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+
+      const requestPayload = payload as {
+        request: {
+          headers: Array<{ name: string; value: { value: string } | string }>;
+          method: string;
+          url: string;
+        };
+      };
+      this.emit("request", {
+        headers: mapBiDiHeaders(requestPayload.request.headers),
+        method: requestPayload.request.method,
+        url: requestPayload.request.url
+      });
+    });
+
+    this.attachBiDiListener("network.responseStarted", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+
+      const responsePayload = payload as {
+        request: { url: string };
+        response: {
+          fromCache: boolean;
+          headers: Array<{ name: string; value: { value: string } | string }>;
+          mimeType: string;
+          status: number;
+          statusText: string;
+          url: string;
+        };
+      };
+      this.emit("response", {
+        fromCache: responsePayload.response.fromCache,
+        headers: mapBiDiHeaders(responsePayload.response.headers),
+        mimeType: responsePayload.response.mimeType,
+        status: responsePayload.response.status,
+        statusText: responsePayload.response.statusText,
+        url: responsePayload.response.url || responsePayload.request.url
+      });
+    });
+
+    this.attachBiDiListener("network.fetchError", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+
+      const failedPayload = payload as {
+        errorText: string;
+        request: {
+          method: string;
+          url: string;
+        };
+      };
+      this.emit("requestfailed", {
+        errorText: failedPayload.errorText,
+        method: failedPayload.request.method,
+        url: failedPayload.request.url
+      });
+    });
+
+    this.attachBiDiListener("browsingContext.contextDestroyed", (payload) => {
+      if (!hasContext(payload, this.contextId) || this.closed) {
+        return;
+      }
+
+      this.closed = true;
+      this.emit("close", undefined);
+      void this.cleanupBiDiListeners();
+    });
+  }
+
+  private attachBiDiListener(
+    event: string,
+    listener: (payload: unknown) => void
+  ): void {
+    this.bidiListeners.set(event, listener);
+    this.client.on(event as never, listener as never);
+  }
+
+  private async cleanupBiDiListeners(): Promise<void> {
+    for (const [event, listener] of this.bidiListeners) {
+      this.client.removeListener(event, listener);
+    }
+    this.bidiListeners.clear();
+
+    try {
+      await this.client.sessionUnsubscribe({
+        contexts: [this.contextId],
+        events: [
+          "browsingContext.contextDestroyed",
+          "browsingContext.domContentLoaded",
+          "browsingContext.load",
+          "network.beforeRequestSent",
+          "network.fetchError",
+          "network.responseStarted"
+        ]
+      });
+    } catch {}
+  }
+
+  private emit<K extends PageEventName>(event: K, payload: PageEventMap[K]): void {
+    const listeners = this.eventListeners.get(event);
+    if (!listeners) {
+      return;
+    }
+
+    for (const listener of Array.from(listeners)) {
+      if (payload === undefined) {
+        (listener as () => void)();
+        continue;
+      }
+
+      (listener as (eventPayload: PageEventMap[K]) => void)(payload);
+    }
+  }
 }
 
 class BidiLocatorAdapter implements ProtocolLocatorAdapter {
@@ -798,6 +1005,26 @@ function buttonNumber(button: MouseButton): number {
     case "right":
       return 2;
   }
+}
+
+function hasContext(payload: unknown, contextId: string): boolean {
+  if (!payload || typeof payload !== "object" || !("context" in payload)) {
+    return false;
+  }
+
+  return (payload as { context: string | null }).context === contextId;
+}
+
+function mapBiDiHeaders(
+  headers: Array<{ name: string; value: { value: string } | string }>
+): Array<{ name: string; value: string }> {
+  return headers.map((header) => ({
+    name: header.name,
+    value:
+      typeof header.value === "string"
+        ? header.value
+        : header.value.value
+  }));
 }
 
 function toBiDiKeyValue(key: string): string {

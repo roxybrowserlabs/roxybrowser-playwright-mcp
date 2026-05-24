@@ -24,6 +24,7 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "example:launch": "pnpm build && node ./examples/launch-local-browser.mjs",
     "example:connect-cdp": "pnpm build && node ./examples/connect-over-cdp.mjs",
+    "example:page-events": "pnpm build && node ./examples/page-events-and-screenshot.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
