@@ -18,7 +18,7 @@ import type { PageEventListener, PageEventName, PageResponse } from "../types/ev
 import type { PageNavigationResult, ResolvedAriaRef } from "../types/api.js";
 import type { ProtocolCapabilities } from "./capabilities.js";
 
-export type LocatorStrategy = "css" | "text" | "role";
+export type LocatorStrategy = "css" | "text" | "role" | "xpath";
 
 export interface LocatorSelector {
   strategy: LocatorStrategy;
@@ -29,6 +29,17 @@ export interface LocatorSelector {
   regexFlags?: string;
   nameIsRegex?: boolean;
   nameRegexFlags?: string;
+}
+
+export type LocatorPick =
+  | { kind: "first" }
+  | { kind: "last" }
+  | { kind: "nth"; index: number };
+
+export interface ProtocolElementHandleReference {
+  chain: LocatorSelector[];
+  pick?: LocatorPick;
+  scope?: ProtocolElementHandleReference;
 }
 
 export interface ProtocolBrowserAdapterFactory {
@@ -69,10 +80,38 @@ export interface ProtocolPageAdapter {
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   on<K extends PageEventName>(event: K, listener: PageEventListener<K>): () => void;
+  query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null>;
+  queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]>;
+  evalOnSelector<TResult>(selector: LocatorSelector[], expression: string, arg?: unknown): Promise<TResult>;
+  evalOnSelectorAll<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult>;
   locator(selector: LocatorSelector): ProtocolLocatorAdapter;
   getByText(text: string | RegExp, options?: GetByTextOptions): ProtocolLocatorAdapter;
   getByRole(role: string, options?: GetByRoleOptions): ProtocolLocatorAdapter;
   close(): Promise<void>;
+}
+
+export interface ProtocolElementHandleAdapter {
+  reference(): ProtocolElementHandleReference;
+  query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null>;
+  queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]>;
+  evalOnSelector<TResult>(selector: LocatorSelector[], expression: string, arg?: unknown): Promise<TResult>;
+  evalOnSelectorAll<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult>;
+  evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult>;
+  click(options?: ClickOptions): Promise<void>;
+  hover(options?: HoverOptions): Promise<void>;
+  fill(value: string, options?: FillOptions): Promise<void>;
+  type(value: string, options?: TypeOptions): Promise<void>;
+  press(key: string, options?: PressOptions): Promise<void>;
+  textContent(): Promise<string | null>;
+  isVisible(): Promise<boolean>;
 }
 
 export interface ProtocolLocatorAdapter {

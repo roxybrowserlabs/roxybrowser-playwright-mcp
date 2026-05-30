@@ -14,8 +14,48 @@ export function parseSelectorChain(selector: string): LocatorSelector[] {
 }
 
 function parseSelectorPart(part: string): LocatorSelector {
-  if (part.startsWith("text=")) {
-    return parseTextSelector(part.slice(5));
+  const engineMatch = /^([a-zA-Z0-9-]+)\s*=(.*)$/s.exec(part);
+  if (engineMatch) {
+    const engine = engineMatch[1]!;
+    const body = engineMatch[2]!;
+    switch (engine) {
+      case "css":
+        return {
+          strategy: "css",
+          value: body.trim()
+        };
+      case "text":
+        return parseTextSelector(body);
+      case "xpath":
+        return {
+          strategy: "xpath",
+          value: body.trim()
+        };
+      case "id":
+        return {
+          strategy: "css",
+          value: `[id=${quoteAttributeValue(body.trim())}]`
+        };
+      case "data-test":
+      case "data-testid":
+      case "data-test-id":
+        return {
+          strategy: "css",
+          value: `[${engine}=${quoteAttributeValue(body.trim())}]`
+        };
+      default:
+        return {
+          strategy: "css",
+          value: part
+        };
+    }
+  }
+
+  if (
+    (part.startsWith('"') && part.endsWith('"')) ||
+    (part.startsWith("'") && part.endsWith("'"))
+  ) {
+    return parseTextSelector(part);
   }
 
   return {
@@ -76,4 +116,8 @@ function unescapeQuotedText(text: string, quote: string): string {
     }
     return escaped;
   });
+}
+
+function quoteAttributeValue(value: string): string {
+  return JSON.stringify(unescapeQuotedText(value, '"'));
 }

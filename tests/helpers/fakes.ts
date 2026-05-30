@@ -5,6 +5,7 @@ import type {
   ProtocolBrowserAdapter,
   ProtocolBrowserContextAdapter,
   ProtocolBrowserSession,
+  ProtocolElementHandleAdapter,
   ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "../../src/protocol/adapter.js";
@@ -64,10 +65,34 @@ export function createLocatorAdapterStub(): ProtocolLocatorAdapter {
   return adapter;
 }
 
+export function createElementHandleAdapterStub(): ProtocolElementHandleAdapter {
+  const adapter: ProtocolElementHandleAdapter = {
+    reference: vi.fn(() => ({
+      chain: [{ strategy: "css", value: ".handle" }],
+      pick: { kind: "first" }
+    })),
+    query: vi.fn(async () => adapter),
+    queryAll: vi.fn(async () => [adapter]),
+    evalOnSelector: vi.fn(async <TResult>() => "selector-value" as TResult),
+    evalOnSelectorAll: vi.fn(async <TResult>() => ["selector-value"] as TResult),
+    evaluate: vi.fn(async <TResult>() => "handle-value" as TResult),
+    click: vi.fn(async () => {}),
+    hover: vi.fn(async () => {}),
+    fill: vi.fn(async () => {}),
+    type: vi.fn(async () => {}),
+    press: vi.fn(async () => {}),
+    textContent: vi.fn(async () => "handle-text"),
+    isVisible: vi.fn(async () => true)
+  };
+
+  return adapter;
+}
+
 export function createPageAdapterStub(): ProtocolPageAdapter & {
   emit<K extends PageEventName>(event: K, payload: PageEventMap[K]): void;
 } {
   const locatorAdapter = createLocatorAdapterStub();
+  const elementHandleAdapter = createElementHandleAdapterStub();
   const listeners = new Map<PageEventName, Set<PageEventListener<PageEventName>>>();
 
   return {
@@ -128,6 +153,10 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
         }
       };
     }),
+    query: vi.fn(async () => elementHandleAdapter),
+    queryAll: vi.fn(async () => [elementHandleAdapter]),
+    evalOnSelector: vi.fn(async <TResult>() => "page-selector-value" as TResult),
+    evalOnSelectorAll: vi.fn(async <TResult>() => ["page-selector-value"] as TResult),
     locator: vi.fn(() => locatorAdapter),
     getByText: vi.fn(() => locatorAdapter),
     getByRole: vi.fn(() => locatorAdapter),

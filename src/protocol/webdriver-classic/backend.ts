@@ -14,6 +14,7 @@ import type {
   ProtocolBrowserAdapterFactory,
   ProtocolBrowserContextAdapter,
   ProtocolBrowserSession,
+  ProtocolElementHandleAdapter,
   ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "../adapter.js";
@@ -130,6 +131,30 @@ class ClassicWebDriverPageAdapter implements ProtocolPageAdapter {
 
   on<K extends PageEventName>(_event: K, _listener: PageEventListener<K>): () => void {
     throw new NotImplementedInProtocolError("webdriver", `page.on(${String(_event)})`);
+  }
+
+  async query(_selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null> {
+    throw new NotImplementedInProtocolError("webdriver", "page.$");
+  }
+
+  async queryAll(_selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
+    throw new NotImplementedInProtocolError("webdriver", "page.$$");
+  }
+
+  async evalOnSelector<TResult>(
+    _selector: LocatorSelector[],
+    _expression: string,
+    _arg?: unknown
+  ): Promise<TResult> {
+    throw new NotImplementedInProtocolError("webdriver", "page.$eval");
+  }
+
+  async evalOnSelectorAll<TResult>(
+    _selector: LocatorSelector[],
+    _expression: string,
+    _arg?: unknown
+  ): Promise<TResult> {
+    throw new NotImplementedInProtocolError("webdriver", "page.$$eval");
   }
 
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {

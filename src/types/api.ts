@@ -23,6 +23,16 @@ import type {
   PageResponse
 } from "./events.js";
 
+export type ElementCallback<TResult, TArg = unknown> = (
+  element: unknown,
+  arg: TArg
+) => TResult | Promise<TResult>;
+
+export type ElementArrayCallback<TResult, TArg = unknown> = (
+  elements: unknown[],
+  arg: TArg
+) => TResult | Promise<TResult>;
+
 export interface BrowserType {
   launch(options?: LaunchOptions): Promise<Browser>;
   connectOverCDP(
@@ -76,7 +86,7 @@ export interface Page {
   setContent(html: string): Promise<void>;
   evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult>;
   waitForLoadState(state?: PageGotoOptions["waitUntil"]): Promise<void>;
-  waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<Locator | null>;
+  waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<ElementHandle | null>;
   ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
@@ -87,6 +97,18 @@ export interface Page {
     event: K,
     predicate?: PageEventPredicate<K>
   ): Promise<PageEventMap[K]>;
+  $(selector: string): Promise<ElementHandle | null>;
+  $$(selector: string): Promise<ElementHandle[]>;
+  $eval<TResult, TArg = unknown>(
+    selector: string,
+    pageFunction: string | ElementCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult>;
+  $$eval<TResult, TArg = unknown>(
+    selector: string,
+    pageFunction: string | ElementArrayCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult>;
   locator(selector: string): Locator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
   getByRole(role: string, options?: GetByRoleOptions): Locator;
@@ -96,6 +118,33 @@ export interface Page {
   type(selector: string, value: string, options?: TypeOptions): Promise<void>;
   press(selector: string, key: string, options?: PressOptions): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface ElementHandle {
+  $(selector: string): Promise<ElementHandle | null>;
+  $$(selector: string): Promise<ElementHandle[]>;
+  $eval<TResult, TArg = unknown>(
+    selector: string,
+    pageFunction: string | ElementCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult>;
+  $$eval<TResult, TArg = unknown>(
+    selector: string,
+    pageFunction: string | ElementArrayCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult>;
+  evaluate<TResult, TArg = unknown>(
+    pageFunction: string | ElementCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult>;
+  waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<ElementHandle | null>;
+  click(options?: ClickOptions): Promise<void>;
+  hover(options?: HoverOptions): Promise<void>;
+  fill(value: string, options?: FillOptions): Promise<void>;
+  type(value: string, options?: TypeOptions): Promise<void>;
+  press(key: string, options?: PressOptions): Promise<void>;
+  textContent(): Promise<string | null>;
+  isVisible(): Promise<boolean>;
 }
 
 export interface Locator {

@@ -96,4 +96,37 @@ describe("page.waitForSelector e2e", () => {
       expect(await handle!.textContent()).toBe("Hello from light");
     });
   });
+
+  it("elementHandle.waitForSelector should immediately resolve if node exists", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<span>extra</span><div><span>target</span></div>");
+      const div = (await page.$("div"))!;
+      const span = await div.waitForSelector("span", { state: "attached" });
+      expect(await span!.evaluate((e) => (e as HTMLElement).textContent)).toBe("target");
+    });
+  });
+
+  it("elementHandle.waitForSelector should wait", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div></div>");
+      const div = (await page.$("div"))!;
+      const promise = div.waitForSelector("span", { state: "attached" });
+      await div.evaluate((element) => {
+        (element as HTMLElement).innerHTML = "<span>target</span>";
+      });
+      const span = await promise;
+      expect(await span!.evaluate((e) => (e as HTMLElement).textContent)).toBe("target");
+    });
+  });
+
+  it("elementHandle.waitForSelector should timeout", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div></div>");
+      const div = (await page.$("div"))!;
+      const error = await div.waitForSelector("span", { timeout: 100 }).catch((caughtError: Error) => {
+        return caughtError;
+      });
+      expect(error.message).toContain("Timeout 100ms exceeded.");
+    });
+  });
 });

@@ -9,6 +9,10 @@ import { NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
 import { createPageResponse } from "../../pageResponse.js";
 import { createNavigationResult } from "../../navigationResult.js";
 import type { ResolvedAriaRef } from "../../types/api.js";
+import {
+  SELECTOR_RUNTIME_SOURCE,
+  type SelectorRuntimePayload
+} from "../selectorRuntime.js";
 import type {
   AriaSnapshotOptions,
   ClickOptions,
@@ -34,6 +38,8 @@ import type {
   ProtocolBrowserAdapterFactory,
   ProtocolBrowserContextAdapter,
   ProtocolBrowserSession,
+  ProtocolElementHandleAdapter,
+  ProtocolElementHandleReference,
   ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "../adapter.js";
@@ -677,6 +683,61 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     };
   }
 
+  async query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null> {
+    const count = await this.countSelector({
+      chain: selector
+    });
+    if (count === 0) {
+      return null;
+    }
+    return new BidiElementHandleAdapter(this, {
+      chain: selector,
+      pick: { kind: "first" }
+    });
+  }
+
+  async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
+    const count = await this.countSelector({
+      chain: selector
+    });
+    return Array.from({ length: count }, (_value, index) => {
+      return new BidiElementHandleAdapter(this, {
+        chain: selector,
+        pick: { kind: "nth", index }
+      });
+    });
+  }
+
+  async evalOnSelector<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.evaluateOnReference<TResult>(
+      {
+        chain: selector,
+        pick: { kind: "first" }
+      },
+      expression,
+      arg,
+      `page.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`
+    );
+  }
+
+  async evalOnSelectorAll<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.evaluateOnReferenceAll<TResult>(
+      {
+        chain: selector
+      },
+      expression,
+      arg
+    );
+  }
+
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
     return new BidiLocatorAdapter(this, {
       chain: [selector]
@@ -921,8 +982,12 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     locator: BidiLocatorState,
     options?: HoverOptions
   ): Promise<ActionPoint> {
-    return this.runLocatorOperation<ActionPoint>(locator, {
+    return this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
+      reference: {
+        chain: locator.chain,
+        ...(locator.pick ? { pick: locator.pick } : {})
+      },
       ...(options?.force !== undefined ? { force: options.force } : {}),
       ...(options?.position ? { position: options.position } : {})
     });
@@ -930,13 +995,204 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   private async runLocatorOperation<TResult>(
     locator: BidiLocatorState,
-    payload: Omit<LocatorPayload, "chain" | "pick">
+    payload: Omit<SelectorRuntimePayload, "reference">
   ): Promise<TResult> {
-    return this.evaluateFunction<TResult>(LOCATOR_OPERATION_SOURCE, {
+    return this.runSelectorOperation<TResult>({
       ...payload,
-      chain: locator.chain,
-      pick: locator.pick
+      reference: {
+        chain: locator.chain,
+        ...(locator.pick ? { pick: locator.pick } : {})
+      }
     });
+  }
+
+  async countSelector(reference: ProtocolElementHandleReference): Promise<number> {
+    return this.runSelectorOperation<number>({
+      operation: "count",
+      reference
+    });
+  }
+
+  async evaluateOnReference<TResult>(
+    reference: ProtocolElementHandleReference,
+    expression: string,
+    arg?: unknown,
+    missingMessage?: string
+  ): Promise<TResult> {
+    return this.runSelectorOperation<TResult>({
+      operation: "evaluate",
+      reference,
+      expression,
+      arg,
+      ...(missingMessage ? { missingMessage } : {})
+    });
+  }
+
+  async evaluateOnReferenceAll<TResult>(
+    reference: ProtocolElementHandleReference,
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.runSelectorOperation<TResult>({
+      operation: "evaluateAll",
+      reference,
+      expression,
+      arg
+    });
+  }
+
+  async elementTextContent(reference: ProtocolElementHandleReference): Promise<string | null> {
+    return this.runSelectorOperation<string | null>({
+      operation: "textContent",
+      reference
+    });
+  }
+
+  async elementIsVisible(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isVisible",
+      reference
+    });
+  }
+
+  async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
+    const point = await this.runSelectorOperation<ActionPoint>({
+      operation: "actionPoint",
+      reference,
+      ...(options?.force !== undefined ? { force: options.force } : {}),
+      ...(options?.position ? { position: options.position } : {})
+    });
+    const button = buttonNumber(options?.button ?? "left");
+    const clickCount = options?.clickCount ?? 1;
+
+    for (let index = 0; index < clickCount; index += 1) {
+      await this.client.inputPerformActions({
+        context: this.contextId,
+        actions: [
+          {
+            type: "pointer",
+            id: "mouse",
+            parameters: { pointerType: "mouse" },
+            actions: [
+              {
+                type: "pointerMove",
+                x: Math.round(point.x),
+                y: Math.round(point.y),
+                origin: "viewport"
+              },
+              {
+                type: "pointerDown",
+                button
+              },
+              ...(options?.delay ? [{ type: "pause", duration: options.delay } as const] : []),
+              {
+                type: "pointerUp",
+                button
+              }
+            ]
+          }
+        ]
+      });
+    }
+  }
+
+  async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
+    const point = await this.runSelectorOperation<ActionPoint>({
+      operation: "actionPoint",
+      reference,
+      ...(options?.force !== undefined ? { force: options.force } : {}),
+      ...(options?.position ? { position: options.position } : {})
+    });
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [
+            {
+              type: "pointerMove",
+              x: Math.round(point.x),
+              y: Math.round(point.y),
+              origin: "viewport"
+            }
+          ]
+        }
+      ]
+    });
+  }
+
+  async fillReference(
+    reference: ProtocolElementHandleReference,
+    value: string,
+    options?: FillOptions
+  ): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "fill",
+      reference,
+      value,
+      ...(options?.force !== undefined ? { force: options.force } : {})
+    });
+  }
+
+  async typeReference(
+    reference: ProtocolElementHandleReference,
+    value: string,
+    options?: TypeOptions
+  ): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "focus",
+      reference
+    });
+
+    const actions = value.split("").flatMap((character) => [
+      { type: "keyDown" as const, value: character },
+      ...(options?.delay ? [{ type: "pause" as const, duration: options.delay }] : []),
+      { type: "keyUp" as const, value: character }
+    ]);
+
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions
+        }
+      ]
+    });
+  }
+
+  async pressReference(
+    reference: ProtocolElementHandleReference,
+    key: string,
+    options?: PressOptions
+  ): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "focus",
+      reference
+    });
+
+    const bidiKey = toBiDiKeyValue(key);
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions: [
+            { type: "keyDown", value: bidiKey },
+            ...(options?.delay ? [{ type: "pause" as const, duration: options.delay }] : []),
+            { type: "keyUp", value: bidiKey }
+          ]
+        }
+      ]
+    });
+  }
+
+  private async runSelectorOperation<TResult>(payload: SelectorRuntimePayload): Promise<TResult> {
+    return this.evaluateFunction<TResult>(SELECTOR_RUNTIME_SOURCE, payload);
   }
 
   private attachBiDiListeners(): void {
@@ -1266,6 +1522,23 @@ function shouldCaptureNavigationResponseUrl(url: string): boolean {
   }
 }
 
+function formatSelectorChain(chain: LocatorSelector[]): string {
+  return chain
+    .map((selector) => {
+      if (selector.strategy === "css") {
+        return selector.value;
+      }
+      if (selector.strategy === "xpath") {
+        return `xpath=${selector.value}`;
+      }
+      if (selector.strategy === "text") {
+        return `text=${selector.value}`;
+      }
+      return `${selector.strategy}=${selector.value}`;
+    })
+    .join(" >> ");
+}
+
 class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   constructor(
     private readonly page: BidiPageAdapter,
@@ -1326,6 +1599,114 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
 
   async isVisible(): Promise<boolean> {
     return this.page.isVisibleLocator(this.state);
+  }
+}
+
+class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
+  constructor(
+    private readonly page: BidiPageAdapter,
+    private readonly referenceState: ProtocolElementHandleReference
+  ) {}
+
+  reference(): ProtocolElementHandleReference {
+    return {
+      chain: [...this.referenceState.chain],
+      ...(this.referenceState.pick ? { pick: this.referenceState.pick } : {}),
+      ...(this.referenceState.scope ? { scope: this.referenceState.scope } : {})
+    };
+  }
+
+  async query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null> {
+    const reference: ProtocolElementHandleReference = {
+      scope: this.reference(),
+      chain: selector
+    };
+    const count = await this.page.countSelector(reference);
+    if (count === 0) {
+      return null;
+    }
+    return new BidiElementHandleAdapter(this.page, {
+      ...reference,
+      pick: { kind: "first" }
+    });
+  }
+
+  async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
+    const reference: ProtocolElementHandleReference = {
+      scope: this.reference(),
+      chain: selector
+    };
+    const count = await this.page.countSelector(reference);
+    return Array.from({ length: count }, (_value, index) => {
+      return new BidiElementHandleAdapter(this.page, {
+        ...reference,
+        pick: { kind: "nth", index }
+      });
+    });
+  }
+
+  async evalOnSelector<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.page.evaluateOnReference(
+      {
+        scope: this.reference(),
+        chain: selector,
+        pick: { kind: "first" }
+      },
+      expression,
+      arg,
+      `elementHandle.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`
+    );
+  }
+
+  async evalOnSelectorAll<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.page.evaluateOnReferenceAll(
+      {
+        scope: this.reference(),
+        chain: selector
+      },
+      expression,
+      arg
+    );
+  }
+
+  async evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult> {
+    return this.page.evaluateOnReference(this.reference(), expression, arg, "No element found.");
+  }
+
+  async click(options?: ClickOptions): Promise<void> {
+    await this.page.clickReference(this.reference(), options);
+  }
+
+  async hover(options?: HoverOptions): Promise<void> {
+    await this.page.hoverReference(this.reference(), options);
+  }
+
+  async fill(value: string, options?: FillOptions): Promise<void> {
+    await this.page.fillReference(this.reference(), value, options);
+  }
+
+  async type(value: string, options?: TypeOptions): Promise<void> {
+    await this.page.typeReference(this.reference(), value, options);
+  }
+
+  async press(key: string, options?: PressOptions): Promise<void> {
+    await this.page.pressReference(this.reference(), key, options);
+  }
+
+  async textContent(): Promise<string | null> {
+    return this.page.elementTextContent(this.reference());
+  }
+
+  async isVisible(): Promise<boolean> {
+    return this.page.elementIsVisible(this.reference());
   }
 }
 

@@ -2,6 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { RoxyElementHandle } from "../../src/elementHandle.js";
 import { RoxyLocator } from "../../src/locator.js";
 import { RoxyPage } from "../../src/page.js";
 import { createPageAdapterStub } from "../helpers/fakes.js";
@@ -150,7 +151,7 @@ describe("RoxyPage", () => {
     expect(pressSpy).toHaveBeenCalledWith("Enter", undefined);
   });
 
-  it("waitForSelector parses chained selectors and returns a locator", async () => {
+  it("waitForSelector parses chained selectors and returns an element handle", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
       enabled: true,
@@ -163,21 +164,133 @@ describe("RoxyPage", () => {
       hoverBeforeClickMs: 110
     });
 
-    const locator = await page.waitForSelector("div >> text=Hello", {
+    const handle = await page.waitForSelector("div >> text=Hello", {
       state: "attached",
       timeout: 100
     });
 
-    expect(locator).toBeInstanceOf(RoxyLocator);
-    expect(adapter.locator).toHaveBeenCalledWith({
-      strategy: "css",
-      value: "div"
+    expect(handle).toBeInstanceOf(RoxyElementHandle);
+    expect(adapter.query).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "div"
+      },
+      {
+        strategy: "text",
+        value: "Hello"
+      }
+    ]);
+  });
+
+  it("proxies page query and eval helpers to the page adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
     });
-    const rootLocatorAdapter = vi.mocked(adapter.locator).mock.results[0]?.value;
-    expect(rootLocatorAdapter?.locator).toHaveBeenCalledWith({
-      strategy: "text",
-      value: "Hello"
+
+    const handle = await page.$("div");
+    const handles = await page.$$("div");
+    const value = await page.$eval("div", (element, suffix: string) => {
+      return `${String(element)}${suffix}`;
+    }, "!");
+    const values = await page.$$eval("div", (elements, suffix: string) => {
+      return elements.map((element) => `${String(element)}${suffix}`);
+    }, "!");
+
+    expect(handle).toBeInstanceOf(RoxyElementHandle);
+    expect(handles[0]).toBeInstanceOf(RoxyElementHandle);
+    expect(value).toBe("page-selector-value");
+    expect(values).toEqual(["page-selector-value"]);
+    expect(adapter.query).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "div"
+      }
+    ]);
+    expect(adapter.queryAll).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "div"
+      }
+    ]);
+    expect(adapter.evalOnSelector).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "div"
+      }
+    ], expect.stringContaining("suffix"), "!");
+    expect(adapter.evalOnSelectorAll).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "div"
+      }
+    ], expect.stringContaining("suffix"), "!");
+  });
+
+  it("wraps element handle subtree methods", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
     });
+
+    const handle = (await page.$("div"))!;
+    const child = await handle.$("span");
+    const children = await handle.$$("span");
+    const value = await handle.$eval("span", (element, suffix: string) => {
+      return `${String(element)}${suffix}`;
+    }, "!");
+    const values = await handle.$$eval("span", (elements, suffix: string) => {
+      return elements.map((element) => `${String(element)}${suffix}`);
+    }, "!");
+    const self = await handle.evaluate((element, suffix: string) => {
+      return `${String(element)}${suffix}`;
+    }, "!");
+
+    expect(child).toBeInstanceOf(RoxyElementHandle);
+    expect(children[0]).toBeInstanceOf(RoxyElementHandle);
+    expect(value).toBe("selector-value");
+    expect(values).toEqual(["selector-value"]);
+    expect(self).toBe("handle-value");
+
+    const queryHandle = await vi.mocked(adapter.query).mock.results[0]?.value;
+    expect(queryHandle?.query).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "span"
+      }
+    ]);
+    expect(queryHandle?.queryAll).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "span"
+      }
+    ]);
+    expect(queryHandle?.evalOnSelector).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "span"
+      }
+    ], expect.stringContaining("suffix"), "!");
+    expect(queryHandle?.evalOnSelectorAll).toHaveBeenCalledWith([
+      {
+        strategy: "css",
+        value: "span"
+      }
+    ], expect.any(String), "!");
   });
 
   it("subscribes, unsubscribes, and deduplicates adapter listeners for page events", () => {

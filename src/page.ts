@@ -1,6 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import { extname } from "node:path";
+import { RoxyElementHandle, serializeEvaluationArgument } from "./elementHandle.js";
 import { TimeoutError } from "./errors.js";
+import { serializePageFunction } from "./evaluation.js";
 import { DefaultHumanController } from "./human/controller.js";
 import { RoxyLocator } from "./locator.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
@@ -13,7 +15,15 @@ import type {
   PageEventPredicate,
   PageResponse
 } from "./types/events.js";
-import type { Locator, Page, PageNavigationResult, ResolvedAriaRef } from "./types/api.js";
+import type {
+  ElementArrayCallback,
+  ElementCallback,
+  ElementHandle,
+  Locator,
+  Page,
+  PageNavigationResult,
+  ResolvedAriaRef
+} from "./types/api.js";
 import type {
   AriaSnapshotOptions,
   ClickOptions,
@@ -43,7 +53,7 @@ export class RoxyPage implements Page {
 
   constructor(
     private readonly adapter: ProtocolPageAdapter,
-    humanDefaults: ResolvedHumanizationOptions
+    private readonly humanDefaults: ResolvedHumanizationOptions
   ) {
     this.humanController = new DefaultHumanController(humanDefaults);
   }
@@ -91,7 +101,7 @@ export class RoxyPage implements Page {
   async waitForSelector(
     selector: string,
     options: WaitForSelectorOptions = {}
-  ): Promise<Locator | null> {
+  ): Promise<ElementHandle | null> {
     if ("waitFor" in options && options.waitFor !== undefined) {
       if (options.waitFor !== "visible") {
         throw new Error("options.waitFor is not supported, did you mean options.state?");
@@ -99,25 +109,23 @@ export class RoxyPage implements Page {
     }
 
     const state = options.state ?? options.waitFor ?? "visible";
-    const locator = this.locator(selector);
     const timeout = options.timeout ?? DEFAULT_EVENT_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (Date.now() - startTime <= timeout) {
-      const textContent = await locator.textContent();
-      const exists = textContent !== null;
-      const visible = exists ? await locator.isVisible() : false;
+      const handle = await this.$(selector);
+      const visible = handle ? await handle.isVisible() : false;
 
-      if (state === "attached" && exists) {
-        return locator;
+      if (state === "attached" && handle) {
+        return handle;
       }
-      if (state === "visible" && visible) {
-        return locator;
+      if (state === "visible" && visible && handle) {
+        return handle;
       }
       if (state === "hidden" && !visible) {
         return null;
       }
-      if (state === "detached" && !exists) {
+      if (state === "detached" && !handle) {
         return null;
       }
 
@@ -257,6 +265,40 @@ export class RoxyPage implements Page {
 
       this.on(event, listener);
     });
+  }
+
+  async $(selector: string): Promise<ElementHandle | null> {
+    const handle = await this.adapter.query(parseSelectorChain(selector));
+    return handle ? new RoxyElementHandle(handle, this.humanDefaults) : null;
+  }
+
+  async $$(selector: string): Promise<ElementHandle[]> {
+    const handles = await this.adapter.queryAll(parseSelectorChain(selector));
+    return handles.map((handle) => new RoxyElementHandle(handle, this.humanDefaults));
+  }
+
+  async $eval<TResult, TArg = unknown>(
+    selector: string,
+    pageFunction: string | ElementCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult> {
+    return this.adapter.evalOnSelector(
+      parseSelectorChain(selector),
+      serializePageFunction(pageFunction),
+      serializeEvaluationArgument(arg)
+    );
+  }
+
+  async $$eval<TResult, TArg = unknown>(
+    selector: string,
+    pageFunction: string | ElementArrayCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult> {
+    return this.adapter.evalOnSelectorAll(
+      parseSelectorChain(selector),
+      serializePageFunction(pageFunction),
+      serializeEvaluationArgument(arg)
+    );
   }
 
   locator(selector: string): Locator {

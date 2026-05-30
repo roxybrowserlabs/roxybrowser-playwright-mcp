@@ -14,6 +14,10 @@ import { LocatorError, TimeoutError } from "../../errors.js";
 import { createPageResponse } from "../../pageResponse.js";
 import type { ResolvedAriaRef } from "../../types/api.js";
 import { createNavigationResult } from "../../navigationResult.js";
+import {
+  SELECTOR_RUNTIME_SOURCE,
+  type SelectorRuntimePayload
+} from "../selectorRuntime.js";
 import type {
   AriaSnapshotOptions,
   BrowserConnectOptions,
@@ -42,6 +46,8 @@ import type {
   ProtocolBrowserAdapterFactory,
   ProtocolBrowserContextAdapter,
   ProtocolBrowserSession,
+  ProtocolElementHandleAdapter,
+  ProtocolElementHandleReference,
   ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "../adapter.js";
@@ -883,6 +889,61 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     };
   }
 
+  async query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null> {
+    const count = await this.countSelector({
+      chain: selector
+    });
+    if (count === 0) {
+      return null;
+    }
+    return new CdpElementHandleAdapter(this, {
+      chain: selector,
+      pick: { kind: "first" }
+    });
+  }
+
+  async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
+    const count = await this.countSelector({
+      chain: selector
+    });
+    return Array.from({ length: count }, (_value, index) => {
+      return new CdpElementHandleAdapter(this, {
+        chain: selector,
+        pick: { kind: "nth", index }
+      });
+    });
+  }
+
+  async evalOnSelector<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.evaluateOnReference<TResult>(
+      {
+        chain: selector,
+        pick: { kind: "first" }
+      },
+      expression,
+      arg,
+      `page.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`
+    );
+  }
+
+  async evalOnSelectorAll<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.evaluateOnReferenceAll<TResult>(
+      {
+        chain: selector
+      },
+      expression,
+      arg
+    );
+  }
+
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
     return new CdpLocatorAdapter(this, {
       chain: [selector]
@@ -1109,8 +1170,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     options?: HoverOptions
   ): Promise<ActionPoint> {
     try {
-      return await this.runLocatorOperation<ActionPoint>(locator, {
+      return await this.runSelectorOperation<ActionPoint>({
         operation: "actionPoint",
+        reference: {
+          chain: locator.chain,
+          ...(locator.pick ? { pick: locator.pick } : {})
+        },
         ...(options?.force !== undefined ? { force: options.force } : {}),
         ...(options?.position ? { position: options.position } : {})
       });
@@ -1121,17 +1186,170 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private async runLocatorOperation<TResult>(
     locator: CdpLocatorState,
-    payload: Omit<LocatorPayload, "chain" | "pick">
+    payload: Omit<SelectorRuntimePayload, "reference">
   ): Promise<TResult> {
     try {
-      return await this.evaluateFunction<TResult>(LOCATOR_OPERATION_SOURCE, {
+      return await this.runSelectorOperation<TResult>({
         ...payload,
-        chain: locator.chain,
-        pick: locator.pick
+        reference: {
+          chain: locator.chain,
+          ...(locator.pick ? { pick: locator.pick } : {})
+        }
       });
     } catch (error) {
       throw wrapLocatorError(locator, error);
     }
+  }
+
+  async countSelector(reference: ProtocolElementHandleReference): Promise<number> {
+    return this.runSelectorOperation<number>({
+      operation: "count",
+      reference
+    });
+  }
+
+  async evaluateOnReference<TResult>(
+    reference: ProtocolElementHandleReference,
+    expression: string,
+    arg?: unknown,
+    missingMessage?: string
+  ): Promise<TResult> {
+    return this.runSelectorOperation<TResult>({
+      operation: "evaluate",
+      reference,
+      expression,
+      arg,
+      ...(missingMessage ? { missingMessage } : {})
+    });
+  }
+
+  async evaluateOnReferenceAll<TResult>(
+    reference: ProtocolElementHandleReference,
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.runSelectorOperation<TResult>({
+      operation: "evaluateAll",
+      reference,
+      expression,
+      arg
+    });
+  }
+
+  async elementTextContent(reference: ProtocolElementHandleReference): Promise<string | null> {
+    return this.runSelectorOperation<string | null>({
+      operation: "textContent",
+      reference
+    });
+  }
+
+  async elementIsVisible(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isVisible",
+      reference
+    });
+  }
+
+  async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
+    const actionPoint = await this.runSelectorOperation<ActionPoint>({
+      operation: "actionPoint",
+      reference,
+      ...(options?.force !== undefined ? { force: options.force } : {}),
+      ...(options?.position ? { position: options.position } : {})
+    });
+    const button = options?.button ?? "left";
+    const clickCount = options?.clickCount ?? 1;
+
+    await this.dispatchMouseMove(actionPoint);
+    for (let index = 0; index < clickCount; index += 1) {
+      await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
+      await delay(options?.delay ?? 0);
+      await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
+    }
+  }
+
+  async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
+    const actionPoint = await this.runSelectorOperation<ActionPoint>({
+      operation: "actionPoint",
+      reference,
+      ...(options?.force !== undefined ? { force: options.force } : {}),
+      ...(options?.position ? { position: options.position } : {})
+    });
+    await this.dispatchMouseMove(actionPoint);
+  }
+
+  async fillReference(
+    reference: ProtocolElementHandleReference,
+    value: string,
+    options?: FillOptions
+  ): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "fill",
+      reference,
+      value,
+      ...(options?.force !== undefined ? { force: options.force } : {})
+    });
+  }
+
+  async typeReference(
+    reference: ProtocolElementHandleReference,
+    value: string,
+    options?: TypeOptions
+  ): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "focus",
+      reference
+    });
+
+    for (const character of value) {
+      await this.options.client.Input.dispatchKeyEvent({
+        type: "char",
+        text: character
+      });
+      await delay(options?.delay ?? 0);
+    }
+  }
+
+  async pressReference(
+    reference: ProtocolElementHandleReference,
+    key: string,
+    options?: PressOptions
+  ): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "focus",
+      reference
+    });
+
+    const keyDefinition = resolveKeyDefinition(key);
+    await this.options.client.Input.dispatchKeyEvent({
+      type: "keyDown",
+      key: keyDefinition.key,
+      code: keyDefinition.code,
+      ...(keyDefinition.text !== undefined
+        ? {
+            text: keyDefinition.text,
+            unmodifiedText: keyDefinition.text
+          }
+        : {}),
+      windowsVirtualKeyCode: keyDefinition.keyCode,
+      nativeVirtualKeyCode: keyDefinition.keyCode
+    });
+
+    if (options?.delay) {
+      await delay(options.delay);
+    }
+
+    await this.options.client.Input.dispatchKeyEvent({
+      type: "keyUp",
+      key: keyDefinition.key,
+      code: keyDefinition.code,
+      windowsVirtualKeyCode: keyDefinition.keyCode,
+      nativeVirtualKeyCode: keyDefinition.keyCode
+    });
+  }
+
+  private async runSelectorOperation<TResult>(payload: SelectorRuntimePayload): Promise<TResult> {
+    return this.evaluateFunction<TResult>(SELECTOR_RUNTIME_SOURCE, payload);
   }
 
   private async evaluateExpression<TResult>(expression: string): Promise<TResult> {
@@ -1142,9 +1360,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
 
     if (response.exceptionDetails) {
-      throw new Error(
-        response.exceptionDetails.text || "Runtime evaluation failed."
-      );
+      throw new Error(formatCdpEvaluationError(response));
     }
 
     return extractRemoteValue<TResult>(response.result);
@@ -1394,6 +1610,114 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
 
   async isVisible(): Promise<boolean> {
     return this.page.isVisibleLocator(this.state);
+  }
+}
+
+class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
+  constructor(
+    private readonly page: CdpPageAdapter,
+    private readonly referenceState: ProtocolElementHandleReference
+  ) {}
+
+  reference(): ProtocolElementHandleReference {
+    return {
+      chain: [...this.referenceState.chain],
+      ...(this.referenceState.pick ? { pick: this.referenceState.pick } : {}),
+      ...(this.referenceState.scope ? { scope: this.referenceState.scope } : {})
+    };
+  }
+
+  async query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null> {
+    const reference: ProtocolElementHandleReference = {
+      scope: this.reference(),
+      chain: selector
+    };
+    const count = await this.page.countSelector(reference);
+    if (count === 0) {
+      return null;
+    }
+    return new CdpElementHandleAdapter(this.page, {
+      ...reference,
+      pick: { kind: "first" }
+    });
+  }
+
+  async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
+    const reference: ProtocolElementHandleReference = {
+      scope: this.reference(),
+      chain: selector
+    };
+    const count = await this.page.countSelector(reference);
+    return Array.from({ length: count }, (_value, index) => {
+      return new CdpElementHandleAdapter(this.page, {
+        ...reference,
+        pick: { kind: "nth", index }
+      });
+    });
+  }
+
+  async evalOnSelector<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.page.evaluateOnReference(
+      {
+        scope: this.reference(),
+        chain: selector,
+        pick: { kind: "first" }
+      },
+      expression,
+      arg,
+      `elementHandle.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`
+    );
+  }
+
+  async evalOnSelectorAll<TResult>(
+    selector: LocatorSelector[],
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    return this.page.evaluateOnReferenceAll(
+      {
+        scope: this.reference(),
+        chain: selector
+      },
+      expression,
+      arg
+    );
+  }
+
+  async evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult> {
+    return this.page.evaluateOnReference(this.reference(), expression, arg, "No element found.");
+  }
+
+  async click(options?: ClickOptions): Promise<void> {
+    await this.page.clickReference(this.reference(), options);
+  }
+
+  async hover(options?: HoverOptions): Promise<void> {
+    await this.page.hoverReference(this.reference(), options);
+  }
+
+  async fill(value: string, options?: FillOptions): Promise<void> {
+    await this.page.fillReference(this.reference(), value, options);
+  }
+
+  async type(value: string, options?: TypeOptions): Promise<void> {
+    await this.page.typeReference(this.reference(), value, options);
+  }
+
+  async press(key: string, options?: PressOptions): Promise<void> {
+    await this.page.pressReference(this.reference(), key, options);
+  }
+
+  async textContent(): Promise<string | null> {
+    return this.page.elementTextContent(this.reference());
+  }
+
+  async isVisible(): Promise<boolean> {
+    return this.page.elementIsVisible(this.reference());
   }
 }
 
@@ -1721,6 +2045,34 @@ function extractRemoteValue<TResult>(result: { value?: unknown; type?: string })
   return (result.value as TResult | undefined) as TResult;
 }
 
+function formatCdpEvaluationError(response: {
+  exceptionDetails?: {
+    exception?: {
+      description?: string;
+      value?: unknown;
+    };
+    text?: string;
+  };
+}): string {
+  const description = response.exceptionDetails?.exception?.description;
+  if (description) {
+    const firstLine = description
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (firstLine) {
+      return firstLine;
+    }
+  }
+
+  const value = response.exceptionDetails?.exception?.value;
+  if (typeof value === "string" && value) {
+    return value;
+  }
+
+  return response.exceptionDetails?.text || "Runtime evaluation failed.";
+}
+
 function formatConsoleText(
   args: Array<{
     description?: string;
@@ -1824,6 +2176,23 @@ function shouldCaptureNavigationResponseUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function formatSelectorChain(chain: LocatorSelector[]): string {
+  return chain
+    .map((selector) => {
+      if (selector.strategy === "css") {
+        return selector.value;
+      }
+      if (selector.strategy === "xpath") {
+        return `xpath=${selector.value}`;
+      }
+      if (selector.strategy === "text") {
+        return `text=${selector.value}`;
+      }
+      return `${selector.strategy}=${selector.value}`;
+    })
+    .join(" >> ");
 }
 
 async function withTimeout<TResult>(
