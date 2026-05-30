@@ -20,15 +20,21 @@ describe("RoxyPage", () => {
       hoverBeforeClickMs: 110
     });
 
-    await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+    expect((await page.goto("https://example.com", { waitUntil: "domcontentloaded" }))?.url).toBe(
+      "https://example.com"
+    );
+    expect(await page.url()).toBe("https://example.com");
+    expect((await page.goBack())?.url()).toBe("https://example.com/back");
+    expect((await page.goForward())?.url()).toBe("https://example.com/forward");
+    expect((await page.reload())?.url).toBe("https://example.com/reload");
     expect(await page.title()).toBe("Example title");
     expect(await page.content()).toBe("<html></html>");
     await page.setContent("<div>ok</div>");
     expect(await page.evaluate<{ ok: boolean }>("() => ({ ok: true })")).toEqual({ ok: true });
     await page.waitForLoadState("load");
     expect(await page.ariaSnapshot({ mode: "ai", depth: 2 })).toBe('- document\n  - button "Example"');
-    expect(await page.resolveAriaRef("r1")).toEqual({
-      ref: "r1",
+    expect(await page.resolveAriaRef("e1")).toEqual({
+      ref: "e1",
       selector: "#example",
       xpath: '//*[@id="example"]',
       querySelector: 'document.querySelector("#example")',
@@ -42,10 +48,14 @@ describe("RoxyPage", () => {
     expect(adapter.goto).toHaveBeenCalledWith("https://example.com", {
       waitUntil: "domcontentloaded"
     });
+    expect(adapter.url).toHaveBeenCalledTimes(1);
+    expect(adapter.goBack).toHaveBeenCalledWith(undefined);
+    expect(adapter.goForward).toHaveBeenCalledWith(undefined);
+    expect(adapter.reload).toHaveBeenCalledWith(undefined);
     expect(adapter.setContent).toHaveBeenCalledWith("<div>ok</div>");
     expect(adapter.waitForLoadState).toHaveBeenCalledWith("load");
     expect(adapter.ariaSnapshot).toHaveBeenCalledWith({ mode: "ai", depth: 2 });
-    expect(adapter.resolveAriaRef).toHaveBeenCalledWith("r1");
+    expect(adapter.resolveAriaRef).toHaveBeenCalledWith("e1");
     expect(adapter.screenshot).toHaveBeenCalledWith({ type: "png" });
     expect(adapter.close).toHaveBeenCalledTimes(1);
   });
@@ -140,6 +150,36 @@ describe("RoxyPage", () => {
     expect(pressSpy).toHaveBeenCalledWith("Enter", undefined);
   });
 
+  it("waitForSelector parses chained selectors and returns a locator", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const locator = await page.waitForSelector("div >> text=Hello", {
+      state: "attached",
+      timeout: 100
+    });
+
+    expect(locator).toBeInstanceOf(RoxyLocator);
+    expect(adapter.locator).toHaveBeenCalledWith({
+      strategy: "css",
+      value: "div"
+    });
+    const rootLocatorAdapter = vi.mocked(adapter.locator).mock.results[0]?.value;
+    expect(rootLocatorAdapter?.locator).toHaveBeenCalledWith({
+      strategy: "text",
+      value: "Hello"
+    });
+  });
+
   it("subscribes, unsubscribes, and deduplicates adapter listeners for page events", () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
@@ -202,5 +242,34 @@ describe("RoxyPage", () => {
     });
 
     expect(secondRequestListener).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for console events and applies the predicate", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const waited = page.waitForEvent("console", (message) => message.text() === "match");
+
+    adapter.emit("console", {
+      text: () => "skip",
+      type: () => "log"
+    });
+    adapter.emit("console", {
+      text: () => "match",
+      type: () => "log"
+    });
+
+    const message = await waited;
+    expect(message.text()).toBe("match");
+    expect(message.type()).toBe("log");
   });
 });

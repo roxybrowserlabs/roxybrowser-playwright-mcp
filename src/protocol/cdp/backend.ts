@@ -11,7 +11,9 @@ import {
   withOptionalTimeout
 } from "../../ariaSnapshot.js";
 import { LocatorError, TimeoutError } from "../../errors.js";
+import { createPageResponse } from "../../pageResponse.js";
 import type { ResolvedAriaRef } from "../../types/api.js";
+import { createNavigationResult } from "../../navigationResult.js";
 import type {
   AriaSnapshotOptions,
   BrowserConnectOptions,
@@ -31,7 +33,8 @@ import type {
 import type {
   PageEventListener,
   PageEventMap,
-  PageEventName
+  PageEventName,
+  PageResponse
 } from "../../types/events.js";
 import type {
   LocatorSelector,
@@ -43,6 +46,7 @@ import type {
   ProtocolPageAdapter
 } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
+import { looksLikeFunctionExpression } from "../evaluate.js";
 import type CDP from "chrome-remote-interface";
 
 const chromeRemoteInterface = ("default" in cdpModule
@@ -114,6 +118,17 @@ interface StateWaiter {
   resolve: () => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+interface ResponseBodyState {
+  ready: Promise<void>;
+  resolveReady: () => void;
+  rejectReady: (error: Error) => void;
+  text?: Promise<string>;
+}
+
+interface NavigationResponseCapture {
+  lastResponse: PageResponse | null;
 }
 
 interface LocatorPayload {
@@ -487,15 +502,23 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 }
 
 class CdpPageAdapter implements ProtocolPageAdapter {
+  private mainFrameId: string | undefined;
   private domContentLoaded = false;
   private loadFired = false;
   private networkIdleReached = false;
+  private sameDocumentNavigation = false;
+  private allowSameDocumentNavigationToResolveWaiters = false;
   private activeRequests = 0;
   private closed = false;
   private networkIdleTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly stateWaiters = new Set<StateWaiter>();
   private readonly eventListeners = new Map<PageEventName, Set<PageEventListener<PageEventName>>>();
-  private readonly requestMetadata = new Map<string, { method: string; url: string }>();
+  private readonly requestMetadata = new Map<
+    string,
+    { frameId?: string; method: string; type?: string; url: string }
+  >();
+  private readonly responseBodies = new Map<string, ResponseBodyState>();
+  private navigationResponseCapture: NavigationResponseCapture | undefined;
 
   static async create(options: {
     browserClient: CdpClient;
@@ -534,7 +557,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const { client } = this.options;
     await Promise.all([
       client.Page.enable(),
-      client.Runtime.enable(),
+      client.Page.setLifecycleEventsEnabled({ enabled: true }).catch(() => {}),
+    client.Runtime.enable(),
       client.DOM.enable({}),
       client.Network.enable({})
     ]);
@@ -545,19 +569,65 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.emit("domcontentloaded", undefined);
     });
 
+    client.Page.navigatedWithinDocument(() => {
+      this.sameDocumentNavigation = true;
+      this.domContentLoaded = true;
+      this.loadFired = true;
+      this.networkIdleReached = true;
+      if (this.allowSameDocumentNavigationToResolveWaiters) {
+        this.flushWaiters();
+      }
+    });
+
+    client.Page.frameNavigated((event) => {
+      if (event.frame.parentId) {
+        return;
+      }
+
+      this.mainFrameId = event.frame.id;
+
+      if (event.type === "BackForwardCacheRestore") {
+        this.domContentLoaded = true;
+        this.loadFired = true;
+        this.networkIdleReached = true;
+        this.flushWaiters();
+      }
+    });
+
+    client.Page.frameStoppedLoading((event) => {
+      if (!this.isMainFrameId(event.frameId)) {
+        return;
+      }
+
+      this.domContentLoaded = true;
+      this.loadFired = true;
+      this.maybeArmNetworkIdleTimer();
+      this.flushWaiters();
+    });
+
     client.Page.loadEventFired(() => {
       this.loadFired = true;
       this.flushWaiters();
       this.emit("load", undefined);
     });
 
+    client.Runtime.consoleAPICalled((event) => {
+      this.emit("console", {
+        text: () => formatConsoleText(event.args),
+        type: () => event.type
+      });
+    });
+
     client.Network.requestWillBeSent((event) => {
+      const requestEvent = event as typeof event & { frameId?: string; type?: string };
       this.activeRequests += 1;
       this.networkIdleReached = false;
       this.clearNetworkIdleTimer();
       this.requestMetadata.set(event.requestId, {
         method: event.request.method,
-        url: event.request.url
+        url: event.request.url,
+        ...(requestEvent.frameId ? { frameId: requestEvent.frameId } : {}),
+        ...(requestEvent.type ? { type: requestEvent.type } : {})
       });
       this.emit("request", {
         headers: mapCdpHeaders(event.request.headers),
@@ -575,21 +645,39 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     };
 
     client.Network.responseReceived((event) => {
-      this.emit("response", {
+      const responseEvent = event as typeof event & { frameId?: string; type?: string };
+      const response = createPageResponse({
         fromCache: Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache),
         headers: mapCdpHeaders(event.response.headers),
         mimeType: event.response.mimeType,
         status: event.response.status,
         statusText: event.response.statusText,
+        text: () => this.getResponseText(event.requestId),
         url: event.response.url
       });
+
+      this.emit("response", response);
+
+      if (
+        this.navigationResponseCapture &&
+        responseEvent.type === "Document" &&
+        responseEvent.frameId &&
+        this.isMainFrameId(responseEvent.frameId) &&
+        shouldCaptureNavigationResponseUrl(response.url)
+      ) {
+        this.navigationResponseCapture.lastResponse = response;
+      }
     });
 
     client.Network.loadingFinished((event) => {
+      this.ensureResponseBodyState(event.requestId).resolveReady();
       onRequestSettled(event.requestId);
     });
     client.Network.loadingFailed((event) => {
       const request = this.requestMetadata.get(event.requestId);
+      this.ensureResponseBodyState(event.requestId).rejectReady(
+        new Error(event.errorText || "Network loading failed.")
+      );
       onRequestSettled(event.requestId);
       this.emit("requestfailed", {
         errorText: event.errorText,
@@ -602,9 +690,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.maybeArmNetworkIdleTimer();
   }
 
-  async goto(url: string, options: PageGotoOptions = {}): Promise<void> {
+  async goto(url: string, options: PageGotoOptions = {}): Promise<PageResponse | null> {
     const waitUntil = options.waitUntil ?? "load";
     const targetUrl = resolveUrl(url, this.options.contextOptions.baseURL);
+    const capture = this.beginNavigationResponseCapture();
     this.resetNavigationState();
 
     await withTimeout(
@@ -616,6 +705,46 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     if (waitUntil !== "commit") {
       await this.waitForLoadState(waitUntil, options.timeout);
     }
+
+    if (this.navigationResponseCapture === capture) {
+      this.navigationResponseCapture = undefined;
+    }
+    return capture.lastResponse;
+  }
+
+  async url(): Promise<string> {
+    return this.evaluateExpression<string>("String(globalThis.location?.href || '')");
+  }
+
+  async goBack(options: PageGotoOptions = {}): Promise<ReturnType<typeof createNavigationResult> | null> {
+    return this.navigateHistory(-1, options);
+  }
+
+  async goForward(options: PageGotoOptions = {}): Promise<ReturnType<typeof createNavigationResult> | null> {
+    return this.navigateHistory(1, options);
+  }
+
+  async reload(options: PageGotoOptions = {}): Promise<PageResponse | null> {
+    const waitUntil = options.waitUntil ?? "load";
+    const capture = this.beginNavigationResponseCapture();
+    this.resetNavigationState();
+
+    await withTimeout(
+      (this.options.client.Page as typeof this.options.client.Page & {
+        reload(): Promise<void>;
+      }).reload(),
+      options.timeout,
+      "Timed out while reloading page."
+    );
+
+    if (waitUntil !== "commit") {
+      await this.waitForLoadState(waitUntil, options.timeout);
+    }
+
+    if (this.navigationResponseCapture === capture) {
+      this.navigationResponseCapture = undefined;
+    }
+    return capture.lastResponse;
   }
 
   async title(): Promise<string> {
@@ -649,7 +778,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult> {
-    if (arg === undefined) {
+    if (arg === undefined && !looksLikeFunctionExpression(expression)) {
       return this.evaluateExpression<TResult>(expression);
     }
 
@@ -1032,6 +1161,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   private isStateSatisfied(state: WaitUntilState): boolean {
+    if (this.sameDocumentNavigation && this.allowSameDocumentNavigationToResolveWaiters) {
+      return true;
+    }
+
     switch (state) {
       case "domcontentloaded":
         return this.domContentLoaded;
@@ -1048,8 +1181,49 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.domContentLoaded = false;
     this.loadFired = false;
     this.networkIdleReached = false;
+    this.sameDocumentNavigation = false;
+    this.allowSameDocumentNavigationToResolveWaiters = false;
     this.activeRequests = 0;
     this.clearNetworkIdleTimer();
+  }
+
+  private async navigateHistory(
+    delta: -1 | 1,
+    options: PageGotoOptions
+  ): Promise<ReturnType<typeof createNavigationResult> | null> {
+    const pageDomain = this.options.client.Page as typeof this.options.client.Page & {
+      getNavigationHistory(): Promise<{
+        currentIndex: number;
+        entries: Array<{ id: number; url: string }>;
+      }>;
+      navigateToHistoryEntry(options: { entryId: number }): Promise<void>;
+    };
+    const history = await retryOnNotAttachedToActivePage(() => {
+      return pageDomain.getNavigationHistory();
+    });
+    const nextEntry = history.entries[history.currentIndex + delta];
+    if (!nextEntry) {
+      return null;
+    }
+
+    const waitUntil = options.waitUntil ?? "load";
+    this.resetNavigationState();
+    this.allowSameDocumentNavigationToResolveWaiters = true;
+    await withTimeout(
+      retryOnNotAttachedToActivePage(() => {
+        return pageDomain.navigateToHistoryEntry({ entryId: nextEntry.id });
+      }),
+      options.timeout,
+      `Timed out while navigating ${delta < 0 ? "back" : "forward"}.`
+    );
+
+    if (waitUntil !== "commit") {
+      await this.waitForLoadState(waitUntil, options.timeout);
+    }
+
+    return createNavigationResult({
+      url: nextEntry.url
+    });
   }
 
   private maybeArmNetworkIdleTimer(): void {
@@ -1079,6 +1253,62 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         waiter.resolve();
       }
     }
+  }
+
+  private isMainFrameId(frameId: string): boolean {
+    return this.mainFrameId === undefined || this.mainFrameId === frameId;
+  }
+
+  private beginNavigationResponseCapture(): NavigationResponseCapture {
+    const capture: NavigationResponseCapture = {
+      lastResponse: null
+    };
+    this.navigationResponseCapture = capture;
+    return capture;
+  }
+
+  private ensureResponseBodyState(requestId: string): ResponseBodyState {
+    const existing = this.responseBodies.get(requestId);
+    if (existing) {
+      return existing;
+    }
+
+    let resolveReady!: () => void;
+    let rejectReady!: (error: Error) => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = (error: Error) => reject(error);
+    });
+    const created: ResponseBodyState = {
+      ready,
+      rejectReady,
+      resolveReady
+    };
+    this.responseBodies.set(requestId, created);
+    return created;
+  }
+
+  private async getResponseText(requestId: string): Promise<string> {
+    const state = this.ensureResponseBodyState(requestId);
+    if (!state.text) {
+      state.text = (async () => {
+        await state.ready;
+        const response = await (
+          this.options.client.Network as typeof this.options.client.Network & {
+            getResponseBody(options: {
+              requestId: string;
+            }): Promise<{ base64Encoded: boolean; body: string }>;
+          }
+        ).getResponseBody({
+          requestId
+        });
+        const buffer = response.base64Encoded
+          ? Buffer.from(response.body, "base64")
+          : Buffer.from(response.body, "utf8");
+        return buffer.toString("utf8");
+      })();
+    }
+    return state.text;
   }
 
   private rejectWaiters(error: Error): void {
@@ -1491,6 +1721,33 @@ function extractRemoteValue<TResult>(result: { value?: unknown; type?: string })
   return (result.value as TResult | undefined) as TResult;
 }
 
+function formatConsoleText(
+  args: Array<{
+    description?: string;
+    type?: string;
+    unserializableValue?: string;
+    value?: unknown;
+  }>
+): string {
+  return args
+    .map((arg) => {
+      if (typeof arg.value === "string") {
+        return arg.value;
+      }
+      if (arg.value !== undefined) {
+        return String(arg.value);
+      }
+      if (arg.unserializableValue) {
+        return arg.unserializableValue;
+      }
+      if (arg.description) {
+        return arg.description;
+      }
+      return arg.type ?? "";
+    })
+    .join(" ");
+}
+
 function resolveKeyDefinition(key: string): {
   code: string;
   key: string;
@@ -1530,6 +1787,43 @@ function resolveKeyDefinition(key: string): {
     key,
     keyCode: 0
   };
+}
+
+async function retryOnNotAttachedToActivePage<TResult>(
+  run: () => Promise<TResult>,
+  attempts = 5
+): Promise<TResult> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error;
+      if (!isNotAttachedToActivePageError(error) || attempt === attempts - 1) {
+        throw error;
+      }
+      await delay(50);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function isNotAttachedToActivePageError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /Not attached to an active page/i.test(error.message)
+  );
+}
+
+function shouldCaptureNavigationResponseUrl(url: string): boolean {
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function withTimeout<TResult>(

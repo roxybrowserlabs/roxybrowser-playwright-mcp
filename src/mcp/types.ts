@@ -26,6 +26,25 @@ export interface BrowserSnapshot {
   url: string;
 }
 
+export interface BrowserSnapshotTarget {
+  raw: string;
+  nodeToken?: string;
+  selector?: string;
+}
+
+export interface BrowserSnapshotRequest {
+  target?: BrowserSnapshotTarget | undefined;
+  depth?: number | undefined;
+  boxes?: boolean | undefined;
+}
+
+export interface BrowserSnapshotToolArgs {
+  target?: string | undefined;
+  filename?: string | undefined;
+  depth?: number | undefined;
+  boxes?: boolean | undefined;
+}
+
 export interface ConnectedBrowserSession {
   readonly protocol: RoxyMcpProtocol;
   readonly browserName: "chromium" | "firefox";
@@ -34,7 +53,7 @@ export interface ConnectedBrowserSession {
   newTab(url?: string): Promise<BrowserTab[]>;
   selectTab(tabId: string): Promise<BrowserTab[]>;
   closeTab(tabId: string): Promise<BrowserTab[]>;
-  snapshot(): Promise<BrowserSnapshot>;
+  snapshot(request?: BrowserSnapshotRequest): Promise<BrowserSnapshot>;
   click(refToken: string): Promise<void>;
   hover(refToken: string): Promise<void>;
   close(): Promise<void>;
@@ -65,8 +84,11 @@ export interface StartRoxyBrowserMcpStdioOptions extends CreateRoxyBrowserMcpSer
 
 export interface SnapshotCacheEntry {
   tabId: string;
+  requestKey: string;
   text: string;
   refs: Record<string, string>;
+  title: string;
+  url: string;
 }
 
 export interface RoxyBrowserMcpServerBundle {

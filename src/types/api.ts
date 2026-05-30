@@ -4,6 +4,7 @@ import type {
   ClickOptions,
   ConnectOverCDPOptions,
   FillOptions,
+  Header,
   GetByRoleOptions,
   GetByTextOptions,
   HoverOptions,
@@ -11,9 +12,16 @@ import type {
   PageGotoOptions,
   PressOptions,
   ScreenshotOptions,
-  TypeOptions
+  TypeOptions,
+  WaitForSelectorOptions
 } from "./options.js";
-import type { PageEventListener, PageEventName } from "./events.js";
+import type {
+  PageEventListener,
+  PageEventMap,
+  PageEventName,
+  PageEventPredicate,
+  PageResponse
+} from "./events.js";
 
 export interface BrowserType {
   launch(options?: LaunchOptions): Promise<Browser>;
@@ -34,6 +42,14 @@ export interface BrowserContext {
   close(): Promise<void>;
 }
 
+export interface PageNavigationResult {
+  ok(): boolean;
+  url(): string;
+  status(): number | null;
+  statusText(): string | null;
+  headers(): Header[];
+}
+
 export interface AriaRefFrameLocator {
   selector: string | null;
   xpath: string | null;
@@ -50,18 +66,27 @@ export interface ResolvedAriaRef {
 }
 
 export interface Page {
-  goto(url: string, options?: PageGotoOptions): Promise<void>;
+  goto(url: string, options?: PageGotoOptions): Promise<PageResponse | null>;
+  url(): Promise<string>;
+  goBack(options?: PageGotoOptions): Promise<PageNavigationResult | null>;
+  goForward(options?: PageGotoOptions): Promise<PageNavigationResult | null>;
+  reload(options?: PageGotoOptions): Promise<PageResponse | null>;
   title(): Promise<string>;
   content(): Promise<string>;
   setContent(html: string): Promise<void>;
   evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult>;
   waitForLoadState(state?: PageGotoOptions["waitUntil"]): Promise<void>;
+  waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<Locator | null>;
   ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   on<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   once<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   removeListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
+  waitForEvent<K extends PageEventName>(
+    event: K,
+    predicate?: PageEventPredicate<K>
+  ): Promise<PageEventMap[K]>;
   locator(selector: string): Locator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
   getByRole(role: string, options?: GetByRoleOptions): Locator;

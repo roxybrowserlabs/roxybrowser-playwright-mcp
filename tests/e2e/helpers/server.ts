@@ -1,11 +1,17 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { TestServer } from "./testserver.js";
 
 export interface TestPageFixture {
   close(): Promise<void>;
   url: string;
+}
+
+export interface HistoryPageFixture extends TestPageFixture {
+  asset(name: string): string;
+  server: TestServer;
 }
 
 export async function createTestPageFixture(): Promise<TestPageFixture> {
@@ -62,6 +68,21 @@ export async function createTestPageFixture(): Promise<TestPageFixture> {
         force: true,
         recursive: true
       });
+    }
+  };
+}
+
+export async function createHistoryPageFixture(): Promise<HistoryPageFixture> {
+  const assetRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "assets");
+  const consoleLogPath = join(assetRoot, "consolelog.html");
+  const server = await TestServer.create(assetRoot);
+
+  return {
+    url: pathToFileURL(consoleLogPath).toString(),
+    asset: (name: string) => join(assetRoot, name),
+    server,
+    close: async () => {
+      await server.stop();
     }
   };
 }

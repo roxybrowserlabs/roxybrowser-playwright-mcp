@@ -5,7 +5,9 @@ import {
   normalizeAriaSnapshotOptions,
   withOptionalTimeout
 } from "../../ariaSnapshot.js";
-import { NotImplementedInProtocolError } from "../../errors.js";
+import { NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
+import { createPageResponse } from "../../pageResponse.js";
+import { createNavigationResult } from "../../navigationResult.js";
 import type { ResolvedAriaRef } from "../../types/api.js";
 import type {
   AriaSnapshotOptions,
@@ -23,7 +25,8 @@ import type {
 import type {
   PageEventListener,
   PageEventMap,
-  PageEventName
+  PageEventName,
+  PageResponse
 } from "../../types/events.js";
 import type {
   LocatorSelector,
@@ -35,6 +38,7 @@ import type {
   ProtocolPageAdapter
 } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
+import { looksLikeFunctionExpression } from "../evaluate.js";
 import WebDriver from "webdriver";
 import type { Client as WebDriverClient } from "webdriver";
 
@@ -78,6 +82,17 @@ interface BidiLocatorState {
 interface ActionPoint {
   x: number;
   y: number;
+}
+
+interface StateWaiter {
+  state: NonNullable<PageGotoOptions["waitUntil"]>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface NavigationResponseCapture {
+  lastResponse: PageResponse | null;
 }
 
 interface LocatorPayload {
@@ -429,6 +444,13 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
 class BidiPageAdapter implements ProtocolPageAdapter {
   private closed = false;
+  private domContentLoaded = false;
+  private loadFired = false;
+  private sameDocumentNavigation = false;
+  private allowSameDocumentNavigationToResolveWaiters = false;
+  private responseDataCollector: string | undefined;
+  private navigationResponseCapture: NavigationResponseCapture | undefined;
+  private readonly stateWaiters = new Set<StateWaiter>();
   private readonly eventListeners = new Map<PageEventName, Set<PageEventListener<PageEventName>>>();
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
 
@@ -454,22 +476,75 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       events: [
         "browsingContext.contextDestroyed",
         "browsingContext.domContentLoaded",
+        "browsingContext.fragmentNavigated",
+        "browsingContext.historyUpdated",
         "browsingContext.load",
+        "log.entryAdded",
         "network.beforeRequestSent",
+        "network.responseCompleted",
         "network.fetchError",
         "network.responseStarted"
       ]
     });
+    const collectorResult = await this.client.networkAddDataCollector({
+      contexts: [this.contextId],
+      dataTypes: ["response"],
+      maxEncodedDataSize: 10_000_000
+    });
+    this.responseDataCollector = collectorResult.collector;
     this.attachBiDiListeners();
     await this.applyContextOptions();
   }
 
-  async goto(url: string, options: PageGotoOptions = {}): Promise<void> {
+  async goto(url: string, options: PageGotoOptions = {}): Promise<PageResponse | null> {
+    const waitUntil = options.waitUntil ?? "load";
+    const capture = this.beginNavigationResponseCapture();
+    this.resetNavigationState();
     await this.client.browsingContextNavigate({
       context: this.contextId,
       url,
-      wait: options.waitUntil === "domcontentloaded" ? "interactive" : "complete"
+      wait: waitUntil === "domcontentloaded" ? "interactive" : "complete"
     });
+    if (waitUntil !== "commit") {
+      await this.waitForLoadState(waitUntil, options.timeout);
+    }
+
+    if (this.navigationResponseCapture === capture) {
+      this.navigationResponseCapture = undefined;
+    }
+    return capture.lastResponse;
+  }
+
+  async url(): Promise<string> {
+    return this.evaluateExpression<string>("String(globalThis.location?.href || '')");
+  }
+
+  async goBack(options: PageGotoOptions = {}): Promise<ReturnType<typeof createNavigationResult> | null> {
+    return this.navigateHistory(-1, options);
+  }
+
+  async goForward(options: PageGotoOptions = {}): Promise<ReturnType<typeof createNavigationResult> | null> {
+    return this.navigateHistory(1, options);
+  }
+
+  async reload(options: PageGotoOptions = {}): Promise<PageResponse | null> {
+    const waitUntil = options.waitUntil ?? "load";
+    const capture = this.beginNavigationResponseCapture();
+    this.resetNavigationState();
+
+    await this.client.browsingContextReload({
+      context: this.contextId,
+      wait: waitUntil === "domcontentloaded" ? "interactive" : "complete"
+    });
+
+    if (waitUntil !== "commit") {
+      await this.waitForLoadState(waitUntil, options.timeout);
+    }
+
+    if (this.navigationResponseCapture === capture) {
+      this.navigationResponseCapture = undefined;
+    }
+    return capture.lastResponse;
   }
 
   async title(): Promise<string> {
@@ -499,14 +574,47 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult> {
-    if (arg === undefined) {
+    if (arg === undefined && !looksLikeFunctionExpression(expression)) {
       return this.evaluateExpression<TResult>(expression);
     }
 
     return this.evaluateFunction<TResult>(expression, arg);
   }
 
-  async waitForLoadState(_state?: PageGotoOptions["waitUntil"]): Promise<void> {}
+  async waitForLoadState(
+    state: PageGotoOptions["waitUntil"] = "load",
+    timeout = 30_000
+  ): Promise<void> {
+    const targetState = state ?? "load";
+    if (targetState === "commit" || this.isStateSatisfied(targetState)) {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.stateWaiters.delete(waiter);
+        reject(new TimeoutError(`Timed out waiting for load state "${targetState}".`));
+      }, timeout);
+
+      const waiter: StateWaiter = {
+        state: targetState,
+        resolve: () => {
+          clearTimeout(timer);
+          this.stateWaiters.delete(waiter);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          this.stateWaiters.delete(waiter);
+          reject(error);
+        },
+        timer
+      };
+
+      this.stateWaiters.add(waiter);
+      this.flushWaiters();
+    });
+  }
 
   async ariaSnapshot(options: AriaSnapshotOptions = {}): Promise<string> {
     const normalizedOptions = normalizeAriaSnapshotOptions(options);
@@ -619,6 +727,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     }
 
     this.closed = true;
+    this.rejectWaiters(new Error("Page closed."));
 
     await this.client.browsingContextClose({
       context: this.contextId
@@ -836,7 +945,35 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         return;
       }
 
+      this.domContentLoaded = true;
+      this.flushWaiters();
       this.emit("domcontentloaded", undefined);
+    });
+
+    this.attachBiDiListener("browsingContext.fragmentNavigated", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+
+      this.sameDocumentNavigation = true;
+      this.domContentLoaded = true;
+      this.loadFired = true;
+      if (this.allowSameDocumentNavigationToResolveWaiters) {
+        this.flushWaiters();
+      }
+    });
+
+    this.attachBiDiListener("browsingContext.historyUpdated", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+
+      this.sameDocumentNavigation = true;
+      this.domContentLoaded = true;
+      this.loadFired = true;
+      if (this.allowSameDocumentNavigationToResolveWaiters) {
+        this.flushWaiters();
+      }
     });
 
     this.attachBiDiListener("browsingContext.load", (payload) => {
@@ -844,7 +981,27 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         return;
       }
 
+      this.loadFired = true;
+      this.flushWaiters();
       this.emit("load", undefined);
+    });
+
+    this.attachBiDiListener("log.entryAdded", (payload) => {
+      if (!hasLogContext(payload, this.contextId)) {
+        return;
+      }
+
+      const logPayload = payload as {
+        params: {
+          method?: string;
+          text?: string | null;
+          type?: string;
+        };
+      };
+      this.emit("console", {
+        text: () => logPayload.params.text ?? "",
+        type: () => logPayload.params.method ?? logPayload.params.type ?? "log"
+      });
     });
 
     this.attachBiDiListener("network.beforeRequestSent", (payload) => {
@@ -872,24 +1029,47 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }
 
       const responsePayload = payload as {
-        request: { url: string };
-        response: {
-          fromCache: boolean;
-          headers: Array<{ name: string; value: { value: string } | string }>;
-          mimeType: string;
-          status: number;
-          statusText: string;
-          url: string;
+        params: {
+          context: string | null;
+          navigation: string | null;
+          request: { destination: string; request: string; url: string };
+          response: {
+            fromCache: boolean;
+            headers: Array<{ name: string; value: { value: string } | string }>;
+            mimeType: string;
+            status: number;
+            statusText: string;
+            url: string;
+          };
         };
       };
-      this.emit("response", {
-        fromCache: responsePayload.response.fromCache,
-        headers: mapBiDiHeaders(responsePayload.response.headers),
-        mimeType: responsePayload.response.mimeType,
-        status: responsePayload.response.status,
-        statusText: responsePayload.response.statusText,
-        url: responsePayload.response.url || responsePayload.request.url
+      const response = createPageResponse({
+        fromCache: responsePayload.params.response.fromCache,
+        headers: mapBiDiHeaders(responsePayload.params.response.headers),
+        mimeType: responsePayload.params.response.mimeType,
+        status: responsePayload.params.response.status,
+        statusText: responsePayload.params.response.statusText,
+        text: () => this.getResponseText(responsePayload.params.request.request),
+        url: responsePayload.params.response.url || responsePayload.params.request.url
       });
+      this.emit("response", response);
+      if (
+        this.navigationResponseCapture &&
+        responsePayload.params.context === this.contextId &&
+        responsePayload.params.navigation !== null &&
+        responsePayload.params.request.destination === "document" &&
+        shouldCaptureNavigationResponseUrl(response.url)
+      ) {
+        this.navigationResponseCapture.lastResponse = response;
+      }
+    });
+
+    this.attachBiDiListener("network.responseCompleted", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+
+      void payload;
     });
 
     this.attachBiDiListener("network.fetchError", (payload) => {
@@ -917,6 +1097,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }
 
       this.closed = true;
+      this.rejectWaiters(new Error("Page closed."));
       this.emit("close", undefined);
       void this.cleanupBiDiListeners();
     });
@@ -942,13 +1123,26 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         events: [
           "browsingContext.contextDestroyed",
           "browsingContext.domContentLoaded",
+          "browsingContext.fragmentNavigated",
+          "browsingContext.historyUpdated",
           "browsingContext.load",
+          "log.entryAdded",
           "network.beforeRequestSent",
+          "network.responseCompleted",
           "network.fetchError",
           "network.responseStarted"
         ]
       });
     } catch {}
+
+    if (this.responseDataCollector) {
+      try {
+        await this.client.networkRemoveDataCollector({
+          collector: this.responseDataCollector
+        });
+      } catch {}
+      this.responseDataCollector = undefined;
+    }
   }
 
   private emit<K extends PageEventName>(event: K, payload: PageEventMap[K]): void {
@@ -965,6 +1159,110 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
       (listener as (eventPayload: PageEventMap[K]) => void)(payload);
     }
+  }
+
+  private async navigateHistory(
+    delta: -1 | 1,
+    options: PageGotoOptions
+  ): Promise<ReturnType<typeof createNavigationResult> | null> {
+    const previousUrl = await this.url();
+    this.resetNavigationState();
+    this.allowSameDocumentNavigationToResolveWaiters = true;
+    try {
+      await this.client.browsingContextTraverseHistory({
+        context: this.contextId,
+        delta
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/history/i.test(message) || /no such/i.test(message)) {
+        return null;
+      }
+      throw error;
+    }
+
+    const waitUntil = options.waitUntil ?? "load";
+    if (waitUntil !== "commit") {
+      await this.waitForLoadState(waitUntil, options.timeout);
+    }
+
+    const currentUrl = await this.url();
+    if (currentUrl === previousUrl) {
+      return null;
+    }
+
+    return createNavigationResult({
+      url: currentUrl
+    });
+  }
+
+  private isStateSatisfied(state: NonNullable<PageGotoOptions["waitUntil"]>): boolean {
+    if (this.sameDocumentNavigation && this.allowSameDocumentNavigationToResolveWaiters) {
+      return true;
+    }
+
+    switch (state) {
+      case "domcontentloaded":
+        return this.domContentLoaded;
+      case "load":
+      case "networkidle":
+        return this.loadFired;
+      case "commit":
+        return true;
+    }
+  }
+
+  private flushWaiters(): void {
+    for (const waiter of Array.from(this.stateWaiters)) {
+      if (this.isStateSatisfied(waiter.state)) {
+        waiter.resolve();
+      }
+    }
+  }
+
+  private rejectWaiters(error: Error): void {
+    for (const waiter of Array.from(this.stateWaiters)) {
+      waiter.reject(error);
+    }
+    this.stateWaiters.clear();
+  }
+
+  private resetNavigationState(): void {
+    this.domContentLoaded = false;
+    this.loadFired = false;
+    this.sameDocumentNavigation = false;
+    this.allowSameDocumentNavigationToResolveWaiters = false;
+  }
+
+  private beginNavigationResponseCapture(): NavigationResponseCapture {
+    const capture: NavigationResponseCapture = {
+      lastResponse: null
+    };
+    this.navigationResponseCapture = capture;
+    return capture;
+  }
+
+  private async getResponseText(requestId: string): Promise<string> {
+    if (!this.responseDataCollector) {
+      return "";
+    }
+    const response = await this.client.networkGetData({
+      collector: this.responseDataCollector,
+      dataType: "response",
+      request: requestId
+    });
+    return response.bytes.type === "base64"
+      ? Buffer.from(response.bytes.value, "base64").toString("utf8")
+      : response.bytes.value;
+  }
+}
+
+function shouldCaptureNavigationResponseUrl(url: string): boolean {
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
   }
 }
 
@@ -1056,6 +1354,17 @@ function hasContext(payload: unknown, contextId: string): boolean {
   }
 
   return (payload as { context: string | null }).context === contextId;
+}
+
+function hasLogContext(payload: unknown, contextId: string): boolean {
+  if (!payload || typeof payload !== "object" || !("params" in payload)) {
+    return false;
+  }
+
+  return (
+    (payload as { params?: { source?: { context?: string | null } } }).params?.source?.context ===
+    contextId
+  );
 }
 
 function mapBiDiHeaders(

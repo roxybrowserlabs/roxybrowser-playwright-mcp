@@ -1,4 +1,6 @@
 import { vi } from "vitest";
+import { createNavigationResult } from "../../src/navigationResult.js";
+import { createPageResponse } from "../../src/pageResponse.js";
 import type {
   ProtocolBrowserAdapter,
   ProtocolBrowserContextAdapter,
@@ -69,7 +71,33 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
   const listeners = new Map<PageEventName, Set<PageEventListener<PageEventName>>>();
 
   return {
-    goto: vi.fn(async () => {}),
+    goto: vi.fn(
+      async () =>
+        createPageResponse({
+          fromCache: false,
+          headers: [],
+          mimeType: "text/html",
+          status: 200,
+          statusText: "OK",
+          text: async () => "<html>example</html>",
+          url: "https://example.com"
+        })
+    ),
+    url: vi.fn(async () => "https://example.com"),
+    goBack: vi.fn(async () => createNavigationResult({ url: "https://example.com/back" })),
+    goForward: vi.fn(async () => createNavigationResult({ url: "https://example.com/forward" })),
+    reload: vi.fn(
+      async () =>
+        createPageResponse({
+          fromCache: false,
+          headers: [],
+          mimeType: "text/html",
+          status: 200,
+          statusText: "OK",
+          text: async () => "<html>reloaded</html>",
+          url: "https://example.com/reload"
+        })
+    ),
     title: vi.fn(async () => "Example title"),
     content: vi.fn(async () => "<html></html>"),
     setContent: vi.fn(async () => {}),

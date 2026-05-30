@@ -6,6 +6,10 @@ export interface AriaSnapshotResult {
   text: string;
   title: string;
   url: string;
+  error?: {
+    code: "stale" | "not_found" | "invalid_selector" | "strict";
+    message?: string;
+  };
 }
 
 export interface ResolvedAriaRefResult {
@@ -25,31 +29,37 @@ export interface ResolvedAriaRefResult {
 
 export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
   const options = payload && payload.options ? payload.options : {};
+  const target = payload && payload.target ? payload.target : undefined;
   const maxDepth = typeof options.depth === "number" ? options.depth : undefined;
   const includeBoxes = Boolean(options.boxes);
   const mode = options.mode === "ai" ? "ai" : "default";
   const rootDocument = document;
-  const globalState = globalThis.__roxyMcpState ?? {
+  const previousState = globalThis.__roxyMcpState ?? {
     elements: new Map(),
     refs: new Map(),
     nextRefId: 1,
     nextNodeId: 1
   };
+  const previousElements = previousState.elements instanceof Map ? previousState.elements : new Map();
+  const globalState = {
+    elements: new Map(),
+    refs: new Map(),
+    nextRefId: typeof previousState.nextRefId === "number" ? previousState.nextRefId : 1,
+    nextNodeId: typeof previousState.nextNodeId === "number" ? previousState.nextNodeId : 1
+  };
   globalState.elements = new Map();
   globalState.refs = new Map();
   globalThis.__roxyMcpState = globalState;
 
-  const interactiveRoles = new Set([
-    "button",
-    "checkbox",
-    "combobox",
-    "link",
-    "menuitem",
-    "option",
-    "radio",
-    "switch",
-    "tab",
-    "textbox"
+  const structuralRolesWithoutImplicitName = new Set([
+    "article",
+    "form",
+    "generic",
+    "list",
+    "listitem",
+    "main",
+    "navigation",
+    "section"
   ]);
 
   function isElementVisible(element) {
@@ -68,6 +78,19 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
 
   function normalizeWhitespace(value) {
     return String(value ?? "").replace(/\s+/g, " ").trim();
+  }
+
+  function formatInlineText(value) {
+    const text = normalizeWhitespace(value);
+    if (!text) {
+      return "";
+    }
+    return /^[\w\s.,!?:;<>/=+-]+$/.test(text) ? text : JSON.stringify(text);
+  }
+
+  function receivesPointerEvents(element) {
+    const style = globalThis.getComputedStyle(element);
+    return !style || style.pointerEvents !== "none";
   }
 
   function inferRole(element) {
@@ -146,12 +169,14 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     if (!element.id) {
       return "";
     }
+    const ownerDocument = element.ownerDocument || rootDocument;
     const escapedId = globalThis.CSS && globalThis.CSS.escape ? globalThis.CSS.escape(element.id) : element.id;
-    const labels = Array.from(rootDocument.querySelectorAll('label[for="' + escapedId + '"]'));
+    const labels = Array.from(ownerDocument.querySelectorAll('label[for="' + escapedId + '"]'));
     return normalizeWhitespace(labels.map((label) => label.textContent || "").join(" "));
   }
 
   function accessibleName(element, role) {
+    const ownerDocument = element.ownerDocument || rootDocument;
     const ariaLabel = normalizeWhitespace(element.getAttribute("aria-label"));
     if (ariaLabel) {
       return ariaLabel;
@@ -161,7 +186,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     if (labelledBy) {
       const ids = labelledBy.split(" ").map((value) => value.trim()).filter(Boolean);
       const text = ids
-        .map((id) => rootDocument.getElementById(id))
+        .map((id) => ownerDocument.getElementById(id))
         .filter(Boolean)
         .map((node) => node.textContent || "")
         .join(" ");
@@ -172,6 +197,10 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     }
 
     const tagName = element.tagName.toLowerCase();
+    if (structuralRolesWithoutImplicitName.has(role)) {
+      return "";
+    }
+
     if (tagName === "img") {
       const alt = normalizeWhitespace(element.getAttribute("alt"));
       if (alt) {
@@ -188,10 +217,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
       if (placeholder) {
         return placeholder;
       }
-      const value = normalizeWhitespace(element.value);
-      if (value) {
-        return value;
-      }
+      return "";
     }
 
     if (tagName === "select") {
@@ -199,8 +225,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
       if (label) {
         return label;
       }
-      const selectedOption = element.options[element.selectedIndex];
-      return normalizeWhitespace(selectedOption ? selectedOption.textContent : "");
+      return "";
     }
 
     if (tagName === "input") {
@@ -208,10 +233,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
       if (label) {
         return label;
       }
-      const inputValue = normalizeWhitespace(element.value);
-      if (inputValue) {
-        return inputValue;
-      }
+      return "";
     }
 
     if (tagName === "iframe") {
@@ -224,76 +246,135 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     return normalizeWhitespace(element.textContent || "");
   }
 
-  function shouldAssignRef(element, role) {
-    if (mode !== "ai") {
-      return false;
-    }
-
-    if (interactiveRoles.has(role)) {
-      return true;
-    }
-
-    if (typeof element.onclick === "function") {
-      return true;
-    }
-
-    const tabIndex = element.getAttribute("tabindex");
-    return tabIndex !== null && Number(tabIndex) >= 0;
-  }
-
-  function shouldIncludeElement(element, role, name) {
-    if (!isElementVisible(element)) {
-      return false;
-    }
-
-    if (shouldAssignRef(element, role)) {
-      return true;
-    }
-
-    if (role !== "generic" && role !== "section" && role !== "article") {
-      return true;
-    }
-
-    return Boolean(name);
-  }
-
   function createRef(element) {
-    const ref = "r" + globalState.nextRefId++;
+    const existingRef = element.__roxyAriaRef;
+    const ref = typeof existingRef === "string" ? existingRef : "e" + globalState.nextRefId++;
+    element.__roxyAriaRef = ref;
     const nodeToken = "n" + globalState.nextNodeId++;
     globalState.elements.set(nodeToken, element);
     globalState.refs.set(ref, nodeToken);
     return { ref, nodeToken };
   }
 
-  function formatBox(element) {
-    if (!includeBoxes) {
-      return "";
-    }
-
+  function createAriaNode(element) {
+    const role = inferRole(element);
+    const name = accessibleName(element, role);
     const rect = element.getBoundingClientRect();
-    return " [box=" + [rect.x, rect.y, rect.width, rect.height].map((value) => Math.round(value * 100) / 100).join(",") + "]";
-  }
+    const node = {
+      role,
+      name,
+      children: [],
+      ref: undefined,
+      active: element.ownerDocument.activeElement === element,
+      level: /^h[1-6]$/.test(element.tagName.toLowerCase()) ? Number(element.tagName[1]) : undefined,
+      checked: undefined,
+      selected: undefined,
+      box: {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      }
+    };
 
-  const lines = ["- document"];
-  const refs = {};
-
-  function addTextNode(node, depth) {
-    const text = normalizeWhitespace(node.textContent || "");
-    if (!text) {
-      return;
+    if (
+      mode === "ai" &&
+      isElementVisible(element) &&
+      receivesPointerEvents(element)
+    ) {
+      node.ref = createRef(element).ref;
     }
 
-    lines.push("  ".repeat(depth) + '- text "' + text + '"');
+    if (role === "checkbox" || role === "radio") {
+      node.checked = Boolean(element.checked);
+    }
+    if (role === "option") {
+      node.selected = Boolean(element.selected);
+    }
+    if (role === "textbox" && typeof element.value === "string" && element.type !== "checkbox" && element.type !== "radio") {
+      node.children.push(element.value);
+    }
+
+    return node;
   }
 
-  function walk(node, depth, suppressDirectText) {
+  function resolveRootNode() {
+    if (!target) {
+      return {
+        ok: true,
+        node: rootDocument.body || rootDocument.documentElement
+      };
+    }
+
+    if (target.nodeToken) {
+      const element = previousElements.get(String(target.nodeToken));
+      if (!element || !element.isConnected) {
+        return {
+          ok: false,
+          error: {
+            code: "stale"
+          }
+        };
+      }
+      return {
+        ok: true,
+        node: element
+      };
+    }
+
+    if (target.selector) {
+      try {
+        const elements = Array.from(rootDocument.querySelectorAll(String(target.selector)));
+        if (elements.length === 0) {
+          return {
+            ok: false,
+            error: {
+              code: "not_found",
+              message: '"' + String(target.selector) + '" does not match any element.'
+            }
+          };
+        }
+        if (elements.length > 1) {
+          return {
+            ok: false,
+            error: {
+              code: "strict",
+              message: 'strict mode violation: "' + String(target.selector) + '" matches multiple elements.'
+            }
+          };
+        }
+        return {
+          ok: true,
+          node: elements[0]
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: "invalid_selector",
+            message: String(error && error.message ? error.message : error)
+          }
+        };
+      }
+    }
+
+    return {
+      ok: false,
+      error: {
+        code: "not_found"
+      }
+    };
+  }
+
+  function visitDom(parentAriaNode, node, forceInclude) {
     if (!node) {
       return;
     }
 
     if (node.nodeType === Node.TEXT_NODE) {
-      if (!suppressDirectText) {
-        addTextNode(node, depth);
+      const text = normalizeWhitespace(node.nodeValue || "");
+      if (text && parentAriaNode.role !== "textbox") {
+        parentAriaNode.children.push(text);
       }
       return;
     }
@@ -303,60 +384,205 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     }
 
     const element = node;
+    const visible = isElementVisible(element);
     const role = inferRole(element);
-    const name = accessibleName(element, role);
-    const include = shouldIncludeElement(element, role, name);
-    const nextDepth = include ? depth + 1 : depth;
-    const suppressChildrenText =
-      role === "button" || role === "link" || role === "textbox" || role === "heading" || role === "label";
+    const include = forceInclude || visible || role === "iframe";
+    const ariaNode = include ? createAriaNode(element) : parentAriaNode;
 
     if (include) {
-      let line = "  ".repeat(depth) + "- " + role;
-      if (name) {
-        line += ' "' + name + '"';
-      }
-      if (shouldAssignRef(element, role)) {
-        const created = createRef(element);
-        refs[created.ref] = created.nodeToken;
-        line += " [ref=" + created.ref + "]";
-      }
-      line += formatBox(element);
-      lines.push(line);
+      parentAriaNode.children.push(ariaNode);
     }
 
-    if (maxDepth !== undefined && depth >= maxDepth) {
-      return;
-    }
-
-    if (role === "iframe" && mode === "ai") {
+    if (ariaNode.role === "iframe" && mode === "ai") {
       try {
         const frameDocument = element.contentDocument;
         const frameBody = frameDocument && (frameDocument.body || frameDocument.documentElement);
         if (frameBody) {
           for (const child of Array.from(frameBody.childNodes)) {
-            walk(child, nextDepth, false);
+            visitDom(ariaNode, child, false);
           }
           return;
         }
       } catch {}
     }
 
-    for (const child of Array.from(element.childNodes)) {
-      walk(child, nextDepth, suppressChildrenText);
-    }
-
-    if (element.shadowRoot) {
-      for (const child of Array.from(element.shadowRoot.childNodes)) {
-        walk(child, nextDepth, suppressChildrenText);
+    const assignedNodes = element.tagName === "SLOT" && typeof element.assignedNodes === "function"
+      ? element.assignedNodes()
+      : [];
+    if (assignedNodes.length) {
+      for (const child of Array.from(assignedNodes)) {
+        visitDom(ariaNode, child, false);
+      }
+    } else {
+      for (const child of Array.from(element.childNodes)) {
+        if (!child.assignedSlot) {
+          visitDom(ariaNode, child, false);
+        }
+      }
+      if (element.shadowRoot) {
+        for (const child of Array.from(element.shadowRoot.childNodes)) {
+          visitDom(ariaNode, child, false);
+        }
       }
     }
   }
 
-  const root = rootDocument.body || rootDocument.documentElement;
-  walk(root, 1, false);
+  function normalizeChildren(node) {
+    const normalizedChildren = [];
+    const textBuffer = [];
+
+    const flushText = () => {
+      if (!textBuffer.length) {
+        return;
+      }
+      const text = normalizeWhitespace(textBuffer.join(" "));
+      if (text) {
+        normalizedChildren.push(text);
+      }
+      textBuffer.length = 0;
+    };
+
+    for (const child of node.children) {
+      if (typeof child === "string") {
+        textBuffer.push(child);
+        continue;
+      }
+      flushText();
+      normalizeChildren(child);
+      normalizedChildren.push(child);
+    }
+    flushText();
+    node.children = normalizedChildren;
+    if (node.children.length === 1 && node.children[0] === node.name) {
+      node.children = [];
+    }
+  }
+
+  function flattenGenericNodes(node) {
+    const flattenedChildren = [];
+    for (const child of node.children) {
+      if (typeof child === "string") {
+        flattenedChildren.push(child);
+        continue;
+      }
+      const flattened = flattenGenericNodes(child);
+      for (const nested of flattened) {
+        flattenedChildren.push(nested);
+      }
+    }
+    node.children = flattenedChildren;
+    const removeSelf =
+      node.role === "generic" &&
+      !node.name &&
+      flattenedChildren.length <= 1 &&
+      flattenedChildren.every((child) => typeof child !== "string" && child.ref);
+    return removeSelf ? flattenedChildren : [node];
+  }
+
+  function renderNode(node, depth, lines) {
+    if (maxDepth !== undefined && depth > maxDepth) {
+      return;
+    }
+
+    let line = "  ".repeat(depth) + "- " + node.role;
+    if (node.name) {
+      line += " " + JSON.stringify(node.name);
+    }
+    if (node.checked) {
+      line += " [checked]";
+    }
+    if (node.selected) {
+      line += " [selected]";
+    }
+    if (node.active) {
+      line += " [active]";
+    }
+    if (node.level) {
+      line += " [level=" + node.level + "]";
+    }
+    if (node.ref) {
+      line += " [ref=" + node.ref + "]";
+    }
+    if (includeBoxes) {
+      line += " [box=" + [node.box.x, node.box.y, node.box.width, node.box.height].join(",") + "]";
+    }
+
+    const singleInlineText =
+      node.children.length === 1 && typeof node.children[0] === "string"
+        ? formatInlineText(node.children[0])
+        : "";
+    const depthLimited = maxDepth !== undefined && depth === maxDepth;
+
+    if (singleInlineText) {
+      lines.push(line + ": " + singleInlineText);
+      return;
+    }
+
+    if (!node.children.length || depthLimited) {
+      lines.push(line);
+      return;
+    }
+
+    lines.push(line + ":");
+    for (const child of node.children) {
+      if (typeof child === "string") {
+        const text = formatInlineText(child);
+        if (text) {
+          lines.push("  ".repeat(depth + 1) + "- text: " + text);
+        }
+        continue;
+      }
+      renderNode(child, depth + 1, lines);
+    }
+  }
+
+  const resolvedRoot = resolveRootNode();
+  if (!resolvedRoot.ok) {
+    return {
+      refs: {},
+      text: "",
+      title: normalizeWhitespace(rootDocument.title || ""),
+      url: String(globalThis.location?.href || ""),
+      error: resolvedRoot.error
+    };
+  }
+
+  const root = {
+    role: "fragment",
+    children: []
+  };
+  visitDom(root, resolvedRoot.node, Boolean(target));
+  for (const child of root.children) {
+    if (typeof child !== "string") {
+      normalizeChildren(child);
+    }
+  }
+
+  const renderedRoots = [];
+  for (const child of root.children) {
+    if (typeof child === "string") {
+      const text = formatInlineText(child);
+      if (text) {
+        renderedRoots.push(text);
+      }
+      continue;
+    }
+    for (const flattened of flattenGenericNodes(child)) {
+      renderedRoots.push(flattened);
+    }
+  }
+
+  const lines = [];
+  for (const child of renderedRoots) {
+    if (typeof child === "string") {
+      lines.push("- text: " + child);
+      continue;
+    }
+    renderNode(child, 0, lines);
+  }
 
   return {
-    refs,
+    refs: Object.fromEntries(globalState.refs.entries()),
     text: lines.join("\n"),
     title: normalizeWhitespace(rootDocument.title || ""),
     url: String(globalThis.location?.href || "")

@@ -42,7 +42,9 @@
     - `list` 返回 tab 列表。
     - `new/select/close` 返回 tab 列表，且有活动 tab 时同时返回该 tab 的 snapshot。
   - `browser_snapshot`
-    - 无必填入参，始终针对当前活动 tab。
+    - 入参：`{ target?: string, filename?: string, depth?: number, boxes?: boolean }`
+    - 始终针对当前活动 tab；`target` 优先解析最近一次 snapshot 的 `ref`，否则按 CSS selector 处理。
+    - `filename` 存在时将 snapshot markdown 写入文件，并返回保存结果；否则直接返回文本树。
     - 输出 Playwright MCP 风格文本树，不返回 HTML。
   - `browser_click` / `browser_hover`
     - 入参：`{ ref: string }`

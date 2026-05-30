@@ -1,5 +1,6 @@
 import type { HumanController } from "./human/types.js";
 import type { ProtocolLocatorAdapter } from "./protocol/adapter.js";
+import { parseSelectorChain } from "./selectors.js";
 import type { Locator } from "./types/api.js";
 import type {
   ClickOptions,
@@ -18,13 +19,16 @@ export class RoxyLocator implements Locator {
   ) {}
 
   locator(selector: string): Locator {
-    return new RoxyLocator(
-      this.adapter.locator({
-        strategy: "css",
-        value: selector
-      }),
-      this.humanController
-    );
+    const chain = parseSelectorChain(selector);
+    const [first, ...rest] = chain;
+    if (!first) {
+      throw new Error("Selector must not be empty.");
+    }
+    let adapter = this.adapter.locator(first);
+    for (const part of rest) {
+      adapter = adapter.locator(part);
+    }
+    return new RoxyLocator(adapter, this.humanController);
   }
 
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {

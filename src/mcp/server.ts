@@ -1,8 +1,14 @@
+import { writeFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { isMcpToolError } from "./errors.js";
 import { formatConnectResult, formatSnapshot, formatTabs, formatTabsWithOptionalSnapshot } from "./format.js";
-import { browserRefActionSchema, browserTabsSchema, roxyBrowserConnectSchema } from "./schemas.js";
+import {
+  browserRefActionSchema,
+  browserSnapshotSchema,
+  browserTabsSchema,
+  roxyBrowserConnectSchema
+} from "./schemas.js";
 import { McpRuntimeManager } from "./runtime.js";
 import type {
   CreateRoxyBrowserMcpServerOptions,
@@ -107,13 +113,19 @@ export function createRoxyBrowserMcpServer(
     "browser_snapshot",
     {
       title: "Browser Snapshot",
-      description: "Return a Playwright-style accessibility and DOM snapshot for the active tab."
+      description: "Return a Playwright-style accessibility and DOM snapshot for the active tab.",
+      inputSchema: browserSnapshotSchema.shape
     },
-    async (extra) => {
+    async (args, extra) => {
       try {
         const runtime = runtimeManager.getRuntime(extra.sessionId);
-        const snapshot = await runtime.snapshot();
-        return textResult(formatSnapshot(snapshot));
+        const snapshot = await runtime.snapshot(args);
+        const formatted = formatSnapshot(snapshot);
+        if (args.filename) {
+          await writeFile(args.filename, formatted);
+          return textResult(`Saved snapshot to "${args.filename}".`);
+        }
+        return textResult(formatted);
       } catch (error) {
         return toolErrorResult(error);
       }

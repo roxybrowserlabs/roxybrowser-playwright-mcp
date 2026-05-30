@@ -6,6 +6,8 @@ export { createRoxyBrowserMcpInMemory } from "./transports/inMemory.js";
 export type {
   BrowserSessionFactory,
   BrowserSnapshot,
+  BrowserSnapshotRequest,
+  BrowserSnapshotToolArgs,
   BrowserTab,
   ConnectedBrowserSession,
   CreateRoxyBrowserMcpServerOptions,

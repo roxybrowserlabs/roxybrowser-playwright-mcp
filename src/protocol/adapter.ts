@@ -11,10 +11,11 @@ import type {
   PageGotoOptions,
   PressOptions,
   ScreenshotOptions,
-  TypeOptions
+  TypeOptions,
+  WaitForSelectorOptions
 } from "../types/options.js";
-import type { PageEventListener, PageEventName } from "../types/events.js";
-import type { ResolvedAriaRef } from "../types/api.js";
+import type { PageEventListener, PageEventName, PageResponse } from "../types/events.js";
+import type { PageNavigationResult, ResolvedAriaRef } from "../types/api.js";
 import type { ProtocolCapabilities } from "./capabilities.js";
 
 export type LocatorStrategy = "css" | "text" | "role";
@@ -54,7 +55,11 @@ export interface ProtocolBrowserContextAdapter {
 }
 
 export interface ProtocolPageAdapter {
-  goto(url: string, options?: PageGotoOptions): Promise<void>;
+  goto(url: string, options?: PageGotoOptions): Promise<PageResponse | null>;
+  url(): Promise<string>;
+  goBack(options?: PageGotoOptions): Promise<PageNavigationResult | null>;
+  goForward(options?: PageGotoOptions): Promise<PageNavigationResult | null>;
+  reload(options?: PageGotoOptions): Promise<PageResponse | null>;
   title(): Promise<string>;
   content(): Promise<string>;
   setContent(html: string): Promise<void>;

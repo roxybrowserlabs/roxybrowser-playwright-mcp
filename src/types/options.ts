@@ -85,6 +85,13 @@ export interface PageGotoOptions extends TimeoutOptions {
   waitUntil?: WaitUntilState;
 }
 
+export type WaitForSelectorState = "attached" | "detached" | "hidden" | "visible";
+
+export interface WaitForSelectorOptions extends TimeoutOptions {
+  state?: WaitForSelectorState;
+  waitFor?: WaitForSelectorState;
+}
+
 export interface HoverOptions extends TimeoutOptions {
   force?: boolean;
   trial?: boolean;

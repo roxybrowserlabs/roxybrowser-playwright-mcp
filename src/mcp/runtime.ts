@@ -3,6 +3,9 @@ import { McpToolError } from "./errors.js";
 import type {
   BrowserSessionFactory,
   BrowserSnapshot,
+  BrowserSnapshotRequest,
+  BrowserSnapshotToolArgs,
+  BrowserSnapshotTarget,
   BrowserTab,
   CreateRoxyBrowserMcpServerOptions,
   SnapshotCacheEntry
@@ -110,23 +113,36 @@ export class McpRuntime {
         };
   }
 
-  async snapshot(): Promise<BrowserSnapshot> {
+  async snapshot(args: BrowserSnapshotToolArgs = {}): Promise<BrowserSnapshot> {
     const session = this.requireConnected();
     const activeTab = this.requireActiveTab();
-    if (this.snapshotCache && this.snapshotCache.tabId === activeTab.id) {
+    const requestKey = this.snapshotRequestKey(args);
+    if (
+      this.snapshotCache &&
+      this.snapshotCache.tabId === activeTab.id &&
+      this.snapshotCache.requestKey === requestKey
+    ) {
       return {
         text: this.snapshotCache.text,
         refs: { ...this.snapshotCache.refs },
-        title: activeTab.title,
-        url: activeTab.url
+        title: this.snapshotCache.title,
+        url: this.snapshotCache.url
       };
     }
 
-    const snapshot = await session.snapshot();
+    const request: BrowserSnapshotRequest = {
+      ...(args.boxes !== undefined ? { boxes: args.boxes } : {}),
+      ...(args.depth !== undefined ? { depth: args.depth } : {}),
+      ...(args.target ? { target: this.resolveSnapshotTarget(args.target) } : {})
+    };
+    const snapshot = await session.snapshot(request);
     this.snapshotCache = {
       tabId: activeTab.id,
+      requestKey,
       text: snapshot.text,
-      refs: { ...snapshot.refs }
+      refs: { ...snapshot.refs },
+      title: snapshot.title,
+      url: snapshot.url
     };
     return snapshot;
   }
@@ -197,6 +213,46 @@ export class McpRuntime {
     }
 
     return token;
+  }
+
+  private resolveSnapshotTarget(target: string): BrowserSnapshotTarget {
+    const activeTab = this.requireActiveTab();
+    if (this.snapshotCache && this.snapshotCache.tabId === activeTab.id) {
+      const token = this.snapshotCache.refs[target];
+      if (token) {
+        return {
+          raw: target,
+          nodeToken: token
+        };
+      }
+    }
+
+    if (/^e\d+$/.test(target)) {
+      if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
+        throw new McpToolError(
+          "stale_ref",
+          'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
+        );
+      }
+
+      throw new McpToolError(
+        "stale_ref",
+        `Ref "${target}" is no longer valid. Call "browser_snapshot" again.`
+      );
+    }
+
+    return {
+      raw: target,
+      selector: target
+    };
+  }
+
+  private snapshotRequestKey(args: BrowserSnapshotToolArgs): string {
+    return JSON.stringify({
+      target: args.target ?? null,
+      depth: args.depth ?? null,
+      boxes: args.boxes ?? null
+    });
   }
 }
 

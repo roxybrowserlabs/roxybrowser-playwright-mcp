@@ -1,5 +1,5 @@
 import { NotImplementedInProtocolError } from "../../errors.js";
-import type { ResolvedAriaRef } from "../../types/api.js";
+import type { PageNavigationResult, ResolvedAriaRef } from "../../types/api.js";
 import type {
   AriaSnapshotOptions,
   BrowserConnectOptions,
@@ -7,6 +7,7 @@ import type {
   PageGotoOptions,
   ScreenshotOptions
 } from "../../types/options.js";
+import type { PageResponse } from "../../types/events.js";
 import type {
   LocatorSelector,
   ProtocolBrowserAdapter,
@@ -75,8 +76,24 @@ class ClassicWebDriverBrowserContextAdapter implements ProtocolBrowserContextAda
 }
 
 class ClassicWebDriverPageAdapter implements ProtocolPageAdapter {
-  async goto(_url: string, _options?: PageGotoOptions): Promise<void> {
+  async goto(_url: string, _options?: PageGotoOptions): Promise<PageResponse | null> {
     throw new NotImplementedInProtocolError("webdriver", "page.goto");
+  }
+
+  async url(): Promise<string> {
+    throw new NotImplementedInProtocolError("webdriver", "page.url");
+  }
+
+  async goBack(_options?: PageGotoOptions): Promise<PageNavigationResult | null> {
+    throw new NotImplementedInProtocolError("webdriver", "page.goBack");
+  }
+
+  async goForward(_options?: PageGotoOptions): Promise<PageNavigationResult | null> {
+    throw new NotImplementedInProtocolError("webdriver", "page.goForward");
+  }
+
+  async reload(_options?: PageGotoOptions): Promise<PageResponse | null> {
+    throw new NotImplementedInProtocolError("webdriver", "page.reload");
   }
 
   async title(): Promise<string> {

@@ -22,7 +22,12 @@ export const browserTabsSchema = z
     }
   });
 
-export const browserSnapshotSchema = z.object({}).strict();
+export const browserSnapshotSchema = z.object({
+  target: z.string().min(1).optional(),
+  filename: z.string().min(1).optional(),
+  depth: z.number().optional(),
+  boxes: z.boolean().optional()
+});
 
 export const browserRefActionSchema = z.object({
   ref: z.string().min(1)

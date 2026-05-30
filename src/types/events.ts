@@ -13,6 +13,7 @@ export interface PageResponse {
   headers: Header[];
   mimeType: string;
   fromCache: boolean;
+  text(): Promise<string>;
 }
 
 export interface PageRequestFailure {
@@ -21,8 +22,14 @@ export interface PageRequestFailure {
   errorText: string;
 }
 
+export interface PageConsoleMessage {
+  text(): string;
+  type(): string;
+}
+
 export interface PageEventMap {
   close: void;
+  console: PageConsoleMessage;
   domcontentloaded: void;
   load: void;
   request: PageRequest;
@@ -35,3 +42,7 @@ export type PageEventName = keyof PageEventMap;
 export type PageEventListener<K extends PageEventName> = PageEventMap[K] extends void
   ? () => void
   : (payload: PageEventMap[K]) => void;
+
+export type PageEventPredicate<K extends PageEventName> = (
+  payload: PageEventMap[K]
+) => boolean | Promise<boolean>;

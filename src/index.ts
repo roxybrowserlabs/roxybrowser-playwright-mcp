@@ -13,13 +13,16 @@ export type {
   BrowserType,
   Locator,
   Page,
+  PageNavigationResult,
   ResolvedAriaRef
 } from "./types/api.js";
 
 export type {
+  PageConsoleMessage,
   PageEventListener,
   PageEventMap,
   PageEventName,
+  PageEventPredicate,
   PageRequest,
   PageRequestFailure,
   PageResponse
@@ -41,12 +44,16 @@ export type {
   Progress,
   ScreenshotOptions,
   ScreenshotType,
-  TypeOptions
+  TypeOptions,
+  WaitForSelectorOptions,
+  WaitForSelectorState
 } from "./types/options.js";
 
 export type {
   BrowserSessionFactory,
   BrowserSnapshot,
+  BrowserSnapshotRequest,
+  BrowserSnapshotToolArgs,
   BrowserTab,
   ConnectedBrowserSession,
   CreateRoxyBrowserMcpServerOptions,

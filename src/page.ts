@@ -1,15 +1,19 @@
 import { writeFile } from "node:fs/promises";
 import { extname } from "node:path";
+import { TimeoutError } from "./errors.js";
 import { DefaultHumanController } from "./human/controller.js";
 import { RoxyLocator } from "./locator.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type { ProtocolPageAdapter } from "./protocol/adapter.js";
+import { parseSelectorChain } from "./selectors.js";
 import type {
   PageEventListener,
   PageEventMap,
-  PageEventName
+  PageEventName,
+  PageEventPredicate,
+  PageResponse
 } from "./types/events.js";
-import type { Locator, Page, ResolvedAriaRef } from "./types/api.js";
+import type { Locator, Page, PageNavigationResult, ResolvedAriaRef } from "./types/api.js";
 import type {
   AriaSnapshotOptions,
   ClickOptions,
@@ -21,13 +25,16 @@ import type {
   PressOptions,
   ScreenshotOptions,
   ScreenshotType,
-  TypeOptions
+  TypeOptions,
+  WaitForSelectorOptions
 } from "./types/options.js";
 
 interface ListenerEntry<K extends PageEventName> {
   original: PageEventListener<K>;
   wrapped: PageEventListener<K>;
 }
+
+const DEFAULT_EVENT_TIMEOUT_MS = 30_000;
 
 export class RoxyPage implements Page {
   private readonly humanController: DefaultHumanController;
@@ -41,8 +48,24 @@ export class RoxyPage implements Page {
     this.humanController = new DefaultHumanController(humanDefaults);
   }
 
-  async goto(url: string, options?: PageGotoOptions): Promise<void> {
-    await this.adapter.goto(url, options);
+  async goto(url: string, options?: PageGotoOptions): Promise<PageResponse | null> {
+    return this.adapter.goto(url, options);
+  }
+
+  async url(): Promise<string> {
+    return this.adapter.url();
+  }
+
+  async goBack(options?: PageGotoOptions): Promise<PageNavigationResult | null> {
+    return this.adapter.goBack(options);
+  }
+
+  async goForward(options?: PageGotoOptions): Promise<PageNavigationResult | null> {
+    return this.adapter.goForward(options);
+  }
+
+  async reload(options?: PageGotoOptions): Promise<PageResponse | null> {
+    return this.adapter.reload(options);
   }
 
   async title(): Promise<string> {
@@ -63,6 +86,45 @@ export class RoxyPage implements Page {
 
   async waitForLoadState(state?: PageGotoOptions["waitUntil"]): Promise<void> {
     await this.adapter.waitForLoadState(state);
+  }
+
+  async waitForSelector(
+    selector: string,
+    options: WaitForSelectorOptions = {}
+  ): Promise<Locator | null> {
+    if ("waitFor" in options && options.waitFor !== undefined) {
+      if (options.waitFor !== "visible") {
+        throw new Error("options.waitFor is not supported, did you mean options.state?");
+      }
+    }
+
+    const state = options.state ?? options.waitFor ?? "visible";
+    const locator = this.locator(selector);
+    const timeout = options.timeout ?? DEFAULT_EVENT_TIMEOUT_MS;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime <= timeout) {
+      const textContent = await locator.textContent();
+      const exists = textContent !== null;
+      const visible = exists ? await locator.isVisible() : false;
+
+      if (state === "attached" && exists) {
+        return locator;
+      }
+      if (state === "visible" && visible) {
+        return locator;
+      }
+      if (state === "hidden" && !visible) {
+        return null;
+      }
+      if (state === "detached" && !exists) {
+        return null;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
 
   async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
@@ -162,14 +224,52 @@ export class RoxyPage implements Page {
     return this;
   }
 
+  async waitForEvent<K extends PageEventName>(
+    event: K,
+    predicate?: PageEventPredicate<K>
+  ): Promise<PageEventMap[K]> {
+    return new Promise<PageEventMap[K]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.removeListener(event, listener);
+        reject(new TimeoutError(`Timed out waiting for event "${String(event)}".`));
+      }, DEFAULT_EVENT_TIMEOUT_MS);
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener(event, listener);
+      };
+
+      const listener = (async (payload?: PageEventMap[K]) => {
+        try {
+          const eventPayload = payload as PageEventMap[K];
+          const accepted = predicate ? await predicate(eventPayload) : true;
+          if (!accepted) {
+            return;
+          }
+
+          cleanup();
+          resolve(eventPayload);
+        } catch (error) {
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      }) as PageEventListener<K>;
+
+      this.on(event, listener);
+    });
+  }
+
   locator(selector: string): Locator {
-    return new RoxyLocator(
-      this.adapter.locator({
-        strategy: "css",
-        value: selector
-      }),
-      this.humanController
-    );
+    const chain = parseSelectorChain(selector);
+    const [first, ...rest] = chain;
+    if (!first) {
+      throw new Error("Selector must not be empty.");
+    }
+    let adapter = this.adapter.locator(first);
+    for (const part of rest) {
+      adapter = adapter.locator(part);
+    }
+    return new RoxyLocator(adapter, this.humanController);
   }
 
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {

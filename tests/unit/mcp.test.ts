@@ -1,9 +1,19 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createRoxyBrowserMcpInMemory, createRoxyBrowserMcpServer, startRoxyBrowserMcpHttp, startRoxyBrowserMcpStdio } from "../../src/mcp/index.js";
 import { afterEach, describe, expect, it } from "vitest";
-import type { BrowserSessionFactory, BrowserSnapshot, BrowserTab, ConnectedBrowserSession, RoxyBrowserConnectArgs } from "../../src/mcp/index.js";
+import type {
+  BrowserSessionFactory,
+  BrowserSnapshot,
+  BrowserSnapshotRequest,
+  BrowserTab,
+  ConnectedBrowserSession,
+  RoxyBrowserConnectArgs
+} from "../../src/mcp/index.js";
 
 class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   readonly browserName: "chromium" | "firefox";
@@ -65,14 +75,21 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     return this.listTabs();
   }
 
-  async snapshot(): Promise<BrowserSnapshot> {
+  async snapshot(request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
     const activeTab = this.tabs.find((tab) => tab.active) ?? this.tabs[0];
+    const targetSuffix = request.target?.nodeToken
+      ? ` [target=${request.target.nodeToken}]`
+      : request.target?.selector
+        ? ` [target=${request.target.selector}]`
+        : "";
+    const depthSuffix = request.depth !== undefined ? ` [depth=${request.depth}]` : "";
+    const boxSuffix = request.boxes ? " [box=0,0,120,32]" : "";
     return {
       title: activeTab?.title ?? "",
       url: activeTab?.url ?? "",
-      text: `- document\n  - button "${activeTab?.title ?? "Action"}" [ref=r1]`,
+      text: `- button "${activeTab?.title ?? "Action"}" [ref=e1]${targetSuffix}${depthSuffix}${boxSuffix}`,
       refs: {
-        r1: `${activeTab?.id ?? "tab"}:node-1`
+        e1: `${activeTab?.id ?? "tab"}:node-1`
       }
     };
   }
@@ -166,7 +183,7 @@ describe("MCP server", () => {
     const clicked = await client.callTool({
       name: "browser_click",
       arguments: {
-        ref: "r1"
+        ref: "e1"
       }
     });
     expect(clicked.isError).toBeUndefined();
@@ -174,11 +191,53 @@ describe("MCP server", () => {
     const stale = await client.callTool({
       name: "browser_click",
       arguments: {
-        ref: "r1"
+        ref: "e1"
       }
     });
     expect(stale.isError).toBe(true);
     expect(textFromResult(stale)).toContain("[stale_ref]");
+  });
+
+  it("passes Playwright-style snapshot args through the MCP layer and can save to a file", async () => {
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: fakeSessionFactory
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+    await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        protocol: "cdp",
+        endpoint: "ws://snapshot-args.invalid/devtools/browser/1"
+      }
+    });
+
+    const tempDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-"));
+    cleanupCallbacks.push(async () => {
+      await rm(tempDir, { recursive: true, force: true });
+    });
+    const filename = join(tempDir, "snapshot.md");
+
+    const result = await client.callTool({
+      name: "browser_snapshot",
+      arguments: {
+        target: "e1",
+        depth: 2,
+        boxes: true,
+        filename
+      }
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(textFromResult(result)).toContain(`Saved snapshot to "${filename}".`);
+
+    const savedSnapshot = await readFile(filename, "utf8");
+    expect(savedSnapshot).toContain("[target=tab-1:node-1]");
+    expect(savedSnapshot).toContain("[depth=2]");
+    expect(savedSnapshot).toContain("[box=0,0,120,32]");
   });
 
   it("validates tab index operations through the tool layer", async () => {

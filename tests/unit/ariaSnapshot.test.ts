@@ -34,6 +34,7 @@ function createSnapshotHelpers(window: Window) {
   return {
     snapshot: window.eval(`(${ARIA_SNAPSHOT_EVALUATE_SOURCE})`) as (payload: {
       options: { mode: "ai" | "default"; depth?: number; boxes?: boolean; timeout?: number };
+      target?: { nodeToken?: string; selector?: string; raw?: string };
     }) => AriaSnapshotResult,
     resolveRef: window.eval(`(${ARIA_REF_SELECTOR_EVALUATE_SOURCE})`) as (payload: {
       ref: string;
@@ -57,7 +58,7 @@ function refForLine(snapshot: AriaSnapshotResult, lineFragment: string): string 
     throw new Error(`Unable to find snapshot line containing "${lineFragment}".\n${snapshot.text}`);
   }
 
-  const match = line.match(/\[ref=(r\d+)\]/);
+  const match = line.match(/\[ref=(e\d+)\]/);
   if (!match) {
     throw new Error(`Unable to extract ref from line: ${line}`);
   }
@@ -117,7 +118,7 @@ describe("aria snapshot helpers", () => {
         mode: "ai"
       }
     });
-    const ref = firstRef(result);
+    const ref = refForLine(result, 'button "Buy now"');
     const resolved = resolveRef({ ref });
     const target = window.document.getElementById("buy-now");
 
@@ -141,7 +142,7 @@ describe("aria snapshot helpers", () => {
     const window = createWindow("<!doctype html><html><body><button>Click</button></body></html>");
     const { resolveRef } = createSnapshotHelpers(window);
 
-    expect(resolveRef({ ref: "r99" })).toEqual({
+    expect(resolveRef({ ref: "e99" })).toEqual({
       ok: false,
       reason: "stale"
     });
@@ -158,7 +159,7 @@ describe("aria snapshot helpers", () => {
 
     expect(result.text).not.toContain("[ref=");
     expect(result.refs).toEqual({});
-    expect(resolveRef({ ref: "r1" })).toEqual({
+    expect(resolveRef({ ref: "e1" })).toEqual({
       ok: false,
       reason: "stale"
     });
@@ -192,6 +193,251 @@ describe("aria snapshot helpers", () => {
       ok: false,
       reason: "stale"
     });
+  });
+
+  it("supports selector-targeted snapshots from a subtree root", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <section id="marketing">
+            <button>Learn more</button>
+          </section>
+          <section id="checkout">
+            <button>Pay now</button>
+          </section>
+        </body>
+      </html>
+    `);
+    const { snapshot } = createSnapshotHelpers(window);
+
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      },
+      target: {
+        raw: "#checkout",
+        selector: "#checkout"
+      }
+    });
+    const sectionRef = refForLine(result, "- section");
+    const buttonRef = refForLine(result, 'button "Pay now"');
+
+    expect(result.text).toBe(`- section [ref=${sectionRef}]:
+  - button "Pay now" [ref=${buttonRef}]`);
+  });
+
+  it("supports ref-targeted snapshots using the previous snapshot state", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <main>
+            <button id="pay-now">Pay now</button>
+            <button id="cancel">Cancel</button>
+          </main>
+        </body>
+      </html>
+    `);
+    const { snapshot } = createSnapshotHelpers(window);
+
+    const firstResult = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    const ref = refForLine(firstResult, 'button "Pay now"');
+    const nodeToken = firstResult.refs[ref];
+    if (!nodeToken) {
+      throw new Error(`Expected node token for ref "${ref}".`);
+    }
+
+    const secondResult = snapshot({
+      options: {
+        mode: "ai"
+      },
+      target: {
+        raw: ref,
+        nodeToken
+      }
+    });
+    expect(secondResult.text).toBe(`- button "Pay now" [ref=${ref}]`);
+  });
+
+  it("matches Playwright-style snapshot depth rendering for list trees", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <ul>
+            <li>text</li>
+            <li>
+              <button>Button</button>
+            </li>
+          </ul>
+        </body>
+      </html>
+    `);
+    const { snapshot } = createSnapshotHelpers(window);
+
+    const depthOne = snapshot({
+      options: {
+        mode: "ai",
+        depth: 1
+      }
+    });
+    const listRef = refForLine(depthOne, "- list ");
+    const textItemRef = refForLine(depthOne, "- listitem");
+    const nestedItemRef = depthOne.text
+      .split("\n")
+      .filter((line) => line.startsWith("  - listitem"))
+      .find((line) => !line.includes(": text"));
+    if (!nestedItemRef) {
+      throw new Error(`Expected nested list item line.\n${depthOne.text}`);
+    }
+    const nestedItemMatch = nestedItemRef.match(/\[ref=(e\d+)\]/);
+    if (!nestedItemMatch) {
+      throw new Error(`Expected ref in line: ${nestedItemRef}`);
+    }
+
+    expect(depthOne.text).toBe(`- list [ref=${listRef}]:
+  - listitem [ref=${textItemRef}]: text
+  - listitem [ref=${nestedItemMatch[1]}]`);
+
+    const depthTwo = snapshot({
+      options: {
+        mode: "ai",
+        depth: 2
+      }
+    });
+    const listRef2 = refForLine(depthTwo, "- list ");
+    const textItemRef2 = depthTwo.text
+      .split("\n")
+      .find((line) => line.startsWith("  - listitem") && line.includes(": text"));
+    const nestedItemRef2 = depthTwo.text
+      .split("\n")
+      .find((line) => line.startsWith("  - listitem") && !line.includes(": text"));
+    const buttonRef2 = refForLine(depthTwo, 'button "Button"');
+    if (!textItemRef2 || !nestedItemRef2) {
+      throw new Error(`Expected both list item lines.\n${depthTwo.text}`);
+    }
+    const textItemMatch2 = textItemRef2.match(/\[ref=(e\d+)\]/);
+    const nestedItemMatch2 = nestedItemRef2.match(/\[ref=(e\d+)\]/);
+    if (!textItemMatch2 || !nestedItemMatch2) {
+      throw new Error(`Expected refs in list item lines.\n${depthTwo.text}`);
+    }
+
+    expect(depthTwo.text).toBe(`- list [ref=${listRef2}]:
+  - listitem [ref=${textItemMatch2[1]}]: text
+  - listitem [ref=${nestedItemMatch2[1]}]:
+    - button "Button" [ref=${buttonRef2}]`);
+  });
+
+  it("supports boxes and omits them by default", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <button>click</button>
+        </body>
+      </html>
+    `);
+    const button = window.document.querySelector("button")!;
+    button.getBoundingClientRect = () => ({
+      x: 100,
+      y: 50,
+      width: 80,
+      height: 40,
+      top: 50,
+      right: 180,
+      bottom: 90,
+      left: 100,
+      toJSON() {
+        return this;
+      }
+    });
+    const { snapshot } = createSnapshotHelpers(window);
+
+    const boxed = snapshot({
+      options: {
+        mode: "ai",
+        boxes: true
+      }
+    });
+    expect(boxed.text).toContain('button "click"');
+    expect(boxed.text).toContain("[box=100,50,80,40]");
+
+    const plain = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+    expect(plain.text).not.toContain("[box=");
+  });
+
+  it("returns strict and no-match errors for selector targets", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <button>Submit</button>
+          <button>Cancel</button>
+        </body>
+      </html>
+    `);
+    const { snapshot } = createSnapshotHelpers(window);
+
+    const strictResult = snapshot({
+      options: {
+        mode: "ai"
+      },
+      target: {
+        raw: "button",
+        selector: "button"
+      }
+    });
+    expect(strictResult.error).toEqual({
+      code: "strict",
+      message: 'strict mode violation: "button" matches multiple elements.'
+    });
+
+    const notFound = snapshot({
+      options: {
+        mode: "ai"
+      },
+      target: {
+        raw: "#target",
+        selector: "#target"
+      }
+    });
+    expect(notFound.error).toEqual({
+      code: "not_found",
+      message: '"#target" does not match any element.'
+    });
+  });
+
+  it("keeps visibility:hidden > visibility:visible descendants in the snapshot", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <div style="visibility: hidden;">
+            <div style="visibility: visible;">
+              <button>Button</button>
+            </div>
+          </div>
+        </body>
+      </html>
+    `);
+    const { snapshot } = createSnapshotHelpers(window);
+
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+
+    expect(result.text).toContain('- button "Button"');
   });
 
   it("builds stable nth-of-type selector and xpath when the target has no id", () => {
@@ -528,7 +774,7 @@ describe("aria snapshot helpers", () => {
         mode: "ai"
       }
     });
-    const ref = firstRef(result);
+    const ref = refForLine(result, 'button "Remove me"');
     window.document.getElementById("remove-me")?.remove();
 
     expect(resolveRef({ ref })).toEqual({

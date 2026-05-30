@@ -1,11 +1,16 @@
 import * as cdpModule from "chrome-remote-interface";
 import WebDriver from "webdriver";
 import type { Client as WebDriverClient } from "webdriver";
-import { ARIA_SNAPSHOT_EVALUATE_SOURCE, normalizeAriaSnapshotOptions } from "../ariaSnapshot.js";
+import {
+  ARIA_SNAPSHOT_EVALUATE_SOURCE,
+  normalizeAriaSnapshotOptions,
+  type AriaSnapshotResult
+} from "../ariaSnapshot.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE } from "./snapshot.js";
 import type {
   BrowserSnapshot,
+  BrowserSnapshotRequest,
   BrowserTab,
   ConnectedBrowserSession,
   RoxyBrowserConnectArgs
@@ -159,6 +164,55 @@ async function evaluateBiDi<TResult>(
   return response.result?.value as TResult;
 }
 
+function toAriaSnapshotPayload(request: BrowserSnapshotRequest = {}): {
+  options: ReturnType<typeof normalizeAriaSnapshotOptions>;
+  target?: BrowserSnapshotRequest["target"];
+} {
+  return {
+    options: normalizeAriaSnapshotOptions({
+      mode: "ai",
+      ...(request.depth !== undefined ? { depth: request.depth } : {}),
+      ...(request.boxes !== undefined ? { boxes: request.boxes } : {})
+    }),
+    ...(request.target ? { target: request.target } : {})
+  };
+}
+
+function toBrowserSnapshot(
+  result: AriaSnapshotResult,
+  request: BrowserSnapshotRequest
+): BrowserSnapshot {
+  if (result.error) {
+    const targetLabel = request.target?.raw ?? "target";
+    const detailedMessage = result.error.message;
+    if (result.error.code === "stale") {
+      throw new McpToolError(
+        "stale_ref",
+        detailedMessage || `Target "${targetLabel}" is no longer valid. Call "browser_snapshot" again.`
+      );
+    }
+
+    if (result.error.code === "invalid_selector" || result.error.code === "strict") {
+      throw new McpToolError(
+        "invalid_target",
+        detailedMessage || `Target "${targetLabel}" is not a valid selector.`
+      );
+    }
+
+    throw new McpToolError(
+      "invalid_target",
+      detailedMessage || `Target "${targetLabel}" could not be found in the active tab.`
+    );
+  }
+
+  return {
+    refs: result.refs,
+    text: result.text,
+    title: result.title,
+    url: result.url
+  };
+}
+
 function chooseInitialTab(tabs: Array<{ id: string; url: string }>): string | undefined {
   return tabs.find((tab) => tab.url && tab.url !== "about:blank")?.id ?? tabs[0]?.id;
 }
@@ -256,13 +310,14 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return this.refreshTabs();
   }
 
-  async snapshot(): Promise<BrowserSnapshot> {
+  async snapshot(request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
     const pageClient = await this.getActivePageClient();
-    return evaluateCdp<BrowserSnapshot>(pageClient, ARIA_SNAPSHOT_EVALUATE_SOURCE, {
-      options: normalizeAriaSnapshotOptions({
-        mode: "ai"
-      })
-    });
+    const result = await evaluateCdp<AriaSnapshotResult>(
+      pageClient,
+      ARIA_SNAPSHOT_EVALUATE_SOURCE,
+      toAriaSnapshotPayload(request)
+    );
+    return toBrowserSnapshot(result, request);
   }
 
   async click(refToken: string): Promise<void> {
@@ -480,13 +535,15 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     return this.refreshTabs();
   }
 
-  async snapshot(): Promise<BrowserSnapshot> {
+  async snapshot(request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
     const tabId = await this.getActiveTabId();
-    return evaluateBiDi<BrowserSnapshot>(this.client, tabId, ARIA_SNAPSHOT_EVALUATE_SOURCE, {
-      options: normalizeAriaSnapshotOptions({
-        mode: "ai"
-      })
-    });
+    const result = await evaluateBiDi<AriaSnapshotResult>(
+      this.client,
+      tabId,
+      ARIA_SNAPSHOT_EVALUATE_SOURCE,
+      toAriaSnapshotPayload(request)
+    );
+    return toBrowserSnapshot(result, request);
   }
 
   async click(refToken: string): Promise<void> {

@@ -4,6 +4,7 @@ export class McpToolError extends Error {
       | "not_connected"
       | "no_active_tab"
       | "invalid_tab_index"
+      | "invalid_target"
       | "stale_ref"
       | "unsupported_protocol_input",
     message: string
