@@ -25,12 +25,18 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:bundle": "vite build --config vite.bundle.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.config.ts",
+    "test:unit:bundle": "pnpm build:bundle && vitest run --config vitest.bundle.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:e2e:bidi": "vitest run --config vitest.e2e.bidi.config.ts",
     "example:launch": "pnpm build && node ./examples/launch-local-browser.mjs",
     "example:connect-cdp": "pnpm build && node ./examples/connect-over-cdp.mjs",
+    "example:connect-bidi": "pnpm build && node ./examples/connect-firefox-bidi.mjs",
+    "example:probe-bidi-http": "pnpm build && node ./examples/probe-firefox-bidi-http.mjs",
+    "example:launch-bidi": "pnpm build && node ./examples/launch-firefox-bidi.mjs",
     "example:page-events": "pnpm build && node ./examples/page-events-and-screenshot.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

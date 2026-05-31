@@ -27,8 +27,11 @@ This branch establishes the package scaffold, API shape, and protocol boundaries
 
 - `pnpm test` runs the unit suite in `tests/unit`.
 - `pnpm test:e2e` runs a real-browser CDP flow in `tests/e2e`.
+- `pnpm test:e2e:bidi` runs the Firefox BiDi e2e suite in `tests/e2e/bidi`.
 
 The e2e suite writes a temporary HTML fixture, launches Chrome or Edge in headless mode, and verifies the public API against a real page through CDP. If auto-detection is not enough for your machine or CI image, set `ROXY_E2E_EXECUTABLE_PATH` to a Chromium-based browser binary before running the e2e command.
+
+The BiDi e2e suite prefers connecting to an existing Firefox BiDi websocket when `ROXY_BIDI_WS_ENDPOINT` is set. This is the recommended path when your local environment already knows how to start Firefox or expose a BiDi endpoint. Without that variable, the suite falls back to launching a local Firefox binary and will use `ROXY_BIDI_EXECUTABLE_PATH` when provided.
 
 ## Browser launch
 
@@ -38,9 +41,9 @@ The e2e suite writes a temporary HTML fixture, launches Chrome or Edge in headle
 - `channel`: resolve a known local install such as `chrome`, `chrome-beta`, `chrome-dev`, `chrome-canary`, `msedge`, `msedge-beta`, `msedge-dev`, `msedge-canary`, or `chromium`.
 - auto-detection: fall back to the default Chrome, Chromium, and Edge candidate paths for the current platform.
 
-`firefox.launch()` now uses the BiDi backend by default through the `webdriver` package and launches a locally installed Firefox binary. The current Firefox BiDi path supports browser launch, context creation, page creation, navigation, title lookup, script evaluation, and locator-based `click`, `hover`, `fill`, `type`, `press`, `textContent`, and `isVisible` flows.
+`firefox.launch()` now uses the BiDi backend by default and launches a locally installed Firefox binary directly. The current Firefox BiDi path supports browser launch, context creation, page creation, navigation, title lookup, script evaluation, and locator-based `click`, `hover`, `fill`, `type`, `press`, `textContent`, and `isVisible` flows.
 
-Firefox launch also depends on a working geckodriver runtime. If your package manager blocks dependency postinstall scripts, you may need to approve the geckodriver install step or provide your own driver binary in the environment.
+Firefox launch requires a local Firefox binary with BiDi remote debugging support. If auto-detection is not enough for your machine or CI image, set `ROXY_EXECUTABLE_PATH` or pass `executablePath` explicitly.
 
 ## CDP connect
 

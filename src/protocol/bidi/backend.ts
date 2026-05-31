@@ -45,8 +45,12 @@ import type {
 } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
 import { looksLikeFunctionExpression } from "../evaluate.js";
-import WebDriver from "webdriver";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Client as WebDriverClient } from "webdriver";
+import { getWebDriverModule } from "../../vendor/webdriver.js";
 
 const BIDI_CAPABILITIES: ProtocolCapabilities = {
   protocol: "bidi",
@@ -352,6 +356,9 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
   readonly capabilities = BIDI_CAPABILITIES;
 
   private client: WebDriverClient | undefined;
+  private ownsSession = false;
+  private spawnedProcess: ReturnType<typeof spawn> | undefined;
+  private userDataDir: string | undefined;
 
   constructor(private readonly options: BrowserConnectOptions) {}
 
@@ -365,25 +372,20 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
     }
 
     if (this.options.wsEndpoint) {
-      throw new Error("Firefox BiDi attach by wsEndpoint is not implemented on the webdriver backend yet.");
+      const connection = await connectBidiFromWsEndpoint(
+        this.options.wsEndpoint,
+        this.options.sessionId
+      );
+      this.client = connection.client;
+      this.ownsSession = connection.ownsSession;
+      return;
     }
 
-    this.client = await WebDriver.newSession({
-      capabilities: {
-        alwaysMatch: {
-          browserName: "firefox",
-          acceptInsecureCerts: true,
-          "moz:firefoxOptions": {
-            ...(this.options.executablePath ? { binary: this.options.executablePath } : {}),
-            args: [
-              ...(this.options.headless === false ? [] : ["-headless"]),
-              ...(this.options.args ?? [])
-            ]
-          }
-        },
-        firstMatch: [{}]
-      }
-    });
+    const { client, ownsSession, process: proc, userDataDir } = await launchFirefoxBidi(this.options);
+    this.client = client;
+    this.ownsSession = ownsSession;
+    this.spawnedProcess = proc;
+    this.userDataDir = userDataDir;
   }
 
   async browser(): Promise<ProtocolBrowserSession> {
@@ -391,7 +393,7 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
       throw new Error("BiDi browser adapter is not connected.");
     }
 
-    return new BidiBrowserSession(this.client);
+    return new BidiBrowserSession(this.client, this.ownsSession);
   }
 
   async close(): Promise<void> {
@@ -400,48 +402,81 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
     }
 
     try {
-      await this.client.deleteSession();
+      // Close the BiDi WebSocket directly — deleteSession() would attempt an
+      // HTTP request to geckodriver which does not exist in this connection mode.
+      (this.client as unknown as { _bidiHandler?: { close?: () => void } })
+        ._bidiHandler?.close?.();
     } finally {
       this.client = undefined;
+      this.ownsSession = false;
+    }
+
+    if (this.spawnedProcess) {
+      await cleanupFirefoxProcess(this.spawnedProcess, this.userDataDir);
+      this.spawnedProcess = undefined;
+      this.userDataDir = undefined;
     }
   }
 }
 
 class BidiBrowserSession implements ProtocolBrowserSession {
-  constructor(private readonly client: WebDriverClient) {}
+  constructor(
+    private readonly client: WebDriverClient,
+    private readonly ownsSession: boolean
+  ) {}
 
   async version(): Promise<string> {
-    return `${this.client.capabilities.browserName}/${this.client.capabilities.browserVersion}`;
+    const browserName = this.client.capabilities.browserName ?? "firefox";
+    const browserVersion = this.client.capabilities.browserVersion;
+    return browserVersion ? `${browserName}/${browserVersion}` : browserName;
   }
 
   async newContext(
     options: BrowserContextOptions = {}
   ): Promise<ProtocolBrowserContextAdapter> {
+    if (options.reuseDefaultUserContext) {
+      return new BidiBrowserContextAdapter(this.client, undefined, options);
+    }
+
     const response = await this.client.browserCreateUserContext({});
     return new BidiBrowserContextAdapter(this.client, response.userContext, options);
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    if (this.ownsSession) {
+      await this.client.sessionEnd({});
+    }
+  }
 }
 
 class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   constructor(
     private readonly client: WebDriverClient,
-    private readonly userContext: string,
+    private readonly userContext: string | undefined,
     private readonly options: BrowserContextOptions
   ) {}
 
   async newPage(): Promise<ProtocolPageAdapter> {
-    const response = await this.client.browsingContextCreate({
-      type: "tab",
-      userContext: this.userContext
-    });
+    const response = await this.client.browsingContextCreate(
+      this.userContext
+        ? {
+            type: "tab",
+            userContext: this.userContext
+          }
+        : {
+            type: "tab"
+          }
+    );
 
     const page = await BidiPageAdapter.create(this.client, response.context, this.options);
     return page;
   }
 
   async close(): Promise<void> {
+    if (!this.userContext) {
+      return;
+    }
+
     await this.client.browserRemoveUserContext({
       userContext: this.userContext
     });
@@ -506,11 +541,20 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     const waitUntil = options.waitUntil ?? "load";
     const capture = this.beginNavigationResponseCapture();
     this.resetNavigationState();
-    await this.client.browsingContextNavigate({
-      context: this.contextId,
-      url,
-      wait: waitUntil === "domcontentloaded" ? "interactive" : "complete"
-    });
+    try {
+      await this.client.browsingContextNavigate({
+        context: this.contextId,
+        url,
+        wait: waitUntil === "domcontentloaded" ? "interactive" : "complete"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("blockedByPolicy")) {
+        throw error;
+      }
+
+      await this.navigateViaLocation(url);
+    }
     if (waitUntil !== "commit") {
       await this.waitForLoadState(waitUntil, options.timeout);
     }
@@ -579,12 +623,26 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     );
   }
 
+  private async navigateViaLocation(url: string): Promise<void> {
+    await this.evaluateFunction<void>(
+      `(payload) => {
+        globalThis.location.href = payload.url;
+      }`,
+      { url }
+    );
+  }
+
   async evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult> {
-    if (arg === undefined && !looksLikeFunctionExpression(expression)) {
-      return this.evaluateExpression<TResult>(expression);
+    // Convert function to string if needed (handles cases where a function is passed instead of string)
+    const expressionStr = typeof expression === "function"
+      ? (expression as unknown as Function).toString()
+      : expression;
+
+    if (arg === undefined && !looksLikeFunctionExpression(expressionStr)) {
+      return this.evaluateExpression<TResult>(expressionStr);
     }
 
-    return this.evaluateFunction<TResult>(expression, arg);
+    return this.evaluateFunction<TResult>(expressionStr, arg);
   }
 
   async waitForLoadState(
@@ -1248,15 +1306,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }
 
       const logPayload = payload as {
-        params: {
-          method?: string;
-          text?: string | null;
-          type?: string;
-        };
+        method?: string;
+        text?: string | null;
+        type?: string;
       };
       this.emit("console", {
-        text: () => logPayload.params.text ?? "",
-        type: () => logPayload.params.method ?? logPayload.params.type ?? "log"
+        text: () => logPayload.text ?? "",
+        type: () => logPayload.method ?? logPayload.type ?? "log"
       });
     });
 
@@ -1285,35 +1341,33 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }
 
       const responsePayload = payload as {
-        params: {
-          context: string | null;
-          navigation: string | null;
-          request: { destination: string; request: string; url: string };
-          response: {
-            fromCache: boolean;
-            headers: Array<{ name: string; value: { value: string } | string }>;
-            mimeType: string;
-            status: number;
-            statusText: string;
-            url: string;
-          };
+        context: string | null;
+        navigation: string | null;
+        request: { destination: string; request: string; url: string };
+        response: {
+          fromCache: boolean;
+          headers: Array<{ name: string; value: { value: string } | string }>;
+          mimeType: string;
+          status: number;
+          statusText: string;
+          url: string;
         };
       };
       const response = createPageResponse({
-        fromCache: responsePayload.params.response.fromCache,
-        headers: mapBiDiHeaders(responsePayload.params.response.headers),
-        mimeType: responsePayload.params.response.mimeType,
-        status: responsePayload.params.response.status,
-        statusText: responsePayload.params.response.statusText,
-        text: () => this.getResponseText(responsePayload.params.request.request),
-        url: responsePayload.params.response.url || responsePayload.params.request.url
+        fromCache: responsePayload.response.fromCache,
+        headers: mapBiDiHeaders(responsePayload.response.headers),
+        mimeType: responsePayload.response.mimeType,
+        status: responsePayload.response.status,
+        statusText: responsePayload.response.statusText,
+        text: () => this.getResponseText(responsePayload.request.request),
+        url: responsePayload.response.url || responsePayload.request.url
       });
       this.emit("response", response);
       if (
         this.navigationResponseCapture &&
-        responsePayload.params.context === this.contextId &&
-        responsePayload.params.navigation !== null &&
-        responsePayload.params.request.destination === "document" &&
+        responsePayload.context === this.contextId &&
+        responsePayload.navigation !== null &&
+        responsePayload.request.destination === "document" &&
         shouldCaptureNavigationResponseUrl(response.url)
       ) {
         this.navigationResponseCapture.lastResponse = response;
@@ -1711,6 +1765,19 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
 }
 
 function extractBiDiValue<TResult>(value: BidiRemoteValue): TResult {
+  if (value.type === "array" && Array.isArray(value.value)) {
+    return value.value.map((entry) => extractBiDiValue(entry as BidiRemoteValue)) as TResult;
+  }
+
+  // BiDi returns objects as arrays of [key, value] pairs
+  if (value.type === "object" && Array.isArray(value.value)) {
+    const obj: Record<string, unknown> = {};
+    for (const [key, val] of value.value as Array<[string, BidiRemoteValue]>) {
+      obj[key] = extractBiDiValue(val);
+    }
+    return obj as TResult;
+  }
+
   return value.value as TResult;
 }
 
@@ -1738,12 +1805,12 @@ function hasContext(payload: unknown, contextId: string): boolean {
 }
 
 function hasLogContext(payload: unknown, contextId: string): boolean {
-  if (!payload || typeof payload !== "object" || !("params" in payload)) {
+  if (!payload || typeof payload !== "object" || !("source" in payload)) {
     return false;
   }
 
   return (
-    (payload as { params?: { source?: { context?: string | null } } }).params?.source?.context ===
+    (payload as { source?: { context?: string | null } }).source?.context ===
     contextId
   );
 }
@@ -1772,5 +1839,280 @@ function toBiDiKeyValue(key: string): string {
       return "\uE00C";
     default:
       return key;
+  }
+}
+
+async function connectBidiFromWsEndpoint(
+  wsEndpoint: string,
+  sessionId?: string
+): Promise<BidiConnectionResult> {
+  const bidiEndpoint = buildFirefoxBidiEndpoint(wsEndpoint, sessionId);
+  const client = getWebDriverModule().attachToSession({
+    sessionId: sessionId || "bidi-direct",
+    capabilities: {
+      // Firefox BiDi endpoints are direct WebSocket connections and do not
+      // expose CDP-style discovery endpoints such as /json/version.
+      webSocketUrl: bidiEndpoint,
+      browserName: "firefox"
+    } as { webSocketUrl: string; browserName: string }
+  } as never);
+
+  const bidiHandler = (client as unknown as {
+    _bidiHandler?: {
+      waitForConnected?: () => Promise<boolean>;
+    };
+  })._bidiHandler;
+
+  if (bidiHandler?.waitForConnected) {
+    const connected = await bidiHandler.waitForConnected();
+    if (!connected) {
+      throw new Error(`Failed to establish a WebDriver BiDi connection to ${bidiEndpoint}.`);
+    }
+  }
+
+  const ownsSession = await ensureBiDiSession(client, sessionId, wsEndpoint);
+  return {
+    client,
+    ownsSession
+  };
+}
+
+interface FirefoxLaunchResult {
+  client: WebDriverClient;
+  process: ReturnType<typeof spawn> | undefined;
+  ownsSession: boolean;
+  userDataDir: string;
+}
+
+interface BidiConnectionResult {
+  client: WebDriverClient;
+  ownsSession: boolean;
+}
+
+async function launchFirefoxBidi(options: BrowserConnectOptions): Promise<FirefoxLaunchResult> {
+  const userDataDir = await mkdtemp(join(tmpdir(), "roxybrowser-bidi-"));
+  const executable = options.executablePath ?? defaultFirefoxExecutable();
+  const host = options.host ?? "127.0.0.1";
+  const port = options.port ?? await pickFreePort();
+  const args = buildFirefoxLaunchArgs(options, userDataDir, port);
+  const proc = spawn(executable, args, {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  try {
+    const wsEndpoint = await waitForFirefoxBiDiEndpoint(proc, host, port, 15_000);
+    const connection = await connectBidiFromWsEndpoint(wsEndpoint, options.sessionId);
+    return {
+      client: connection.client,
+      ownsSession: connection.ownsSession,
+      process: proc,
+      userDataDir
+    };
+  } catch (error) {
+    await cleanupFirefoxProcess(proc, userDataDir);
+    throw error;
+  }
+}
+
+async function cleanupFirefoxProcess(
+  proc: ReturnType<typeof spawn> | undefined,
+  userDataDir: string | undefined
+): Promise<void> {
+  if (proc) {
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+
+      proc.once("exit", finish);
+      proc.kill("SIGTERM");
+      setTimeout(() => {
+        proc.kill("SIGKILL");
+        finish();
+      }, 5_000);
+    });
+  }
+
+  if (userDataDir) {
+    await rm(userDataDir, { force: true, recursive: true });
+  }
+}
+
+function waitForFirefoxBiDiEndpoint(
+  proc: ReturnType<typeof spawn>,
+  host: string,
+  port: number,
+  timeoutMs: number
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let stderr = "";
+    let stdout = "";
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      proc.stderr?.off("data", onStderr);
+      proc.stdout?.off("data", onStdout);
+      proc.off("error", onError);
+      proc.off("exit", onExit);
+      callback();
+    };
+
+    const maybeResolveFromOutput = () => {
+      const output = `${stderr}\n${stdout}`;
+      const endpoint = output.match(/WebDriver BiDi listening on (ws:\/\/[^\s]+)/)?.[1];
+      if (endpoint) {
+        finish(() => resolve(endpoint));
+        return;
+      }
+
+      if (output.includes("WebDriver BiDi listening")) {
+        finish(() => resolve(`ws://${host}:${port}`));
+      }
+    };
+
+    const onStderr = (chunk: unknown) => {
+      stderr += String(chunk);
+      maybeResolveFromOutput();
+    };
+
+    const onStdout = (chunk: unknown) => {
+      stdout += String(chunk);
+      maybeResolveFromOutput();
+    };
+
+    const onError = (error: unknown) => {
+      finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+    };
+
+    const onExit = () => {
+      finish(() =>
+        reject(new Error(
+          stderr || stdout
+            ? `Firefox exited before exposing BiDi endpoint:\nstderr: ${stderr.trim()}\nstdout: ${stdout.trim()}`
+            : "Firefox exited before exposing BiDi endpoint."
+        ))
+      );
+    };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new TimeoutError(
+        `Timed out waiting for Firefox BiDi endpoint.\nstderr: ${stderr.trim()}\nstdout: ${stdout.trim()}`
+      )));
+    }, timeoutMs);
+
+    proc.stderr?.on("data", onStderr);
+    proc.stdout?.on("data", onStdout);
+    proc.once("error", onError);
+    proc.once("exit", onExit);
+  });
+}
+
+async function pickFreePort(): Promise<number> {
+  const { createServer } = await import("node:net");
+  return new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port);
+        } else {
+          reject(new Error("Failed to pick a free port."));
+        }
+      });
+    });
+  });
+}
+
+function buildFirefoxBidiEndpoint(wsEndpoint: string, sessionId?: string): string {
+  const url = new URL(wsEndpoint);
+
+  if (sessionId) {
+    url.pathname = `/session/${sessionId}`;
+    return url.toString();
+  }
+
+  if (url.pathname === "/" || url.pathname === "") {
+    url.pathname = "/session";
+  }
+
+  return url.toString();
+}
+
+function isSessionSpecificFirefoxBidiEndpoint(wsEndpoint: string): boolean {
+  const pathname = new URL(wsEndpoint).pathname;
+  return /^\/session\/[^/]+$/.test(pathname);
+}
+
+async function ensureBiDiSession(
+  client: WebDriverClient,
+  sessionId: string | undefined,
+  wsEndpoint: string
+): Promise<boolean> {
+  await client.sessionStatus({});
+
+  if (sessionId || isSessionSpecificFirefoxBidiEndpoint(wsEndpoint)) {
+    return false;
+  }
+
+  try {
+    await client.browsingContextGetTree({});
+    return false;
+  } catch (error) {
+    if (!String(error instanceof Error ? error.message : error).includes("session does not exist")) {
+      throw error;
+    }
+  }
+
+  try {
+    await client.sessionNew({
+      capabilities: {
+        alwaysMatch: {
+          acceptInsecureCerts: true
+        }
+      }
+    });
+    return true;
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error);
+    if (message.includes("Maximum number of active sessions")) {
+      throw new Error(
+        "Maximum number of active BiDi sessions. Reuse an existing one with sessionId or close the current session first."
+      );
+    }
+    throw error;
+  }
+}
+
+export function buildFirefoxLaunchArgs(
+  options: Pick<BrowserConnectOptions, "args" | "headless">,
+  userDataDir: string,
+  port: number
+): string[] {
+  return [
+    "-profile",
+    userDataDir,
+    "-no-remote",
+    `--remote-debugging-port=${port}`,
+    ...(options.headless === false ? [] : ["-headless"]),
+    ...(options.args ?? [])
+  ];
+}
+
+function defaultFirefoxExecutable(): string {
+  switch (process.platform) {
+    case "darwin":
+      return "/Applications/Firefox.app/Contents/MacOS/firefox";
+    case "win32":
+      return "C:\\Program Files\\Mozilla Firefox\\firefox.exe";
+    default:
+      return "firefox";
   }
 }

@@ -1,6 +1,7 @@
 import type {
   AriaSnapshotOptions,
   BrowserContextOptions,
+  BrowserConnectOptions,
   ClickOptions,
   ConnectOverCDPOptions,
   FillOptions,
@@ -35,6 +36,7 @@ export type ElementArrayCallback<TResult, TArg = unknown> = (
 
 export interface BrowserType {
   launch(options?: LaunchOptions): Promise<Browser>;
+  connect(options: BrowserConnectOptions): Promise<Browser>;
   connectOverCDP(
     endpointURL: string,
     options?: ConnectOverCDPOptions

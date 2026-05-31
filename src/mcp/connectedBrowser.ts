@@ -1,11 +1,11 @@
 import * as cdpModule from "chrome-remote-interface";
-import WebDriver from "webdriver";
 import type { Client as WebDriverClient } from "webdriver";
 import {
   ARIA_SNAPSHOT_EVALUATE_SOURCE,
   normalizeAriaSnapshotOptions,
   type AriaSnapshotResult
 } from "../ariaSnapshot.js";
+import { getWebDriverModule } from "../vendor/webdriver.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE } from "./snapshot.js";
 import type {
@@ -457,13 +457,13 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       );
     }
 
-    const client = WebDriver.attachToSession({
+    const client = getWebDriverModule().attachToSession({
       sessionId: "roxybrowser-mcp",
       capabilities: {
         browserName: "firefox",
         webSocketUrl: args.endpoint
-      } as unknown as WebdriverIO.Capabilities
-    }) as WebDriverClient & {
+      } as { webSocketUrl: string; browserName: string }
+    } as never) as WebDriverClient & {
       _bidiHandler?: {
         waitForConnected(): Promise<boolean>;
         close(): Promise<void>;
@@ -636,6 +636,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         close(): Promise<void>;
       };
     };
+    await this.client.sessionEnd({}).catch(() => {});
     await internalClient._bidiHandler?.close().catch(() => {});
   }
 

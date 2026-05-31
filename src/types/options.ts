@@ -54,6 +54,7 @@ export interface LaunchOptions {
   executablePath?: string;
   args?: string[];
   wsEndpoint?: string;
+  sessionId?: string;
   host?: string;
   port?: number;
   human?: HumanizationOptions;
@@ -74,6 +75,7 @@ export interface BrowserContextOptions {
   locale?: string;
   timezoneId?: string;
   baseURL?: string;
+  reuseDefaultUserContext?: boolean;
   human?: HumanizationOptions;
 }
 

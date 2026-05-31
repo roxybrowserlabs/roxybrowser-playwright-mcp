@@ -28,8 +28,10 @@ export class RoxyBrowser implements Browser {
   }
 
   async close(): Promise<void> {
-    await this.session.close();
-    await this.adapter.close();
+    try {
+      await this.session.close();
+    } finally {
+      await this.adapter.close();
+    }
   }
 }
-

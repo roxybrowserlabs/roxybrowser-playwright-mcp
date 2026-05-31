@@ -27,6 +27,14 @@ export class RoxyBrowserType implements BrowserType {
     });
   }
 
+  async connect(options: BrowserConnectOptions): Promise<Browser> {
+    return this.connectBrowser({
+      ...options,
+      browserName: options.browserName ?? this.browserName,
+      protocol: options.protocol ?? (this.browserName === "firefox" ? "bidi" : "cdp")
+    });
+  }
+
   async connectOverCDP(
     endpointURL: string,
     options?: ConnectOverCDPOptions

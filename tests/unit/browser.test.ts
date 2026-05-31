@@ -63,5 +63,25 @@ describe("RoxyBrowser", () => {
     expect(session.close).toHaveBeenCalledTimes(1);
     expect(adapter.close).toHaveBeenCalledTimes(1);
   });
-});
 
+  it("still closes the adapter if session shutdown fails", async () => {
+    const session = createBrowserSessionStub();
+    const adapter = createBrowserAdapterStub();
+    session.close = async () => {
+      throw new Error("session end failed");
+    };
+    const browser = new RoxyBrowser(session, adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await expect(browser.close()).rejects.toThrow("session end failed");
+    expect(adapter.close).toHaveBeenCalledTimes(1);
+  });
+});
