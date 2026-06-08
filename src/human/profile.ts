@@ -58,3 +58,7 @@ export function resolveHumanizationOptions(
   };
 }
 
+export function jitter(ms: number): number {
+  return Math.round(ms * (0.8 + Math.random() * 0.4));
+}
+

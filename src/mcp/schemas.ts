@@ -33,7 +33,31 @@ export const browserRefActionSchema = z.object({
   ref: z.string().min(1)
 });
 
+export const browserClickSchema = z.object({
+  element: z.string().optional().describe(
+    "Human-readable element description used to obtain permission to interact with the element"
+  ),
+  target: z.string().describe(
+    "Exact target element reference from the page snapshot, or a unique CSS selector"
+  ),
+  doubleClick: z.boolean().optional().describe(
+    "Whether to perform a double click instead of a single click"
+  ),
+  button: z.enum(["left", "right", "middle"]).optional().describe(
+    "Button to click, defaults to left"
+  ),
+  modifiers: z.array(z.enum(["Alt", "Control", "ControlOrMeta", "Meta", "Shift"])).optional().describe(
+    "Modifier keys to press during the click"
+  ),
+  human: z.object({
+    profile: z.enum(["cautious", "balanced", "fast"]).optional().describe(
+      "Humanization timing profile, defaults to balanced"
+    )
+  }).optional().describe("Humanization settings for this click")
+});
+
 export type RoxyBrowserConnectInput = z.infer<typeof roxyBrowserConnectSchema>;
 export type BrowserTabsInput = z.infer<typeof browserTabsSchema>;
 export type BrowserSnapshotInput = z.infer<typeof browserSnapshotSchema>;
 export type BrowserRefActionInput = z.infer<typeof browserRefActionSchema>;
+export type BrowserClickInput = z.infer<typeof browserClickSchema>;

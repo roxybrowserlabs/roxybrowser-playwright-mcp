@@ -4,6 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { isMcpToolError } from "./errors.js";
 import { formatConnectResult, formatSnapshot, formatTabs, formatTabsWithOptionalSnapshot } from "./format.js";
 import {
+  browserClickSchema,
   browserRefActionSchema,
   browserSnapshotSchema,
   browserTabsSchema,
@@ -136,14 +137,20 @@ export function createRoxyBrowserMcpServer(
     "browser_click",
     {
       title: "Browser Click",
-      description: "Click a previously snapshotted element reference in the active tab.",
-      inputSchema: browserRefActionSchema.shape
+      description: "Perform click on a web page. Returns an updated snapshot.",
+      inputSchema: browserClickSchema.shape
     },
     async (args, extra) => {
       try {
         const runtime = runtimeManager.getRuntime(extra.sessionId);
-        await runtime.click(args.ref);
-        return textResult(`Clicked ref "${args.ref}".`);
+        const snapshot = await runtime.click(args.target, {
+          ...(args.element !== undefined ? { element: args.element } : {}),
+          ...(args.doubleClick !== undefined ? { doubleClick: args.doubleClick } : {}),
+          ...(args.button !== undefined ? { button: args.button } : {}),
+          ...(args.modifiers !== undefined ? { modifiers: args.modifiers } : {}),
+          ...(args.human !== undefined ? { human: args.human as { profile?: string } } : {})
+        });
+        return textResult(formatSnapshot(snapshot));
       } catch (error) {
         return toolErrorResult(error);
       }

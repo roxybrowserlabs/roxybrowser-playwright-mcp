@@ -826,6 +826,23 @@ export const ARIA_REF_SELECTOR_EVALUATE_SOURCE = String.raw`(payload) => {
   };
 }`;
 
+export const ACTION_POINT_BY_SELECTOR_SOURCE = String.raw`(payload) => {
+  const element = document.querySelector(payload.selector);
+  if (!element || !element.isConnected) {
+    return { ok: false, reason: "not_found" };
+  }
+  element.scrollIntoView({ block: "center", inline: "center" });
+  const rect = element.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) {
+    return { ok: false, reason: "hidden" };
+  }
+  return {
+    ok: true,
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2
+  };
+}`;
+
 export const ACTION_POINT_EVALUATE_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
   if (!state || !state.elements || !state.elements.has(payload.nodeToken)) {

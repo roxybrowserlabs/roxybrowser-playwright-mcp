@@ -11,9 +11,12 @@ import type {
   BrowserSnapshot,
   BrowserSnapshotRequest,
   BrowserTab,
+  ClickTarget,
   ConnectedBrowserSession,
-  RoxyBrowserConnectArgs
+  RoxyBrowserConnectArgs,
+  SessionClickOptions
 } from "../../src/mcp/index.js";
+
 
 class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   readonly browserName: "chromium" | "firefox";
@@ -94,9 +97,17 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     };
   }
 
-  async click(_refToken: string): Promise<void> {}
+  clickCalls: Array<{ target: ClickTarget; options: SessionClickOptions }> = [];
+  hoverCalls: Array<ClickTarget> = [];
 
-  async hover(_refToken: string): Promise<void> {}
+  async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    this.clickCalls.push({ target, options });
+  }
+
+  async hover(target: ClickTarget): Promise<void> {
+    this.hoverCalls.push(target);
+  }
+
 
   async close(): Promise<void> {}
 }
@@ -153,7 +164,7 @@ describe("MCP server", () => {
     ]);
   });
 
-  it("returns structured errors before connect and invalidates refs after actions", async () => {
+  it("returns structured errors before connect and invalidates snapshot cache after click", async () => {
     const bundle = await createRoxyBrowserMcpInMemory({
       sessionFactory: fakeSessionFactory
     });
@@ -180,22 +191,25 @@ describe("MCP server", () => {
     expect(connected.isError).toBeUndefined();
     expect(textFromResult(connected)).toContain("Connected to chromium via cdp.");
 
+    // Click with a valid aria-ref — should succeed and return a new snapshot
     const clicked = await client.callTool({
       name: "browser_click",
       arguments: {
-        ref: "e1"
+        target: "e1"
       }
     });
     expect(clicked.isError).toBeUndefined();
+    expect(textFromResult(clicked)).toContain("button");
 
-    const stale = await client.callTool({
-      name: "browser_click",
+    // Hover with an invalid ref (no snapshot cache after a hover-invalidation)
+    const hoverResult = await client.callTool({
+      name: "browser_hover",
       arguments: {
-        ref: "e1"
+        ref: "e999"
       }
     });
-    expect(stale.isError).toBe(true);
-    expect(textFromResult(stale)).toContain("[stale_ref]");
+    expect(hoverResult.isError).toBe(true);
+    expect(textFromResult(hoverResult)).toContain("[stale_ref]");
   });
 
   it("passes Playwright-style snapshot args through the MCP layer and can save to a file", async () => {
@@ -357,5 +371,164 @@ describe("MCP server", () => {
 
     expect(bundle.server).toBeDefined();
     expect(bundle.runtimeManager).toBeDefined();
+  });
+
+  describe("browser_click", () => {
+    async function setupConnectedClient() {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: fakeSessionFactory
+      });
+      cleanupCallbacks.push(async () => bundle.close());
+
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: {
+          protocol: "cdp",
+          endpoint: "ws://click-test.invalid/devtools/browser/1"
+        }
+      });
+      return client;
+    }
+
+    it("resolves aria-ref target and returns updated snapshot", async () => {
+      const client = await setupConnectedClient();
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1" }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(textFromResult(result)).toContain("button");
+    });
+
+    it("accepts CSS selector as target", async () => {
+      const client = await setupConnectedClient();
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.submit" }
+      });
+
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("returns stale_ref error for unknown aria-ref", async () => {
+      const client = await setupConnectedClient();
+
+      // Take a snapshot to warm the cache, then try a ref that doesn't exist
+      await client.callTool({ name: "browser_snapshot", arguments: {} });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e999" }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain("[stale_ref]");
+    });
+
+    it("accepts doubleClick option", async () => {
+      const client = await setupConnectedClient();
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1", doubleClick: true }
+      });
+
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("accepts button option", async () => {
+      const client = await setupConnectedClient();
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1", button: "right" }
+      });
+
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("accepts modifiers option", async () => {
+      const client = await setupConnectedClient();
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1", modifiers: ["Shift"] }
+      });
+
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("accepts human profile option", async () => {
+      const client = await setupConnectedClient();
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1", human: { profile: "cautious" } }
+      });
+
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("records hover call before click in fake session", async () => {
+      let capturedSession: FakeConnectedBrowserSession | undefined;
+      const trackingFactory: BrowserSessionFactory = async (args) => {
+        capturedSession = new FakeConnectedBrowserSession(args);
+        return capturedSession;
+      };
+
+      const bundle = await createRoxyBrowserMcpInMemory({ sessionFactory: trackingFactory });
+      cleanupCallbacks.push(async () => bundle.close());
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "ws://hover-test.invalid/devtools/browser/1" }
+      });
+
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1" }
+      });
+
+      expect(capturedSession).toBeDefined();
+      // hover is called before click (humanization)
+      expect(capturedSession!.hoverCalls.length).toBeGreaterThanOrEqual(1);
+      expect(capturedSession!.clickCalls.length).toBe(1);
+      // aria-ref was resolved to a nodeToken
+      expect(capturedSession!.clickCalls[0]!.target).toHaveProperty("nodeToken");
+    });
+
+    it("passes selector directly for non-ref targets", async () => {
+      let capturedSession: FakeConnectedBrowserSession | undefined;
+      const trackingFactory: BrowserSessionFactory = async (args) => {
+        capturedSession = new FakeConnectedBrowserSession(args);
+        return capturedSession;
+      };
+
+      const bundle = await createRoxyBrowserMcpInMemory({ sessionFactory: trackingFactory });
+      cleanupCallbacks.push(async () => bundle.close());
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "ws://selector-test.invalid/devtools/browser/1" }
+      });
+
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.primary" }
+      });
+
+      expect(capturedSession).toBeDefined();
+      expect(capturedSession!.clickCalls[0]!.target).toEqual({ selector: "button.primary" });
+    });
   });
 });

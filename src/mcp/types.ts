@@ -54,9 +54,18 @@ export interface ConnectedBrowserSession {
   selectTab(tabId: string): Promise<BrowserTab[]>;
   closeTab(tabId: string): Promise<BrowserTab[]>;
   snapshot(request?: BrowserSnapshotRequest): Promise<BrowserSnapshot>;
-  click(refToken: string): Promise<void>;
-  hover(refToken: string): Promise<void>;
+  click(target: ClickTarget, options: SessionClickOptions): Promise<void>;
+  hover(target: ClickTarget): Promise<void>;
   close(): Promise<void>;
+}
+
+export type ClickTarget = { nodeToken: string } | { selector: string };
+
+export interface SessionClickOptions {
+  doubleClick?: boolean;
+  button?: "left" | "right" | "middle";
+  modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">;
+  clickHoldMs: number;
 }
 
 export type BrowserSessionFactory = (

@@ -7,9 +7,17 @@ import type {
   BrowserSnapshotToolArgs,
   BrowserSnapshotTarget,
   BrowserTab,
+  ClickTarget,
   CreateRoxyBrowserMcpServerOptions,
+  SessionClickOptions,
   SnapshotCacheEntry
 } from "./types.js";
+import { resolveHumanizationOptions, jitter } from "../human/profile.js";
+import type { HumanizationOptions } from "../types/options.js";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export class McpRuntime {
   private connection:
@@ -147,17 +155,39 @@ export class McpRuntime {
     return snapshot;
   }
 
-  async click(ref: string): Promise<void> {
+  async click(
+    target: string,
+    opts?: {
+      element?: string;
+      doubleClick?: boolean;
+      button?: "left" | "right" | "middle";
+      modifiers?: string[];
+      human?: { profile?: string };
+    }
+  ): Promise<BrowserSnapshot> {
     const session = this.requireConnected();
-    const refToken = this.resolveRef(ref);
-    await session.click(refToken);
+    const resolved = this.resolveTarget(target);
+    const humanOpts = resolveHumanizationOptions(opts?.human as HumanizationOptions | undefined);
+
+    await session.hover(resolved);
+    const hoverDelayMs = jitter(humanOpts.hoverBeforeClickMs);
+    if (hoverDelayMs > 0) await delay(hoverDelayMs);
+
+    await session.click(resolved, {
+      ...(opts?.doubleClick !== undefined ? { doubleClick: opts.doubleClick } : {}),
+      ...(opts?.button !== undefined ? { button: opts.button } : {}),
+      ...(opts?.modifiers !== undefined ? { modifiers: opts.modifiers as SessionClickOptions["modifiers"] } : {}),
+      clickHoldMs: jitter(humanOpts.clickHoldMs)
+    } as SessionClickOptions);
+
     this.invalidateSnapshot();
+    return this.snapshot();
   }
 
   async hover(ref: string): Promise<void> {
     const session = this.requireConnected();
-    const refToken = this.resolveRef(ref);
-    await session.hover(refToken);
+    const resolved = this.resolveTarget(ref);
+    await session.hover(resolved);
     this.invalidateSnapshot();
   }
 
@@ -193,6 +223,29 @@ export class McpRuntime {
       throw new McpToolError("no_active_tab", "No active tab is available.");
     }
     return activeTab;
+  }
+
+  private resolveTarget(target: string): ClickTarget {
+    const activeTab = this.requireActiveTab();
+
+    if (/^(f\d+)?e\d+$/.test(target)) {
+      if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
+        throw new McpToolError(
+          "stale_ref",
+          'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
+        );
+      }
+      const token = this.snapshotCache.refs[target];
+      if (!token) {
+        throw new McpToolError(
+          "stale_ref",
+          `Ref "${target}" is no longer valid. Call "browser_snapshot" again.`
+        );
+      }
+      return { nodeToken: token };
+    }
+
+    return { selector: target };
   }
 
   private resolveRef(ref: string): string {
