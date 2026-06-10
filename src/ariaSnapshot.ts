@@ -58,14 +58,39 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
 
   const structuralRolesWithoutImplicitName = new Set([
     "article",
+    "banner",
+    "blockquote",
+    "complementary",
+    "contentinfo",
+    "dialog",
+    "figure",
     "form",
     "generic",
+    "group",
     "list",
+    "listbox",
     "listitem",
     "main",
     "navigation",
-    "section"
+    "paragraph",
+    "row",
+    "rowgroup",
+    "search",
+    "section",
+    "separator",
+    "table"
   ]);
+
+  function isAriaHidden(element) {
+    let current = element;
+    while (current) {
+      if (current.getAttribute && current.getAttribute("aria-hidden") === "true") {
+        return true;
+      }
+      current = current.parentElement;
+    }
+    return false;
+  }
 
   function isElementVisible(element) {
     if (!element || !element.isConnected) {
@@ -122,19 +147,33 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
       if (type === "radio") {
         return "radio";
       }
+      if (type === "range") {
+        return "slider";
+      }
+      if (type === "number") {
+        return "spinbutton";
+      }
+      if (type === "search") {
+        return "searchbox";
+      }
       return "textbox";
     }
     if (tagName === "textarea") {
       return "textbox";
     }
     if (tagName === "select") {
-      return "combobox";
+      return element.hasAttribute("multiple") || Number(element.getAttribute("size")) > 1
+        ? "listbox"
+        : "combobox";
     }
     if (tagName === "option") {
       return "option";
     }
+    if (tagName === "optgroup") {
+      return "group";
+    }
     if (tagName === "img") {
-      return "img";
+      return element.getAttribute("alt") === "" ? "presentation" : "img";
     }
     if (tagName === "ul" || tagName === "ol") {
       return "list";
@@ -165,6 +204,81 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     }
     if (tagName === "iframe") {
       return "iframe";
+    }
+    if (tagName === "table") {
+      return "table";
+    }
+    if (tagName === "tr") {
+      return "row";
+    }
+    if (tagName === "th") {
+      return element.getAttribute("scope") === "row" ? "rowheader" : "columnheader";
+    }
+    if (tagName === "td") {
+      return "cell";
+    }
+    if (tagName === "thead" || tagName === "tbody" || tagName === "tfoot") {
+      return "rowgroup";
+    }
+    if (tagName === "caption") {
+      return "caption";
+    }
+    if (tagName === "details") {
+      return "group";
+    }
+    if (tagName === "summary") {
+      return "button";
+    }
+    if (tagName === "dialog") {
+      return "dialog";
+    }
+    if (tagName === "fieldset") {
+      return "group";
+    }
+    if (tagName === "legend") {
+      return "legend";
+    }
+    if (tagName === "figure") {
+      return "figure";
+    }
+    if (tagName === "figcaption") {
+      return "caption";
+    }
+    if (tagName === "progress") {
+      return "progressbar";
+    }
+    if (tagName === "meter") {
+      return "meter";
+    }
+    if (tagName === "output") {
+      return "status";
+    }
+    if (tagName === "hr") {
+      return "separator";
+    }
+    if (tagName === "blockquote") {
+      return "blockquote";
+    }
+    if (tagName === "p") {
+      return "paragraph";
+    }
+    if (tagName === "aside") {
+      return "complementary";
+    }
+    if (tagName === "header") {
+      return "banner";
+    }
+    if (tagName === "footer") {
+      return "contentinfo";
+    }
+    if (tagName === "search") {
+      return "search";
+    }
+    if (tagName === "menu") {
+      return "list";
+    }
+    if (tagName === "menuitem") {
+      return "menuitem";
     }
 
     return "generic";
@@ -262,19 +376,108 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     return { ref, nodeToken };
   }
 
+  function ariaBoolean(element, attribute) {
+    const value = element.getAttribute(attribute);
+    if (value === null) {
+      return undefined;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+    if (normalized === "mixed") {
+      return "mixed";
+    }
+    return undefined;
+  }
+
+  function computeChecked(element, role) {
+    const ariaChecked = element.getAttribute("aria-checked");
+    if (ariaChecked !== null) {
+      const normalized = ariaChecked.trim().toLowerCase();
+      if (normalized === "mixed") {
+        return "mixed";
+      }
+      if (normalized === "true") {
+        return true;
+      }
+      if (normalized === "false") {
+        return false;
+      }
+    }
+    if (role === "checkbox" || role === "radio") {
+      if (element.indeterminate) {
+        return "mixed";
+      }
+      return Boolean(element.checked);
+    }
+    return undefined;
+  }
+
+  function computeDisabled(element) {
+    const ariaDisabled = ariaBoolean(element, "aria-disabled");
+    if (ariaDisabled === true) {
+      return true;
+    }
+    if (typeof element.disabled === "boolean" && element.disabled) {
+      return true;
+    }
+    return undefined;
+  }
+
+  function computeExpanded(element) {
+    const ariaExpanded = ariaBoolean(element, "aria-expanded");
+    if (ariaExpanded === true || ariaExpanded === false) {
+      return ariaExpanded;
+    }
+    if (element.tagName.toLowerCase() === "details") {
+      return Boolean(element.open);
+    }
+    return undefined;
+  }
+
+  function computePressed(element) {
+    const ariaPressed = element.getAttribute("aria-pressed");
+    if (ariaPressed === null) {
+      return undefined;
+    }
+    const normalized = ariaPressed.trim().toLowerCase();
+    if (normalized === "mixed") {
+      return "mixed";
+    }
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+    return undefined;
+  }
+
   function createAriaNode(element, frameIndex) {
     const role = inferRole(element);
     const name = accessibleName(element, role);
     const rect = element.getBoundingClientRect();
+    const ariaLevel = element.getAttribute("aria-level");
     const node = {
       role,
       name,
       children: [],
       ref: undefined,
       active: element.ownerDocument.activeElement === element,
-      level: /^h[1-6]$/.test(element.tagName.toLowerCase()) ? Number(element.tagName[1]) : undefined,
+      level: /^h[1-6]$/.test(element.tagName.toLowerCase())
+        ? Number(element.tagName[1])
+        : ariaLevel !== null && Number.isFinite(Number(ariaLevel))
+          ? Number(ariaLevel)
+          : undefined,
       checked: undefined,
       selected: undefined,
+      disabled: undefined,
+      expanded: undefined,
+      pressed: undefined,
       box: {
         x: Math.round(rect.x),
         y: Math.round(rect.y),
@@ -291,12 +494,24 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
       node.ref = createRef(element, frameIndex).ref;
     }
 
-    if (role === "checkbox" || role === "radio") {
-      node.checked = Boolean(element.checked);
+    const checked = computeChecked(element, role);
+    if (checked !== undefined) {
+      node.checked = checked;
     }
+
     if (role === "option") {
       node.selected = Boolean(element.selected);
+    } else {
+      const ariaSelected = ariaBoolean(element, "aria-selected");
+      if (ariaSelected === true) {
+        node.selected = true;
+      }
     }
+
+    node.disabled = computeDisabled(element);
+    node.expanded = computeExpanded(element);
+    node.pressed = computePressed(element);
+
     if (role === "textbox" && typeof element.value === "string" && element.type !== "checkbox" && element.type !== "radio") {
       node.children.push(element.value);
     }
@@ -390,8 +605,23 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     }
 
     const element = node;
+
+    // Skip aria-hidden subtrees (but not when we're force-including a target root)
+    if (!forceInclude && isAriaHidden(element)) {
+      return;
+    }
+
     const visible = isElementVisible(element);
     const role = inferRole(element);
+
+    // role=presentation and role=none strip semantics: traverse children under the parent
+    if (role === "presentation" || role === "none") {
+      for (const child of Array.from(element.childNodes)) {
+        visitDom(parentAriaNode, child, false, frameIndex);
+      }
+      return;
+    }
+
     const include = forceInclude || visible || role === "iframe";
     const ariaNode = include ? createAriaNode(element, frameIndex) : parentAriaNode;
 
@@ -495,17 +725,32 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     if (node.name) {
       line += " " + JSON.stringify(node.name);
     }
-    if (node.checked) {
+    if (node.checked === "mixed") {
+      line += " [checked=mixed]";
+    } else if (node.checked) {
       line += " [checked]";
+    }
+    if (node.disabled) {
+      line += " [disabled]";
+    }
+    if (node.expanded === true) {
+      line += " [expanded]";
+    } else if (node.expanded === false) {
+      line += " [collapsed]";
+    }
+    if (node.level) {
+      line += " [level=" + node.level + "]";
+    }
+    if (node.pressed === "mixed") {
+      line += " [pressed=mixed]";
+    } else if (node.pressed === true) {
+      line += " [pressed]";
     }
     if (node.selected) {
       line += " [selected]";
     }
     if (node.active) {
       line += " [active]";
-    }
-    if (node.level) {
-      line += " [level=" + node.level + "]";
     }
     if (node.ref) {
       line += " [ref=" + node.ref + "]";

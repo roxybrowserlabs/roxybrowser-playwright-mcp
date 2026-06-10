@@ -1090,3 +1090,193 @@ describe("cross-iframe depth limiting", () => {
     expect(result.text).toContain("list");
   });
 });
+
+describe("aria state attributes", () => {
+  function snapshotOf(html: string) {
+    const window = createWindow(`<!doctype html><html><body>${html}</body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    return snapshot({ options: { mode: "ai" } }).text;
+  }
+
+  it("renders [disabled] for a disabled button", () => {
+    expect(snapshotOf(`<button disabled>Save</button>`)).toContain('button "Save" [disabled]');
+  });
+
+  it("renders [disabled] for aria-disabled=true", () => {
+    expect(snapshotOf(`<div role="button" aria-disabled="true">Save</div>`)).toContain("[disabled]");
+  });
+
+  it("does not render [disabled] when aria-disabled=false", () => {
+    expect(snapshotOf(`<button aria-disabled="false">Save</button>`)).not.toContain("[disabled]");
+  });
+
+  it("renders [checked] for a checked checkbox", () => {
+    expect(snapshotOf(`<input type="checkbox" checked aria-label="agree" />`)).toContain("[checked]");
+  });
+
+  it("renders [checked=mixed] for aria-checked=mixed", () => {
+    expect(snapshotOf(`<div role="checkbox" aria-checked="mixed">Partial</div>`)).toContain("[checked=mixed]");
+  });
+
+  it("renders [checked=mixed] for an indeterminate checkbox", () => {
+    const window = createWindow(`<!doctype html><html><body><input id="cb" type="checkbox" aria-label="agree" /></body></html>`);
+    (window.document.getElementById("cb") as HTMLInputElement).indeterminate = true;
+    const { snapshot } = createSnapshotHelpers(window);
+    expect(snapshot({ options: { mode: "ai" } }).text).toContain("[checked=mixed]");
+  });
+
+  it("renders [expanded] for aria-expanded=true", () => {
+    expect(snapshotOf(`<button aria-expanded="true">Menu</button>`)).toContain('button "Menu" [expanded]');
+  });
+
+  it("renders [collapsed] for aria-expanded=false", () => {
+    expect(snapshotOf(`<button aria-expanded="false">Menu</button>`)).toContain('button "Menu" [collapsed]');
+  });
+
+  it("renders [expanded] for an open details element", () => {
+    expect(snapshotOf(`<details open><summary>More</summary><p>Body</p></details>`)).toContain("[expanded]");
+  });
+
+  it("renders [pressed] for aria-pressed=true", () => {
+    expect(snapshotOf(`<button aria-pressed="true">Bold</button>`)).toContain('button "Bold" [pressed]');
+  });
+
+  it("renders [pressed=mixed] for aria-pressed=mixed", () => {
+    expect(snapshotOf(`<button aria-pressed="mixed">Bold</button>`)).toContain("[pressed=mixed]");
+  });
+
+  it("renders [selected] for aria-selected=true", () => {
+    expect(snapshotOf(`<div role="tab" aria-selected="true">Tab 1</div>`)).toContain("[selected]");
+  });
+
+  it("renders [level] from aria-level", () => {
+    expect(snapshotOf(`<div role="heading" aria-level="3">Title</div>`)).toContain("[level=3]");
+  });
+
+  it("orders states as checked, disabled, expanded, level, pressed, selected", () => {
+    const text = snapshotOf(
+      `<div role="checkbox" aria-checked="true" aria-disabled="true" aria-expanded="true" aria-pressed="true" aria-selected="true">All</div>`
+    );
+    const line = text.split("\n").find((l) => l.includes("All"))!;
+    const idxChecked = line.indexOf("[checked]");
+    const idxDisabled = line.indexOf("[disabled]");
+    const idxExpanded = line.indexOf("[expanded]");
+    const idxPressed = line.indexOf("[pressed]");
+    const idxSelected = line.indexOf("[selected]");
+    expect(idxChecked).toBeGreaterThan(-1);
+    expect(idxChecked).toBeLessThan(idxDisabled);
+    expect(idxDisabled).toBeLessThan(idxExpanded);
+    expect(idxExpanded).toBeLessThan(idxPressed);
+    expect(idxPressed).toBeLessThan(idxSelected);
+  });
+});
+
+describe("aria-hidden and presentation filtering", () => {
+  function snapshotOf(html: string) {
+    const window = createWindow(`<!doctype html><html><body>${html}</body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    return snapshot({ options: { mode: "ai" } }).text;
+  }
+
+  it("excludes an aria-hidden=true element", () => {
+    const text = snapshotOf(`<button aria-hidden="true">Hidden</button><button>Shown</button>`);
+    expect(text).not.toContain("Hidden");
+    expect(text).toContain("Shown");
+  });
+
+  it("excludes descendants of an aria-hidden=true container", () => {
+    const text = snapshotOf(`<div aria-hidden="true"><button>Deep hidden</button></div><button>Visible</button>`);
+    expect(text).not.toContain("Deep hidden");
+    expect(text).toContain("Visible");
+  });
+
+  it("strips semantics for role=presentation but keeps children", () => {
+    const text = snapshotOf(`<ul role="presentation"><li>Item</li></ul>`);
+    // The ul's "list" role is stripped; listitem children are promoted to the body level
+    expect(text).not.toMatch(/- list[^i]/); // no "- list" followed by non-"i" (avoids matching listitem)
+    expect(text).toContain("Item");
+  });
+
+  it("strips semantics for role=none but keeps children", () => {
+    const text = snapshotOf(`<table role="none"><tr><td>Cell</td></tr></table>`);
+    expect(text).not.toContain("- table");
+    expect(text).toContain("Cell");
+  });
+
+  it("treats an img with empty alt as presentation", () => {
+    const text = snapshotOf(`<img alt="" src="x.png" /><img alt="Logo" src="y.png" />`);
+    // empty-alt img is stripped (presentation); named img is kept
+    expect(text).not.toMatch(/- img\s+\[/); // no unnamed img line (no name = role-only line)
+    expect(text).toContain('img "Logo"');
+  });
+});
+
+describe("inferRole completeness", () => {
+  function snapshotOf(html: string) {
+    const window = createWindow(`<!doctype html><html><body>${html}</body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    return snapshot({ options: { mode: "ai" } }).text;
+  }
+
+  it("maps table elements to table/rowgroup/row/columnheader/cell", () => {
+    const text = snapshotOf(`
+      <table>
+        <thead><tr><th>Name</th></tr></thead>
+        <tbody><tr><td>Alice</td></tr></tbody>
+      </table>
+    `);
+    expect(text).toContain("- table");
+    expect(text).toContain("- rowgroup");
+    expect(text).toContain("- row");
+    expect(text).toContain("- columnheader");
+    expect(text).toContain("- cell");
+  });
+
+  it("maps th[scope=row] to rowheader", () => {
+    expect(snapshotOf(`<table><tr><th scope="row">Total</th><td>5</td></tr></table>`)).toContain("- rowheader");
+  });
+
+  it("maps dialog to dialog role", () => {
+    const window = createWindow(`<!doctype html><html><body><dialog open><p>Hi</p></dialog></body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    expect(snapshot({ options: { mode: "ai" } }).text).toContain("- dialog");
+  });
+
+  it("maps progress to progressbar", () => {
+    expect(snapshotOf(`<progress value="50" max="100"></progress>`)).toContain("- progressbar");
+  });
+
+  it("maps meter to meter", () => {
+    expect(snapshotOf(`<meter value="0.5">50%</meter>`)).toContain("- meter");
+  });
+
+  it("maps details to group and summary to button", () => {
+    const text = snapshotOf(`<details><summary>Toggle</summary><p>Body</p></details>`);
+    expect(text).toContain("- group");
+    expect(text).toContain('button "Toggle"');
+  });
+
+  it("maps fieldset to group", () => {
+    expect(snapshotOf(`<fieldset><legend>Info</legend></fieldset>`)).toContain("- group");
+  });
+
+  it("maps multiple select to listbox and single select to combobox", () => {
+    expect(snapshotOf(`<select multiple aria-label="m"><option>a</option></select>`)).toContain("- listbox");
+    expect(snapshotOf(`<select aria-label="s"><option>a</option></select>`)).toContain("- combobox");
+  });
+
+  it("maps input[type=range] to slider and input[type=search] to searchbox", () => {
+    expect(snapshotOf(`<input type="range" aria-label="vol" />`)).toContain("- slider");
+    expect(snapshotOf(`<input type="search" aria-label="q" />`)).toContain("- searchbox");
+  });
+
+  it("maps landmark elements: header→banner, footer→contentinfo, aside→complementary", () => {
+    expect(snapshotOf(`<header>H</header>`)).toContain("- banner");
+    expect(snapshotOf(`<footer>F</footer>`)).toContain("- contentinfo");
+    expect(snapshotOf(`<aside>A</aside>`)).toContain("- complementary");
+  });
+
+  it("maps hr to separator", () => {
+    expect(snapshotOf(`<hr />`)).toContain("- separator");
+  });
+});
