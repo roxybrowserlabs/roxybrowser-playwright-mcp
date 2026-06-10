@@ -205,6 +205,156 @@ export class McpRuntime {
     this.invalidateSnapshot();
   }
 
+  async navigate(url: string): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.navigate(url);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async type(
+    ref: string,
+    text: string,
+    opts?: { submit?: boolean }
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    await session.type(resolved, text, opts);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async pressKey(
+    key: string,
+    modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.pressKey(key, modifiers);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async selectOption(
+    ref: string,
+    values: string[]
+  ): Promise<{ selected: string[]; snapshot?: BrowserSnapshot }> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    const selected = await session.selectOption(resolved, values);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return { selected };
+    }
+    return { selected, snapshot: await this.snapshot() };
+  }
+
+  async check(
+    ref: string,
+    checked: boolean
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    await session.check(resolved, checked);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async goBack(): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.goBack();
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async goForward(): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.goForward();
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async scroll(
+    ref: string | null,
+    deltaX: number,
+    deltaY: number
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = ref !== null ? this.resolveTarget(ref) : null;
+    await session.scroll(resolved, deltaX, deltaY);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async takeScreenshot(): Promise<string> {
+    const session = this.requireConnected();
+    return session.screenshot();
+  }
+
+  async uploadFile(ref: string, paths: string[]): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    await session.uploadFile(resolved, paths);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async waitFor(
+    condition: { text?: string; url?: string },
+    timeoutMs = 5000
+  ): Promise<BrowserSnapshot> {
+    const deadline = Date.now() + timeoutMs;
+    const poll = async (): Promise<BrowserSnapshot> => {
+      this.invalidateSnapshot();
+      const snap = await this.snapshot();
+      if (condition.text && !snap.text.includes(condition.text)) {
+        if (Date.now() >= deadline) {
+          throw new McpToolError(
+            "timeout",
+            `Timed out after ${timeoutMs}ms waiting for text "${condition.text}" to appear.`
+          );
+        }
+        await delay(250);
+        return poll();
+      }
+      if (condition.url && !snap.url.includes(condition.url)) {
+        if (Date.now() >= deadline) {
+          throw new McpToolError(
+            "timeout",
+            `Timed out after ${timeoutMs}ms waiting for URL to contain "${condition.url}".`
+          );
+        }
+        await delay(250);
+        return poll();
+      }
+      return snap;
+    };
+    return poll();
+  }
+
   invalidateSnapshot(): void {
     this.snapshotCache = undefined;
   }
