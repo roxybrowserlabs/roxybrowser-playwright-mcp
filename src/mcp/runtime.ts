@@ -10,13 +10,18 @@ import type {
   ClickTarget,
   CreateRoxyBrowserMcpServerOptions,
   SessionClickOptions,
-  SnapshotCacheEntry
+  SnapshotCacheEntry,
+  SnapshotMode
 } from "./types.js";
 import { resolveHumanizationOptions, jitter } from "../human/profile.js";
 import type { HumanizationOptions } from "../types/options.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function staleRefMessage(ref: string): string {
+  return `Ref ${ref} not found in the current page snapshot. Try capturing new snapshot.`;
 }
 
 export class McpRuntime {
@@ -27,8 +32,14 @@ export class McpRuntime {
     | undefined;
   private tabs: BrowserTab[] = [];
   private snapshotCache: SnapshotCacheEntry | undefined;
+  private readonly snapshotMode: SnapshotMode;
 
-  constructor(private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession) {}
+  constructor(
+    private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession,
+    options: { snapshotMode?: SnapshotMode } = {}
+  ) {
+    this.snapshotMode = options.snapshotMode ?? "full";
+  }
 
   async connect(args: Parameters<BrowserSessionFactory>[0]): Promise<{
     browserName: string;
@@ -164,7 +175,7 @@ export class McpRuntime {
       modifiers?: string[];
       human?: { profile?: string };
     }
-  ): Promise<BrowserSnapshot> {
+  ): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const resolved = this.resolveTarget(target);
     const humanOpts = resolveHumanizationOptions(opts?.human as HumanizationOptions | undefined);
@@ -181,6 +192,9 @@ export class McpRuntime {
     } as SessionClickOptions);
 
     this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
     return this.snapshot();
   }
 
@@ -230,17 +244,11 @@ export class McpRuntime {
 
     if (/^(f\d+)?e\d+$/.test(target)) {
       if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
-        throw new McpToolError(
-          "stale_ref",
-          'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
-        );
+        throw new McpToolError("stale_ref", staleRefMessage(target));
       }
       const token = this.snapshotCache.refs[target];
       if (!token) {
-        throw new McpToolError(
-          "stale_ref",
-          `Ref "${target}" is no longer valid. Call "browser_snapshot" again.`
-        );
+        throw new McpToolError("stale_ref", staleRefMessage(target));
       }
       return { nodeToken: token };
     }
@@ -251,18 +259,12 @@ export class McpRuntime {
   private resolveRef(ref: string): string {
     const activeTab = this.requireActiveTab();
     if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
-      throw new McpToolError(
-        "stale_ref",
-        'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
-      );
+      throw new McpToolError("stale_ref", staleRefMessage(ref));
     }
 
     const token = this.snapshotCache.refs[ref];
     if (!token) {
-      throw new McpToolError(
-        "stale_ref",
-        `Ref "${ref}" is no longer valid. Call "browser_snapshot" again.`
-      );
+      throw new McpToolError("stale_ref", staleRefMessage(ref));
     }
 
     return token;
@@ -280,18 +282,8 @@ export class McpRuntime {
       }
     }
 
-    if (/^e\d+$/.test(target)) {
-      if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
-        throw new McpToolError(
-          "stale_ref",
-          'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
-        );
-      }
-
-      throw new McpToolError(
-        "stale_ref",
-        `Ref "${target}" is no longer valid. Call "browser_snapshot" again.`
-      );
+    if (/^(f\d+)?e\d+$/.test(target)) {
+      throw new McpToolError("stale_ref", staleRefMessage(target));
     }
 
     return {
@@ -312,7 +304,10 @@ export class McpRuntime {
 export class McpRuntimeManager {
   private readonly runtimes = new Map<string, McpRuntime>();
 
-  constructor(private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"]) {}
+  constructor(
+    private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"],
+    private readonly options: { snapshotMode?: SnapshotMode } = {}
+  ) {}
 
   getRuntime(sessionId = "default"): McpRuntime {
     const existing = this.runtimes.get(sessionId);
@@ -320,7 +315,9 @@ export class McpRuntimeManager {
       return existing;
     }
 
-    const runtime = new McpRuntime(this.sessionFactory);
+    const runtime = new McpRuntime(this.sessionFactory, {
+      ...(this.options.snapshotMode !== undefined ? { snapshotMode: this.options.snapshotMode } : {})
+    });
     this.runtimes.set(sessionId, runtime);
     return runtime;
   }

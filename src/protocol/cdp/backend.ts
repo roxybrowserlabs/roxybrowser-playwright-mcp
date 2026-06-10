@@ -6,8 +6,10 @@ import * as cdpModule from "chrome-remote-interface";
 import {
   ARIA_REF_SELECTOR_EVALUATE_SOURCE,
   ARIA_SNAPSHOT_EVALUATE_SOURCE,
+  type AriaSnapshotResult,
   type ResolvedAriaRefResult,
   normalizeAriaSnapshotOptions,
+  retryUntilReady,
   withOptionalTimeout
 } from "../../ariaSnapshot.js";
 import { LocatorError, TimeoutError } from "../../errors.js";
@@ -828,12 +830,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async ariaSnapshot(options: AriaSnapshotOptions = {}): Promise<string> {
     const normalizedOptions = normalizeAriaSnapshotOptions(options);
-    const result = await withOptionalTimeout(
-      this.evaluateFunction<{ text: string }>(ARIA_SNAPSHOT_EVALUATE_SOURCE, {
+    const result = await retryUntilReady(
+      () => this.evaluateFunction<AriaSnapshotResult>(ARIA_SNAPSHOT_EVALUATE_SOURCE, {
         options: normalizedOptions
       }),
-      normalizedOptions.timeout,
-      'Timed out while generating page.ariaSnapshot().'
+      { timeoutMs: normalizedOptions.timeout ?? 15_000 }
     );
     return result.text;
   }

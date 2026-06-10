@@ -3,6 +3,7 @@ import type { Client as WebDriverClient } from "webdriver";
 import {
   ARIA_SNAPSHOT_EVALUATE_SOURCE,
   normalizeAriaSnapshotOptions,
+  retryUntilReady,
   type AriaSnapshotResult
 } from "../ariaSnapshot.js";
 import { getWebDriverModule } from "../vendor/webdriver.js";
@@ -319,10 +320,8 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async snapshot(request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
     const pageClient = await this.getActivePageClient();
-    const result = await evaluateCdp<AriaSnapshotResult>(
-      pageClient,
-      ARIA_SNAPSHOT_EVALUATE_SOURCE,
-      toAriaSnapshotPayload(request)
+    const result = await retryUntilReady(() =>
+      evaluateCdp<AriaSnapshotResult>(pageClient, ARIA_SNAPSHOT_EVALUATE_SOURCE, toAriaSnapshotPayload(request))
     );
     return toBrowserSnapshot(result, request);
   }

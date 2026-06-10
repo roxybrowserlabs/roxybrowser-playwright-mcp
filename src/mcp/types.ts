@@ -72,12 +72,15 @@ export type BrowserSessionFactory = (
   args: RoxyBrowserConnectArgs
 ) => Promise<ConnectedBrowserSession>;
 
+export type SnapshotMode = "full" | "none";
+
 export interface CreateRoxyBrowserMcpServerOptions {
   sessionFactory?: BrowserSessionFactory;
   serverInfo?: {
     name?: string;
     version?: string;
   };
+  snapshotMode?: SnapshotMode;
 }
 
 export interface StartRoxyBrowserMcpHttpOptions extends CreateRoxyBrowserMcpServerOptions {

@@ -16,6 +16,7 @@ export type {
   RoxyBrowserMcpInMemoryBundle,
   RoxyBrowserMcpServerBundle,
   RoxyBrowserMcpStdioBundle,
+  SnapshotMode,
   StartRoxyBrowserMcpHttpOptions,
   StartRoxyBrowserMcpStdioOptions
 } from "./types.js";

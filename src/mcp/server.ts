@@ -53,7 +53,9 @@ function toConnectArgs(args: {
 export function createRoxyBrowserMcpServer(
   options: CreateRoxyBrowserMcpServerOptions = {}
 ): RoxyBrowserMcpServerBundle {
-  const runtimeManager = new McpRuntimeManager(options.sessionFactory);
+  const runtimeManager = new McpRuntimeManager(options.sessionFactory, {
+    ...(options.snapshotMode !== undefined ? { snapshotMode: options.snapshotMode } : {})
+  });
   const server = new McpServer({
     name: options.serverInfo?.name ?? "roxybrowser-mcp",
     version: options.serverInfo?.version ?? "0.1.0"
@@ -121,12 +123,11 @@ export function createRoxyBrowserMcpServer(
       try {
         const runtime = runtimeManager.getRuntime(extra.sessionId);
         const snapshot = await runtime.snapshot(args);
-        const formatted = formatSnapshot(snapshot);
         if (args.filename) {
-          await writeFile(args.filename, formatted);
+          await writeFile(args.filename, snapshot.text);
           return textResult(`Saved snapshot to "${args.filename}".`);
         }
-        return textResult(formatted);
+        return textResult(formatSnapshot(snapshot));
       } catch (error) {
         return toolErrorResult(error);
       }
@@ -150,6 +151,9 @@ export function createRoxyBrowserMcpServer(
           ...(args.modifiers !== undefined ? { modifiers: args.modifiers } : {}),
           ...(args.human !== undefined ? { human: args.human as { profile?: string } } : {})
         });
+        if (!snapshot) {
+          return textResult(`Clicked "${args.element ?? args.target}".`);
+        }
         return textResult(formatSnapshot(snapshot));
       } catch (error) {
         return toolErrorResult(error);

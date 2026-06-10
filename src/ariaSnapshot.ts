@@ -6,6 +6,7 @@ export interface AriaSnapshotResult {
   text: string;
   title: string;
   url: string;
+  notReady?: boolean;
   error?: {
     code: "stale" | "not_found" | "invalid_selector" | "strict";
     message?: string;
@@ -34,6 +35,9 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
   const includeBoxes = Boolean(options.boxes);
   const mode = options.mode === "ai" ? "ai" : "default";
   const rootDocument = document;
+  if (!rootDocument.body || rootDocument.readyState === "loading") {
+    return { notReady: true, refs: {}, text: "", title: String(rootDocument.title || ""), url: String(globalThis.location?.href || "") };
+  }
   const previousState = globalThis.__roxyMcpState ?? {
     elements: new Map(),
     refs: new Map(),
@@ -45,7 +49,8 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     elements: new Map(),
     refs: new Map(),
     nextRefId: typeof previousState.nextRefId === "number" ? previousState.nextRefId : 1,
-    nextNodeId: typeof previousState.nextNodeId === "number" ? previousState.nextNodeId : 1
+    nextNodeId: typeof previousState.nextNodeId === "number" ? previousState.nextNodeId : 1,
+    nextFrameId: 1
   };
   globalState.elements = new Map();
   globalState.refs = new Map();
@@ -246,9 +251,10 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     return normalizeWhitespace(element.textContent || "");
   }
 
-  function createRef(element) {
+  function createRef(element, frameIndex) {
     const existingRef = element.__roxyAriaRef;
-    const ref = typeof existingRef === "string" ? existingRef : "e" + globalState.nextRefId++;
+    const prefix = frameIndex > 0 ? "f" + frameIndex : "";
+    const ref = typeof existingRef === "string" ? existingRef : prefix + "e" + globalState.nextRefId++;
     element.__roxyAriaRef = ref;
     const nodeToken = "n" + globalState.nextNodeId++;
     globalState.elements.set(nodeToken, element);
@@ -256,7 +262,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     return { ref, nodeToken };
   }
 
-  function createAriaNode(element) {
+  function createAriaNode(element, frameIndex) {
     const role = inferRole(element);
     const name = accessibleName(element, role);
     const rect = element.getBoundingClientRect();
@@ -282,7 +288,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
       isElementVisible(element) &&
       receivesPointerEvents(element)
     ) {
-      node.ref = createRef(element).ref;
+      node.ref = createRef(element, frameIndex).ref;
     }
 
     if (role === "checkbox" || role === "radio") {
@@ -366,7 +372,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     };
   }
 
-  function visitDom(parentAriaNode, node, forceInclude) {
+  function visitDom(parentAriaNode, node, forceInclude, frameIndex) {
     if (!node) {
       return;
     }
@@ -387,7 +393,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     const visible = isElementVisible(element);
     const role = inferRole(element);
     const include = forceInclude || visible || role === "iframe";
-    const ariaNode = include ? createAriaNode(element) : parentAriaNode;
+    const ariaNode = include ? createAriaNode(element, frameIndex) : parentAriaNode;
 
     if (include) {
       parentAriaNode.children.push(ariaNode);
@@ -398,8 +404,9 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
         const frameDocument = element.contentDocument;
         const frameBody = frameDocument && (frameDocument.body || frameDocument.documentElement);
         if (frameBody) {
+          const childFrameIndex = globalState.nextFrameId++;
           for (const child of Array.from(frameBody.childNodes)) {
-            visitDom(ariaNode, child, false);
+            visitDom(ariaNode, child, false, childFrameIndex);
           }
           return;
         }
@@ -411,17 +418,17 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
       : [];
     if (assignedNodes.length) {
       for (const child of Array.from(assignedNodes)) {
-        visitDom(ariaNode, child, false);
+        visitDom(ariaNode, child, false, frameIndex);
       }
     } else {
       for (const child of Array.from(element.childNodes)) {
         if (!child.assignedSlot) {
-          visitDom(ariaNode, child, false);
+          visitDom(ariaNode, child, false, frameIndex);
         }
       }
       if (element.shadowRoot) {
         for (const child of Array.from(element.shadowRoot.childNodes)) {
-          visitDom(ariaNode, child, false);
+          visitDom(ariaNode, child, false, frameIndex);
         }
       }
     }
@@ -551,7 +558,7 @@ export const ARIA_SNAPSHOT_EVALUATE_SOURCE = String.raw`(payload) => {
     role: "fragment",
     children: []
   };
-  visitDom(root, resolvedRoot.node, Boolean(target));
+  visitDom(root, resolvedRoot.node, Boolean(target), 0);
   for (const child of root.children) {
     if (typeof child !== "string") {
       normalizeChildren(child);
@@ -903,4 +910,26 @@ export function normalizeAriaSnapshotOptions(
     ...(options.mode !== undefined ? { mode: options.mode } : {}),
     ...(options.timeout !== undefined ? { timeout: options.timeout } : {})
   };
+}
+
+export async function retryUntilReady<T extends { notReady?: boolean }>(
+  fn: () => Promise<T>,
+  { timeoutMs = 15_000 }: { timeoutMs?: number } = {}
+): Promise<T> {
+  const delays = [100, 250, 500, 1000, 2000, 4000];
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  while (true) {
+    try {
+      const result = await fn();
+      if (!result.notReady) return result;
+    } catch {
+      // context detached during navigation — will retry
+    }
+    const backoff = delays[Math.min(attempt++, delays.length - 1)] ?? 4000;
+    if (Date.now() + backoff >= deadline) {
+      throw new TimeoutError("Timed out waiting for the page to be ready for a snapshot.");
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, backoff));
+  }
 }

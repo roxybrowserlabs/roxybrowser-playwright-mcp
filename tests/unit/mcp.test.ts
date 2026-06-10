@@ -252,6 +252,9 @@ describe("MCP server", () => {
     expect(savedSnapshot).toContain("[target=tab-1:node-1]");
     expect(savedSnapshot).toContain("[depth=2]");
     expect(savedSnapshot).toContain("[box=0,0,120,32]");
+    // Playwright writes the raw snapshot text — no "Snapshot (title - url):" header.
+    expect(savedSnapshot).not.toContain("Snapshot (");
+    expect(savedSnapshot.startsWith("- button")).toBe(true);
   });
 
   it("validates tab index operations through the tool layer", async () => {
@@ -429,6 +432,10 @@ describe("MCP server", () => {
 
       expect(result.isError).toBe(true);
       expect(textFromResult(result)).toContain("[stale_ref]");
+      // Message text aligns with Playwright's wording.
+      expect(textFromResult(result)).toContain(
+        "Ref e999 not found in the current page snapshot. Try capturing new snapshot."
+      );
     });
 
     it("accepts doubleClick option", async () => {
@@ -529,6 +536,77 @@ describe("MCP server", () => {
 
       expect(capturedSession).toBeDefined();
       expect(capturedSession!.clickCalls[0]!.target).toEqual({ selector: "button.primary" });
+    });
+  });
+
+  describe("snapshotMode", () => {
+    async function setupClient(options: { snapshotMode?: "full" | "none" } = {}) {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: fakeSessionFactory,
+        ...(options.snapshotMode !== undefined ? { snapshotMode: options.snapshotMode } : {})
+      });
+      cleanupCallbacks.push(async () => bundle.close());
+
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "ws://snapshot-mode.invalid/devtools/browser/1" }
+      });
+      return client;
+    }
+
+    it("appends the updated snapshot to click results by default (full mode)", async () => {
+      const client = await setupClient();
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1" }
+      });
+
+      expect(result.isError).toBeUndefined();
+      const text = textFromResult(result);
+      expect(text).toContain("Snapshot (");
+      expect(text).toContain('button');
+    });
+
+    it("appends the updated snapshot to click results when snapshotMode is full", async () => {
+      const client = await setupClient({ snapshotMode: "full" });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1" }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(textFromResult(result)).toContain("Snapshot (");
+    });
+
+    it("omits the snapshot from click results when snapshotMode is none", async () => {
+      const client = await setupClient({ snapshotMode: "none" });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1" }
+      });
+
+      expect(result.isError).toBeUndefined();
+      const text = textFromResult(result);
+      expect(text).not.toContain("Snapshot (");
+      expect(text).toContain("Clicked");
+    });
+
+    it("still serves explicit browser_snapshot calls when snapshotMode is none", async () => {
+      const client = await setupClient({ snapshotMode: "none" });
+
+      const result = await client.callTool({
+        name: "browser_snapshot",
+        arguments: {}
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(textFromResult(result)).toContain("Snapshot (");
     });
   });
 });

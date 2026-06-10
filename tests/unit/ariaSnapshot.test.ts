@@ -1,10 +1,11 @@
 import { JSDOM } from "jsdom";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ARIA_REF_SELECTOR_EVALUATE_SOURCE,
   ARIA_SNAPSHOT_EVALUATE_SOURCE,
   type AriaSnapshotResult,
-  type ResolvedAriaRefResult
+  type ResolvedAriaRefResult,
+  retryUntilReady
 } from "../../src/ariaSnapshot.js";
 
 function createWindow(html: string) {
@@ -12,6 +13,12 @@ function createWindow(html: string) {
     runScripts: "outside-only",
     url: "https://example.com/"
   }).window;
+  // JSDOM defaults readyState to "loading"; treat fixtures as fully loaded pages
+  // so the injected snapshot script does not short-circuit with a notReady signal.
+  Object.defineProperty(window.document, "readyState", {
+    configurable: true,
+    get: () => "complete"
+  });
   window.HTMLElement.prototype.getBoundingClientRect = function () {
     return {
       x: 0,
@@ -58,7 +65,7 @@ function refForLine(snapshot: AriaSnapshotResult, lineFragment: string): string 
     throw new Error(`Unable to find snapshot line containing "${lineFragment}".\n${snapshot.text}`);
   }
 
-  const match = line.match(/\[ref=(e\d+)\]/);
+  const match = line.match(/\[ref=((?:f\d+)?e\d+)\]/);
   if (!match) {
     throw new Error(`Unable to extract ref from line: ${line}`);
   }
@@ -853,5 +860,233 @@ describe("aria snapshot helpers", () => {
     expect(resolveTopLevelQuerySelector(window, secondResolved.querySelector ?? null)).toBe(
       window.document.getElementById("after")
     );
+  });
+
+  it("assigns flat eN refs to top-level elements and f{n}eN refs to iframe children", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <button id="top">Top button</button>
+          <iframe id="frame-a"></iframe>
+        </body>
+      </html>
+    `);
+    const frameA = window.document.getElementById("frame-a") as HTMLIFrameElement;
+    attachIframeWindow(
+      frameA,
+      `
+        <!doctype html>
+        <html>
+          <body>
+            <button id="inside-a">Inside frame</button>
+          </body>
+        </html>
+      `
+    );
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+
+    const topRef = refForLine(result, 'button "Top button"');
+    const insideRef = refForLine(result, 'button "Inside frame"');
+
+    expect(topRef).toMatch(/^e\d+$/);
+    expect(insideRef).toMatch(/^f1e\d+$/);
+  });
+
+  it("increments the frame index for sibling iframes", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <iframe id="frame-a"></iframe>
+          <iframe id="frame-b"></iframe>
+        </body>
+      </html>
+    `);
+    const frameA = window.document.getElementById("frame-a") as HTMLIFrameElement;
+    const frameB = window.document.getElementById("frame-b") as HTMLIFrameElement;
+    attachIframeWindow(
+      frameA,
+      `<!doctype html><html><body><button>Button A</button></body></html>`
+    );
+    attachIframeWindow(
+      frameB,
+      `<!doctype html><html><body><button>Button B</button></body></html>`
+    );
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+
+    expect(refForLine(result, 'button "Button A"')).toMatch(/^f1e\d+$/);
+    expect(refForLine(result, 'button "Button B"')).toMatch(/^f2e\d+$/);
+  });
+
+  it("assigns a distinct frame index to a nested iframe and keeps the ref resolvable", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <iframe id="outer"></iframe>
+        </body>
+      </html>
+    `);
+    const outerFrame = window.document.getElementById("outer") as HTMLIFrameElement;
+    const outerWindow = attachIframeWindow(
+      outerFrame,
+      `<!doctype html><html><body><iframe id="inner"></iframe></body></html>`
+    );
+    const innerFrame = outerWindow.document.getElementById("inner") as HTMLIFrameElement;
+    const innerWindow = attachIframeWindow(
+      innerFrame,
+      `<!doctype html><html><body><button id="deep">Deep button</button></body></html>`
+    );
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+
+    const deepRef = refForLine(result, 'button "Deep button"');
+    expect(deepRef).toMatch(/^f\d+e\d+$/);
+
+    const resolved = resolveRef({ ref: deepRef });
+    expect(resolved.ok).toBe(true);
+    expect(resolveXpath(innerWindow.document, resolved.xpath ?? null)).toBe(
+      innerWindow.document.getElementById("deep")
+    );
+  });
+});
+
+describe("notReady signal", () => {
+  it("returns notReady when document.body is null", () => {
+    const window = createWindow(`<!doctype html><html><head></head></html>`);
+    Object.defineProperty(window.document, "body", {
+      configurable: true,
+      get: () => null
+    });
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.notReady).toBe(true);
+    expect(result.text).toBe("");
+    expect(result.refs).toEqual({});
+  });
+
+  it("returns notReady when readyState is 'loading'", () => {
+    const window = createWindow(`<!doctype html><html><body><button>Hi</button></body></html>`);
+    Object.defineProperty(window.document, "readyState", {
+      configurable: true,
+      get: () => "loading"
+    });
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.notReady).toBe(true);
+    expect(result.text).toBe("");
+  });
+
+  it("returns normal result when body exists and readyState is 'complete'", () => {
+    const window = createWindow(`<!doctype html><html><body><button>Click me</button></body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.notReady).toBeFalsy();
+    expect(result.text).toContain("Click me");
+  });
+
+  it("returns normal result when readyState is 'interactive'", () => {
+    const window = createWindow(`<!doctype html><html><body><button>Go</button></body></html>`);
+    Object.defineProperty(window.document, "readyState", {
+      configurable: true,
+      get: () => "interactive"
+    });
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.notReady).toBeFalsy();
+    expect(result.text).toContain("Go");
+  });
+});
+
+describe("retryUntilReady", () => {
+  it("returns immediately on first success", async () => {
+    const fn = vi.fn().mockResolvedValue({ text: "ok", refs: {}, title: "", url: "" });
+    const result = await retryUntilReady(fn);
+    expect(result.text).toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries when fn returns notReady, succeeds on second call", async () => {
+    const fn = vi.fn()
+      .mockResolvedValueOnce({ notReady: true, text: "", refs: {}, title: "", url: "" })
+      .mockResolvedValue({ text: "ready", refs: {}, title: "", url: "" });
+    const result = await retryUntilReady(fn, { timeoutMs: 5_000 });
+    expect(result.text).toBe("ready");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries when fn throws, succeeds on next call", async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new Error("context destroyed"))
+      .mockResolvedValue({ text: "alive", refs: {}, title: "", url: "" });
+    const result = await retryUntilReady(fn, { timeoutMs: 5_000 });
+    expect(result.text).toBe("alive");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws TimeoutError when deadline is exceeded", async () => {
+    const fn = vi.fn().mockResolvedValue({ notReady: true, text: "", refs: {}, title: "", url: "" });
+    await expect(retryUntilReady(fn, { timeoutMs: 0 })).rejects.toThrow(
+      "Timed out waiting for the page to be ready for a snapshot."
+    );
+  });
+
+  it("returns after multiple retries before timeout", async () => {
+    let calls = 0;
+    const fn = vi.fn().mockImplementation(() => {
+      calls++;
+      if (calls < 3) return Promise.resolve({ notReady: true, text: "", refs: {}, title: "", url: "" });
+      return Promise.resolve({ text: "done", refs: {}, title: "", url: "" });
+    });
+    const result = await retryUntilReady(fn, { timeoutMs: 10_000 });
+    expect(result.text).toBe("done");
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("cross-iframe depth limiting", () => {
+  function buildNestedIframeWindow() {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <nav>
+            <iframe id="frame"></iframe>
+          </nav>
+        </body>
+      </html>
+    `);
+    const iframeEl = window.document.getElementById("frame") as HTMLIFrameElement;
+    const frameWindow = attachIframeWindow(
+      iframeEl,
+      `<!doctype html><html><body><ul><li><button id="deep-btn">Deep</button></li></ul></body></html>`
+    );
+    return { window, frameWindow };
+  }
+
+  it("depth=3: iframe deep button is excluded (4 levels deep)", () => {
+    const { window } = buildNestedIframeWindow();
+    const { snapshot } = createSnapshotHelpers(window);
+    // nav(0) > iframe(1) > ul(2) > li(3) → button would be depth 4, beyond limit
+    const result = snapshot({ options: { mode: "ai", depth: 3 } });
+    expect(result.text).not.toContain("Deep");
+  });
+
+  it("no depth limit: iframe deep button appears", () => {
+    const { window } = buildNestedIframeWindow();
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.text).toContain("Deep");
+  });
+
+  it("depth=2: iframe top-level list is still visible", () => {
+    const { window } = buildNestedIframeWindow();
+    const { snapshot } = createSnapshotHelpers(window);
+    // nav(0) > iframe(1) > ul(2) is right at the limit — should appear
+    const result = snapshot({ options: { mode: "ai", depth: 2 } });
+    expect(result.text).toContain("list");
   });
 });
