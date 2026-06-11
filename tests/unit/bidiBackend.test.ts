@@ -3,11 +3,26 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BidiBrowserAdapterFactory,
   buildFirefoxLaunchArgs,
-  resetWebDriverModuleForTests,
-  setWebDriverModuleForTests
+  resetBidiClientFactoryForTests,
+  setBidiClientFactoryForTests,
+  WebSocketBidiClient
 } from "../../src/bundle.js";
 
-const attachToSession = vi.fn();
+const createClient = vi.fn();
+
+function createBidiClientStub(overrides: Record<string, unknown> = {}) {
+  return {
+    capabilities: {
+      browserName: "firefox"
+    },
+    close: vi.fn(),
+    on: vi.fn(),
+    removeListener: vi.fn(),
+    sessionStatus: vi.fn(async () => ({})),
+    browsingContextGetTree: vi.fn(async () => ({ contexts: [] })),
+    ...overrides
+  };
+}
 
 describe("buildFirefoxLaunchArgs", () => {
   it("launches Firefox with a temporary profile and BiDi debugging port", () => {
@@ -43,8 +58,8 @@ describe("buildFirefoxLaunchArgs", () => {
 
 describe("BidiBrowserAdapterFactory", () => {
   afterEach(() => {
-    attachToSession.mockReset();
-    resetWebDriverModuleForTests();
+    createClient.mockReset();
+    resetBidiClientFactoryForTests();
     vi.unstubAllGlobals();
   });
 
@@ -52,35 +67,22 @@ describe("BidiBrowserAdapterFactory", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
 
-    attachToSession.mockReturnValue({
-      capabilities: {
-        browserName: "firefox"
-      },
-      sessionStatus: vi.fn(async () => ({})),
-      browsingContextGetTree: vi.fn(async () => ({ contexts: [] })),
-      _bidiHandler: {
-        close: vi.fn()
-      }
-    });
+    const client = createBidiClientStub();
+    createClient.mockResolvedValue(client);
 
     const adapter = new BidiBrowserAdapterFactory().create({
       browserName: "firefox",
       protocol: "bidi",
       wsEndpoint: "ws://127.0.0.1:53453"
     });
-    setWebDriverModuleForTests({
-      attachToSession
-    });
+    setBidiClientFactoryForTests(createClient);
 
     await adapter.connect();
 
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(attachToSession).toHaveBeenCalledWith({
-      sessionId: "bidi-direct",
-      capabilities: {
-        webSocketUrl: "ws://127.0.0.1:53453/session",
-        browserName: "firefox"
-      }
+    expect(createClient).toHaveBeenCalledWith({
+      webSocketUrl: "ws://127.0.0.1:53453/session",
+      browserName: "firefox"
     });
 
     const browser = await adapter.browser();
@@ -91,18 +93,11 @@ describe("BidiBrowserAdapterFactory", () => {
     const sessionEnd = vi.fn(async () => {});
     const close = vi.fn();
 
-    attachToSession.mockReturnValue({
-      capabilities: {
-        browserName: "firefox"
-      },
-      sessionStatus: vi.fn(async () => ({})),
-      browsingContextGetTree: vi.fn(async () => ({ contexts: [] })),
+    const client = createBidiClientStub({
       sessionEnd,
-      _bidiHandler: {
-        waitForConnected: vi.fn(async () => true),
-        close
-      }
+      close
     });
+    createClient.mockResolvedValue(client);
 
     const adapter = new BidiBrowserAdapterFactory().create({
       browserName: "firefox",
@@ -110,18 +105,13 @@ describe("BidiBrowserAdapterFactory", () => {
       wsEndpoint: "ws://127.0.0.1:53453",
       sessionId: "abc123"
     });
-    setWebDriverModuleForTests({
-      attachToSession
-    });
+    setBidiClientFactoryForTests(createClient);
 
     await adapter.connect();
 
-    expect(attachToSession).toHaveBeenCalledWith({
-      sessionId: "abc123",
-      capabilities: {
-        webSocketUrl: "ws://127.0.0.1:53453/session/abc123",
-        browserName: "firefox"
-      }
+    expect(createClient).toHaveBeenCalledWith({
+      webSocketUrl: "ws://127.0.0.1:53453/session/abc123",
+      browserName: "firefox"
     });
 
     const browser = await adapter.browser();
@@ -142,30 +132,22 @@ describe("BidiBrowserAdapterFactory", () => {
     }));
     const close = vi.fn();
 
-    attachToSession.mockReturnValue({
-      capabilities: {
-        browserName: "firefox"
-      },
-      sessionStatus: vi.fn(async () => ({})),
+    const client = createBidiClientStub({
       browsingContextGetTree: vi.fn(async () => {
         throw new Error("session does not exist");
       }),
       sessionNew,
       sessionEnd,
-      _bidiHandler: {
-        waitForConnected: vi.fn(async () => true),
-        close
-      }
+      close
     });
+    createClient.mockResolvedValue(client);
 
     const adapter = new BidiBrowserAdapterFactory().create({
       browserName: "firefox",
       protocol: "bidi",
       wsEndpoint: "ws://127.0.0.1:53453"
     });
-    setWebDriverModuleForTests({
-      attachToSession
-    });
+    setBidiClientFactoryForTests(createClient);
 
     await adapter.connect();
     const browser = await adapter.browser();
@@ -181,5 +163,157 @@ describe("BidiBrowserAdapterFactory", () => {
     expect(sessionEnd).toHaveBeenCalledWith({});
     await adapter.close();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+});
+
+type FakeWebSocketListener = (event?: unknown) => void;
+
+class FakeWebSocket {
+  static readonly OPEN = 1;
+
+  readonly listeners = new Map<string, Set<FakeWebSocketListener>>();
+  readonly sent: string[] = [];
+  readyState = 0;
+  url: string;
+
+  constructor(url: string) {
+    this.url = url;
+    fakeWebSockets.push(this);
+  }
+
+  addEventListener(
+    type: string,
+    listener: FakeWebSocketListener,
+    options?: { once?: boolean }
+  ): void {
+    const listeners = this.listeners.get(type) ?? new Set<FakeWebSocketListener>();
+    if (options?.once) {
+      const wrapped: FakeWebSocketListener = (event) => {
+        listeners.delete(wrapped);
+        listener(event);
+      };
+      listeners.add(wrapped);
+    } else {
+      listeners.add(listener);
+    }
+    this.listeners.set(type, listeners);
+  }
+
+  close(): void {
+    this.readyState = 3;
+    this.emit("close");
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  open(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.emit("open");
+  }
+
+  message(payload: unknown): void {
+    this.emit("message", { data: JSON.stringify(payload) });
+  }
+
+  private emit(type: string, event?: unknown): void {
+    for (const listener of Array.from(this.listeners.get(type) ?? [])) {
+      listener(event);
+    }
+  }
+}
+
+const fakeWebSockets: FakeWebSocket[] = [];
+
+describe("WebSocketBidiClient", () => {
+  afterEach(() => {
+    fakeWebSockets.length = 0;
+    vi.unstubAllGlobals();
+  });
+
+  async function connectClient(): Promise<{
+    client: WebSocketBidiClient;
+    socket: FakeWebSocket;
+  }> {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new WebSocketBidiClient({
+      browserName: "firefox",
+      webSocketUrl: "ws://127.0.0.1:9222/session"
+    });
+    const socket = fakeWebSockets[0]!;
+    const connected = client.connect();
+    socket.open();
+    await connected;
+    return { client, socket };
+  }
+
+  it("matches command responses by id", async () => {
+    const { client, socket } = await connectClient();
+
+    const response = client.sendCommand("session.status", {});
+
+    expect(JSON.parse(socket.sent[0]!)).toEqual({
+      id: 1,
+      method: "session.status",
+      params: {}
+    });
+
+    socket.message({
+      type: "success",
+      id: 1,
+      result: {
+        ready: true,
+        message: "ready"
+      }
+    });
+
+    await expect(response).resolves.toEqual({
+      result: {
+        ready: true,
+        message: "ready"
+      }
+    });
+  });
+
+  it("rejects protocol errors for matching commands", async () => {
+    const { client, socket } = await connectClient();
+
+    const response = client.sendCommand("browsingContext.getTree", {});
+    socket.message({
+      type: "error",
+      id: 1,
+      error: "invalid session id",
+      message: "session does not exist"
+    });
+
+    await expect(response).rejects.toThrow("invalid session id: session does not exist");
+  });
+
+  it("dispatches BiDi event params to listeners", async () => {
+    const { client, socket } = await connectClient();
+    const listener = vi.fn();
+
+    client.on("browsingContext.load", listener);
+    socket.message({
+      type: "event",
+      method: "browsingContext.load",
+      params: {
+        context: "ctx-1"
+      }
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      context: "ctx-1"
+    });
+  });
+
+  it("rejects pending commands when the websocket closes", async () => {
+    const { client, socket } = await connectClient();
+
+    const response = client.sendCommand("session.status", {});
+    socket.close();
+
+    await expect(response).rejects.toThrow("WebDriver BiDi connection closed.");
   });
 });

@@ -2,6 +2,7 @@ node_modules
 dist
 coverage
 .vitest
+.env
 *.tsbuildinfo
 .DS_Store
 .pnpm-store

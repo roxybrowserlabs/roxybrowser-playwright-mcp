@@ -49,8 +49,8 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Client as WebDriverClient } from "webdriver";
-import { getWebDriverModule } from "../../vendor/webdriver.js";
+import type { BidiProtocolClient } from "./client.js";
+import { getBidiClientFactory } from "./client.js";
 
 const BIDI_CAPABILITIES: ProtocolCapabilities = {
   protocol: "bidi",
@@ -355,7 +355,7 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
   readonly protocol = "bidi" as const;
   readonly capabilities = BIDI_CAPABILITIES;
 
-  private client: WebDriverClient | undefined;
+  private client: BidiProtocolClient | undefined;
   private ownsSession = false;
   private spawnedProcess: ReturnType<typeof spawn> | undefined;
   private userDataDir: string | undefined;
@@ -402,10 +402,7 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
     }
 
     try {
-      // Close the BiDi WebSocket directly — deleteSession() would attempt an
-      // HTTP request to geckodriver which does not exist in this connection mode.
-      (this.client as unknown as { _bidiHandler?: { close?: () => void } })
-        ._bidiHandler?.close?.();
+      this.client.close();
     } finally {
       this.client = undefined;
       this.ownsSession = false;
@@ -421,7 +418,7 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
 
 class BidiBrowserSession implements ProtocolBrowserSession {
   constructor(
-    private readonly client: WebDriverClient,
+    private readonly client: BidiProtocolClient,
     private readonly ownsSession: boolean
   ) {}
 
@@ -451,7 +448,7 @@ class BidiBrowserSession implements ProtocolBrowserSession {
 
 class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   constructor(
-    private readonly client: WebDriverClient,
+    private readonly client: BidiProtocolClient,
     private readonly userContext: string | undefined,
     private readonly options: BrowserContextOptions
   ) {}
@@ -496,7 +493,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
 
   static async create(
-    client: WebDriverClient,
+    client: BidiProtocolClient,
     contextId: string,
     contextOptions: BrowserContextOptions
   ): Promise<BidiPageAdapter> {
@@ -506,7 +503,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   private constructor(
-    private readonly client: WebDriverClient,
+    private readonly client: BidiProtocolClient,
     private readonly contextId: string,
     private readonly contextOptions: BrowserContextOptions
   ) {}
@@ -651,6 +648,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     const targetState = state ?? "load";
     if (targetState === "commit" || this.isStateSatisfied(targetState)) {
+      return;
+    }
+
+    if (await this.isCurrentDocumentReadyFor(targetState)) {
       return;
     }
 
@@ -1522,6 +1523,20 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     }
   }
 
+  private async isCurrentDocumentReadyFor(
+    state: NonNullable<PageGotoOptions["waitUntil"]>
+  ): Promise<boolean> {
+    try {
+      const readyState = await this.evaluateExpression<string>("document.readyState");
+      if (state === "domcontentloaded") {
+        return readyState === "interactive" || readyState === "complete";
+      }
+      return readyState === "complete";
+    } catch {
+      return false;
+    }
+  }
+
   private flushWaiters(): void {
     for (const waiter of Array.from(this.stateWaiters)) {
       if (this.isStateSatisfied(waiter.state)) {
@@ -1847,45 +1862,34 @@ async function connectBidiFromWsEndpoint(
   sessionId?: string
 ): Promise<BidiConnectionResult> {
   const bidiEndpoint = buildFirefoxBidiEndpoint(wsEndpoint, sessionId);
-  const client = getWebDriverModule().attachToSession({
-    sessionId: sessionId || "bidi-direct",
-    capabilities: {
-      // Firefox BiDi endpoints are direct WebSocket connections and do not
-      // expose CDP-style discovery endpoints such as /json/version.
-      webSocketUrl: bidiEndpoint,
-      browserName: "firefox"
-    } as { webSocketUrl: string; browserName: string }
-  } as never);
+  // Firefox BiDi endpoints are direct WebSocket connections and do not expose
+  // CDP-style discovery endpoints such as /json/version.
+  const client = await getBidiClientFactory()({
+    webSocketUrl: bidiEndpoint,
+    browserName: "firefox"
+  });
 
-  const bidiHandler = (client as unknown as {
-    _bidiHandler?: {
-      waitForConnected?: () => Promise<boolean>;
+  try {
+    const ownsSession = await ensureBiDiSession(client, sessionId, wsEndpoint);
+    return {
+      client,
+      ownsSession
     };
-  })._bidiHandler;
-
-  if (bidiHandler?.waitForConnected) {
-    const connected = await bidiHandler.waitForConnected();
-    if (!connected) {
-      throw new Error(`Failed to establish a WebDriver BiDi connection to ${bidiEndpoint}.`);
-    }
+  } catch (error) {
+    client.close();
+    throw error;
   }
-
-  const ownsSession = await ensureBiDiSession(client, sessionId, wsEndpoint);
-  return {
-    client,
-    ownsSession
-  };
 }
 
 interface FirefoxLaunchResult {
-  client: WebDriverClient;
+  client: BidiProtocolClient;
   process: ReturnType<typeof spawn> | undefined;
   ownsSession: boolean;
   userDataDir: string;
 }
 
 interface BidiConnectionResult {
-  client: WebDriverClient;
+  client: BidiProtocolClient;
   ownsSession: boolean;
 }
 
@@ -2052,7 +2056,7 @@ function isSessionSpecificFirefoxBidiEndpoint(wsEndpoint: string): boolean {
 }
 
 async function ensureBiDiSession(
-  client: WebDriverClient,
+  client: BidiProtocolClient,
   sessionId: string | undefined,
   wsEndpoint: string
 ): Promise<boolean> {

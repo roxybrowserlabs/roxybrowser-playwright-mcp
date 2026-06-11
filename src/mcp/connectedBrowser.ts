@@ -1,11 +1,11 @@
 import * as cdpModule from "chrome-remote-interface";
-import type { Client as WebDriverClient } from "webdriver";
 import {
   ARIA_SNAPSHOT_EVALUATE_SOURCE,
   normalizeAriaSnapshotOptions,
   type AriaSnapshotResult
 } from "../ariaSnapshot.js";
-import { getWebDriverModule } from "../vendor/webdriver.js";
+import type { BidiProtocolClient } from "../protocol/bidi/client.js";
+import { getBidiClientFactory } from "../protocol/bidi/client.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
 import type {
@@ -142,7 +142,7 @@ async function evaluateCdp<TResult>(
 }
 
 async function evaluateBiDi<TResult>(
-  client: WebDriverClient,
+  client: BidiProtocolClient,
   contextId: string,
   functionSource: string,
   arg?: unknown
@@ -473,7 +473,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
   private activeTabId: string | undefined;
 
-  private constructor(private readonly client: WebDriverClient) {}
+  private constructor(private readonly client: BidiProtocolClient) {}
 
   static async connect(args: RoxyBrowserConnectArgs): Promise<BidiConnectedBrowserSession> {
     if (args.browser && args.browser !== "firefox") {
@@ -491,20 +491,10 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       );
     }
 
-    const client = getWebDriverModule().attachToSession({
-      sessionId: "roxybrowser-mcp",
-      capabilities: {
-        browserName: "firefox",
-        webSocketUrl: args.endpoint
-      } as { webSocketUrl: string; browserName: string }
-    } as never) as WebDriverClient & {
-      _bidiHandler?: {
-        waitForConnected(): Promise<boolean>;
-        close(): Promise<void>;
-      };
-    };
-
-    await client._bidiHandler?.waitForConnected();
+    const client = await getBidiClientFactory()({
+      browserName: "firefox",
+      webSocketUrl: args.endpoint
+    });
 
     const session = new BidiConnectedBrowserSession(client);
     const tabs = await session.refreshTabs();
@@ -645,7 +635,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
     await this.client.inputPerformActions({
       context: tabId,
-      actions: actions as Parameters<typeof this.client.inputPerformActions>[0]["actions"]
+      actions
     });
     await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
   }
@@ -692,13 +682,8 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async close(): Promise<void> {
-    const internalClient = this.client as WebDriverClient & {
-      _bidiHandler?: {
-        close(): Promise<void>;
-      };
-    };
     await this.client.sessionEnd({}).catch(() => {});
-    await internalClient._bidiHandler?.close().catch(() => {});
+    this.client.close();
   }
 
   private async refreshTabs(): Promise<BrowserTab[]> {

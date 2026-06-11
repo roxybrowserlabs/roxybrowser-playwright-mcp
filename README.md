@@ -31,7 +31,7 @@ This branch establishes the package scaffold, API shape, and protocol boundaries
 
 The e2e suite writes a temporary HTML fixture, launches Chrome or Edge in headless mode, and verifies the public API against a real page through CDP. If auto-detection is not enough for your machine or CI image, set `ROXY_E2E_EXECUTABLE_PATH` to a Chromium-based browser binary before running the e2e command.
 
-The BiDi e2e suite prefers connecting to an existing Firefox BiDi websocket when `ROXY_BIDI_WS_ENDPOINT` is set. This is the recommended path when your local environment already knows how to start Firefox or expose a BiDi endpoint. Without that variable, the suite falls back to launching a local Firefox binary and will use `ROXY_BIDI_EXECUTABLE_PATH` when provided.
+The BiDi e2e suite prefers connecting to an existing Firefox BiDi websocket when `ROXY_BIDI_WS_ENDPOINT` is set. Without that variable, it can use the RoxyBrowser local API when `ROXYBROWSER_API_TOKEN` is configured: it finds a matching Firefox profile, opens it, and derives the BiDi websocket from the profile connection info. If neither is configured, the suite falls back to launching a local Firefox binary and will use `ROXY_BIDI_EXECUTABLE_PATH` when provided. See `.env.example` for the supported local settings.
 
 ## Browser launch
 

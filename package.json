@@ -30,6 +30,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:unit:bundle": "pnpm build:bundle && vitest run --config vitest.bundle.config.ts",
+    "test:mcp-parity": "pnpm build:bundle && vitest run --config vitest.mcp-parity.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:e2e:bidi": "vitest run --config vitest.e2e.bidi.config.ts",
     "example:launch": "pnpm build && node ./examples/launch-local-browser.mjs",
@@ -44,15 +45,18 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "chrome-remote-interface": "^0.33.3",
-    "webdriver": "^9.27.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/mcp": "0.0.76",
     "@types/chrome-remote-interface": "^0.34.0",
     "@types/node": "^24.1.0",
     "@vitest/coverage-v8": "^4.1.6",
     "jsdom": "^29.1.1",
-    "typescript": "^5.6.3",
-    "vitest": "^4.1.6"
+    "playwright": "1.61.0-alpha-1781023400000",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.6",
+    "webdriver-bidi-protocol": "^0.4.2"
   }
 }

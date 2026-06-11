@@ -30,6 +30,11 @@ export {
   buildFirefoxLaunchArgs
 } from "./protocol/bidi/backend.js";
 export {
+  resetBidiClientFactoryForTests,
+  setBidiClientFactoryForTests,
+  WebSocketBidiClient
+} from "./protocol/bidi/client.js";
+export {
   buildChromiumLaunchArgs,
   CdpBrowserAdapterFactory,
   resolveExecutableCandidates
@@ -37,8 +42,3 @@ export {
 export { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 export { DefaultHumanController } from "./human/controller.js";
 export { resolveHumanizationOptions } from "./human/profile.js";
-export {
-  getWebDriverModule,
-  resetWebDriverModuleForTests,
-  setWebDriverModuleForTests
-} from "./vendor/webdriver.js";

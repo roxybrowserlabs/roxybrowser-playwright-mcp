@@ -25,7 +25,7 @@ describe("browser e2e (bidi/firefox)", () => {
         try {
           await page.goto(fixture.url, { waitUntil: "load" });
 
-          expect(await browser.version()).toMatch(/Firefox/);
+          expect(await browser.version()).toMatch(/firefox/i);
           expect(await page.title()).toBe("Roxy E2E");
           expect(await page.getByRole("textbox", { name: "Name" }).isVisible()).toBe(true);
 
