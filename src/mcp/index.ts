@@ -9,6 +9,7 @@ export type {
   BrowserSnapshotRequest,
   BrowserSnapshotToolArgs,
   BrowserTab,
+  ClickTarget,
   ConnectedBrowserSession,
   CreateRoxyBrowserMcpServerOptions,
   RoxyBrowserConnectArgs,
@@ -16,6 +17,9 @@ export type {
   RoxyBrowserMcpInMemoryBundle,
   RoxyBrowserMcpServerBundle,
   RoxyBrowserMcpStdioBundle,
+  SessionClickOptions,
+  SessionTypeOptions,
+  SnapshotMode,
   StartRoxyBrowserMcpHttpOptions,
   StartRoxyBrowserMcpStdioOptions
 } from "./types.js";

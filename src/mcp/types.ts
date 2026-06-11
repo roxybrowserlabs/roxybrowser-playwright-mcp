@@ -56,6 +56,16 @@ export interface ConnectedBrowserSession {
   snapshot(request?: BrowserSnapshotRequest): Promise<BrowserSnapshot>;
   click(target: ClickTarget, options: SessionClickOptions): Promise<void>;
   hover(target: ClickTarget): Promise<void>;
+  navigate(url: string): Promise<void>;
+  type(target: ClickTarget, text: string, options?: SessionTypeOptions): Promise<void>;
+  pressKey(key: string, modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">): Promise<void>;
+  selectOption(target: ClickTarget, values: string[]): Promise<string[]>;
+  check(target: ClickTarget, checked: boolean): Promise<void>;
+  goBack(): Promise<void>;
+  goForward(): Promise<void>;
+  scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void>;
+  screenshot(): Promise<string>;
+  uploadFile(target: ClickTarget, filePaths: string[]): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -68,9 +78,15 @@ export interface SessionClickOptions {
   clickHoldMs: number;
 }
 
+export interface SessionTypeOptions {
+  submit?: boolean;
+}
+
 export type BrowserSessionFactory = (
   args: RoxyBrowserConnectArgs
 ) => Promise<ConnectedBrowserSession>;
+
+export type SnapshotMode = "full" | "none";
 
 export interface CreateRoxyBrowserMcpServerOptions {
   sessionFactory?: BrowserSessionFactory;
@@ -78,6 +94,7 @@ export interface CreateRoxyBrowserMcpServerOptions {
     name?: string;
     version?: string;
   };
+  snapshotMode?: SnapshotMode;
 }
 
 export interface StartRoxyBrowserMcpHttpOptions extends CreateRoxyBrowserMcpServerOptions {

@@ -10,13 +10,18 @@ import type {
   ClickTarget,
   CreateRoxyBrowserMcpServerOptions,
   SessionClickOptions,
-  SnapshotCacheEntry
+  SnapshotCacheEntry,
+  SnapshotMode
 } from "./types.js";
 import { resolveHumanizationOptions, jitter } from "../human/profile.js";
 import type { HumanizationOptions } from "../types/options.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function staleRefMessage(ref: string): string {
+  return `Ref ${ref} not found in the current page snapshot. Try capturing new snapshot.`;
 }
 
 export class McpRuntime {
@@ -27,8 +32,14 @@ export class McpRuntime {
     | undefined;
   private tabs: BrowserTab[] = [];
   private snapshotCache: SnapshotCacheEntry | undefined;
+  private readonly snapshotMode: SnapshotMode;
 
-  constructor(private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession) {}
+  constructor(
+    private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession,
+    options: { snapshotMode?: SnapshotMode } = {}
+  ) {
+    this.snapshotMode = options.snapshotMode ?? "full";
+  }
 
   async connect(args: Parameters<BrowserSessionFactory>[0]): Promise<{
     browserName: string;
@@ -164,7 +175,7 @@ export class McpRuntime {
       modifiers?: string[];
       human?: { profile?: string };
     }
-  ): Promise<BrowserSnapshot> {
+  ): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const resolved = this.resolveTarget(target);
     const humanOpts = resolveHumanizationOptions(opts?.human as HumanizationOptions | undefined);
@@ -181,6 +192,9 @@ export class McpRuntime {
     } as SessionClickOptions);
 
     this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
     return this.snapshot();
   }
 
@@ -189,6 +203,156 @@ export class McpRuntime {
     const resolved = this.resolveTarget(ref);
     await session.hover(resolved);
     this.invalidateSnapshot();
+  }
+
+  async navigate(url: string): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.navigate(url);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async type(
+    ref: string,
+    text: string,
+    opts?: { submit?: boolean }
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    await session.type(resolved, text, opts);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async pressKey(
+    key: string,
+    modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.pressKey(key, modifiers);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async selectOption(
+    ref: string,
+    values: string[]
+  ): Promise<{ selected: string[]; snapshot?: BrowserSnapshot }> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    const selected = await session.selectOption(resolved, values);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return { selected };
+    }
+    return { selected, snapshot: await this.snapshot() };
+  }
+
+  async check(
+    ref: string,
+    checked: boolean
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    await session.check(resolved, checked);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async goBack(): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.goBack();
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async goForward(): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.goForward();
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async scroll(
+    ref: string | null,
+    deltaX: number,
+    deltaY: number
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = ref !== null ? this.resolveTarget(ref) : null;
+    await session.scroll(resolved, deltaX, deltaY);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async takeScreenshot(): Promise<string> {
+    const session = this.requireConnected();
+    return session.screenshot();
+  }
+
+  async uploadFile(ref: string, paths: string[]): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    await session.uploadFile(resolved, paths);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async waitFor(
+    condition: { text?: string; url?: string },
+    timeoutMs = 5000
+  ): Promise<BrowserSnapshot> {
+    const deadline = Date.now() + timeoutMs;
+    const poll = async (): Promise<BrowserSnapshot> => {
+      this.invalidateSnapshot();
+      const snap = await this.snapshot();
+      if (condition.text && !snap.text.includes(condition.text)) {
+        if (Date.now() >= deadline) {
+          throw new McpToolError(
+            "timeout",
+            `Timed out after ${timeoutMs}ms waiting for text "${condition.text}" to appear.`
+          );
+        }
+        await delay(250);
+        return poll();
+      }
+      if (condition.url && !snap.url.includes(condition.url)) {
+        if (Date.now() >= deadline) {
+          throw new McpToolError(
+            "timeout",
+            `Timed out after ${timeoutMs}ms waiting for URL to contain "${condition.url}".`
+          );
+        }
+        await delay(250);
+        return poll();
+      }
+      return snap;
+    };
+    return poll();
   }
 
   invalidateSnapshot(): void {
@@ -230,17 +394,11 @@ export class McpRuntime {
 
     if (/^(f\d+)?e\d+$/.test(target)) {
       if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
-        throw new McpToolError(
-          "stale_ref",
-          'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
-        );
+        throw new McpToolError("stale_ref", staleRefMessage(target));
       }
       const token = this.snapshotCache.refs[target];
       if (!token) {
-        throw new McpToolError(
-          "stale_ref",
-          `Ref "${target}" is no longer valid. Call "browser_snapshot" again.`
-        );
+        throw new McpToolError("stale_ref", staleRefMessage(target));
       }
       return { nodeToken: token };
     }
@@ -251,18 +409,12 @@ export class McpRuntime {
   private resolveRef(ref: string): string {
     const activeTab = this.requireActiveTab();
     if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
-      throw new McpToolError(
-        "stale_ref",
-        'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
-      );
+      throw new McpToolError("stale_ref", staleRefMessage(ref));
     }
 
     const token = this.snapshotCache.refs[ref];
     if (!token) {
-      throw new McpToolError(
-        "stale_ref",
-        `Ref "${ref}" is no longer valid. Call "browser_snapshot" again.`
-      );
+      throw new McpToolError("stale_ref", staleRefMessage(ref));
     }
 
     return token;
@@ -280,18 +432,8 @@ export class McpRuntime {
       }
     }
 
-    if (/^e\d+$/.test(target)) {
-      if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
-        throw new McpToolError(
-          "stale_ref",
-          'No fresh snapshot is available for the active tab. Call "browser_snapshot" again.'
-        );
-      }
-
-      throw new McpToolError(
-        "stale_ref",
-        `Ref "${target}" is no longer valid. Call "browser_snapshot" again.`
-      );
+    if (/^(f\d+)?e\d+$/.test(target)) {
+      throw new McpToolError("stale_ref", staleRefMessage(target));
     }
 
     return {
@@ -312,7 +454,10 @@ export class McpRuntime {
 export class McpRuntimeManager {
   private readonly runtimes = new Map<string, McpRuntime>();
 
-  constructor(private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"]) {}
+  constructor(
+    private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"],
+    private readonly options: { snapshotMode?: SnapshotMode } = {}
+  ) {}
 
   getRuntime(sessionId = "default"): McpRuntime {
     const existing = this.runtimes.get(sessionId);
@@ -320,7 +465,9 @@ export class McpRuntimeManager {
       return existing;
     }
 
-    const runtime = new McpRuntime(this.sessionFactory);
+    const runtime = new McpRuntime(this.sessionFactory, {
+      ...(this.options.snapshotMode !== undefined ? { snapshotMode: this.options.snapshotMode } : {})
+    });
     this.runtimes.set(sessionId, runtime);
     return runtime;
   }

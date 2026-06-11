@@ -1,10 +1,11 @@
 import { JSDOM } from "jsdom";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ARIA_REF_SELECTOR_EVALUATE_SOURCE,
   ARIA_SNAPSHOT_EVALUATE_SOURCE,
   type AriaSnapshotResult,
-  type ResolvedAriaRefResult
+  type ResolvedAriaRefResult,
+  retryUntilReady
 } from "../../src/ariaSnapshot.js";
 
 function createWindow(html: string) {
@@ -12,6 +13,12 @@ function createWindow(html: string) {
     runScripts: "outside-only",
     url: "https://example.com/"
   }).window;
+  // JSDOM defaults readyState to "loading"; treat fixtures as fully loaded pages
+  // so the injected snapshot script does not short-circuit with a notReady signal.
+  Object.defineProperty(window.document, "readyState", {
+    configurable: true,
+    get: () => "complete"
+  });
   window.HTMLElement.prototype.getBoundingClientRect = function () {
     return {
       x: 0,
@@ -58,7 +65,7 @@ function refForLine(snapshot: AriaSnapshotResult, lineFragment: string): string 
     throw new Error(`Unable to find snapshot line containing "${lineFragment}".\n${snapshot.text}`);
   }
 
-  const match = line.match(/\[ref=(e\d+)\]/);
+  const match = line.match(/\[ref=((?:f\d+)?e\d+)\]/);
   if (!match) {
     throw new Error(`Unable to extract ref from line: ${line}`);
   }
@@ -853,5 +860,423 @@ describe("aria snapshot helpers", () => {
     expect(resolveTopLevelQuerySelector(window, secondResolved.querySelector ?? null)).toBe(
       window.document.getElementById("after")
     );
+  });
+
+  it("assigns flat eN refs to top-level elements and f{n}eN refs to iframe children", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <button id="top">Top button</button>
+          <iframe id="frame-a"></iframe>
+        </body>
+      </html>
+    `);
+    const frameA = window.document.getElementById("frame-a") as HTMLIFrameElement;
+    attachIframeWindow(
+      frameA,
+      `
+        <!doctype html>
+        <html>
+          <body>
+            <button id="inside-a">Inside frame</button>
+          </body>
+        </html>
+      `
+    );
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+
+    const topRef = refForLine(result, 'button "Top button"');
+    const insideRef = refForLine(result, 'button "Inside frame"');
+
+    expect(topRef).toMatch(/^e\d+$/);
+    expect(insideRef).toMatch(/^f1e\d+$/);
+  });
+
+  it("increments the frame index for sibling iframes", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <iframe id="frame-a"></iframe>
+          <iframe id="frame-b"></iframe>
+        </body>
+      </html>
+    `);
+    const frameA = window.document.getElementById("frame-a") as HTMLIFrameElement;
+    const frameB = window.document.getElementById("frame-b") as HTMLIFrameElement;
+    attachIframeWindow(
+      frameA,
+      `<!doctype html><html><body><button>Button A</button></body></html>`
+    );
+    attachIframeWindow(
+      frameB,
+      `<!doctype html><html><body><button>Button B</button></body></html>`
+    );
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+
+    expect(refForLine(result, 'button "Button A"')).toMatch(/^f1e\d+$/);
+    expect(refForLine(result, 'button "Button B"')).toMatch(/^f2e\d+$/);
+  });
+
+  it("assigns a distinct frame index to a nested iframe and keeps the ref resolvable", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <iframe id="outer"></iframe>
+        </body>
+      </html>
+    `);
+    const outerFrame = window.document.getElementById("outer") as HTMLIFrameElement;
+    const outerWindow = attachIframeWindow(
+      outerFrame,
+      `<!doctype html><html><body><iframe id="inner"></iframe></body></html>`
+    );
+    const innerFrame = outerWindow.document.getElementById("inner") as HTMLIFrameElement;
+    const innerWindow = attachIframeWindow(
+      innerFrame,
+      `<!doctype html><html><body><button id="deep">Deep button</button></body></html>`
+    );
+    const { snapshot, resolveRef } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+
+    const deepRef = refForLine(result, 'button "Deep button"');
+    expect(deepRef).toMatch(/^f\d+e\d+$/);
+
+    const resolved = resolveRef({ ref: deepRef });
+    expect(resolved.ok).toBe(true);
+    expect(resolveXpath(innerWindow.document, resolved.xpath ?? null)).toBe(
+      innerWindow.document.getElementById("deep")
+    );
+  });
+});
+
+describe("notReady signal", () => {
+  it("returns notReady when document.body is null", () => {
+    const window = createWindow(`<!doctype html><html><head></head></html>`);
+    Object.defineProperty(window.document, "body", {
+      configurable: true,
+      get: () => null
+    });
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.notReady).toBe(true);
+    expect(result.text).toBe("");
+    expect(result.refs).toEqual({});
+  });
+
+  it("returns notReady when readyState is 'loading'", () => {
+    const window = createWindow(`<!doctype html><html><body><button>Hi</button></body></html>`);
+    Object.defineProperty(window.document, "readyState", {
+      configurable: true,
+      get: () => "loading"
+    });
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.notReady).toBe(true);
+    expect(result.text).toBe("");
+  });
+
+  it("returns normal result when body exists and readyState is 'complete'", () => {
+    const window = createWindow(`<!doctype html><html><body><button>Click me</button></body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.notReady).toBeFalsy();
+    expect(result.text).toContain("Click me");
+  });
+
+  it("returns normal result when readyState is 'interactive'", () => {
+    const window = createWindow(`<!doctype html><html><body><button>Go</button></body></html>`);
+    Object.defineProperty(window.document, "readyState", {
+      configurable: true,
+      get: () => "interactive"
+    });
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.notReady).toBeFalsy();
+    expect(result.text).toContain("Go");
+  });
+});
+
+describe("retryUntilReady", () => {
+  it("returns immediately on first success", async () => {
+    const fn = vi.fn().mockResolvedValue({ text: "ok", refs: {}, title: "", url: "" });
+    const result = await retryUntilReady(fn);
+    expect(result.text).toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries when fn returns notReady, succeeds on second call", async () => {
+    const fn = vi.fn()
+      .mockResolvedValueOnce({ notReady: true, text: "", refs: {}, title: "", url: "" })
+      .mockResolvedValue({ text: "ready", refs: {}, title: "", url: "" });
+    const result = await retryUntilReady(fn, { timeoutMs: 5_000 });
+    expect(result.text).toBe("ready");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries when fn throws, succeeds on next call", async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new Error("context destroyed"))
+      .mockResolvedValue({ text: "alive", refs: {}, title: "", url: "" });
+    const result = await retryUntilReady(fn, { timeoutMs: 5_000 });
+    expect(result.text).toBe("alive");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws TimeoutError when deadline is exceeded", async () => {
+    const fn = vi.fn().mockResolvedValue({ notReady: true, text: "", refs: {}, title: "", url: "" });
+    await expect(retryUntilReady(fn, { timeoutMs: 0 })).rejects.toThrow(
+      "Timed out waiting for the page to be ready for a snapshot."
+    );
+  });
+
+  it("returns after multiple retries before timeout", async () => {
+    let calls = 0;
+    const fn = vi.fn().mockImplementation(() => {
+      calls++;
+      if (calls < 3) return Promise.resolve({ notReady: true, text: "", refs: {}, title: "", url: "" });
+      return Promise.resolve({ text: "done", refs: {}, title: "", url: "" });
+    });
+    const result = await retryUntilReady(fn, { timeoutMs: 10_000 });
+    expect(result.text).toBe("done");
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("cross-iframe depth limiting", () => {
+  function buildNestedIframeWindow() {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <nav>
+            <iframe id="frame"></iframe>
+          </nav>
+        </body>
+      </html>
+    `);
+    const iframeEl = window.document.getElementById("frame") as HTMLIFrameElement;
+    const frameWindow = attachIframeWindow(
+      iframeEl,
+      `<!doctype html><html><body><ul><li><button id="deep-btn">Deep</button></li></ul></body></html>`
+    );
+    return { window, frameWindow };
+  }
+
+  it("depth=3: iframe deep button is excluded (4 levels deep)", () => {
+    const { window } = buildNestedIframeWindow();
+    const { snapshot } = createSnapshotHelpers(window);
+    // nav(0) > iframe(1) > ul(2) > li(3) → button would be depth 4, beyond limit
+    const result = snapshot({ options: { mode: "ai", depth: 3 } });
+    expect(result.text).not.toContain("Deep");
+  });
+
+  it("no depth limit: iframe deep button appears", () => {
+    const { window } = buildNestedIframeWindow();
+    const { snapshot } = createSnapshotHelpers(window);
+    const result = snapshot({ options: { mode: "ai" } });
+    expect(result.text).toContain("Deep");
+  });
+
+  it("depth=2: iframe top-level list is still visible", () => {
+    const { window } = buildNestedIframeWindow();
+    const { snapshot } = createSnapshotHelpers(window);
+    // nav(0) > iframe(1) > ul(2) is right at the limit — should appear
+    const result = snapshot({ options: { mode: "ai", depth: 2 } });
+    expect(result.text).toContain("list");
+  });
+});
+
+describe("aria state attributes", () => {
+  function snapshotOf(html: string) {
+    const window = createWindow(`<!doctype html><html><body>${html}</body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    return snapshot({ options: { mode: "ai" } }).text;
+  }
+
+  it("renders [disabled] for a disabled button", () => {
+    expect(snapshotOf(`<button disabled>Save</button>`)).toContain('button "Save" [disabled]');
+  });
+
+  it("renders [disabled] for aria-disabled=true", () => {
+    expect(snapshotOf(`<div role="button" aria-disabled="true">Save</div>`)).toContain("[disabled]");
+  });
+
+  it("does not render [disabled] when aria-disabled=false", () => {
+    expect(snapshotOf(`<button aria-disabled="false">Save</button>`)).not.toContain("[disabled]");
+  });
+
+  it("renders [checked] for a checked checkbox", () => {
+    expect(snapshotOf(`<input type="checkbox" checked aria-label="agree" />`)).toContain("[checked]");
+  });
+
+  it("renders [checked=mixed] for aria-checked=mixed", () => {
+    expect(snapshotOf(`<div role="checkbox" aria-checked="mixed">Partial</div>`)).toContain("[checked=mixed]");
+  });
+
+  it("renders [checked=mixed] for an indeterminate checkbox", () => {
+    const window = createWindow(`<!doctype html><html><body><input id="cb" type="checkbox" aria-label="agree" /></body></html>`);
+    (window.document.getElementById("cb") as HTMLInputElement).indeterminate = true;
+    const { snapshot } = createSnapshotHelpers(window);
+    expect(snapshot({ options: { mode: "ai" } }).text).toContain("[checked=mixed]");
+  });
+
+  it("renders [expanded] for aria-expanded=true", () => {
+    expect(snapshotOf(`<button aria-expanded="true">Menu</button>`)).toContain('button "Menu" [expanded]');
+  });
+
+  it("renders [collapsed] for aria-expanded=false", () => {
+    expect(snapshotOf(`<button aria-expanded="false">Menu</button>`)).toContain('button "Menu" [collapsed]');
+  });
+
+  it("renders [expanded] for an open details element", () => {
+    expect(snapshotOf(`<details open><summary>More</summary><p>Body</p></details>`)).toContain("[expanded]");
+  });
+
+  it("renders [pressed] for aria-pressed=true", () => {
+    expect(snapshotOf(`<button aria-pressed="true">Bold</button>`)).toContain('button "Bold" [pressed]');
+  });
+
+  it("renders [pressed=mixed] for aria-pressed=mixed", () => {
+    expect(snapshotOf(`<button aria-pressed="mixed">Bold</button>`)).toContain("[pressed=mixed]");
+  });
+
+  it("renders [selected] for aria-selected=true", () => {
+    expect(snapshotOf(`<div role="tab" aria-selected="true">Tab 1</div>`)).toContain("[selected]");
+  });
+
+  it("renders [level] from aria-level", () => {
+    expect(snapshotOf(`<div role="heading" aria-level="3">Title</div>`)).toContain("[level=3]");
+  });
+
+  it("orders states as checked, disabled, expanded, level, pressed, selected", () => {
+    const text = snapshotOf(
+      `<div role="checkbox" aria-checked="true" aria-disabled="true" aria-expanded="true" aria-pressed="true" aria-selected="true">All</div>`
+    );
+    const line = text.split("\n").find((l) => l.includes("All"))!;
+    const idxChecked = line.indexOf("[checked]");
+    const idxDisabled = line.indexOf("[disabled]");
+    const idxExpanded = line.indexOf("[expanded]");
+    const idxPressed = line.indexOf("[pressed]");
+    const idxSelected = line.indexOf("[selected]");
+    expect(idxChecked).toBeGreaterThan(-1);
+    expect(idxChecked).toBeLessThan(idxDisabled);
+    expect(idxDisabled).toBeLessThan(idxExpanded);
+    expect(idxExpanded).toBeLessThan(idxPressed);
+    expect(idxPressed).toBeLessThan(idxSelected);
+  });
+});
+
+describe("aria-hidden and presentation filtering", () => {
+  function snapshotOf(html: string) {
+    const window = createWindow(`<!doctype html><html><body>${html}</body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    return snapshot({ options: { mode: "ai" } }).text;
+  }
+
+  it("excludes an aria-hidden=true element", () => {
+    const text = snapshotOf(`<button aria-hidden="true">Hidden</button><button>Shown</button>`);
+    expect(text).not.toContain("Hidden");
+    expect(text).toContain("Shown");
+  });
+
+  it("excludes descendants of an aria-hidden=true container", () => {
+    const text = snapshotOf(`<div aria-hidden="true"><button>Deep hidden</button></div><button>Visible</button>`);
+    expect(text).not.toContain("Deep hidden");
+    expect(text).toContain("Visible");
+  });
+
+  it("strips semantics for role=presentation but keeps children", () => {
+    const text = snapshotOf(`<ul role="presentation"><li>Item</li></ul>`);
+    // The ul's "list" role is stripped; listitem children are promoted to the body level
+    expect(text).not.toMatch(/- list[^i]/); // no "- list" followed by non-"i" (avoids matching listitem)
+    expect(text).toContain("Item");
+  });
+
+  it("strips semantics for role=none but keeps children", () => {
+    const text = snapshotOf(`<table role="none"><tr><td>Cell</td></tr></table>`);
+    expect(text).not.toContain("- table");
+    expect(text).toContain("Cell");
+  });
+
+  it("treats an img with empty alt as presentation", () => {
+    const text = snapshotOf(`<img alt="" src="x.png" /><img alt="Logo" src="y.png" />`);
+    // empty-alt img is stripped (presentation); named img is kept
+    expect(text).not.toMatch(/- img\s+\[/); // no unnamed img line (no name = role-only line)
+    expect(text).toContain('img "Logo"');
+  });
+});
+
+describe("inferRole completeness", () => {
+  function snapshotOf(html: string) {
+    const window = createWindow(`<!doctype html><html><body>${html}</body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    return snapshot({ options: { mode: "ai" } }).text;
+  }
+
+  it("maps table elements to table/rowgroup/row/columnheader/cell", () => {
+    const text = snapshotOf(`
+      <table>
+        <thead><tr><th>Name</th></tr></thead>
+        <tbody><tr><td>Alice</td></tr></tbody>
+      </table>
+    `);
+    expect(text).toContain("- table");
+    expect(text).toContain("- rowgroup");
+    expect(text).toContain("- row");
+    expect(text).toContain("- columnheader");
+    expect(text).toContain("- cell");
+  });
+
+  it("maps th[scope=row] to rowheader", () => {
+    expect(snapshotOf(`<table><tr><th scope="row">Total</th><td>5</td></tr></table>`)).toContain("- rowheader");
+  });
+
+  it("maps dialog to dialog role", () => {
+    const window = createWindow(`<!doctype html><html><body><dialog open><p>Hi</p></dialog></body></html>`);
+    const { snapshot } = createSnapshotHelpers(window);
+    expect(snapshot({ options: { mode: "ai" } }).text).toContain("- dialog");
+  });
+
+  it("maps progress to progressbar", () => {
+    expect(snapshotOf(`<progress value="50" max="100"></progress>`)).toContain("- progressbar");
+  });
+
+  it("maps meter to meter", () => {
+    expect(snapshotOf(`<meter value="0.5">50%</meter>`)).toContain("- meter");
+  });
+
+  it("maps details to group and summary to button", () => {
+    const text = snapshotOf(`<details><summary>Toggle</summary><p>Body</p></details>`);
+    expect(text).toContain("- group");
+    expect(text).toContain('button "Toggle"');
+  });
+
+  it("maps fieldset to group", () => {
+    expect(snapshotOf(`<fieldset><legend>Info</legend></fieldset>`)).toContain("- group");
+  });
+
+  it("maps multiple select to listbox and single select to combobox", () => {
+    expect(snapshotOf(`<select multiple aria-label="m"><option>a</option></select>`)).toContain("- listbox");
+    expect(snapshotOf(`<select aria-label="s"><option>a</option></select>`)).toContain("- combobox");
+  });
+
+  it("maps input[type=range] to slider and input[type=search] to searchbox", () => {
+    expect(snapshotOf(`<input type="range" aria-label="vol" />`)).toContain("- slider");
+    expect(snapshotOf(`<input type="search" aria-label="q" />`)).toContain("- searchbox");
+  });
+
+  it("maps landmark elements: header→banner, footer→contentinfo, aside→complementary", () => {
+    expect(snapshotOf(`<header>H</header>`)).toContain("- banner");
+    expect(snapshotOf(`<footer>F</footer>`)).toContain("- contentinfo");
+    expect(snapshotOf(`<aside>A</aside>`)).toContain("- complementary");
+  });
+
+  it("maps hr to separator", () => {
+    expect(snapshotOf(`<hr />`)).toContain("- separator");
   });
 });
