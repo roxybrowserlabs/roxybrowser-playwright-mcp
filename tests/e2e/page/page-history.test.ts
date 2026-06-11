@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { pathToFileURL } from "node:url";
-import { withPage } from "../helpers/browser.js";
-import { createHistoryPageFixture } from "../helpers/server.js";
+import { withPage } from "../../helpers/browser.js";
+import { createHistoryPageFixture } from "../../helpers/server.js";
 
 describe("page history e2e", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;

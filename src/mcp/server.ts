@@ -1,5 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ListToolsRequestSchema,
+  type CallToolResult,
+  type ListToolsResult,
+  type Tool as McpToolDefinition
+} from "@modelcontextprotocol/sdk/types.js";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { isMcpToolError } from "./errors.js";
 import { textResult } from "./tool.js";
 import { allTools } from "./tools/index.js";
@@ -47,6 +53,7 @@ export function createRoxyBrowserMcpServer(
       }
     );
   }
+  registerListedToolSchemaOverrides(server);
 
   return {
     server,
@@ -58,4 +65,43 @@ export function createRoxyBrowserMcpServer(
       }
     }
   };
+}
+
+function registerListedToolSchemaOverrides(server: McpServer): void {
+  const listedInputSchemas = new Map(
+    allTools
+      .filter((tool) => tool.schema.listedInputSchema)
+      .map((tool) => [tool.schema.name, tool.schema.listedInputSchema!])
+  );
+
+  if (listedInputSchemas.size === 0) {
+    return;
+  }
+
+  const toolDefinitions = allTools.map<McpToolDefinition>((tool) => ({
+    name: tool.schema.name,
+    title: tool.schema.title,
+    description: tool.schema.description,
+    inputSchema: listedInputSchemas.get(tool.schema.name)
+      ?? objectInputSchema(toJsonSchemaCompat(tool.schema.inputSchema, {
+        strictUnions: true,
+        pipeStrategy: "input"
+      }))
+  }));
+
+  server.server.setRequestHandler(ListToolsRequestSchema, (): ListToolsResult => ({
+    tools: toolDefinitions
+  }));
+}
+
+function objectInputSchema(schema: unknown): McpToolDefinition["inputSchema"] {
+  if (isRecord(schema) && schema.type === "object") {
+    return schema as McpToolDefinition["inputSchema"];
+  }
+
+  throw new Error("MCP tool input schema must be a JSON object schema.");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

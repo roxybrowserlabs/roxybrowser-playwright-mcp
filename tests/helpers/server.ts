@@ -73,7 +73,7 @@ export async function createTestPageFixture(): Promise<TestPageFixture> {
 }
 
 export async function createHistoryPageFixture(): Promise<HistoryPageFixture> {
-  const assetRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "assets");
+  const assetRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "e2e", "assets");
   const consoleLogPath = join(assetRoot, "consolelog.html");
   const server = await TestServer.create(assetRoot);
 

@@ -321,8 +321,8 @@ describe("MCP server", () => {
     expect(savedSnapshot).toContain("[target=tab-1:node-1]");
     expect(savedSnapshot).toContain("[depth=2]");
     expect(savedSnapshot).toContain("[box=0,0,120,32]");
-    // Playwright writes the raw snapshot text — no "Snapshot (title - url):" header.
-    expect(savedSnapshot).not.toContain("Snapshot (");
+    // Playwright writes the raw snapshot text, without the MCP response header.
+    expect(savedSnapshot).not.toContain("### Snapshot");
     expect(savedSnapshot.startsWith("- button")).toBe(true);
   });
 
@@ -636,7 +636,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       const text = textFromResult(result);
-      expect(text).toContain("Snapshot (");
+      expect(text).toContain("### Snapshot");
       expect(text).toContain('button');
     });
 
@@ -649,7 +649,7 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("omits the snapshot from click results when snapshotMode is none", async () => {
@@ -662,7 +662,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       const text = textFromResult(result);
-      expect(text).not.toContain("Snapshot (");
+      expect(text).not.toContain("### Snapshot");
       expect(text).toContain("Clicked");
     });
 
@@ -675,7 +675,7 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
   });
 
@@ -708,7 +708,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(getSession().navigateCalls).toEqual(["https://example.com"]);
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("omits snapshot in snapshotMode none", async () => {
@@ -727,7 +727,7 @@ describe("MCP server", () => {
       expect(result.isError).toBeUndefined();
       const text = textFromResult(result);
       expect(text).toContain("Navigated to");
-      expect(text).not.toContain("Snapshot (");
+      expect(text).not.toContain("### Snapshot");
     });
 
     it("rejects non-URL input", async () => {
@@ -750,7 +750,7 @@ describe("MCP server", () => {
       expect(getSession().typeCalls.length).toBe(1);
       expect(getSession().typeCalls[0]!.text).toBe("hello");
       expect(getSession().typeCalls[0]!.target).toHaveProperty("nodeToken");
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("passes submit option through", async () => {
@@ -797,7 +797,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(getSession().pressKeyCalls).toEqual([{ key: "Enter", modifiers: undefined }]);
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("passes modifier keys", async () => {
@@ -825,7 +825,7 @@ describe("MCP server", () => {
       expect(getSession().selectOptionCalls[0]!.values).toEqual(["opt1", "opt2"]);
       const text = textFromResult(result);
       expect(text).toContain("opt1");
-      expect(text).toContain("Snapshot (");
+      expect(text).toContain("### Snapshot");
     });
 
     it("resolves selector as-is", async () => {
@@ -851,7 +851,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(getSession().checkCalls[0]!.checked).toBe(true);
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("unchecks element when checked is false", async () => {
@@ -864,7 +864,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(getSession().checkCalls[0]!.checked).toBe(false);
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
   });
 
@@ -879,7 +879,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(getSession().goBackCount).toBe(1);
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
   });
 
@@ -894,7 +894,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(getSession().goForwardCount).toBe(1);
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
   });
 
@@ -909,7 +909,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(getSession().scrollCalls[0]).toEqual({ target: null, deltaX: 0, deltaY: 500 });
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("resolves ref to element scroll", async () => {
@@ -936,7 +936,7 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("returns snapshot immediately when url condition already met", async () => {
@@ -948,7 +948,7 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("times out when condition is never met", async () => {
@@ -1019,7 +1019,7 @@ describe("MCP server", () => {
       expect(result.isError).toBeUndefined();
       expect(getSession().uploadFileCalls[0]!.paths).toEqual(["/tmp/file.txt"]);
       expect(getSession().uploadFileCalls[0]!.target).toHaveProperty("nodeToken");
-      expect(textFromResult(result)).toContain("Snapshot (");
+      expect(textFromResult(result)).toContain("### Snapshot");
     });
 
     it("passes selector target for non-ref inputs", async () => {

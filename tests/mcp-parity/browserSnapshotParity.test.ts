@@ -5,6 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRoxyBrowserMcpInMemory } from "../../src/mcp/index.js";
+import { resolveRoxyBrowserEndpoint } from "../helpers/roxybrowser.js";
 
 const VIEWPORT = { width: 1280, height: 720 };
 const ONLINE_URLS = [
@@ -12,7 +13,8 @@ const ONLINE_URLS = [
   "https://www.bing.com",
   "https://www.google.com"
 ];
-const CDP_ENDPOINT_ENV = "ROXY_MCP_PARITY_CDP_ENDPOINT";
+const ROXYBROWSER_API_PORT = process.env.ROXYBROWSER_API_PORT ?? "50000";
+const ROXYBROWSER_API_TOKEN = process.env.ROXYBROWSER_API_TOKEN;
 const LOCAL_FIXTURE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html lang="en">
   <head>
@@ -101,7 +103,7 @@ async function createParityRun(): Promise<{
   roxyClient: Client;
   cdpEndpoint: string;
 }> {
-  const cdpEndpoint = cdpEndpointFromEnv();
+  const cdpEndpoint = await resolveCdpEndpoint();
 
   const playwright = await createPlaywrightMcpClient(cdpEndpoint);
   cleanupCallbacks.push(playwright.close);
@@ -124,6 +126,13 @@ async function navigateBoth(
   run: { playwrightClient: Client; roxyClient: Client; cdpEndpoint: string },
   url: string
 ): Promise<void> {
+  const connectResult = await callTool(run.roxyClient, "roxy_browser_connect", {
+    protocol: "cdp",
+    endpoint: run.cdpEndpoint,
+    browser: "chromium"
+  });
+  assertToolSucceeded("Roxy MCP roxy_browser_connect", connectResult);
+
   assertToolSucceeded(
     "Playwright MCP browser_navigate",
     await callTool(run.playwrightClient, "browser_navigate", { url })
@@ -133,12 +142,10 @@ async function navigateBoth(
     await callTool(run.playwrightClient, "browser_resize", VIEWPORT)
   );
 
-  const connectResult = await callTool(run.roxyClient, "roxy_browser_connect", {
-    protocol: "cdp",
-    endpoint: run.cdpEndpoint,
-    browser: "chromium"
-  });
-  assertToolSucceeded("Roxy MCP roxy_browser_connect", connectResult);
+  assertToolSucceeded(
+    "Roxy MCP browser_navigate",
+    await callTool(run.roxyClient, "browser_navigate", { url })
+  );
 }
 
 async function supportedSnapshotArgs(run: {
@@ -238,20 +245,24 @@ function playwrightMcpCliPath(): string {
   return join(dirname(require.resolve("@playwright/mcp/package.json")), "cli.js");
 }
 
-function cdpEndpointFromEnv(): string {
-  const endpoint = process.env[CDP_ENDPOINT_ENV]?.trim();
-  if (!endpoint) {
+async function resolveCdpEndpoint(): Promise<string> {
+  if (!ROXYBROWSER_API_TOKEN) {
     throw new Error(
-      `Set ${CDP_ENDPOINT_ENV} to a running Chromium CDP endpoint before running MCP parity tests. Example: ${CDP_ENDPOINT_ENV}=ws://127.0.0.1:9222/devtools/browser/<id> pnpm test:mcp-parity`
+      "Set ROXYBROWSER_API_TOKEN in .env so the test can open a Chrome profile through RoxyBrowser."
     );
   }
-  const parsed = new URL(endpoint);
-  if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:" && parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error(
-      `${CDP_ENDPOINT_ENV} must be a ws(s) browser websocket endpoint or http(s) CDP discovery endpoint. Received "${parsed.protocol}".`
-    );
-  }
-  return endpoint;
+
+  return resolveRoxyBrowserEndpoint({
+    protocol: "cdp",
+    apiPort: ROXYBROWSER_API_PORT,
+    apiToken: ROXYBROWSER_API_TOKEN,
+    profileName: "RoxyBrowser Chrome MCP Parity",
+    profileMatch: "chrome",
+    windowRemark: "chrome mcp parity",
+    debugScope: "roxybrowser:mcp-parity",
+    useSingleProfileFallback: false,
+    createMissingProfile: true
+  });
 }
 
 function textFromResult(result: CallToolResult): string {

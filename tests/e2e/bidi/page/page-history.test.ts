@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { pathToFileURL } from "node:url";
-import { withBidiPage } from "../../helpers/bidi.js";
-import { createHistoryPageFixture } from "../../helpers/server.js";
+import { withBidiPage } from "../../../helpers/bidi.js";
+import { createHistoryPageFixture } from "../../../helpers/server.js";
 
 describe("page history e2e (bidi/firefox)", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;

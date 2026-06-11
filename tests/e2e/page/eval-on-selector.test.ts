@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { withPage } from "../helpers/browser.js";
+import { withPage } from "../../helpers/browser.js";
 
 describe("page eval on selector e2e", () => {
   it("should work with css selector", async () => {

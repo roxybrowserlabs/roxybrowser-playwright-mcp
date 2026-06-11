@@ -1,7 +1,14 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
+import { loadEnvFile } from "node:process";
 import { defineConfig } from "vitest/config";
 
 const sourceBundlePath = path.resolve(__dirname, "dist/roxybrowser.bundle.js");
+const envPath = path.resolve(process.cwd(), ".env");
+
+if (existsSync(envPath)) {
+  loadEnvFile(envPath);
+}
 
 export default defineConfig({
   resolve: {

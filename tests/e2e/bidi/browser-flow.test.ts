@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { openBidiBrowser } from "../helpers/bidi.js";
-import { createTestPageFixture } from "../helpers/server.js";
+import { openBidiBrowser } from "../../helpers/bidi.js";
+import { createTestPageFixture } from "../../helpers/server.js";
 
 describe("browser e2e (bidi/firefox)", () => {
   let fixture: Awaited<ReturnType<typeof createTestPageFixture>>;

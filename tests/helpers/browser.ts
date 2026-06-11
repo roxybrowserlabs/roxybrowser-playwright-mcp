@@ -1,5 +1,5 @@
-import { chromium } from "../../../src/index.js";
-import type { Browser, BrowserContext, Page } from "../../../src/types/api.js";
+import { chromium } from "../../src/index.js";
+import type { Browser, BrowserContext, Page } from "../../src/types/api.js";
 
 export async function withPage<T>(
   run: (page: Page, context: BrowserContext, browser: Browser) => Promise<T>

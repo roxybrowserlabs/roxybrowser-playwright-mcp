@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium } from "../../src/index.js";
-import { createTestPageFixture } from "./helpers/server.js";
+import { createTestPageFixture } from "../helpers/server.js";
 
 describe("browser e2e", () => {
   let fixture: Awaited<ReturnType<typeof createTestPageFixture>>;

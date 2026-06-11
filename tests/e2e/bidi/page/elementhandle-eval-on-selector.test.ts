@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { withBidiPage } from "../../helpers/bidi.js";
+import { withBidiPage } from "../../../helpers/bidi.js";
 
 describe("elementHandle eval on selector e2e (bidi/firefox)", () => {
   it("should work", async () => {

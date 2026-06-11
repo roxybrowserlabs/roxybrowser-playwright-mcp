@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, Tool as McpToolDefinition } from "@modelcontextprotocol/sdk/types.js";
 import type { McpRuntime } from "./runtime.js";
 
 // Bound on ZodObject so `.shape` is available at registration time.
@@ -10,6 +10,7 @@ export type ToolSchema<Input extends AnyZodObject = AnyZodObject> = {
   title: string;
   description: string;
   inputSchema: Input;
+  listedInputSchema?: McpToolDefinition["inputSchema"];
 };
 
 export type Tool<Input extends AnyZodObject = AnyZodObject> = {

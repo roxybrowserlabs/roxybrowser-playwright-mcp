@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { withPage } from "../helpers/browser.js";
+import { withPage } from "../../helpers/browser.js";
 
 describe("page aria snapshot iframe refs e2e", () => {
   it("assigns flat eN refs at top level and f{n}eN refs inside an iframe", async () => {

@@ -2,13 +2,13 @@ import type { BrowserSnapshot, BrowserTab } from "./types.js";
 
 export function formatTabs(tabs: BrowserTab[]): string {
   if (tabs.length === 0) {
-    return "Tabs:\n- (none)";
+    return "### Open tabs\n- (none)";
   }
 
-  const lines = ["Tabs:"];
+  const lines = ["### Open tabs"];
   for (const [index, tab] of tabs.entries()) {
     lines.push(
-      `- [${index}] ${tab.active ? "*" : " "} ${tab.title || "(untitled)"} - ${tab.url || "about:blank"}`
+      `- ${index}: ${tab.active ? "(current) " : ""}[${tab.title || "(untitled)"}](${tab.url || "about:blank"})`
     );
   }
 
@@ -16,7 +16,17 @@ export function formatTabs(tabs: BrowserTab[]): string {
 }
 
 export function formatSnapshot(snapshot: BrowserSnapshot): string {
-  return `Snapshot (${snapshot.title || "(untitled)"} - ${snapshot.url || "about:blank"}):\n${snapshot.text}`;
+  const url = snapshot.url || "about:blank";
+  const title = snapshot.title || "(untitled)";
+  return [
+    "### Page",
+    `- Page URL: ${url}`,
+    `- Page Title: ${title}`,
+    "### Snapshot",
+    "```yaml",
+    snapshot.text,
+    "```"
+  ].join("\n");
 }
 
 export function formatConnectResult(input: {

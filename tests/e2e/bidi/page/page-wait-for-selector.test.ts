@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { withBidiPage } from "../../helpers/bidi.js";
-import { createHistoryPageFixture } from "../../helpers/server.js";
+import { withBidiPage } from "../../../helpers/bidi.js";
+import { createHistoryPageFixture } from "../../../helpers/server.js";
 
 describe("page.waitForSelector e2e (bidi/firefox)", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;

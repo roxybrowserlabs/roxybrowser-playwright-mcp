@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { withPage } from "../helpers/browser.js";
-import { createHistoryPageFixture } from "../helpers/server.js";
+import { withPage } from "../../helpers/browser.js";
+import { createHistoryPageFixture } from "../../helpers/server.js";
 
 describe("page.waitForSelector e2e", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;
