@@ -45,7 +45,8 @@ const snapshot = defineTool({
       return textResult(`Saved snapshot to "${args.filename}".`);
     }
     const tabs = await runtime.listTabs();
-    return textResult(`${formatTabs(tabs)}\n${formatSnapshot(snap)}`);
+    const prefix = tabs.length > 1 ? `${formatTabs(tabs)}\n` : "";
+    return textResult(`${prefix}${formatSnapshot(snap)}`);
   }
 });
 

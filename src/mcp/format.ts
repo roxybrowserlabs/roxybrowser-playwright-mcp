@@ -22,10 +22,16 @@ export function formatSnapshot(snapshot: BrowserSnapshot): string {
     "### Page",
     `- Page URL: ${url}`,
     `- Page Title: ${title}`,
+    ...(snapshot.console && (snapshot.console.errors || snapshot.console.warnings)
+      ? [`- Console: ${snapshot.console.errors} errors, ${snapshot.console.warnings} warnings`]
+      : []),
     "### Snapshot",
     "```yaml",
     snapshot.text,
-    "```"
+    "```",
+    ...(snapshot.consoleLink
+      ? ["### Events", `- New console entries: ${snapshot.consoleLink}`]
+      : [])
   ].join("\n");
 }
 

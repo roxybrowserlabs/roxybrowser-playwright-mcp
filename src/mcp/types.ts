@@ -24,6 +24,14 @@ export interface BrowserSnapshot {
   refs: Record<string, string>;
   title: string;
   url: string;
+  console?: BrowserConsoleSummary | undefined;
+  consoleLink?: string | undefined;
+}
+
+export interface BrowserConsoleSummary {
+  total: number;
+  errors: number;
+  warnings: number;
 }
 
 export interface BrowserSnapshotTarget {
@@ -115,6 +123,8 @@ export interface SnapshotCacheEntry {
   refs: Record<string, string>;
   title: string;
   url: string;
+  console?: BrowserConsoleSummary | undefined;
+  consoleLink?: string | undefined;
 }
 
 export interface RoxyBrowserMcpServerBundle {

@@ -25,7 +25,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build:bundle": "vite build --config vite.bundle.config.ts",
+    "build:vendor:snapshot": "node ./scripts/generate-playwright-snapshot-source.mjs",
+    "build:bundle": "pnpm build:vendor:snapshot && vite build --config vite.bundle.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.config.ts",

@@ -1,0 +1,3 @@
+[submodule "library/playwright"]
+	path = library/playwright
+	url = https://github.com/microsoft/playwright.git

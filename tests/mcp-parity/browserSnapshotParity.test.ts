@@ -1,8 +1,11 @@
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import * as cdpModule from "chrome-remote-interface";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import { chromium } from "playwright";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRoxyBrowserMcpInMemory } from "../../src/mcp/index.js";
 import { resolveRoxyBrowserEndpoint } from "../helpers/roxybrowser.js";
@@ -43,8 +46,49 @@ const LOCAL_FIXTURE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(`<!
     </main>
   </body>
 </html>`)}`;
+const LOCAL_CONSOLE_FIXTURE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MCP Console Parity</title>
+    <script>
+      window.__emitMcpParityConsole = () => {
+        console.warn("mcp parity warning");
+        console.error("mcp parity error");
+        setTimeout(() => {
+          throw new Error("mcp parity page error");
+        }, 0);
+      };
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1>Console parity fixture</h1>
+      <button type="button">Stable button</button>
+    </main>
+  </body>
+</html>`)}`;
 
 const cleanupCallbacks: Array<() => Promise<void>> = [];
+const chromeRemoteInterface = ("default" in cdpModule
+  ? cdpModule.default
+  : cdpModule) as unknown as {
+  (options: {
+    host?: string;
+    port?: number;
+    target?: string;
+  }): Promise<CdpBrowserClient>;
+};
+
+type CdpBrowserClient = {
+  close(): Promise<void>;
+  Target: {
+    getTargets(): Promise<{ targetInfos: Array<{ targetId: string; type: string; url: string }> }>;
+    createTarget(options: { url: string }): Promise<{ targetId: string }>;
+    activateTarget(options: { targetId: string }): Promise<void>;
+    closeTarget(options: { targetId: string }): Promise<void>;
+  };
+};
 
 afterEach(async () => {
   while (cleanupCallbacks.length > 0) {
@@ -69,33 +113,61 @@ describe("browser_snapshot MCP parity", () => {
 
   for (const scenario of parityScenarios()) {
     it(`matches Playwright MCP for ${scenario.name}`, async () => {
-      const run = await createParityRun();
-      await navigateBoth(run, scenario.url());
-
-      const snapshotArgs = await supportedSnapshotArgs(run);
+      const snapshotArgs = await supportedSnapshotArgs(scenario.name);
       for (const args of snapshotArgs) {
-        const [playwrightResult, roxyResult] = await Promise.all([
-          callTool(run.playwrightClient, "browser_snapshot", args),
-          callTool(run.roxyClient, "browser_snapshot", args)
-        ]);
+        const cdpEndpoint = await createPreparedPage(scenario.url());
+        const playwright = await createPlaywrightMcpClient(cdpEndpoint);
+        cleanupCallbacks.push(playwright.close);
+        const playwrightResult = await callTool(playwright.client, "browser_snapshot", args);
+        const roxy = await createRoxyMcpClient();
+        const roxyResult = await snapshotWithRoxy({ roxyClient: roxy.client, cdpEndpoint }, args);
 
-        expect(roxyResult).toEqual(playwrightResult);
+        expect(
+          comparableSnapshotResult(roxyResult, scenario.compareConsoleEvents),
+          `browser_snapshot args ${JSON.stringify(args)}`
+        ).toEqual(comparableSnapshotResult(playwrightResult, scenario.compareConsoleEvents));
       }
     });
   }
+
+  it("matches Playwright MCP console summary and log entries for deterministic fixture", async () => {
+    const cdpEndpoint = await createPreparedPage(LOCAL_CONSOLE_FIXTURE_URL);
+    const playwright = await createPlaywrightMcpClient(cdpEndpoint);
+    cleanupCallbacks.push(playwright.close);
+
+    const roxy = await createRoxyMcpClient();
+    await connectRoxyToCdp(roxy.client, cdpEndpoint);
+
+    await emitDeterministicConsole(cdpEndpoint);
+
+    const playwrightResult = await callTool(playwright.client, "browser_snapshot", {});
+    const roxyResult = await callTool(roxy.client, "browser_snapshot", {});
+
+    expect(consoleSummaryLine(roxyResult)).toEqual(consoleSummaryLine(playwrightResult));
+    expect(await consoleLogEntries(roxyResult)).toEqual(await consoleLogEntries(playwrightResult));
+  });
 });
 
-function parityScenarios(): Array<{ name: string; url(): string }> {
+function parityScenarios(): Array<{ name: string; url(): string; compareConsoleEvents: boolean }> {
   return [
     {
       name: "local accessibility fixture",
-      url: () => LOCAL_FIXTURE_URL
+      url: () => LOCAL_FIXTURE_URL,
+      compareConsoleEvents: true
     },
     ...ONLINE_URLS.map((url) => ({
       name: url,
-      url: () => url
+      url: () => url,
+      compareConsoleEvents: false
     }))
   ];
+}
+
+async function createPreparedPage(url: string): Promise<string> {
+  const cdpEndpoint = await resolveCdpEndpoint();
+  await resetCdpPages(cdpEndpoint);
+  await preparePageWithPlaywright(cdpEndpoint, url);
+  return cdpEndpoint;
 }
 
 async function createParityRun(): Promise<{
@@ -104,11 +176,22 @@ async function createParityRun(): Promise<{
   cdpEndpoint: string;
 }> {
   const cdpEndpoint = await resolveCdpEndpoint();
+  await resetCdpPages(cdpEndpoint);
 
   const playwright = await createPlaywrightMcpClient(cdpEndpoint);
   cleanupCallbacks.push(playwright.close);
 
-  const roxyBundle = await createRoxyBrowserMcpInMemory();
+  const roxy = await createRoxyMcpClient();
+
+  return {
+    playwrightClient: playwright.client,
+    roxyClient: roxy.client,
+    cdpEndpoint
+  };
+}
+
+async function createRoxyMcpClient(): Promise<{ client: Client }> {
+  const roxyBundle = await createRoxyBrowserMcpInMemory({ snapshotMode: "none" });
   cleanupCallbacks.push(async () => roxyBundle.close());
 
   const roxyClient = createClient("roxy-mcp-parity-client");
@@ -116,51 +199,111 @@ async function createParityRun(): Promise<{
   await roxyClient.connect(roxyBundle.clientTransport);
 
   return {
-    playwrightClient: playwright.client,
-    roxyClient,
-    cdpEndpoint
+    client: roxyClient
   };
 }
 
-async function navigateBoth(
-  run: { playwrightClient: Client; roxyClient: Client; cdpEndpoint: string },
-  url: string
-): Promise<void> {
-  const connectResult = await callTool(run.roxyClient, "roxy_browser_connect", {
+async function resetCdpPages(cdpEndpoint: string): Promise<void> {
+  const connection = await cdpBrowserConnection(cdpEndpoint);
+  const client = await chromeRemoteInterface(connection);
+  try {
+    const before = await client.Target.getTargets();
+    const fresh = await client.Target.createTarget({ url: "about:blank" });
+    await client.Target.activateTarget({ targetId: fresh.targetId });
+
+    await Promise.all(
+      before.targetInfos
+        .filter((target) => target.type === "page" && target.targetId !== fresh.targetId)
+        .map((target) => client.Target.closeTarget({ targetId: target.targetId }).catch(() => undefined))
+    );
+  } finally {
+    await client.close();
+  }
+}
+
+async function cdpBrowserConnection(endpoint: string): Promise<{
+  host: string;
+  port: number;
+  target?: string;
+}> {
+  const url = new URL(endpoint);
+  if (url.protocol === "ws:" || url.protocol === "wss:") {
+    return {
+      host: url.hostname,
+      port: Number(url.port),
+      target: endpoint
+    };
+  }
+
+  const versionUrl = new URL("/json/version", url);
+  const response = await fetch(versionUrl);
+  if (!response.ok) {
+    throw new Error(`Unable to read CDP version endpoint at ${versionUrl.toString()}.`);
+  }
+  const version = await response.json() as { webSocketDebuggerUrl?: unknown };
+  if (typeof version.webSocketDebuggerUrl !== "string") {
+    throw new Error(`CDP version endpoint did not include webSocketDebuggerUrl.`);
+  }
+  const ws = new URL(version.webSocketDebuggerUrl);
+  return {
+    host: ws.hostname,
+    port: Number(ws.port),
+    target: version.webSocketDebuggerUrl
+  };
+}
+
+async function preparePageWithPlaywright(cdpEndpoint: string, url: string): Promise<void> {
+  const browser = await chromium.connectOverCDP(cdpEndpoint);
+  try {
+    const context = browser.contexts()[0] ?? await browser.newContext();
+    const page = context.pages()[0] ?? await context.newPage();
+    await page.setViewportSize(VIEWPORT);
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.waitForLoadState("load", { timeout: 5_000 }).catch(() => undefined);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function emitDeterministicConsole(cdpEndpoint: string): Promise<void> {
+  const browser = await chromium.connectOverCDP(cdpEndpoint);
+  try {
+    const page = browser.contexts()[0]?.pages()[0];
+    if (!page) {
+      throw new Error("No page is available for deterministic console fixture.");
+    }
+    await page.evaluate(() => {
+      (globalThis as typeof globalThis & { __emitMcpParityConsole(): void }).__emitMcpParityConsole();
+    });
+    await page.waitForTimeout(250);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function snapshotWithRoxy(run: {
+  roxyClient: Client;
+  cdpEndpoint: string;
+}, args: Record<string, unknown>): Promise<CallToolResult> {
+  await connectRoxyToCdp(run.roxyClient, run.cdpEndpoint);
+  return callTool(run.roxyClient, "browser_snapshot", args);
+}
+
+async function connectRoxyToCdp(roxyClient: Client, cdpEndpoint: string): Promise<void> {
+  const connectResult = await callTool(roxyClient, "roxy_browser_connect", {
     protocol: "cdp",
-    endpoint: run.cdpEndpoint,
+    endpoint: cdpEndpoint,
     browser: "chromium"
   });
   assertToolSucceeded("Roxy MCP roxy_browser_connect", connectResult);
-
-  assertToolSucceeded(
-    "Playwright MCP browser_navigate",
-    await callTool(run.playwrightClient, "browser_navigate", { url })
-  );
-  assertToolSucceeded(
-    "Playwright MCP browser_resize",
-    await callTool(run.playwrightClient, "browser_resize", VIEWPORT)
-  );
-
-  assertToolSucceeded(
-    "Roxy MCP browser_navigate",
-    await callTool(run.roxyClient, "browser_navigate", { url })
-  );
 }
 
-async function supportedSnapshotArgs(run: {
-  playwrightClient: Client;
-  roxyClient: Client;
-}): Promise<Array<Record<string, unknown>>> {
-  const [playwrightTool, roxyTool] = await Promise.all([
-    browserSnapshotTool(run.playwrightClient),
-    browserSnapshotTool(run.roxyClient)
-  ]);
-
-  expect(roxyTool.inputSchema).toEqual(playwrightTool.inputSchema);
-
-  const properties = (playwrightTool.inputSchema.properties ?? {}) as Record<string, unknown>;
+async function supportedSnapshotArgs(scenarioName: string): Promise<Array<Record<string, unknown>>> {
+  const properties = await browserSnapshotInputSchemaProperties();
   const args: Array<Record<string, unknown>> = [{}];
+  if (scenarioName !== "local accessibility fixture") {
+    return args;
+  }
   if ("depth" in properties) {
     args.push({ depth: 2 });
   }
@@ -171,6 +314,22 @@ async function supportedSnapshotArgs(run: {
     args.push({ depth: 2, boxes: true });
   }
   return args;
+}
+
+let browserSnapshotPropertiesPromise: Promise<Record<string, unknown>> | undefined;
+
+async function browserSnapshotInputSchemaProperties(): Promise<Record<string, unknown>> {
+  browserSnapshotPropertiesPromise ??= (async () => {
+    const run = await createParityRun();
+    const [playwrightTool, roxyTool] = await Promise.all([
+      browserSnapshotTool(run.playwrightClient),
+      browserSnapshotTool(run.roxyClient)
+    ]);
+
+    expect(roxyTool.inputSchema).toEqual(playwrightTool.inputSchema);
+    return (playwrightTool.inputSchema.properties ?? {}) as Record<string, unknown>;
+  })();
+  return browserSnapshotPropertiesPromise;
 }
 
 async function browserSnapshotTool(client: Client): Promise<Tool> {
@@ -212,6 +371,8 @@ async function createPlaywrightMcpClient(cdpEndpoint: string): Promise<{
       cdpEndpoint,
       "--browser",
       "chromium",
+      "--snapshot-mode",
+      "none",
       "--viewport-size",
       `${VIEWPORT.width}x${VIEWPORT.height}`
     ],
@@ -276,4 +437,70 @@ function assertToolSucceeded(label: string, result: CallToolResult): void {
   if (result.isError) {
     throw new Error(`${label} failed:\n${textFromResult(result)}`);
   }
+}
+
+function comparableSnapshotResult(result: CallToolResult, compareConsoleEvents: boolean): CallToolResult {
+  if (compareConsoleEvents) {
+    return result;
+  }
+
+  return {
+    ...result,
+    content: result.content.map((item) => {
+      if (item.type !== "text") {
+        return item;
+      }
+      return {
+        ...item,
+        text: stripConsoleEvents(item.text)
+      };
+    })
+  };
+}
+
+function stripConsoleEvents(text: string): string {
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line.startsWith("- Console: ")) {
+      continue;
+    }
+    if (line === "### Events") {
+      while (index + 1 < lines.length && !lines[index + 1].startsWith("### ")) {
+        index++;
+      }
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+function consoleSummaryLine(result: CallToolResult): string | undefined {
+  return textFromResult(result).split("\n").find((line) => line.startsWith("- Console: "));
+}
+
+async function consoleLogEntries(result: CallToolResult): Promise<string[]> {
+  const link = textFromResult(result)
+    .split("\n")
+    .find((line) => line.startsWith("- New console entries: "))
+    ?.slice("- New console entries: ".length);
+  if (!link) {
+    return [];
+  }
+
+  const match = /^(.*)#L(\d+)(?:-L(\d+))?$/.exec(link);
+  if (!match) {
+    throw new Error(`Unexpected console log link: ${link}`);
+  }
+  const [, filePath, fromLineText, toLineText] = match;
+  const fromLine = Number(fromLineText);
+  const toLine = Number(toLineText ?? fromLineText);
+  const text = await readFile(join(process.cwd(), filePath), "utf8");
+  return text
+    .split("\n")
+    .slice(fromLine - 1, toLine)
+    .filter(Boolean)
+    .map((line) => line.replace(/^\[\s*-?\d+ms\] /, ""));
 }

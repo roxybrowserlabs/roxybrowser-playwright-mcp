@@ -8,10 +8,12 @@ export {
 export {
   ACTION_POINT_EVALUATE_SOURCE,
   ARIA_REF_SELECTOR_EVALUATE_SOURCE,
-  ARIA_SNAPSHOT_EVALUATE_SOURCE,
   normalizeAriaSnapshotOptions,
   withOptionalTimeout
 } from "./ariaSnapshot.js";
+export {
+  PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE
+} from "./vendor/playwright/ariaSnapshotEvaluate.js";
 export { RoxyBrowser } from "./browser.js";
 export { RoxyBrowserContext } from "./browserContext.js";
 export { RoxyBrowserType } from "./browserType.js";

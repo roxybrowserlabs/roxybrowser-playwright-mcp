@@ -1,10 +1,12 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import * as cdpModule from "chrome-remote-interface";
 import {
-  ARIA_SNAPSHOT_EVALUATE_SOURCE,
   normalizeAriaSnapshotOptions,
   retryUntilReady,
   type AriaSnapshotResult
 } from "../ariaSnapshot.js";
+import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../vendor/playwright/ariaSnapshotEvaluate.js";
 import type { BidiProtocolClient } from "../protocol/bidi/client.js";
 import { getBidiClientFactory } from "../protocol/bidi/client.js";
 import { McpToolError } from "./errors.js";
@@ -43,10 +45,26 @@ type CdpTargetInfo = {
   url: string;
 };
 
+type CdpFrameTree = {
+  frame: {
+    id: string;
+    parentId?: string;
+    url: string;
+  };
+  childFrames?: CdpFrameTree[];
+};
+
 type CdpClient = {
   close(): Promise<void>;
   Page: {
     enable(): Promise<void>;
+    createIsolatedWorld(options: {
+      frameId: string;
+      worldName?: string;
+      grantUniveralAccess?: boolean;
+      grantUniversalAccess?: boolean;
+    }): Promise<{ executionContextId: number }>;
+    getFrameTree(): Promise<{ frameTree: CdpFrameTree }>;
     navigate(options: { url: string }): Promise<{ frameId: string; errorText?: string }>;
     goBack(): Promise<{ success: boolean }>;
     goForward(): Promise<{ success: boolean }>;
@@ -57,11 +75,56 @@ type CdpClient = {
   };
   Runtime: {
     enable(): Promise<void>;
+    consoleAPICalled(
+      listener: (event: {
+        type: string;
+        executionContextId?: number;
+        args: Array<{
+          description?: string;
+          type?: string;
+          unserializableValue?: string;
+          value?: unknown;
+        }>;
+        timestamp?: number;
+        stackTrace?: { callFrames?: Array<{ url?: string; lineNumber?: number }> };
+      }) => void
+    ): void;
+    exceptionThrown(
+      listener: (event: {
+        timestamp?: number;
+        exceptionDetails?: {
+          text?: string;
+          url?: string;
+          lineNumber?: number;
+          exception?: { description?: string; value?: unknown };
+        };
+      }) => void
+    ): void;
     evaluate(options: {
       expression: string;
       returnByValue: boolean;
       awaitPromise: boolean;
-    }): Promise<{ result: { value?: unknown; objectId?: string }; exceptionDetails?: { text?: string } }>;
+      contextId?: number;
+    }): Promise<{
+      result: { value?: unknown; objectId?: string };
+      exceptionDetails?: { text?: string; exception?: { description?: string; value?: unknown } };
+    }>;
+  };
+  Log?: {
+    enable(): Promise<void>;
+    entryAdded(
+      listener: (event: {
+        entry: {
+          args?: Array<{ objectId?: string }>;
+          level?: string;
+          text?: string;
+          source?: string;
+          timestamp?: number;
+          url?: string;
+          lineNumber?: number;
+        };
+      }) => void
+    ): void;
   };
   DOM: {
     enable(options: {}): Promise<void>;
@@ -113,6 +176,23 @@ interface CdpConnectionDetails {
   port: number;
 }
 
+interface BrowserConsoleMessage {
+  type: string;
+  timestamp: number;
+  text: string;
+  locationUrl: string;
+  lineNumber: number;
+  formattedText: string;
+}
+
+interface BrowserConsoleState {
+  messages: BrowserConsoleMessage[];
+  nextMessageIndex: number;
+  logStartTime: number;
+  logLine: number;
+  logFile?: string;
+}
+
 function buildConnectionFromWsEndpoint(browserWsEndpoint: string): CdpConnectionDetails {
   const parsed = new URL(browserWsEndpoint);
   return {
@@ -154,7 +234,8 @@ async function resolveCdpConnection(endpoint: string): Promise<CdpConnectionDeta
 async function evaluateCdp<TResult>(
   client: CdpClient,
   functionSource: string,
-  arg?: unknown
+  arg?: unknown,
+  contextId?: number
 ): Promise<TResult> {
   const expression =
     arg === undefined
@@ -163,11 +244,19 @@ async function evaluateCdp<TResult>(
   const response = await client.Runtime.evaluate({
     expression,
     returnByValue: true,
-    awaitPromise: true
+    awaitPromise: true,
+    ...(contextId !== undefined ? { contextId } : {})
   });
 
   if (response.exceptionDetails) {
-    throw new Error(response.exceptionDetails.text || "CDP runtime evaluation failed.");
+    const description = response.exceptionDetails.exception?.description;
+    const value = response.exceptionDetails.exception?.value;
+    throw new Error(
+      description
+        || (value !== undefined ? String(value) : undefined)
+        || response.exceptionDetails.text
+        || "CDP runtime evaluation failed."
+    );
   }
 
   return response.result.value as TResult;
@@ -176,7 +265,8 @@ async function evaluateCdp<TResult>(
 async function evaluateCdpRef(
   client: CdpClient,
   functionSource: string,
-  arg?: unknown
+  arg?: unknown,
+  contextId?: number
 ): Promise<{ objectId?: string }> {
   const expression =
     arg === undefined
@@ -185,11 +275,19 @@ async function evaluateCdpRef(
   const response = await client.Runtime.evaluate({
     expression,
     returnByValue: false,
-    awaitPromise: true
+    awaitPromise: true,
+    ...(contextId !== undefined ? { contextId } : {})
   });
 
   if (response.exceptionDetails) {
-    throw new Error(response.exceptionDetails.text || "CDP runtime evaluation failed.");
+    const description = response.exceptionDetails.exception?.description;
+    const value = response.exceptionDetails.exception?.value;
+    throw new Error(
+      description
+        || (value !== undefined ? String(value) : undefined)
+        || response.exceptionDetails.text
+        || "CDP runtime evaluation failed."
+    );
   }
 
   const objectId = response.result.objectId;
@@ -391,7 +489,8 @@ function toAriaSnapshotPayload(request: BrowserSnapshotRequest = {}): {
 
 function toBrowserSnapshot(
   result: AriaSnapshotResult,
-  request: BrowserSnapshotRequest
+  request: BrowserSnapshotRequest,
+  extras: Pick<BrowserSnapshot, "console" | "consoleLink"> = {}
 ): BrowserSnapshot {
   if (result.error) {
     const targetLabel = request.target?.raw ?? "target";
@@ -420,7 +519,9 @@ function toBrowserSnapshot(
     refs: result.refs,
     text: result.text,
     title: result.title,
-    url: result.url
+    url: result.url,
+    ...(extras.console ? { console: extras.console } : {}),
+    ...(extras.consoleLink ? { consoleLink: extras.consoleLink } : {})
   };
 }
 
@@ -433,6 +534,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   readonly browserName = "chromium" as const;
 
   private readonly pageClients = new Map<string, CdpClient>();
+  private readonly pageConsoleStates = new Map<string, BrowserConsoleState>();
   private activeTabId: string | undefined;
   private versionString = "Chromium/unknown";
 
@@ -464,6 +566,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     if (tabs.length === 0) {
       await session.newTab();
     }
+    await session.getActivePageClient().catch(() => undefined);
     return session;
   }
 
@@ -502,6 +605,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const pageClient = this.pageClients.get(tabId);
     if (pageClient) {
       this.pageClients.delete(tabId);
+      this.pageConsoleStates.delete(tabId);
       await pageClient.close().catch(() => {});
     }
 
@@ -522,21 +626,33 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async snapshot(request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
+    const activeTabId = await this.getActiveTabId();
     const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
     const result = await retryUntilReady(() =>
-      evaluateCdp<AriaSnapshotResult>(pageClient, ARIA_SNAPSHOT_EVALUATE_SOURCE, toAriaSnapshotPayload(request))
+      evaluateCdp<AriaSnapshotResult>(
+        pageClient,
+        ARIA_SNAPSHOT_EVALUATE_SOURCE,
+        toAriaSnapshotPayload(request),
+        contextId
+      )
     );
-    return toBrowserSnapshot(result, request);
+    return toBrowserSnapshot(result, request, {
+      console: this.consoleSummary(activeTabId),
+      consoleLink: await this.takeConsoleLink(activeTabId)
+    });
   }
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const point = await evaluateCdp<{ ok: boolean; reason?: string; x?: number; y?: number }>(
       pageClient,
       source,
-      arg
+      arg,
+      contextId
     );
     if (!point.ok || point.x === undefined || point.y === undefined) {
       const isSelector = "selector" in target;
@@ -589,12 +705,14 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async hover(target: ClickTarget): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const point = await evaluateCdp<{ ok: boolean; reason?: string; x?: number; y?: number }>(
       pageClient,
       source,
-      arg
+      arg,
+      contextId
     );
     if (!point.ok || point.x === undefined || point.y === undefined) {
       const isSelector = "selector" in target;
@@ -626,16 +744,21 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async navigate(url: string): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const tabId = await this.getActiveTabId();
+    this.resetConsole(tabId);
     await pageClient.Page.navigate({ url });
+    await waitForCdpDocumentReady(pageClient, 5_000);
   }
 
   async type(target: ClickTarget, text: string, options?: SessionTypeOptions): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
     const result = await evaluateCdp<{ ok: boolean; reason?: string }>(
       pageClient,
       TYPE_INTO_ELEMENT_SOURCE,
-      { ...arg, text, submit: options?.submit ?? false }
+      { ...arg, text, submit: options?.submit ?? false },
+      contextId
     );
     if (!result.ok) {
       const isSelector = "selector" in target;
@@ -688,11 +811,13 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async selectOption(target: ClickTarget, values: string[]): Promise<string[]> {
     const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
     const result = await evaluateCdp<{ ok: boolean; reason?: string; selected: string[] }>(
       pageClient,
       SELECT_OPTION_SOURCE,
-      { ...arg, values }
+      { ...arg, values },
+      contextId
     );
     if (!result.ok) {
       const isSelector = "selector" in target;
@@ -708,11 +833,13 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async check(target: ClickTarget, checked: boolean): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
     const result = await evaluateCdp<{ ok: boolean; reason?: string }>(
       pageClient,
       CHECK_ELEMENT_SOURCE,
-      { ...arg, checked }
+      { ...arg, checked },
+      contextId
     );
     if (!result.ok) {
       const isSelector = "selector" in target;
@@ -737,8 +864,14 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = target ? this.targetArg(target) : {};
-    await evaluateCdp<{ ok: boolean }>(pageClient, SCROLL_ELEMENT_SOURCE, { ...arg, deltaX, deltaY });
+    await evaluateCdp<{ ok: boolean }>(
+      pageClient,
+      SCROLL_ELEMENT_SOURCE,
+      { ...arg, deltaX, deltaY },
+      contextId
+    );
   }
 
   async screenshot(): Promise<string> {
@@ -749,8 +882,9 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async uploadFile(target: ClickTarget, filePaths: string[]): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
-    const refResult = await evaluateCdpRef(pageClient, GET_ELEMENT_OBJECT_SOURCE, arg);
+    const refResult = await evaluateCdpRef(pageClient, GET_ELEMENT_OBJECT_SOURCE, arg, contextId);
     if (!refResult.objectId) {
       const isSelector = "selector" in target;
       throw new McpToolError(
@@ -789,6 +923,15 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     }));
   }
 
+  private async getActiveTabId(): Promise<string> {
+    const tabs = await this.refreshTabs();
+    const activeTab = tabs.find((tab) => tab.active);
+    if (!activeTab) {
+      throw new McpToolError("no_active_tab", "No active tab is available.");
+    }
+    return activeTab.id;
+  }
+
   private async getActivePageClient(): Promise<CdpClient> {
     const tabs = await this.refreshTabs();
     const activeTab = tabs.find((tab) => tab.active);
@@ -806,9 +949,238 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       port: this.connection.port,
       target: activeTab.id
     });
-    await Promise.all([client.Page.enable(), client.Runtime.enable(), client.DOM.enable({})]);
+    this.installConsoleCollection(activeTab.id, client);
+    await Promise.all([
+      client.Page.enable(),
+      client.Runtime.enable(),
+      client.DOM.enable({}),
+      client.Log?.enable().catch(() => undefined)
+    ]);
     this.pageClients.set(activeTab.id, client);
     return client;
+  }
+
+  private async getActiveUtilityContextId(client: CdpClient): Promise<number> {
+    const { frameTree } = await client.Page.getFrameTree();
+    const response = await client.Page.createIsolatedWorld({
+      frameId: frameTree.frame.id,
+      worldName: "__roxy_playwright_utility_world__",
+      grantUniversalAccess: true
+    });
+    return response.executionContextId;
+  }
+
+  private installConsoleCollection(tabId: string, client: CdpClient): void {
+    this.ensureConsoleState(tabId);
+    client.Runtime.consoleAPICalled((event) => {
+      if (event.executionContextId === 0) {
+        return;
+      }
+      const frame = event.stackTrace?.callFrames?.[0];
+      const text = formatConsoleText(event.args);
+      const locationUrl = frame?.url ?? "";
+      const lineNumber = frame?.lineNumber ?? 0;
+      this.addConsoleMessage(tabId, {
+        type: event.type,
+        timestamp: normalizeConsoleTimestamp(event.timestamp),
+        text,
+        locationUrl,
+        lineNumber,
+        formattedText: formatConsoleMessage(event.type, text, locationUrl, lineNumber)
+      });
+    });
+    client.Runtime.exceptionThrown((event) => {
+      const details = event.exceptionDetails;
+      const text = details?.exception?.description
+        || (details?.exception?.value !== undefined ? String(details.exception.value) : undefined)
+        || details?.text
+        || "Uncaught exception";
+      this.addConsoleMessage(tabId, {
+        type: "error",
+        timestamp: Date.now(),
+        text,
+        locationUrl: details?.url ?? "",
+        lineNumber: details?.lineNumber ?? 0,
+        formattedText: text
+      });
+    });
+    client.Log?.entryAdded((event) => {
+      const entry = event.entry;
+      if (entry.source === "worker") {
+        return;
+      }
+      const type = entry.level ?? "log";
+      const text = entry.text ?? "";
+      const locationUrl = entry.url ?? "";
+      const lineNumber = entry.lineNumber ?? 0;
+      this.addConsoleMessage(tabId, {
+        type,
+        timestamp: normalizeConsoleTimestamp(entry.timestamp),
+        text,
+        locationUrl,
+        lineNumber,
+        formattedText: formatConsoleMessage(type, text, locationUrl, lineNumber)
+      });
+    });
+  }
+
+  private ensureConsoleState(tabId: string): BrowserConsoleState {
+    let state = this.pageConsoleStates.get(tabId);
+    if (!state) {
+      state = {
+        messages: [],
+        nextMessageIndex: 0,
+        logStartTime: Date.now(),
+        logLine: 0
+      };
+      this.pageConsoleStates.set(tabId, state);
+    }
+    return state;
+  }
+
+  private resetConsole(tabId: string): void {
+    this.pageConsoleStates.set(tabId, {
+      messages: [],
+      nextMessageIndex: 0,
+      logStartTime: Date.now(),
+      logLine: 0
+    });
+  }
+
+  private addConsoleMessage(tabId: string, message: BrowserConsoleMessage): void {
+    const state = this.ensureConsoleState(tabId);
+    if (!shouldIncludeConsoleMessage(message.type)) {
+      return;
+    }
+    state.messages.push(message);
+  }
+
+  private consoleSummary(tabId: string): { total: number; errors: number; warnings: number } {
+    const messages = this.ensureConsoleState(tabId).messages;
+    let errors = 0;
+    let warnings = 0;
+    for (const message of messages) {
+      if (message.type === "error" || message.type === "assert") {
+        errors++;
+      } else if (message.type === "warning") {
+        warnings++;
+      }
+    }
+    return { total: messages.length, errors, warnings };
+  }
+
+  private async takeConsoleLink(tabId: string): Promise<string | undefined> {
+    const state = this.ensureConsoleState(tabId);
+    const messages = state.messages.slice(state.nextMessageIndex);
+    if (messages.length === 0) {
+      return undefined;
+    }
+
+    state.logFile ??= path.join(
+      process.cwd(),
+      ".playwright-mcp",
+      `console-${new Date(state.logStartTime).toISOString().replace(/[:.]/g, "-")}.log`
+    );
+    await mkdir(path.dirname(state.logFile), { recursive: true });
+
+    const fromLine = state.logLine + 1;
+    for (const message of messages) {
+      const relativeTime = Math.round(message.timestamp - state.logStartTime);
+      const logLine = `[${String(relativeTime).padStart(8, " ")}ms] ${message.formattedText}\n`;
+      await appendFile(state.logFile, logLine);
+      state.logLine += logLine.split("\n").length - 1;
+    }
+    state.nextMessageIndex = state.messages.length;
+
+    const relativePath = path.relative(process.cwd(), state.logFile);
+    const lineRange = fromLine === state.logLine ? `#L${fromLine}` : `#L${fromLine}-L${state.logLine}`;
+    return `${relativePath}${lineRange}`;
+  }
+}
+
+async function waitForCdpDocumentReady(client: CdpClient, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const readyState = await evaluateCdp<string>(
+      client,
+      String.raw`() => document.readyState`
+    ).catch(() => "loading");
+    if (readyState === "complete") {
+      return;
+    }
+    await delay(100);
+  }
+}
+
+function normalizeConsoleTimestamp(timestamp: number | undefined): number {
+  if (timestamp === undefined) {
+    return Date.now();
+  }
+  return timestamp < 100_000_000_000 ? timestamp * 1000 : timestamp;
+}
+
+function formatConsoleText(
+  args: Array<{
+    description?: string;
+    type?: string;
+    unserializableValue?: string;
+    value?: unknown;
+  }>
+): string {
+  return args
+    .map((arg) => {
+      if (typeof arg.value === "string") {
+        return arg.value;
+      }
+      if (arg.value !== undefined) {
+        return String(arg.value);
+      }
+      if (arg.unserializableValue) {
+        return arg.unserializableValue;
+      }
+      if (arg.description) {
+        return arg.description;
+      }
+      return arg.type ?? "";
+    })
+    .join(" ");
+}
+
+function formatConsoleMessage(type: string, text: string, locationUrl: string, lineNumber: number): string {
+  return `[${type.toUpperCase()}] ${text} @ ${locationUrl}:${lineNumber}`;
+}
+
+function shouldIncludeConsoleMessage(type: string): boolean {
+  return consoleLevelForMessageType(type) <= consoleLevelForMessageType("info");
+}
+
+function consoleLevelForMessageType(type: string): number {
+  switch (type) {
+    case "assert":
+    case "error":
+      return 0;
+    case "warning":
+      return 1;
+    case "count":
+    case "dir":
+    case "dirxml":
+    case "info":
+    case "log":
+    case "table":
+    case "time":
+    case "timeEnd":
+      return 2;
+    case "clear":
+    case "debug":
+    case "endGroup":
+    case "profile":
+    case "profileEnd":
+    case "startGroup":
+    case "startGroupCollapsed":
+    case "trace":
+      return 3;
+    default:
+      return 2;
   }
 }
 

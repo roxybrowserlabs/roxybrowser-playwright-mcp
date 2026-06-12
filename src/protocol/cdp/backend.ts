@@ -5,13 +5,13 @@ import { join } from "node:path";
 import * as cdpModule from "chrome-remote-interface";
 import {
   ARIA_REF_SELECTOR_EVALUATE_SOURCE,
-  ARIA_SNAPSHOT_EVALUATE_SOURCE,
   type AriaSnapshotResult,
   type ResolvedAriaRefResult,
   normalizeAriaSnapshotOptions,
   retryUntilReady,
   withOptionalTimeout
 } from "../../ariaSnapshot.js";
+import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../../vendor/playwright/ariaSnapshotEvaluate.js";
 import { LocatorError, TimeoutError } from "../../errors.js";
 import { createPageResponse } from "../../pageResponse.js";
 import type { ResolvedAriaRef } from "../../types/api.js";

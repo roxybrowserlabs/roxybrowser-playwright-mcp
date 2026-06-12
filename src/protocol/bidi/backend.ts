@@ -1,10 +1,10 @@
 import {
   ARIA_REF_SELECTOR_EVALUATE_SOURCE,
-  ARIA_SNAPSHOT_EVALUATE_SOURCE,
   type ResolvedAriaRefResult,
   normalizeAriaSnapshotOptions,
   withOptionalTimeout
 } from "../../ariaSnapshot.js";
+import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../../vendor/playwright/ariaSnapshotEvaluate.js";
 import { NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
 import { createPageResponse } from "../../pageResponse.js";
 import { createNavigationResult } from "../../navigationResult.js";

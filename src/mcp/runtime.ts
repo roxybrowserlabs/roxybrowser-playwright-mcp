@@ -55,7 +55,7 @@ export class McpRuntime {
     };
     this.tabs = await session.listTabs();
     const version = await session.version();
-    const snapshot = this.tabs.some((tab) => tab.active)
+    const snapshot = this.snapshotMode !== "none" && this.tabs.some((tab) => tab.active)
       ? await this.snapshot()
       : undefined;
 
@@ -136,18 +136,6 @@ export class McpRuntime {
     const session = this.requireConnected();
     const activeTab = this.requireActiveTab();
     const requestKey = this.snapshotRequestKey(args);
-    if (
-      this.snapshotCache &&
-      this.snapshotCache.tabId === activeTab.id &&
-      this.snapshotCache.requestKey === requestKey
-    ) {
-      return {
-        text: this.snapshotCache.text,
-        refs: { ...this.snapshotCache.refs },
-        title: this.snapshotCache.title,
-        url: this.snapshotCache.url
-      };
-    }
 
     const request: BrowserSnapshotRequest = {
       ...(args.boxes !== undefined ? { boxes: args.boxes } : {}),
@@ -161,7 +149,9 @@ export class McpRuntime {
       text: snapshot.text,
       refs: { ...snapshot.refs },
       title: snapshot.title,
-      url: snapshot.url
+      url: snapshot.url,
+      ...(snapshot.console ? { console: { ...snapshot.console } } : {}),
+      ...(snapshot.consoleLink ? { consoleLink: snapshot.consoleLink } : {})
     };
     return snapshot;
   }

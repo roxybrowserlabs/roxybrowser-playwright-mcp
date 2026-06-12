@@ -1164,16 +1164,19 @@ export async function retryUntilReady<T extends { notReady?: boolean }>(
   const delays = [100, 250, 500, 1000, 2000, 4000];
   const deadline = Date.now() + timeoutMs;
   let attempt = 0;
+  let lastError: unknown;
   while (true) {
     try {
       const result = await fn();
       if (!result.notReady) return result;
-    } catch {
+    } catch (error) {
       // context detached during navigation — will retry
+      lastError = error;
     }
     const backoff = delays[Math.min(attempt++, delays.length - 1)] ?? 4000;
     if (Date.now() + backoff >= deadline) {
-      throw new TimeoutError("Timed out waiting for the page to be ready for a snapshot.");
+      const detail = lastError instanceof Error ? ` Last error: ${lastError.message}` : "";
+      throw new TimeoutError(`Timed out waiting for the page to be ready for a snapshot.${detail}`);
     }
     await new Promise<void>(resolve => setTimeout(resolve, backoff));
   }
