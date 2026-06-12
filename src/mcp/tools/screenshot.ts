@@ -11,20 +11,27 @@ const takeScreenshot = defineTool({
       element: z.string().optional().describe(
         "Human-readable description of the area to screenshot"
       ),
-      ref: z.string().optional().describe(
+      target: z.string().optional().describe(
         "Element reference or CSS selector to clip screenshot to; omit for full page"
       ),
-      filename: z.string().optional().describe("Save screenshot to this file path")
+      type: z.enum(["png", "jpeg"]).default("png").describe("Image format for the screenshot. Default is png."),
+      filename: z.string().optional().describe("File name to save the screenshot to."),
+      fullPage: z.boolean().optional().describe("When true, takes a screenshot of the full scrollable page, instead of the currently visible viewport. Cannot be used with element screenshots.")
     })
   },
   handle: async (args, runtime) => {
-    const data = await runtime.takeScreenshot();
+    const target = args.target;
+    const result = await runtime.takeScreenshot({
+      type: args.type,
+      ...(args.fullPage !== undefined ? { fullPage: args.fullPage } : {}),
+      ...(target !== undefined ? { target } : {})
+    });
     if (args.filename) {
-      await writeFile(args.filename, Buffer.from(data, "base64"));
+      await writeFile(args.filename, Buffer.from(result.data, "base64"));
       return textResult(`Screenshot saved to "${args.filename}".`);
     }
     return {
-      content: [{ type: "image", data, mimeType: "image/png" }]
+      content: [{ type: "image", data: result.data, mimeType: result.mimeType }]
     };
   }
 });

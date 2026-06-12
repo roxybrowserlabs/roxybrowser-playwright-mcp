@@ -5,10 +5,10 @@ import { formatSnapshot } from "../format.js";
 const navigate = defineTool({
   schema: {
     name: "browser_navigate",
-    title: "Browser Navigate",
-    description: "Navigate the active tab to a URL. Returns an updated snapshot after navigation.",
+    title: "Navigate to a URL",
+    description: "Navigate to a URL",
     inputSchema: z.object({
-      url: z.string().url().describe("URL to navigate to")
+      url: z.string().describe("The URL to navigate to")
     })
   },
   handle: async (args, runtime) => {
@@ -20,9 +20,9 @@ const navigate = defineTool({
 
 const goBack = defineTool({
   schema: {
-    name: "browser_go_back",
-    title: "Browser Go Back",
-    description: "Navigate back in the active tab's browser history. Returns an updated snapshot.",
+    name: "browser_navigate_back",
+    title: "Go back",
+    description: "Go back to the previous page in the history",
     inputSchema: z.object({})
   },
   handle: async (_args, runtime) => {
@@ -34,9 +34,9 @@ const goBack = defineTool({
 
 const goForward = defineTool({
   schema: {
-    name: "browser_go_forward",
-    title: "Browser Go Forward",
-    description: "Navigate forward in the active tab's browser history. Returns an updated snapshot.",
+    name: "browser_navigate_forward",
+    title: "Go forward",
+    description: "Go forward to the next page in the history",
     inputSchema: z.object({})
   },
   handle: async (_args, runtime) => {
@@ -49,21 +49,27 @@ const goForward = defineTool({
 const waitFor = defineTool({
   schema: {
     name: "browser_wait_for",
-    title: "Browser Wait For",
-    description: "Wait until text or a URL pattern appears in the active tab, then return the snapshot.",
+    title: "Wait for",
+    description: "Wait for text to appear or disappear or a specified time to pass",
     inputSchema: z.object({
-      text: z.string().optional().describe("Wait until this text appears in the page snapshot"),
-      url: z.string().optional().describe("Wait until the active tab URL contains this string"),
-      timeout: z.number().optional().describe("Timeout in milliseconds, default 5000")
+      time: z.number().optional().describe("The time to wait in seconds"),
+      text: z.string().optional().describe("The text to wait for"),
+      textGone: z.string().optional().describe("The text to wait for to disappear")
     })
   },
   handle: async (args, runtime) => {
+    if (!args.text && !args.textGone && !args.time) {
+      throw new Error("Either time, text or textGone must be provided");
+    }
+    if (args.time) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, args.time! * 1000)));
+    }
     const snap = await runtime.waitFor(
       {
         ...(args.text !== undefined ? { text: args.text } : {}),
-        ...(args.url !== undefined ? { url: args.url } : {})
+        ...(args.textGone !== undefined ? { textGone: args.textGone } : {})
       },
-      args.timeout ?? 5000
+      5000
     );
     return textResult(formatSnapshot(snap));
   }

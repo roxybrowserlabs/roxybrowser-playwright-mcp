@@ -58,6 +58,25 @@ const hover = defineTool({
   }
 });
 
+const drag = defineTool({
+  schema: {
+    name: "browser_drag",
+    title: "Drag mouse",
+    description: "Perform drag and drop between two elements",
+    inputSchema: z.object({
+      startElement: z.string().optional().describe("Human-readable source element description used to obtain the permission to interact with the element"),
+      startTarget: z.string().describe("Exact target element reference from the page snapshot, or a unique element selector"),
+      endElement: z.string().optional().describe("Human-readable target element description used to obtain the permission to interact with the element"),
+      endTarget: z.string().describe("Exact target element reference from the page snapshot, or a unique element selector")
+    })
+  },
+  handle: async (args, runtime) => {
+    const snap = await runtime.drag(args.startTarget, args.endTarget);
+    if (!snap) return textResult(`Dragged "${args.startElement ?? args.startTarget}" to "${args.endElement ?? args.endTarget}".`);
+    return textResult(formatSnapshot(snap));
+  }
+});
+
 const scroll = defineTool({
   schema: {
     name: "browser_scroll",
@@ -81,4 +100,4 @@ const scroll = defineTool({
   }
 });
 
-export default [click, hover, scroll];
+export default [click, drag, hover, scroll];

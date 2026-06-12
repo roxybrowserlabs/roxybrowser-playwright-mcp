@@ -40,6 +40,9 @@ export interface BidiProtocolClient {
   browsingContextClose(params: unknown): Promise<Commands["browsingContext.close"]["returnType"]>;
   browsingContextCreate(params: unknown): Promise<Commands["browsingContext.create"]["returnType"]>;
   browsingContextGetTree(params: unknown): Promise<Commands["browsingContext.getTree"]["returnType"]>;
+  browsingContextHandleUserPrompt(
+    params: unknown
+  ): Promise<Commands["browsingContext.handleUserPrompt"]["returnType"]>;
   browsingContextNavigate(params: unknown): Promise<Commands["browsingContext.navigate"]["returnType"]>;
   browsingContextReload(params: unknown): Promise<Commands["browsingContext.reload"]["returnType"]>;
   browsingContextSetViewport(
@@ -57,6 +60,7 @@ export interface BidiProtocolClient {
   ): Promise<Commands["emulation.setUserAgentOverride"]["returnType"]>;
   inputPerformActions(params: unknown): Promise<Commands["input.performActions"]["returnType"]>;
   inputReleaseActions(params: unknown): Promise<Commands["input.releaseActions"]["returnType"]>;
+  inputSetFiles(params: unknown): Promise<Commands["input.setFiles"]["returnType"]>;
   networkAddDataCollector(params: unknown): Promise<Commands["network.addDataCollector"]["returnType"]>;
   networkGetData(params: unknown): Promise<Commands["network.getData"]["returnType"]>;
   networkRemoveDataCollector(params: unknown): Promise<Commands["network.removeDataCollector"]["returnType"]>;
@@ -221,6 +225,10 @@ export class WebSocketBidiClient implements BidiProtocolClient {
     return (await this.sendCommand("browsingContext.getTree", params as Commands["browsingContext.getTree"]["params"])).result;
   }
 
+  async browsingContextHandleUserPrompt(params: unknown) {
+    return (await this.sendCommand("browsingContext.handleUserPrompt", params as Commands["browsingContext.handleUserPrompt"]["params"])).result;
+  }
+
   async browsingContextNavigate(params: unknown) {
     return (await this.sendCommand("browsingContext.navigate", params as Commands["browsingContext.navigate"]["params"])).result;
   }
@@ -255,6 +263,10 @@ export class WebSocketBidiClient implements BidiProtocolClient {
 
   async inputReleaseActions(params: unknown) {
     return (await this.sendCommand("input.releaseActions", params as Commands["input.releaseActions"]["params"])).result;
+  }
+
+  async inputSetFiles(params: unknown) {
+    return (await this.sendCommand("input.setFiles", params as Commands["input.setFiles"]["params"])).result;
   }
 
   async networkAddDataCollector(params: unknown) {

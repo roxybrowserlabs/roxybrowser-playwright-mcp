@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import * as cdpModule from "chrome-remote-interface";
 import {
@@ -12,6 +12,8 @@ import { getBidiClientFactory } from "../protocol/bidi/client.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
 import type {
+  BrowserConsoleEntry,
+  BrowserNetworkRequest,
   BrowserSnapshot,
   BrowserSnapshotRequest,
   BrowserTab,
@@ -19,6 +21,10 @@ import type {
   ConnectedBrowserSession,
   RoxyBrowserConnectArgs,
   SessionClickOptions,
+  SessionDragOptions,
+  SessionDropOptions,
+  SessionFormField,
+  SessionScreenshotOptions,
   SessionTypeOptions
 } from "./types.js";
 
@@ -56,6 +62,7 @@ type CdpFrameTree = {
 
 type CdpClient = {
   close(): Promise<void>;
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   Page: {
     enable(): Promise<void>;
     createIsolatedWorld(options: {
@@ -72,6 +79,15 @@ type CdpClient = {
       format?: "jpeg" | "png";
       clip?: { x: number; y: number; width: number; height: number; scale: number };
     }): Promise<{ data: string }>;
+    handleJavaScriptDialog(options: { accept: boolean; promptText?: string }): Promise<void>;
+    javascriptDialogOpening(
+      listener: (event: {
+        url?: string;
+        message: string;
+        type: "alert" | "confirm" | "prompt" | "beforeunload";
+        defaultPrompt?: string;
+      }) => void
+    ): void;
   };
   Runtime: {
     enable(): Promise<void>;
@@ -109,6 +125,49 @@ type CdpClient = {
       result: { value?: unknown; objectId?: string };
       exceptionDetails?: { text?: string; exception?: { description?: string; value?: unknown } };
     }>;
+  };
+  Network?: {
+    enable(options?: {}): Promise<void>;
+    requestWillBeSent(
+      listener: (event: {
+        requestId: string;
+        timestamp?: number;
+        type?: string;
+        request: {
+          url: string;
+          method: string;
+          headers?: Record<string, string>;
+          postData?: string;
+        };
+      }) => void
+    ): void;
+    responseReceived(
+      listener: (event: {
+        requestId: string;
+        timestamp?: number;
+        type?: string;
+        response: {
+          url: string;
+          status: number;
+          statusText: string;
+          headers?: Record<string, string>;
+          mimeType?: string;
+        };
+      }) => void
+    ): void;
+    loadingFinished(listener: (event: { requestId: string; timestamp?: number }) => void): void;
+    loadingFailed(listener: (event: { requestId: string; timestamp?: number; errorText?: string }) => void): void;
+    getResponseBody(options: { requestId: string }): Promise<{ body: string; base64Encoded: boolean }>;
+  };
+  Emulation?: {
+    setDeviceMetricsOverride(options: {
+      mobile: boolean;
+      width: number;
+      height: number;
+      deviceScaleFactor: number;
+      screenWidth: number;
+      screenHeight: number;
+    }): Promise<void>;
   };
   Log?: {
     enable(): Promise<void>;
@@ -191,6 +250,19 @@ interface BrowserConsoleState {
   logStartTime: number;
   logLine: number;
   logFile?: string;
+}
+
+interface BrowserNetworkState {
+  requests: BrowserNetworkRequest[];
+  byRequestId: Map<string, BrowserNetworkRequest>;
+  startedAt: Map<string, number>;
+}
+
+interface BrowserDialogState {
+  message: string;
+  type: "alert" | "confirm" | "prompt" | "beforeunload";
+  defaultPrompt?: string | undefined;
+  url?: string | undefined;
 }
 
 function buildConnectionFromWsEndpoint(browserWsEndpoint: string): CdpConnectionDetails {
@@ -412,6 +484,123 @@ const GET_ELEMENT_OBJECT_SOURCE = String.raw`(payload) => {
     : document.querySelector(payload.selector);
 }`;
 
+const SET_FORM_FIELD_SOURCE = String.raw`(payload) => {
+  const state = globalThis.__roxyMcpState;
+  const el = payload.nodeToken
+    ? (state?.elements?.get(payload.nodeToken) ?? null)
+    : document.querySelector(payload.selector);
+  if (!el || !el.isConnected) return { ok: false, reason: 'not_found' };
+  const tag = el.tagName.toLowerCase();
+  const type = el.getAttribute('type')?.toLowerCase();
+  if (payload.fieldType === 'textbox' || payload.fieldType === 'slider') {
+    if (tag !== 'input' && tag !== 'textarea' && !el.isContentEditable) return { ok: false, reason: 'not_input' };
+    el.focus();
+    if (el.isContentEditable) el.textContent = payload.value;
+    else {
+      const proto = Object.getPrototypeOf(el);
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+        ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (setter) setter.call(el, payload.value);
+      else el.value = payload.value;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: true };
+  }
+  if (payload.fieldType === 'checkbox' || payload.fieldType === 'radio') {
+    if (tag !== 'input' || (type !== 'checkbox' && type !== 'radio')) return { ok: false, reason: 'not_checkable' };
+    const checked = payload.value === 'true';
+    if (el.checked !== checked) el.click();
+    return { ok: true };
+  }
+  if (payload.fieldType === 'combobox') {
+    if (tag !== 'select') return { ok: false, reason: 'not_select' };
+    let matched = false;
+    for (const option of el.options) {
+      const shouldSelect = option.value === payload.value || option.text === payload.value;
+      option.selected = shouldSelect;
+      matched ||= shouldSelect;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: matched, reason: matched ? undefined : 'not_found' };
+  }
+  return { ok: false, reason: 'unsupported' };
+}`;
+
+const DROP_ON_ELEMENT_SOURCE = String.raw`async (payload) => {
+  const state = globalThis.__roxyMcpState;
+  const el = payload.nodeToken
+    ? (state?.elements?.get(payload.nodeToken) ?? null)
+    : document.querySelector(payload.selector);
+  if (!el || !el.isConnected) return { ok: false, reason: 'not_found' };
+  const dataTransfer = new DataTransfer();
+  for (const file of payload.files || []) {
+    const bytes = Uint8Array.from(atob(file.buffer), c => c.charCodeAt(0));
+    dataTransfer.items.add(new File([bytes], file.name, {
+      type: file.mimeType || 'application/octet-stream',
+      lastModified: file.lastModifiedMs
+    }));
+  }
+  for (const [type, value] of Object.entries(payload.data || {}))
+    dataTransfer.setData(type, value);
+  const rect = el.getBoundingClientRect();
+  const makeEvent = (type) => new DragEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    dataTransfer,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2
+  });
+  el.dispatchEvent(makeEvent('dragenter'));
+  const dragover = makeEvent('dragover');
+  el.dispatchEvent(dragover);
+  if (!dragover.defaultPrevented) {
+    el.dispatchEvent(makeEvent('dragleave'));
+    return { ok: false, reason: 'not_accepted' };
+  }
+  el.dispatchEvent(makeEvent('drop'));
+  return { ok: true };
+}`;
+
+const ELEMENT_BOX_SOURCE = String.raw`(payload) => {
+  const state = globalThis.__roxyMcpState;
+  const el = payload.nodeToken
+    ? (state?.elements?.get(payload.nodeToken) ?? null)
+    : document.querySelector(payload.selector);
+  if (!el || !el.isConnected || !(el instanceof Element) || el.getClientRects().length === 0)
+    return { ok: false };
+  const rect = el.getBoundingClientRect();
+  return {
+    ok: true,
+    x: rect.x,
+    y: rect.y,
+    width: Math.max(1, rect.width),
+    height: Math.max(1, rect.height)
+  };
+}`;
+
+const DOCUMENT_BOX_SOURCE = String.raw`() => {
+  const body = document.body;
+  const documentElement = document.documentElement;
+  const width = Math.max(
+    body?.scrollWidth ?? 0,
+    body?.offsetWidth ?? 0,
+    documentElement?.clientWidth ?? 0,
+    documentElement?.scrollWidth ?? 0,
+    documentElement?.offsetWidth ?? 0
+  );
+  const height = Math.max(
+    body?.scrollHeight ?? 0,
+    body?.offsetHeight ?? 0,
+    documentElement?.clientHeight ?? 0,
+    documentElement?.scrollHeight ?? 0,
+    documentElement?.offsetHeight ?? 0
+  );
+  return { x: 0, y: 0, width: Math.max(1, width), height: Math.max(1, height) };
+}`;
+
 const CDP_KEY_MAP: Record<string, { key: string; code: string; keyCode: number; text?: string }> = {
   Enter:      { key: "Enter",     code: "Enter",       keyCode: 13, text: "\r" },
   Return:     { key: "Enter",     code: "Enter",       keyCode: 13, text: "\r" },
@@ -471,6 +660,45 @@ async function evaluateBiDi<TResult>(
   }
 
   return response.result?.value as TResult;
+}
+
+async function evaluateBiDiRef(
+  client: BidiProtocolClient,
+  contextId: string,
+  functionSource: string,
+  arg?: unknown
+): Promise<{ sharedId?: string; handle?: string }> {
+  const expression =
+    arg === undefined
+      ? `(${functionSource})()`
+      : `(${functionSource})(${JSON.stringify(arg)})`;
+  const response = (await client.scriptEvaluate({
+    expression,
+    target: {
+      context: contextId
+    },
+    awaitPromise: true,
+    resultOwnership: "root",
+    serializationOptions: {
+      maxObjectDepth: 0,
+      maxDomDepth: 0
+    }
+  })) as {
+    type: string;
+    result?: { sharedId?: string; handle?: string; value?: { sharedId?: string; handle?: string } };
+    exceptionDetails?: { text?: string };
+  };
+
+  if (response.type === "exception") {
+    throw new Error(response.exceptionDetails?.text || "BiDi runtime evaluation failed.");
+  }
+
+  return {
+    ...(response.result?.sharedId !== undefined ? { sharedId: response.result.sharedId } : {}),
+    ...(response.result?.handle !== undefined ? { handle: response.result.handle } : {}),
+    ...(response.result?.value?.sharedId !== undefined ? { sharedId: response.result.value.sharedId } : {}),
+    ...(response.result?.value?.handle !== undefined ? { handle: response.result.value.handle } : {})
+  };
 }
 
 function toAriaSnapshotPayload(request: BrowserSnapshotRequest = {}): {
@@ -535,6 +763,8 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   private readonly pageClients = new Map<string, CdpClient>();
   private readonly pageConsoleStates = new Map<string, BrowserConsoleState>();
+  private readonly pageNetworkStates = new Map<string, BrowserNetworkState>();
+  private readonly pageDialogStates = new Map<string, BrowserDialogState>();
   private activeTabId: string | undefined;
   private versionString = "Chromium/unknown";
 
@@ -703,6 +933,62 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     }
   }
 
+  async drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const startPoint = await this.actionPoint(pageClient, contextId, start);
+    const endPoint = await this.actionPoint(pageClient, contextId, end);
+    await pageClient.Input.dispatchMouseEvent({
+      type: "mouseMoved",
+      x: startPoint.x,
+      y: startPoint.y,
+      button: "none"
+    });
+    await delay(options.moveDelayMs);
+    await pageClient.Input.dispatchMouseEvent({
+      type: "mousePressed",
+      x: startPoint.x,
+      y: startPoint.y,
+      button: "left",
+      clickCount: 1
+    });
+    await delay(options.holdDelayMs);
+    await pageClient.Input.dispatchMouseEvent({
+      type: "mouseMoved",
+      x: endPoint.x,
+      y: endPoint.y,
+      button: "left"
+    });
+    await delay(options.moveDelayMs);
+    await pageClient.Input.dispatchMouseEvent({
+      type: "mouseReleased",
+      x: endPoint.x,
+      y: endPoint.y,
+      button: "left",
+      clickCount: 1
+    });
+  }
+
+  async drop(target: ClickTarget, payload: SessionDropOptions): Promise<void> {
+    const files = await prepareDropFiles(payload.paths);
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdp<{ ok: boolean; reason?: string }>(
+      pageClient,
+      DROP_ON_ELEMENT_SOURCE,
+      { ...this.targetArg(target), data: payload.data ?? {}, files },
+      contextId
+    );
+    if (!result.ok) {
+      throw new McpToolError(
+        result.reason === "not_accepted" ? "action_failed" : "invalid_target",
+        result.reason === "not_accepted"
+          ? "Drop target did not accept the drop; its dragover handler did not call preventDefault()."
+          : "Drop target could not be found."
+      );
+    }
+  }
+
   async hover(target: ClickTarget): Promise<void> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
@@ -754,6 +1040,26 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
+    if (options?.slowly || options?.delayMs) {
+      const refResult = await evaluateCdpRef(pageClient, FOCUS_AND_GET_ELEMENT_SOURCE, arg, contextId);
+      if (!refResult.objectId) {
+        const isSelector = "selector" in target;
+        throw new McpToolError(
+          isSelector ? "invalid_target" : "stale_ref",
+          isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid."
+        );
+      }
+      for (const char of text) {
+        await pageClient.Input.insertText({ text: char });
+        if (options.delayMs) {
+          await delay(options.delayMs);
+        }
+      }
+      if (options.submit) {
+        await this.pressKey("Enter");
+      }
+      return;
+    }
     const result = await evaluateCdp<{ ok: boolean; reason?: string }>(
       pageClient,
       TYPE_INTO_ELEMENT_SOURCE,
@@ -862,6 +1168,18 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     await pageClient.Page.goForward().catch(() => {});
   }
 
+  async resize(width: number, height: number): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    await pageClient.Emulation?.setDeviceMetricsOverride({
+      mobile: false,
+      width,
+      height,
+      screenWidth: width,
+      screenHeight: height,
+      deviceScaleFactor: 1
+    });
+  }
+
   async scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
@@ -874,10 +1192,49 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     );
   }
 
-  async screenshot(): Promise<string> {
+  async screenshot(options: SessionScreenshotOptions = {}): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
     const pageClient = await this.getActivePageClient();
-    const result = await pageClient.Page.captureScreenshot({ format: "png" });
-    return result.data;
+    const format = options.type ?? "png";
+    const screenshotOptions: {
+      format: "jpeg" | "png";
+      clip?: { x: number; y: number; width: number; height: number; scale: number };
+    } = { format };
+    if (options.target) {
+      const refResult = await evaluateCdpRef(pageClient, GET_ELEMENT_OBJECT_SOURCE, this.targetArg(options.target), await this.getActiveUtilityContextId(pageClient));
+      if (!refResult.objectId) {
+        throw new McpToolError("invalid_target", "Screenshot target could not be found.");
+      }
+      const model = await pageClient.DOM.getBoxModel({ objectId: refResult.objectId });
+      const border = model.model.border;
+      const xs = [border[0], border[2], border[4], border[6]].filter((value): value is number => value !== undefined);
+      const ys = [border[1], border[3], border[5], border[7]].filter((value): value is number => value !== undefined);
+      const x = Math.min(...xs);
+      const y = Math.min(...ys);
+      screenshotOptions.clip = {
+        x,
+        y,
+        width: Math.max(1, Math.max(...xs) - x),
+        height: Math.max(1, Math.max(...ys) - y),
+        scale: 1
+      };
+    } else if (options.fullPage) {
+      const metrics = await pageClient.send("Page.getLayoutMetrics") as {
+        cssContentSize?: { x: number; y: number; width: number; height: number };
+        contentSize?: { x: number; y: number; width: number; height: number };
+      };
+      const contentSize = metrics.cssContentSize ?? metrics.contentSize;
+      if (contentSize) {
+        screenshotOptions.clip = {
+          x: contentSize.x,
+          y: contentSize.y,
+          width: contentSize.width,
+          height: contentSize.height,
+          scale: 1
+        };
+      }
+    }
+    const result = await pageClient.Page.captureScreenshot(screenshotOptions);
+    return { data: result.data, mimeType: format === "png" ? "image/png" : "image/jpeg" };
   }
 
   async uploadFile(target: ClickTarget, filePaths: string[]): Promise<void> {
@@ -895,10 +1252,103 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     await pageClient.DOM.setFileInputFiles({ objectId: refResult.objectId, files: filePaths });
   }
 
+  async fillForm(fields: SessionFormField[]): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    for (const field of fields) {
+      const result = await evaluateCdp<{ ok: boolean; reason?: string }>(
+        pageClient,
+        SET_FORM_FIELD_SOURCE,
+        {
+          ...this.targetArg(field.target),
+          fieldType: field.type,
+          value: field.value
+        },
+        contextId
+      );
+      if (!result.ok) {
+        throw new McpToolError("invalid_target", `Unable to fill form field: ${result.reason ?? "unknown error"}.`);
+      }
+    }
+  }
+
+  async handleDialog(accept: boolean, promptText?: string): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    if (!this.pageDialogStates.has(tabId)) {
+      throw new McpToolError("no_dialog", "No dialog visible.");
+    }
+    const pageClient = await this.getActivePageClient();
+    this.pageDialogStates.delete(tabId);
+    await pageClient.Page.handleJavaScriptDialog({
+      accept,
+      ...(promptText !== undefined ? { promptText } : {})
+    });
+  }
+
+  async networkRequests(): Promise<BrowserNetworkRequest[]> {
+    const tabId = await this.getActiveTabId();
+    return this.ensureNetworkState(tabId).requests.map(cloneNetworkRequest);
+  }
+
+  async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
+    const tabId = await this.getActiveTabId();
+    const request = this.ensureNetworkState(tabId).requests[index - 1];
+    return request ? cloneNetworkRequest(request) : undefined;
+  }
+
+  async runCodeUnsafe(code: string): Promise<unknown> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    return evaluateCdp<unknown>(
+      pageClient,
+      String.raw`async (payload) => {
+        const fn = eval('(' + payload.code + ')');
+        if (typeof fn !== 'function') throw new Error('Code must evaluate to a function.');
+        const page = {
+          evaluate: async (expression, arg) => {
+            const value = typeof expression === 'function' ? expression : eval('(' + expression + ')');
+            return typeof value === 'function' ? await value(arg) : value;
+          },
+          title: () => document.title,
+          url: () => location.href,
+          goto: (url) => { location.href = url; },
+          locator: (selector) => ({
+            click: () => document.querySelector(selector)?.click(),
+            fill: (value) => {
+              const el = document.querySelector(selector);
+              if (!el) throw new Error('Element not found: ' + selector);
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            },
+            textContent: () => document.querySelector(selector)?.textContent ?? null
+          })
+        };
+        return await fn(page);
+      }`,
+      { code },
+      contextId
+    );
+  }
+
   private targetArg(target: ClickTarget): { nodeToken?: string; selector?: string } {
     return "nodeToken" in target
       ? { nodeToken: target.nodeToken }
       : { selector: target.selector };
+  }
+
+  private async actionPoint(client: CdpClient, contextId: number, target: ClickTarget): Promise<{ x: number; y: number }> {
+    const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
+    const point = await evaluateCdp<{ ok: boolean; reason?: string; x?: number; y?: number }>(
+      client,
+      source,
+      this.targetArg(target),
+      contextId
+    );
+    if (!point.ok || point.x === undefined || point.y === undefined) {
+      throw new McpToolError("invalid_target", "Element could not be found or is not visible.");
+    }
+    return { x: point.x, y: point.y };
   }
 
   private async refreshTabs(): Promise<BrowserTab[]> {
@@ -954,6 +1404,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       client.Page.enable(),
       client.Runtime.enable(),
       client.DOM.enable({}),
+      client.Network?.enable({}).catch(() => undefined),
       client.Log?.enable().catch(() => undefined)
     ]);
     this.pageClients.set(activeTab.id, client);
@@ -1022,6 +1473,88 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         formattedText: formatConsoleMessage(type, text, locationUrl, lineNumber)
       });
     });
+    client.Page.javascriptDialogOpening((event) => {
+      this.pageDialogStates.set(tabId, {
+        message: event.message,
+        type: event.type,
+        ...(event.defaultPrompt !== undefined ? { defaultPrompt: event.defaultPrompt } : {}),
+        ...(event.url !== undefined ? { url: event.url } : {})
+      });
+    });
+    this.installNetworkCollection(tabId, client);
+  }
+
+  private installNetworkCollection(tabId: string, client: CdpClient): void {
+    if (!client.Network) {
+      return;
+    }
+    const state = this.ensureNetworkState(tabId);
+    client.Network.requestWillBeSent((event) => {
+      const existing = state.byRequestId.get(event.requestId);
+      const request: BrowserNetworkRequest = existing ?? {
+        index: state.requests.length + 1,
+        requestId: event.requestId,
+        method: event.request.method,
+        url: event.request.url,
+        resourceType: normalizeResourceType(event.type),
+        requestHeaders: {},
+      };
+      request.method = event.request.method;
+      request.url = event.request.url;
+      request.resourceType = normalizeResourceType(event.type);
+      request.requestHeaders = normalizeHeaders(event.request.headers ?? {});
+      if (event.request.postData !== undefined) {
+        request.requestBody = event.request.postData;
+      }
+      if (!existing) {
+        state.requests.push(request);
+        state.byRequestId.set(event.requestId, request);
+      }
+      if (event.timestamp !== undefined) {
+        state.startedAt.set(event.requestId, event.timestamp * 1000);
+      }
+    });
+    client.Network.responseReceived((event) => {
+      const request = state.byRequestId.get(event.requestId);
+      if (!request) {
+        return;
+      }
+      request.status = event.response.status;
+      request.statusText = event.response.statusText;
+      request.responseHeaders = normalizeHeaders(event.response.headers ?? {});
+      request.mimeType = event.response.mimeType;
+      request.resourceType = normalizeResourceType(event.type) || request.resourceType;
+    });
+    client.Network.loadingFinished(async (event) => {
+      const request = state.byRequestId.get(event.requestId);
+      if (!request) {
+        return;
+      }
+      const startedAt = state.startedAt.get(event.requestId);
+      if (startedAt !== undefined && event.timestamp !== undefined) {
+        request.durationMs = Math.round(event.timestamp * 1000 - startedAt);
+      }
+      if (canReadResponseBody(request)) {
+        const clientNetwork = client.Network;
+        const body = await clientNetwork?.getResponseBody({ requestId: event.requestId }).catch(() => undefined);
+        if (body) {
+          request.responseBody = body.base64Encoded
+            ? Buffer.from(body.body, "base64").toString("utf8")
+            : body.body;
+        }
+      }
+    });
+    client.Network.loadingFailed((event) => {
+      const request = state.byRequestId.get(event.requestId);
+      if (!request) {
+        return;
+      }
+      request.failureText = event.errorText ?? "Unknown error";
+      const startedAt = state.startedAt.get(event.requestId);
+      if (startedAt !== undefined && event.timestamp !== undefined) {
+        request.durationMs = Math.round(event.timestamp * 1000 - startedAt);
+      }
+    });
   }
 
   private ensureConsoleState(tabId: string): BrowserConsoleState {
@@ -1038,6 +1571,19 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return state;
   }
 
+  private ensureNetworkState(tabId: string): BrowserNetworkState {
+    let state = this.pageNetworkStates.get(tabId);
+    if (!state) {
+      state = {
+        requests: [],
+        byRequestId: new Map(),
+        startedAt: new Map()
+      };
+      this.pageNetworkStates.set(tabId, state);
+    }
+    return state;
+  }
+
   private resetConsole(tabId: string): void {
     this.pageConsoleStates.set(tabId, {
       messages: [],
@@ -1045,6 +1591,12 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       logStartTime: Date.now(),
       logLine: 0
     });
+    this.pageNetworkStates.set(tabId, {
+      requests: [],
+      byRequestId: new Map(),
+      startedAt: new Map()
+    });
+    this.pageDialogStates.delete(tabId);
   }
 
   private addConsoleMessage(tabId: string, message: BrowserConsoleMessage): void {
@@ -1053,6 +1605,44 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       return;
     }
     state.messages.push(message);
+  }
+
+  async consoleMessages(level: "error" | "warning" | "info" | "debug" = "info", all = false): Promise<BrowserConsoleEntry[]> {
+    const activeTabId = await this.getActiveTabId();
+    const state = this.ensureConsoleState(activeTabId);
+    const startIndex = all ? 0 : state.nextMessageIndex;
+    return state.messages
+      .slice(startIndex)
+      .filter((message) => consoleLevelForMessageType(message.type) <= consoleLevelForMessageType(level))
+      .map((message) => ({
+        type: message.type,
+        text: message.text,
+        timestamp: message.timestamp,
+        locationUrl: message.locationUrl,
+        lineNumber: message.lineNumber,
+        formattedText: message.formattedText
+      }));
+  }
+
+  async evaluate(expression: string, target?: ClickTarget): Promise<unknown> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const source = target
+      ? String.raw`async (payload) => {
+          const state = globalThis.__roxyMcpState;
+          const element = payload.nodeToken
+            ? (state?.elements?.get(payload.nodeToken) ?? null)
+            : document.querySelector(payload.selector);
+          if (!element) throw new Error('Element not found');
+          const value = eval('(' + payload.expression + ')');
+          return typeof value === 'function' ? await value(element) : value;
+        }`
+      : String.raw`async (payload) => {
+          const value = eval('(' + payload.expression + ')');
+          return typeof value === 'function' ? await value() : value;
+        }`;
+    const payload = target ? { ...this.targetArg(target), expression } : { expression };
+    return evaluateCdp<unknown>(pageClient, source, payload, contextId);
   }
 
   private consoleSummary(tabId: string): { total: number; errors: number; warnings: number } {
@@ -1184,10 +1774,170 @@ function consoleLevelForMessageType(type: string): number {
   }
 }
 
+function normalizeHeaders(headers: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    result[key.toLowerCase()] = String(value);
+  }
+  return result;
+}
+
+function normalizeResourceType(type: string | undefined): string {
+  return (type ?? "other").toLowerCase();
+}
+
+function canReadResponseBody(request: BrowserNetworkRequest): boolean {
+  if (request.failureText || request.status === undefined) {
+    return false;
+  }
+  return request.status !== 204 && request.status !== 304 && !(request.status >= 100 && request.status < 200);
+}
+
+function cloneNetworkRequest(request: BrowserNetworkRequest): BrowserNetworkRequest {
+  return {
+    ...request,
+    requestHeaders: { ...request.requestHeaders },
+    ...(request.responseHeaders ? { responseHeaders: { ...request.responseHeaders } } : {})
+  };
+}
+
+type DropFilePayload = {
+  buffer: string;
+  lastModifiedMs: number;
+  mimeType: string;
+  name: string;
+};
+
+async function prepareDropFiles(paths: string[] | undefined): Promise<DropFilePayload[]> {
+  if (!paths?.length) {
+    return [];
+  }
+  return Promise.all(paths.map(async (filePath) => {
+    const [fileStat, buffer] = await Promise.all([
+      stat(filePath),
+      readFile(filePath)
+    ]);
+    if (!fileStat.isFile()) {
+      throw new McpToolError("invalid_input", `Drop path is not a file: ${filePath}`);
+    }
+    return {
+      name: path.basename(filePath),
+      mimeType: mimeTypeForPath(filePath),
+      buffer: buffer.toString("base64"),
+      lastModifiedMs: fileStat.mtimeMs
+    };
+  }));
+}
+
+function mimeTypeForPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".avif": return "image/avif";
+    case ".bmp": return "image/bmp";
+    case ".css": return "text/css";
+    case ".csv": return "text/csv";
+    case ".gif": return "image/gif";
+    case ".htm":
+    case ".html": return "text/html";
+    case ".jpeg":
+    case ".jpg": return "image/jpeg";
+    case ".js":
+    case ".mjs": return "text/javascript";
+    case ".json": return "application/json";
+    case ".md": return "text/markdown";
+    case ".pdf": return "application/pdf";
+    case ".png": return "image/png";
+    case ".svg": return "image/svg+xml";
+    case ".txt": return "text/plain";
+    case ".webp": return "image/webp";
+    case ".xml": return "application/xml";
+    case ".zip": return "application/zip";
+    default: return "application/octet-stream";
+  }
+}
+
+type BidiBytesValue = {
+  type: "base64" | "string";
+  value: string;
+};
+
+type BidiHeader = {
+  name: string;
+  value: BidiBytesValue | string | { value?: string; type?: string };
+};
+
+type BidiNetworkEvent = {
+  context: string;
+  errorText?: string;
+  request: {
+    bodySize?: number;
+    destination?: string;
+    headers?: BidiHeader[];
+    method: string;
+    request: string;
+    url: string;
+  };
+  response?: {
+    headers?: BidiHeader[];
+    mimeType?: string;
+    status: number;
+    statusText?: string;
+  };
+  timestamp?: number;
+};
+
+function bidiBytesValueToString(value: BidiBytesValue | string | { value?: string; type?: string }): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value.type === "base64" && value.value !== undefined) {
+    return Buffer.from(value.value, "base64").toString("utf8");
+  }
+  return value.value ?? "";
+}
+
+function bidiHeadersToRecord(headers: BidiHeader[] | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const header of headers ?? []) {
+    result[header.name] = bidiBytesValueToString(header.value);
+  }
+  return result;
+}
+
+function parseBidiNetworkEvent(payload: unknown): BidiNetworkEvent | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const event = payload as Partial<BidiNetworkEvent>;
+  if (!event.context || !event.request?.request || !event.request.method || !event.request.url) {
+    return undefined;
+  }
+  return {
+    context: event.context,
+    request: event.request,
+    ...(event.errorText !== undefined ? { errorText: event.errorText } : {}),
+    ...(event.response !== undefined ? { response: event.response } : {}),
+    ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {})
+  };
+}
+
+function bidiLogContext(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || !("source" in payload)) {
+    return undefined;
+  }
+  const context = (payload as { source?: { context?: string | null } }).source?.context;
+  return context ?? undefined;
+}
+
 class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   readonly protocol = "bidi" as const;
   readonly browserName = "firefox" as const;
 
+  private readonly pageConsoleStates = new Map<string, BrowserConsoleState>();
+  private readonly pageNetworkStates = new Map<string, BrowserNetworkState>();
+  private readonly pageDialogStates = new Map<string, BrowserDialogState>();
+  private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
+  private responseDataCollector: string | undefined;
   private activeTabId: string | undefined;
 
   private constructor(private readonly client: BidiProtocolClient) {}
@@ -1214,6 +1964,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     });
 
     const session = new BidiConnectedBrowserSession(client);
+    await session.initialize();
     const tabs = await session.refreshTabs();
     if (tabs.length === 0) {
       await session.newTab();
@@ -1264,6 +2015,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const tabsAfterClose = await this.refreshTabs();
     if (tabsAfterClose.length === 0) {
       this.activeTabId = undefined;
+      this.pageConsoleStates.delete(tabId);
+      this.pageNetworkStates.delete(tabId);
+      this.pageDialogStates.delete(tabId);
       return tabsAfterClose;
     }
     const fallbackIndex = index >= 0 ? Math.min(index, tabsAfterClose.length - 1) : 0;
@@ -1284,7 +2038,47 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       ARIA_SNAPSHOT_EVALUATE_SOURCE,
       toAriaSnapshotPayload(request)
     );
-    return toBrowserSnapshot(result, request);
+    return toBrowserSnapshot(result, request, {
+      console: this.consoleSummary(tabId),
+      consoleLink: await this.takeConsoleLink(tabId)
+    });
+  }
+
+  async consoleMessages(level: "error" | "warning" | "info" | "debug" = "info", all = false): Promise<BrowserConsoleEntry[]> {
+    const activeTabId = await this.getActiveTabId();
+    const state = this.ensureConsoleState(activeTabId);
+    const startIndex = all ? 0 : state.nextMessageIndex;
+    return state.messages
+      .slice(startIndex)
+      .filter((message) => consoleLevelForMessageType(message.type) <= consoleLevelForMessageType(level))
+      .map((message) => ({
+        type: message.type,
+        text: message.text,
+        timestamp: message.timestamp,
+        locationUrl: message.locationUrl,
+        lineNumber: message.lineNumber,
+        formattedText: message.formattedText
+      }));
+  }
+
+  async evaluate(expression: string, target?: ClickTarget): Promise<unknown> {
+    const tabId = await this.getActiveTabId();
+    const source = target
+      ? String.raw`async (payload) => {
+          const state = globalThis.__roxyMcpState;
+          const element = payload.nodeToken
+            ? (state?.elements?.get(payload.nodeToken) ?? null)
+            : document.querySelector(payload.selector);
+          if (!element) throw new Error('Element not found');
+          const value = eval('(' + payload.expression + ')');
+          return typeof value === 'function' ? await value(element) : value;
+        }`
+      : String.raw`async (payload) => {
+          const value = eval('(' + payload.expression + ')');
+          return typeof value === 'function' ? await value() : value;
+        }`;
+    const payload = target ? { ...("nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector }), expression } : { expression };
+    return evaluateBiDi<unknown>(this.client, tabId, source, payload);
   }
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
@@ -1357,6 +2151,61 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
   }
 
+  async drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const startPoint = await this.actionPoint(tabId, start);
+    const endPoint = await this.actionPoint(tabId, end);
+    await this.client.inputPerformActions({
+      context: tabId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [
+            {
+              type: "pointerMove",
+              x: Math.round(startPoint.x),
+              y: Math.round(startPoint.y),
+              origin: "viewport"
+            },
+            { type: "pause", duration: options.moveDelayMs },
+            { type: "pointerDown", button: 0 },
+            { type: "pause", duration: options.holdDelayMs },
+            {
+              type: "pointerMove",
+              x: Math.round(endPoint.x),
+              y: Math.round(endPoint.y),
+              origin: "viewport"
+            },
+            { type: "pause", duration: options.moveDelayMs },
+            { type: "pointerUp", button: 0 }
+          ]
+        }
+      ]
+    });
+    await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
+  }
+
+  async drop(target: ClickTarget, payload: SessionDropOptions): Promise<void> {
+    const files = await prepareDropFiles(payload.paths);
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDi<{ ok: boolean; reason?: string }>(
+      this.client,
+      tabId,
+      DROP_ON_ELEMENT_SOURCE,
+      { ...this.targetArg(target), data: payload.data ?? {}, files }
+    );
+    if (!result.ok) {
+      throw new McpToolError(
+        result.reason === "not_accepted" ? "action_failed" : "invalid_target",
+        result.reason === "not_accepted"
+          ? "Drop target did not accept the drop; its dragover handler did not call preventDefault()."
+          : "Drop target could not be found."
+      );
+    }
+  }
+
   async hover(target: ClickTarget): Promise<void> {
     const tabId = await this.getActiveTabId();
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
@@ -1399,12 +2248,21 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async close(): Promise<void> {
+    for (const [event, listener] of this.bidiListeners) {
+      this.client.removeListener(event, listener);
+    }
+    this.bidiListeners.clear();
+    if (this.responseDataCollector) {
+      await this.client.networkRemoveDataCollector({ collector: this.responseDataCollector }).catch(() => {});
+      this.responseDataCollector = undefined;
+    }
     await this.client.sessionEnd({}).catch(() => {});
     this.client.close();
   }
 
   async navigate(url: string): Promise<void> {
     const tabId = await this.getActiveTabId();
+    this.resetConsole(tabId);
     await this.client.browsingContextNavigate({ context: tabId, url, wait: "complete" });
   }
 
@@ -1519,25 +2377,171 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     await this.client.browsingContextTraverseHistory({ context: tabId, delta: 1 }).catch(() => {});
   }
 
+  async resize(width: number, height: number): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.client.browsingContextSetViewport({
+      context: tabId,
+      viewport: { width, height }
+    });
+  }
+
   async scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void> {
     const tabId = await this.getActiveTabId();
     const arg = target ? ("nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector }) : {};
     await evaluateBiDi<{ ok: boolean }>(this.client, tabId, SCROLL_ELEMENT_SOURCE, { ...arg, deltaX, deltaY });
   }
 
-  async screenshot(): Promise<string> {
+  async screenshot(options: SessionScreenshotOptions = {}): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
     const tabId = await this.getActiveTabId();
-    const result = await this.client.browsingContextCaptureScreenshot({ context: tabId });
-    return (result as unknown as { data: string }).data;
+    const format = options.type ?? "png";
+    const screenshotOptions: {
+      context: string;
+      format: { type: "image/jpeg" | "image/png" };
+      origin?: "document" | "viewport";
+      clip?: { type: "box"; x: number; y: number; width: number; height: number };
+    } = {
+      context: tabId,
+      format: { type: format === "png" ? "image/png" : "image/jpeg" }
+    };
+    if (options.target) {
+      const box = await evaluateBiDi<{ ok: boolean; x?: number; y?: number; width?: number; height?: number }>(
+        this.client,
+        tabId,
+        ELEMENT_BOX_SOURCE,
+        this.targetArg(options.target)
+      );
+      if (!box.ok || box.x === undefined || box.y === undefined || box.width === undefined || box.height === undefined) {
+        throw new McpToolError("invalid_target", "Screenshot target could not be found.");
+      }
+      screenshotOptions.origin = "viewport";
+      screenshotOptions.clip = {
+        type: "box",
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height
+      };
+    } else if (options.fullPage) {
+      const box = await evaluateBiDi<{ x: number; y: number; width: number; height: number }>(
+        this.client,
+        tabId,
+        DOCUMENT_BOX_SOURCE
+      );
+      screenshotOptions.origin = "document";
+      screenshotOptions.clip = {
+        type: "box",
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height
+      };
+    }
+    const result = await this.client.browsingContextCaptureScreenshot(screenshotOptions);
+    return {
+      data: (result as unknown as { data: string }).data,
+      mimeType: format === "jpeg" ? "image/jpeg" : "image/png"
+    };
   }
 
-  async uploadFile(_target: ClickTarget, _filePaths: string[]): Promise<void> {
-    // BiDi has no setFiles equivalent and browsers block programmatic file
-    // input assignment, so there is no workaround over this protocol.
-    throw new McpToolError(
-      "not_supported",
-      "File upload is not supported over the BiDi protocol. Use CDP instead."
-    );
+  async uploadFile(target: ClickTarget, filePaths: string[]): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const element = await this.sharedElementReference(tabId, target);
+    await this.client.inputSetFiles({
+      context: tabId,
+      element,
+      files: filePaths
+    });
+  }
+
+  async fillForm(fields: SessionFormField[]): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    for (const field of fields) {
+      const result = await evaluateBiDi<{ ok: boolean; reason?: string }>(
+        this.client,
+        tabId,
+        SET_FORM_FIELD_SOURCE,
+        {
+          ...this.targetArg(field.target),
+          fieldType: field.type,
+          value: field.value
+        }
+      );
+      if (!result.ok) {
+        throw new McpToolError("invalid_target", `Unable to fill form field: ${result.reason ?? "unknown error"}.`);
+      }
+    }
+  }
+
+  async handleDialog(accept: boolean, promptText?: string): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    if (!this.pageDialogStates.has(tabId)) {
+      throw new McpToolError("no_dialog", "No dialog visible.");
+    }
+    this.pageDialogStates.delete(tabId);
+    await this.client.browsingContextHandleUserPrompt({
+      context: tabId,
+      accept,
+      ...(promptText !== undefined ? { userText: promptText } : {})
+    });
+  }
+
+  async networkRequests(): Promise<BrowserNetworkRequest[]> {
+    const tabId = await this.getActiveTabId();
+    return this.ensureNetworkState(tabId).requests.map(cloneNetworkRequest);
+  }
+
+  async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
+    const tabId = await this.getActiveTabId();
+    const request = this.ensureNetworkState(tabId).requests[index - 1];
+    return request ? cloneNetworkRequest(request) : undefined;
+  }
+
+  async runCodeUnsafe(code: string): Promise<unknown> {
+    return this.evaluate(`async () => {
+      const fn = eval(${JSON.stringify(`(${code})`)});
+      if (typeof fn !== 'function') throw new Error('Code must evaluate to a function.');
+      return await fn({
+        evaluate: async expression => {
+          const value = typeof expression === 'function' ? expression : eval('(' + expression + ')');
+          return typeof value === 'function' ? await value() : value;
+        },
+        title: () => document.title,
+        url: () => location.href
+      });
+    }`);
+  }
+
+  private async initialize(): Promise<void> {
+    await this.client.sessionSubscribe({
+      events: [
+        "browsingContext.userPromptOpened",
+        "log.entryAdded",
+        "network.beforeRequestSent",
+        "network.responseCompleted",
+        "network.fetchError",
+        "network.responseStarted"
+      ]
+    }).catch(() => undefined);
+    const collectorResult = await this.client.networkAddDataCollector({
+      dataTypes: ["response"],
+      maxEncodedDataSize: 10_000_000
+    }).catch(() => undefined);
+    this.responseDataCollector = (collectorResult as { collector?: string } | undefined)?.collector;
+    this.attachBiDiListeners();
+  }
+
+  private attachBiDiListeners(): void {
+    this.attachBiDiListener("log.entryAdded", (payload) => this.handleLogEntry(payload));
+    this.attachBiDiListener("browsingContext.userPromptOpened", (payload) => this.handleUserPromptOpened(payload));
+    this.attachBiDiListener("network.beforeRequestSent", (payload) => this.handleBeforeRequestSent(payload));
+    this.attachBiDiListener("network.responseStarted", (payload) => this.handleResponseStarted(payload));
+    this.attachBiDiListener("network.responseCompleted", (payload) => void this.handleResponseCompleted(payload));
+    this.attachBiDiListener("network.fetchError", (payload) => this.handleFetchError(payload));
+  }
+
+  private attachBiDiListener(event: string, listener: (payload: unknown) => void): void {
+    this.bidiListeners.set(event, listener);
+    this.client.on(event, listener);
   }
 
   private async refreshTabs(): Promise<BrowserTab[]> {
@@ -1571,6 +2575,48 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     return activeTab.id;
   }
 
+  private targetArg(target: ClickTarget): { nodeToken: string } | { selector: string } {
+    return "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
+  }
+
+  private async actionPoint(tabId: string, target: ClickTarget): Promise<{ x: number; y: number }> {
+    const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
+    const point = await evaluateBiDi<{ ok: boolean; reason?: string; x?: number; y?: number }>(
+      this.client,
+      tabId,
+      source,
+      this.targetArg(target)
+    );
+    if (!point.ok || point.x === undefined || point.y === undefined) {
+      const isSelector = "selector" in target;
+      throw new McpToolError(
+        isSelector ? "invalid_target" : "stale_ref",
+        isSelector
+          ? `Element "${target.selector}" could not be found or is not visible.`
+          : 'The referenced element is no longer valid. Call "browser_snapshot" again.'
+      );
+    }
+    return { x: point.x, y: point.y };
+  }
+
+  private async sharedElementReference(
+    tabId: string,
+    target: ClickTarget
+  ): Promise<{ sharedId: string; handle?: string }> {
+    const reference = await evaluateBiDiRef(this.client, tabId, GET_ELEMENT_OBJECT_SOURCE, this.targetArg(target));
+    if (!reference.sharedId) {
+      const isSelector = "selector" in target;
+      throw new McpToolError(
+        isSelector ? "invalid_target" : "stale_ref",
+        isSelector ? `Element "${target.selector}" could not be found.` : 'The referenced element is no longer valid.'
+      );
+    }
+    return {
+      sharedId: reference.sharedId,
+      ...(reference.handle !== undefined ? { handle: reference.handle } : {})
+    };
+  }
+
   private async titleForContext(contextId: string): Promise<string> {
     try {
       return await evaluateBiDi<string>(
@@ -1581,6 +2627,253 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     } catch {
       return "";
     }
+  }
+
+  private handleLogEntry(payload: unknown): void {
+    const context = bidiLogContext(payload);
+    if (!context) {
+      return;
+    }
+    const log = payload as {
+      args?: Array<{ value?: unknown; type?: string; unserializableValue?: string }>;
+      level?: string;
+      method?: string;
+      source?: { realm?: string; context?: string | null };
+      stackTrace?: { callFrames?: Array<{ url?: string; lineNumber?: number }> };
+      text?: string | null;
+      timestamp?: number;
+      type?: string;
+    };
+    const frame = log.stackTrace?.callFrames?.[0];
+    const text = log.text ?? (log.args ? formatConsoleText(log.args) : "");
+    const type = log.method ?? log.level ?? log.type ?? "log";
+    const locationUrl = frame?.url ?? "";
+    const lineNumber = frame?.lineNumber ?? 0;
+    this.addConsoleMessage(context, {
+      type,
+      timestamp: normalizeConsoleTimestamp(log.timestamp),
+      text,
+      locationUrl,
+      lineNumber,
+      formattedText: formatConsoleMessage(type, text, locationUrl, lineNumber)
+    });
+  }
+
+  private handleUserPromptOpened(payload: unknown): void {
+    if (!payload || typeof payload !== "object" || !("context" in payload)) {
+      return;
+    }
+    const event = payload as {
+      context: string;
+      defaultValue?: string;
+      message?: string;
+      type?: BrowserDialogState["type"];
+    };
+    this.pageDialogStates.set(event.context, {
+      message: event.message ?? "",
+      type: event.type ?? "alert",
+      ...(event.defaultValue !== undefined ? { defaultPrompt: event.defaultValue } : {})
+    });
+  }
+
+  private handleBeforeRequestSent(payload: unknown): void {
+    const event = parseBidiNetworkEvent(payload);
+    if (!event) {
+      return;
+    }
+    const state = this.ensureNetworkState(event.context);
+    const existing = state.byRequestId.get(event.request.request);
+    const request: BrowserNetworkRequest = existing ?? {
+      index: state.requests.length + 1,
+      requestId: event.request.request,
+      method: event.request.method,
+      url: event.request.url,
+      resourceType: normalizeResourceType(event.request.destination),
+      requestHeaders: {},
+    };
+    request.method = event.request.method;
+    request.url = event.request.url;
+    request.resourceType = normalizeResourceType(event.request.destination);
+    request.requestHeaders = normalizeHeaders(bidiHeadersToRecord(event.request.headers));
+    if (event.request.bodySize !== undefined && event.request.bodySize > 0) {
+      request.requestBody ??= "";
+    }
+    if (!existing) {
+      state.requests.push(request);
+      state.byRequestId.set(event.request.request, request);
+    }
+    if (event.timestamp !== undefined) {
+      state.startedAt.set(event.request.request, event.timestamp);
+    }
+  }
+
+  private handleResponseStarted(payload: unknown): void {
+    const event = parseBidiNetworkEvent(payload);
+    if (!event?.response) {
+      return;
+    }
+    const request = this.ensureNetworkRequest(event);
+    request.status = event.response.status;
+    request.statusText = event.response.statusText ?? "";
+    request.responseHeaders = normalizeHeaders(bidiHeadersToRecord(event.response.headers));
+    request.mimeType = event.response.mimeType;
+  }
+
+  private async handleResponseCompleted(payload: unknown): Promise<void> {
+    const event = parseBidiNetworkEvent(payload);
+    if (!event?.response) {
+      return;
+    }
+    const request = this.ensureNetworkRequest(event);
+    request.status = event.response.status;
+    request.statusText = event.response.statusText ?? "";
+    request.responseHeaders = normalizeHeaders(bidiHeadersToRecord(event.response.headers));
+    request.mimeType = event.response.mimeType;
+    const startedAt = this.ensureNetworkState(event.context).startedAt.get(event.request.request);
+    if (startedAt !== undefined && event.timestamp !== undefined) {
+      request.durationMs = Math.round(event.timestamp - startedAt);
+    }
+    if (canReadResponseBody(request)) {
+      const body = await this.getResponseBody(event.request.request).catch(() => undefined);
+      if (body !== undefined) {
+        request.responseBody = body;
+      }
+    }
+  }
+
+  private handleFetchError(payload: unknown): void {
+    const event = parseBidiNetworkEvent(payload);
+    if (!event) {
+      return;
+    }
+    const request = this.ensureNetworkRequest(event);
+    request.failureText = event.errorText ?? "Unknown error";
+    const startedAt = this.ensureNetworkState(event.context).startedAt.get(event.request.request);
+    if (startedAt !== undefined && event.timestamp !== undefined) {
+      request.durationMs = Math.round(event.timestamp - startedAt);
+    }
+  }
+
+  private ensureNetworkRequest(event: BidiNetworkEvent): BrowserNetworkRequest {
+    const state = this.ensureNetworkState(event.context);
+    let request = state.byRequestId.get(event.request.request);
+    if (!request) {
+      request = {
+        index: state.requests.length + 1,
+        requestId: event.request.request,
+        method: event.request.method,
+        url: event.request.url,
+        resourceType: normalizeResourceType(event.request.destination),
+        requestHeaders: normalizeHeaders(bidiHeadersToRecord(event.request.headers)),
+      };
+      state.requests.push(request);
+      state.byRequestId.set(event.request.request, request);
+    }
+    return request;
+  }
+
+  private async getResponseBody(requestId: string): Promise<string | undefined> {
+    if (!this.responseDataCollector) {
+      return undefined;
+    }
+    const response = await this.client.networkGetData({
+      collector: this.responseDataCollector,
+      dataType: "response",
+      request: requestId
+    }) as { bytes?: BidiBytesValue };
+    return response.bytes ? bidiBytesValueToString(response.bytes) : undefined;
+  }
+
+  private ensureConsoleState(tabId: string): BrowserConsoleState {
+    let state = this.pageConsoleStates.get(tabId);
+    if (!state) {
+      state = {
+        messages: [],
+        nextMessageIndex: 0,
+        logStartTime: Date.now(),
+        logLine: 0
+      };
+      this.pageConsoleStates.set(tabId, state);
+    }
+    return state;
+  }
+
+  private ensureNetworkState(tabId: string): BrowserNetworkState {
+    let state = this.pageNetworkStates.get(tabId);
+    if (!state) {
+      state = {
+        requests: [],
+        byRequestId: new Map(),
+        startedAt: new Map()
+      };
+      this.pageNetworkStates.set(tabId, state);
+    }
+    return state;
+  }
+
+  private resetConsole(tabId: string): void {
+    this.pageConsoleStates.set(tabId, {
+      messages: [],
+      nextMessageIndex: 0,
+      logStartTime: Date.now(),
+      logLine: 0
+    });
+    this.pageNetworkStates.set(tabId, {
+      requests: [],
+      byRequestId: new Map(),
+      startedAt: new Map()
+    });
+    this.pageDialogStates.delete(tabId);
+  }
+
+  private addConsoleMessage(tabId: string, message: BrowserConsoleMessage): void {
+    const state = this.ensureConsoleState(tabId);
+    if (!shouldIncludeConsoleMessage(message.type)) {
+      return;
+    }
+    state.messages.push(message);
+  }
+
+  private consoleSummary(tabId: string): { total: number; errors: number; warnings: number } {
+    const messages = this.ensureConsoleState(tabId).messages;
+    let errors = 0;
+    let warnings = 0;
+    for (const message of messages) {
+      if (message.type === "error" || message.type === "assert") {
+        errors++;
+      } else if (message.type === "warning") {
+        warnings++;
+      }
+    }
+    return { total: messages.length, errors, warnings };
+  }
+
+  private async takeConsoleLink(tabId: string): Promise<string | undefined> {
+    const state = this.ensureConsoleState(tabId);
+    const messages = state.messages.slice(state.nextMessageIndex);
+    if (messages.length === 0) {
+      return undefined;
+    }
+
+    state.logFile ??= path.join(
+      process.cwd(),
+      ".playwright-mcp",
+      `console-${new Date(state.logStartTime).toISOString().replace(/[:.]/g, "-")}.log`
+    );
+    await mkdir(path.dirname(state.logFile), { recursive: true });
+
+    const fromLine = state.logLine + 1;
+    for (const message of messages) {
+      const relativeTime = Math.round(message.timestamp - state.logStartTime);
+      const logLine = `[${String(relativeTime).padStart(8, " ")}ms] ${message.formattedText}\n`;
+      await appendFile(state.logFile, logLine);
+      state.logLine += logLine.split("\n").length - 1;
+    }
+    state.nextMessageIndex = state.messages.length;
+
+    const relativePath = path.relative(process.cwd(), state.logFile);
+    const lineRange = fromLine === state.logLine ? `#L${fromLine}` : `#L${fromLine}-L${state.logLine}`;
+    return `${relativePath}${lineRange}`;
   }
 }
 

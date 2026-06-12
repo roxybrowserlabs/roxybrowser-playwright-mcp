@@ -8,6 +8,7 @@ import { createRoxyBrowserMcpInMemory, createRoxyBrowserMcpServer, startRoxyBrow
 import { afterEach, describe, expect, it } from "vitest";
 import type {
   BrowserSessionFactory,
+  BrowserNetworkRequest,
   BrowserSnapshot,
   BrowserSnapshotRequest,
   BrowserTab,
@@ -15,6 +16,10 @@ import type {
   ConnectedBrowserSession,
   RoxyBrowserConnectArgs,
   SessionClickOptions,
+  SessionDragOptions,
+  SessionDropOptions,
+  SessionFormField,
+  SessionScreenshotOptions,
   SessionTypeOptions
 } from "../../src/mcp/index.js";
 
@@ -103,6 +108,8 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   navigateCalls: string[] = [];
   typeCalls: Array<{ target: ClickTarget; text: string; options?: SessionTypeOptions }> = [];
   pressKeyCalls: Array<{ key: string; modifiers?: string[] }> = [];
+  dragCalls: Array<{ start: ClickTarget; end: ClickTarget; options: SessionDragOptions }> = [];
+  dropCalls: Array<{ target: ClickTarget; payload: SessionDropOptions }> = [];
   selectOptionCalls: Array<{ target: ClickTarget; values: string[] }> = [];
   checkCalls: Array<{ target: ClickTarget; checked: boolean }> = [];
   goBackCount = 0;
@@ -110,6 +117,20 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   scrollCalls: Array<{ target: ClickTarget | null; deltaX: number; deltaY: number }> = [];
   screenshotCount = 0;
   uploadFileCalls: Array<{ target: ClickTarget; paths: string[] }> = [];
+  fillFormCalls: SessionFormField[][] = [];
+
+  async consoleMessages() {
+    return [{
+      type: "log",
+      text: "hello",
+      timestamp: Date.now(),
+      formattedText: "[LOG] hello @ :0"
+    }];
+  }
+
+  async evaluate(expression: string): Promise<unknown> {
+    return `evaluated:${expression}`;
+  }
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     this.clickCalls.push({ target, options });
@@ -136,6 +157,14 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     this.pressKeyCalls.push({ key, modifiers });
   }
 
+  async drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void> {
+    this.dragCalls.push({ start, end, options });
+  }
+
+  async drop(target: ClickTarget, payload: SessionDropOptions): Promise<void> {
+    this.dropCalls.push({ target, payload });
+  }
+
   async selectOption(target: ClickTarget, values: string[]): Promise<string[]> {
     this.selectOptionCalls.push({ target, values });
     return values;
@@ -157,13 +186,52 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     this.scrollCalls.push({ target, deltaX, deltaY });
   }
 
-  async screenshot(): Promise<string> {
+  async resize(width: number, height: number): Promise<void> {
+    const activeTab = this.tabs.find((tab) => tab.active);
+    if (activeTab) {
+      activeTab.title = `${width}x${height}`;
+    }
+  }
+
+  async screenshot(_options?: SessionScreenshotOptions): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
     this.screenshotCount++;
-    return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    return {
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      mimeType: "image/png"
+    };
   }
 
   async uploadFile(target: ClickTarget, paths: string[]): Promise<void> {
     this.uploadFileCalls.push({ target, paths });
+  }
+
+  async fillForm(fields: SessionFormField[]): Promise<void> {
+    this.fillFormCalls.push(fields);
+  }
+
+  async handleDialog(_accept: boolean, _promptText?: string): Promise<void> {}
+
+  async networkRequests(): Promise<BrowserNetworkRequest[]> {
+    return [{
+      index: 1,
+      requestId: "request-1",
+      method: "GET",
+      url: "https://example.test/api",
+      resourceType: "fetch",
+      requestHeaders: {},
+      status: 200,
+      statusText: "OK",
+      responseHeaders: {},
+      responseBody: "{}"
+    }];
+  }
+
+  async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
+    return (await this.networkRequests()).find((request) => request.index === index);
+  }
+
+  async runCodeUnsafe(code: string): Promise<unknown> {
+    return `ran:${code}`;
   }
 
 
@@ -216,12 +284,23 @@ describe("MCP server", () => {
     expect(names).toEqual([
       "browser_check",
       "browser_click",
+      "browser_close",
+      "browser_console_messages",
+      "browser_drag",
+      "browser_drop",
+      "browser_evaluate",
       "browser_file_upload",
-      "browser_go_back",
-      "browser_go_forward",
+      "browser_fill_form",
+      "browser_handle_dialog",
       "browser_hover",
       "browser_navigate",
+      "browser_navigate_back",
+      "browser_navigate_forward",
+      "browser_network_request",
+      "browser_network_requests",
       "browser_press_key",
+      "browser_resize",
+      "browser_run_code_unsafe",
       "browser_scroll",
       "browser_select_option",
       "browser_snapshot",
@@ -231,6 +310,39 @@ describe("MCP server", () => {
       "browser_wait_for",
       "roxy_browser_connect"
     ]);
+  });
+
+  it("passes drop file paths through to the session", async () => {
+    let capturedSession: FakeConnectedBrowserSession | undefined;
+    const trackingFactory: BrowserSessionFactory = async (args) => {
+      capturedSession = new FakeConnectedBrowserSession(args);
+      return capturedSession;
+    };
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: trackingFactory
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+    await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        protocol: "cdp",
+        endpoint: "ws://drop-paths.invalid/devtools/browser/1"
+      }
+    });
+
+    await client.callTool({
+      name: "browser_drop",
+      arguments: {
+        target: "dropzone",
+        paths: ["/tmp/sample.txt"]
+      }
+    });
+
+    expect(capturedSession?.dropCalls[0]?.payload.paths).toEqual(["/tmp/sample.txt"]);
   });
 
   it("returns structured errors before connect and invalidates snapshot cache after click", async () => {
@@ -657,7 +769,7 @@ describe("MCP server", () => {
 
       const result = await client.callTool({
         name: "browser_click",
-        arguments: { target: "e1" }
+        arguments: { target: "button" }
       });
 
       expect(result.isError).toBeUndefined();
@@ -730,10 +842,10 @@ describe("MCP server", () => {
       expect(text).not.toContain("### Snapshot");
     });
 
-    it("rejects non-URL input", async () => {
+    it("accepts non-URL input like Playwright MCP", async () => {
       const { client } = await setupTrackingClient();
       const result = await client.callTool({ name: "browser_navigate", arguments: { url: "not-a-url" } });
-      expect(result.isError).toBe(true);
+      expect(result.isError).toBeUndefined();
     });
   });
 
@@ -743,7 +855,7 @@ describe("MCP server", () => {
 
       const result = await client.callTool({
         name: "browser_type",
-        arguments: { ref: "e1", text: "hello" }
+        arguments: { target: "e1", text: "hello" }
       });
 
       expect(result.isError).toBeUndefined();
@@ -758,7 +870,7 @@ describe("MCP server", () => {
 
       await client.callTool({
         name: "browser_type",
-        arguments: { ref: "e1", text: "query", submit: true }
+        arguments: { target: "e1", text: "query", submit: true }
       });
 
       expect(getSession().typeCalls[0]!.options?.submit).toBe(true);
@@ -769,7 +881,7 @@ describe("MCP server", () => {
 
       await client.callTool({
         name: "browser_type",
-        arguments: { ref: "input#search", text: "test" }
+        arguments: { target: "input#search", text: "test" }
       });
 
       expect(getSession().typeCalls[0]!.target).toEqual({ selector: "input#search" });
@@ -779,7 +891,7 @@ describe("MCP server", () => {
       const { client } = await setupTrackingClient();
       await client.callTool({ name: "browser_snapshot", arguments: {} });
 
-      const result = await client.callTool({ name: "browser_type", arguments: { ref: "e999", text: "hi" } });
+      const result = await client.callTool({ name: "browser_type", arguments: { target: "e999", text: "hi" } });
 
       expect(result.isError).toBe(true);
       expect(textFromResult(result)).toContain("[stale_ref]");
@@ -800,16 +912,6 @@ describe("MCP server", () => {
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
-    it("passes modifier keys", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      await client.callTool({
-        name: "browser_press_key",
-        arguments: { key: "a", modifiers: ["Control"] }
-      });
-
-      expect(getSession().pressKeyCalls[0]!.modifiers).toEqual(["Control"]);
-    });
   });
 
   describe("browser_select_option", () => {
@@ -868,12 +970,12 @@ describe("MCP server", () => {
     });
   });
 
-  describe("browser_go_back", () => {
+  describe("browser_navigate_back", () => {
     it("calls session.goBack and returns snapshot", async () => {
       const { client, getSession } = await setupTrackingClient();
 
       const result = await client.callTool({
-        name: "browser_go_back",
+        name: "browser_navigate_back",
         arguments: {}
       });
 
@@ -883,12 +985,12 @@ describe("MCP server", () => {
     });
   });
 
-  describe("browser_go_forward", () => {
+  describe("browser_navigate_forward", () => {
     it("calls session.goForward and returns snapshot", async () => {
       const { client, getSession } = await setupTrackingClient();
 
       const result = await client.callTool({
-        name: "browser_go_forward",
+        name: "browser_navigate_forward",
         arguments: {}
       });
 
@@ -939,28 +1041,28 @@ describe("MCP server", () => {
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
-    it("returns snapshot immediately when url condition already met", async () => {
+    it("returns snapshot immediately when textGone condition is already met", async () => {
       const { client } = await setupTrackingClient();
 
       const result = await client.callTool({
         name: "browser_wait_for",
-        arguments: { url: "tools-test.invalid" }
+        arguments: { textGone: "not present" }
       });
 
       expect(result.isError).toBeUndefined();
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
-    it("times out when condition is never met", async () => {
+    it("rejects missing wait condition", async () => {
       const { client } = await setupTrackingClient();
 
       const result = await client.callTool({
         name: "browser_wait_for",
-        arguments: { text: "this-text-never-appears-xyz", timeout: 300 }
+        arguments: {}
       });
 
       expect(result.isError).toBe(true);
-      expect(textFromResult(result)).toContain("[timeout]");
+      expect(textFromResult(result)).toContain("Either time, text or textGone must be provided");
     });
   });
 

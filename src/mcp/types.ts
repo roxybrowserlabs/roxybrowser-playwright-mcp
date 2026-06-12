@@ -34,6 +34,32 @@ export interface BrowserConsoleSummary {
   warnings: number;
 }
 
+export interface BrowserConsoleEntry {
+  type: string;
+  text: string;
+  timestamp: number;
+  locationUrl?: string | undefined;
+  lineNumber?: number | undefined;
+  formattedText: string;
+}
+
+export interface BrowserNetworkRequest {
+  index: number;
+  requestId: string;
+  method: string;
+  url: string;
+  resourceType: string;
+  requestHeaders: Record<string, string>;
+  requestBody?: string | undefined;
+  status?: number | undefined;
+  statusText?: string | undefined;
+  responseHeaders?: Record<string, string> | undefined;
+  responseBody?: string | undefined;
+  failureText?: string | undefined;
+  mimeType?: string | undefined;
+  durationMs?: number | undefined;
+}
+
 export interface BrowserSnapshotTarget {
   raw: string;
   nodeToken?: string;
@@ -62,7 +88,11 @@ export interface ConnectedBrowserSession {
   selectTab(tabId: string): Promise<BrowserTab[]>;
   closeTab(tabId: string): Promise<BrowserTab[]>;
   snapshot(request?: BrowserSnapshotRequest): Promise<BrowserSnapshot>;
+  consoleMessages(level?: "error" | "warning" | "info" | "debug", all?: boolean): Promise<BrowserConsoleEntry[]>;
+  evaluate(expression: string, target?: ClickTarget): Promise<unknown>;
   click(target: ClickTarget, options: SessionClickOptions): Promise<void>;
+  drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void>;
+  drop(target: ClickTarget, payload: SessionDropOptions): Promise<void>;
   hover(target: ClickTarget): Promise<void>;
   navigate(url: string): Promise<void>;
   type(target: ClickTarget, text: string, options?: SessionTypeOptions): Promise<void>;
@@ -71,9 +101,15 @@ export interface ConnectedBrowserSession {
   check(target: ClickTarget, checked: boolean): Promise<void>;
   goBack(): Promise<void>;
   goForward(): Promise<void>;
+  resize(width: number, height: number): Promise<void>;
   scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void>;
-  screenshot(): Promise<string>;
+  screenshot(options?: SessionScreenshotOptions): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }>;
   uploadFile(target: ClickTarget, filePaths: string[]): Promise<void>;
+  fillForm(fields: SessionFormField[]): Promise<void>;
+  handleDialog(accept: boolean, promptText?: string): Promise<void>;
+  networkRequests(): Promise<BrowserNetworkRequest[]>;
+  networkRequest(index: number): Promise<BrowserNetworkRequest | undefined>;
+  runCodeUnsafe(code: string): Promise<unknown>;
   close(): Promise<void>;
 }
 
@@ -88,6 +124,30 @@ export interface SessionClickOptions {
 
 export interface SessionTypeOptions {
   submit?: boolean;
+  slowly?: boolean;
+  delayMs?: number;
+}
+
+export interface SessionDragOptions {
+  moveDelayMs: number;
+  holdDelayMs: number;
+}
+
+export interface SessionDropOptions {
+  paths?: string[] | undefined;
+  data?: Record<string, string> | undefined;
+}
+
+export interface SessionScreenshotOptions {
+  type?: "png" | "jpeg" | undefined;
+  fullPage?: boolean | undefined;
+  target?: ClickTarget | undefined;
+}
+
+export interface SessionFormField {
+  target: ClickTarget;
+  type: "textbox" | "checkbox" | "radio" | "combobox" | "slider";
+  value: string;
 }
 
 export type BrowserSessionFactory = (

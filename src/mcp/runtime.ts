@@ -1,6 +1,8 @@
 import { connectBrowserSession } from "./connectedBrowser.js";
 import { McpToolError } from "./errors.js";
 import type {
+  BrowserConsoleEntry,
+  BrowserNetworkRequest,
   BrowserSessionFactory,
   BrowserSnapshot,
   BrowserSnapshotRequest,
@@ -22,6 +24,15 @@ function delay(ms: number): Promise<void> {
 
 function staleRefMessage(ref: string): string {
   return `Ref ${ref} not found in the current page snapshot. Try capturing new snapshot.`;
+}
+
+function normalizeNavigationUrl(url: string): string {
+  try {
+    new URL(url);
+    return url;
+  } catch {
+    return url.startsWith("localhost") ? `http://${url}` : `https://${url}`;
+  }
 }
 
 export class McpRuntime {
@@ -197,7 +208,7 @@ export class McpRuntime {
 
   async navigate(url: string): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
-    await session.navigate(url);
+    await session.navigate(normalizeNavigationUrl(url));
     this.invalidateSnapshot();
     if (this.snapshotMode === "none") {
       return undefined;
@@ -208,11 +219,16 @@ export class McpRuntime {
   async type(
     ref: string,
     text: string,
-    opts?: { submit?: boolean }
+    opts?: { submit?: boolean; slowly?: boolean; human?: { profile?: string } }
   ): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const resolved = this.resolveTarget(ref);
-    await session.type(resolved, text, opts);
+    const humanOpts = resolveHumanizationOptions(opts?.human as HumanizationOptions | undefined);
+    await session.type(resolved, text, {
+      ...(opts?.submit !== undefined ? { submit: opts.submit } : {}),
+      ...(opts?.slowly !== undefined ? { slowly: opts.slowly } : {}),
+      ...(opts?.slowly ? { delayMs: jitter(humanOpts.typingDelayMs) } : {})
+    });
     this.invalidateSnapshot();
     if (this.snapshotMode === "none") {
       return undefined;
@@ -222,9 +238,13 @@ export class McpRuntime {
 
   async pressKey(
     key: string,
-    modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
+    modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">,
+    human?: { profile?: string }
   ): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
+    const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
+    const delayMs = jitter(humanOpts.typingDelayMs);
+    if (delayMs > 0) await delay(delayMs);
     await session.pressKey(key, modifiers);
     this.invalidateSnapshot();
     if (this.snapshotMode === "none") {
@@ -281,6 +301,51 @@ export class McpRuntime {
     return this.snapshot();
   }
 
+  async resize(width: number, height: number): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.resize(width, height);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async consoleMessages(level?: "error" | "warning" | "info" | "debug", all?: boolean): Promise<BrowserConsoleEntry[]> {
+    const session = this.requireConnected();
+    return session.consoleMessages(level, all);
+  }
+
+  async evaluate(expression: string, target?: string): Promise<unknown> {
+    const session = this.requireConnected();
+    const resolved = target ? this.resolveTarget(target) : undefined;
+    return session.evaluate(expression, resolved);
+  }
+
+  async drag(startTarget: string, endTarget: string, human?: { profile?: string }): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
+    await session.drag(this.resolveTarget(startTarget), this.resolveTarget(endTarget), {
+      moveDelayMs: jitter(humanOpts.moveJitterMs),
+      holdDelayMs: jitter(humanOpts.clickHoldMs)
+    });
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async drop(target: string, payload: { paths?: string[]; data?: Record<string, string> }): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.drop(this.resolveTarget(target), payload);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
   async scroll(
     ref: string | null,
     deltaX: number,
@@ -296,9 +361,13 @@ export class McpRuntime {
     return this.snapshot();
   }
 
-  async takeScreenshot(): Promise<string> {
+  async takeScreenshot(options?: { type?: "png" | "jpeg"; fullPage?: boolean; target?: string }): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
     const session = this.requireConnected();
-    return session.screenshot();
+    return session.screenshot({
+      ...(options?.type !== undefined ? { type: options.type } : {}),
+      ...(options?.fullPage !== undefined ? { fullPage: options.fullPage } : {}),
+      ...(options?.target !== undefined ? { target: this.resolveTarget(options.target) } : {})
+    });
   }
 
   async uploadFile(ref: string, paths: string[]): Promise<BrowserSnapshot | undefined> {
@@ -312,8 +381,56 @@ export class McpRuntime {
     return this.snapshot();
   }
 
+  async fillForm(fields: Array<{
+    target: string;
+    type: "textbox" | "checkbox" | "radio" | "combobox" | "slider";
+    value: string;
+  }>, human?: { profile?: string }): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
+    const delayMs = jitter(humanOpts.typingDelayMs);
+    await session.fillForm(fields.map((field) => ({
+      target: this.resolveTarget(field.target),
+      type: field.type,
+      value: field.value
+    })));
+    if (delayMs > 0) await delay(delayMs);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async handleDialog(accept: boolean, promptText?: string): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.handleDialog(accept, promptText);
+    this.invalidateSnapshot();
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async networkRequests(): Promise<BrowserNetworkRequest[]> {
+    const session = this.requireConnected();
+    return session.networkRequests();
+  }
+
+  async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
+    const session = this.requireConnected();
+    return session.networkRequest(index);
+  }
+
+  async runCodeUnsafe(code: string): Promise<unknown> {
+    const session = this.requireConnected();
+    const result = await session.runCodeUnsafe(code);
+    this.invalidateSnapshot();
+    return result;
+  }
+
   async waitFor(
-    condition: { text?: string; url?: string },
+    condition: { text?: string; textGone?: string; url?: string },
     timeoutMs = 5000
   ): Promise<BrowserSnapshot> {
     const deadline = Date.now() + timeoutMs;
@@ -325,6 +442,16 @@ export class McpRuntime {
           throw new McpToolError(
             "timeout",
             `Timed out after ${timeoutMs}ms waiting for text "${condition.text}" to appear.`
+          );
+        }
+        await delay(250);
+        return poll();
+      }
+      if (condition.textGone && snap.text.includes(condition.textGone)) {
+        if (Date.now() >= deadline) {
+          throw new McpToolError(
+            "timeout",
+            `Timed out after ${timeoutMs}ms waiting for text "${condition.textGone}" to disappear.`
           );
         }
         await delay(250);
