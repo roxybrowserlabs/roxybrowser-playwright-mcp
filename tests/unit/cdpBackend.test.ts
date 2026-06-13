@@ -49,6 +49,10 @@ describe("buildChromiumLaunchArgs", () => {
     expect(buildChromiumLaunchArgs({ headless: false }, "/tmp/roxy-profile")).toEqual([
       "--user-data-dir=/tmp/roxy-profile",
       "--remote-debugging-port=0",
+      "--disable-background-networking",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
       "--no-first-run",
       "--no-default-browser-check",
       "--no-startup-window"
@@ -59,6 +63,10 @@ describe("buildChromiumLaunchArgs", () => {
     expect(buildChromiumLaunchArgs({ headless: true }, "/tmp/roxy-profile")).toEqual([
       "--user-data-dir=/tmp/roxy-profile",
       "--remote-debugging-port=0",
+      "--disable-background-networking",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
       "--no-first-run",
       "--no-default-browser-check",
       "--no-startup-window",
@@ -78,6 +86,10 @@ describe("buildChromiumLaunchArgs", () => {
     ).toEqual([
       "--user-data-dir=/tmp/roxy-profile",
       "--remote-debugging-port=0",
+      "--disable-background-networking",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
       "--no-first-run",
       "--no-default-browser-check",
       "--no-startup-window",

@@ -1,6 +1,7 @@
 import { TimeoutError } from "./errors.js";
 import { DefaultHumanController } from "./human/controller.js";
 import { serializePageFunction } from "./evaluation.js";
+import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   ProtocolElementHandleAdapter,
@@ -78,12 +79,7 @@ export class RoxyElementHandle implements ElementHandle {
     selector: string,
     options: WaitForSelectorOptions = {}
   ): Promise<ElementHandle | null> {
-    if ("waitFor" in options && options.waitFor !== undefined && options.waitFor !== "visible") {
-      throw new Error("options.waitFor is not supported, did you mean options.state?");
-    }
-
-    const state = options.state ?? options.waitFor ?? "visible";
-    const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const { state, timeout } = normalizeWaitForSelectorOptions(options, DEFAULT_WAIT_TIMEOUT_MS);
     const startTime = Date.now();
 
     while (Date.now() - startTime <= timeout) {

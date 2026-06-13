@@ -23,7 +23,7 @@ export const PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE = `(payload) => {
 
   const previousState = globalThis.__roxyMcpState && globalThis.__roxyMcpState.elements
     ? globalThis.__roxyMcpState
-    : { elements: new Map(), refs: new Map() };
+    : { elements: new Map(), refs: new Map(), nextFrameSeq: 1 };
 
   function resolveRootNode() {
     if (!target) {
@@ -96,31 +96,111 @@ ${PLAYWRIGHT_INJECTED_SCRIPT_SOURCE
   });
   globalThis.__roxyPlaywrightInjectedScript = injected;
 
-  const snapshot = injected.incrementalAriaSnapshot(resolvedRoot.node, {
+  const mcpState = {
+    refs: new Map(),
+    elements: new Map(),
+    nextFrameSeq: typeof previousState.nextFrameSeq === "number" ? previousState.nextFrameSeq : 1
+  };
+
+  function rememberSnapshotElements(snapshotElements) {
+    for (const entry of snapshotElements.entries()) {
+      const ref = entry[0];
+      const element = entry[1];
+      mcpState.refs.set(ref, ref);
+      mcpState.elements.set(ref, element);
+    }
+  }
+
+  function captureSnapshot(node, snapshotOptions) {
+    const snapshot = injected.incrementalAriaSnapshot(node, snapshotOptions);
+    const snapshotElements = injected._lastAriaSnapshotForQuery && injected._lastAriaSnapshotForQuery.elements
+      ? new Map(injected._lastAriaSnapshotForQuery.elements.entries())
+      : new Map();
+    rememberSnapshotElements(snapshotElements);
+    return { elements: snapshotElements, snapshot };
+  }
+
+  function ensureFrameSeq(iframeElement) {
+    if (typeof iframeElement.__roxyFrameSeq !== "number") {
+      iframeElement.__roxyFrameSeq = mcpState.nextFrameSeq++;
+    }
+    return iframeElement.__roxyFrameSeq;
+  }
+
+  function stitchCapture(capture, snapshotOptions) {
+    const renderedIframeRefs = (capture.snapshot.iframeRefs || []).filter(
+      (ref) => ref in (capture.snapshot.iframeDepths || {})
+    );
+
+    const childSnapshots = renderedIframeRefs.map((ref) => {
+      const iframeElement = capture.elements.get(ref);
+      if (!iframeElement) {
+        return { full: [] };
+      }
+
+      let frameRoot = null;
+      try {
+        const frameDocument = iframeElement.contentDocument;
+        frameRoot = frameDocument && (frameDocument.body || frameDocument.documentElement);
+      } catch {}
+
+      if (!frameRoot) {
+        return { full: [] };
+      }
+
+      const iframeDepth = capture.snapshot.iframeDepths[ref];
+      const childDepth =
+        typeof snapshotOptions.depth === "number"
+          ? snapshotOptions.depth - iframeDepth - 1
+          : undefined;
+      const frameSeq = ensureFrameSeq(iframeElement);
+      const childCapture = captureSnapshot(frameRoot, {
+        ...snapshotOptions,
+        depth: childDepth,
+        refPrefix: "f" + frameSeq
+      });
+      return stitchCapture(childCapture, {
+        ...snapshotOptions,
+        depth: childDepth
+      });
+    });
+
+    const full = [];
+    const lines = String(capture.snapshot.full || "").split("\\n");
+    for (const line of lines) {
+      const match = line.match(/^(\\s*)- iframe (?:\\[active\\] )?\\[ref=([^\\]]*)\\]/);
+      if (!match) {
+        if (line) {
+          full.push(line);
+        }
+        continue;
+      }
+
+      const leadingSpace = match[1];
+      const ref = match[2];
+      const childSnapshot = childSnapshots[renderedIframeRefs.indexOf(ref)] || { full: [] };
+      full.push(childSnapshot.full.length ? line + ":" : line);
+      full.push(...childSnapshot.full.map((entry) => leadingSpace + "  " + entry));
+    }
+
+    return { full };
+  }
+
+  const baseSnapshotOptions = {
     mode: options.mode || "default",
     refPrefix: "",
     doNotRenderActive: options.doNotRenderActive,
     depth: options.depth,
     boxes: options.boxes
-  });
+  };
+  const rootCapture = captureSnapshot(resolvedRoot.node, baseSnapshotOptions);
+  const stitched = stitchCapture(rootCapture, baseSnapshotOptions);
 
-  const refs = new Map();
-  const elements = new Map();
-  const snapshotElements = injected._lastAriaSnapshotForQuery && injected._lastAriaSnapshotForQuery.elements
-    ? injected._lastAriaSnapshotForQuery.elements
-    : new Map();
-  for (const entry of snapshotElements.entries()) {
-    const ref = entry[0];
-    const element = entry[1];
-    refs.set(ref, ref);
-    elements.set(ref, element);
-  }
-
-  globalThis.__roxyMcpState = { refs, elements };
+  globalThis.__roxyMcpState = mcpState;
 
   return {
-    refs: Object.fromEntries(refs.entries()),
-    text: snapshot.full,
+    refs: Object.fromEntries(mcpState.refs.entries()),
+    text: stitched.full.join("\\n"),
     title: String(rootDocument.title || ""),
     url: String(globalThis.location && globalThis.location.href || "")
   };

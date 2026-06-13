@@ -5,6 +5,7 @@ import { TimeoutError } from "./errors.js";
 import { serializePageFunction } from "./evaluation.js";
 import { DefaultHumanController } from "./human/controller.js";
 import { RoxyLocator } from "./locator.js";
+import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type { ProtocolPageAdapter } from "./protocol/adapter.js";
 import { parseSelectorChain } from "./selectors.js";
@@ -102,14 +103,7 @@ export class RoxyPage implements Page {
     selector: string,
     options: WaitForSelectorOptions = {}
   ): Promise<ElementHandle | null> {
-    if ("waitFor" in options && options.waitFor !== undefined) {
-      if (options.waitFor !== "visible") {
-        throw new Error("options.waitFor is not supported, did you mean options.state?");
-      }
-    }
-
-    const state = options.state ?? options.waitFor ?? "visible";
-    const timeout = options.timeout ?? DEFAULT_EVENT_TIMEOUT_MS;
+    const { state, timeout } = normalizeWaitForSelectorOptions(options, DEFAULT_EVENT_TIMEOUT_MS);
     const startTime = Date.now();
 
     while (Date.now() - startTime <= timeout) {

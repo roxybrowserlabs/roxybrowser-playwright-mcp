@@ -12,16 +12,20 @@ import type {
 } from "./types.js";
 
 export class DefaultHumanController implements HumanController {
+  private actionQueue = Promise.resolve();
+
   constructor(private readonly defaults: ResolvedHumanizationOptions) {}
 
   async click(target: HumanActionTarget, options?: ClickOptions): Promise<void> {
-    await this.hover(target, options);
-    if (this.defaults.hoverBeforeClickMs > 0) {
-      await delay(this.defaults.hoverBeforeClickMs);
-    }
-    await target.click({
-      ...options,
-      delay: options?.delay ?? this.defaults.clickHoldMs
+    await this.enqueue(async () => {
+      await this.hover(target, options);
+      if (this.defaults.hoverBeforeClickMs > 0) {
+        await delay(this.defaults.hoverBeforeClickMs);
+      }
+      await target.click({
+        ...options,
+        delay: options?.delay ?? this.defaults.clickHoldMs
+      });
     });
   }
 
@@ -57,6 +61,15 @@ export class DefaultHumanController implements HumanController {
       ...options,
       delay: options?.delay ?? this.defaults.typingDelayMs
     });
+  }
+
+  private async enqueue<TResult>(action: () => Promise<TResult>): Promise<TResult> {
+    const run = this.actionQueue.then(action, action);
+    this.actionQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 }
 

@@ -85,5 +85,53 @@ describe("DefaultHumanController", () => {
     expect(target.type).toHaveBeenCalledWith("hello", { delay: 77 });
     expect(target.press).toHaveBeenCalledWith("Enter", { delay: 77 });
   });
-});
 
+  it("serializes concurrent clicks within the same controller", async () => {
+    const controller = new DefaultHumanController({
+      enabled: true,
+      profile: "fast",
+      moveJitterMs: 1,
+      clickHoldMs: 60,
+      scrollStepPx: 2,
+      typingDelayMs: 33,
+      typingVarianceMs: 4,
+      hoverBeforeClickMs: 0
+    });
+    let markFirstClickStarted!: () => void;
+    const firstClickStarted = new Promise<void>((resolve) => {
+      markFirstClickStarted = resolve;
+    });
+    let resolveFirstClick!: () => void;
+    const target: HumanActionTarget = {
+      click: vi
+        .fn<HumanActionTarget["click"]>()
+        .mockImplementationOnce(
+          async () => {
+            markFirstClickStarted();
+            return new Promise<void>((resolve) => {
+              resolveFirstClick = resolve;
+            });
+          }
+        )
+        .mockResolvedValue(undefined),
+      hover: vi.fn(async () => {}),
+      fill: vi.fn(async () => {}),
+      type: vi.fn(async () => {}),
+      press: vi.fn(async () => {})
+    };
+
+    const firstClick = controller.click(target);
+    const secondClick = controller.click(target);
+
+    await firstClickStarted;
+    expect(target.hover).toHaveBeenCalledTimes(1);
+    expect(target.click).toHaveBeenCalledTimes(1);
+
+    resolveFirstClick();
+    await firstClick;
+    await secondClick;
+
+    expect(target.hover).toHaveBeenCalledTimes(2);
+    expect(target.click).toHaveBeenCalledTimes(2);
+  });
+});

@@ -76,6 +76,7 @@ const CDP_CAPABILITIES: ProtocolCapabilities = {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
+let pointerActionQueue = Promise.resolve();
 
 type CdpClient = CDP.Client;
 type CdpVersionResult = CDP.VersionResult;
@@ -129,9 +130,10 @@ interface StateWaiter {
 }
 
 interface ResponseBodyState {
+  failure?: Error;
   ready: Promise<void>;
+  markFailed: (error: Error) => void;
   resolveReady: () => void;
-  rejectReady: (error: Error) => void;
   text?: Promise<string>;
 }
 
@@ -683,7 +685,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
     client.Network.loadingFailed((event) => {
       const request = this.requestMetadata.get(event.requestId);
-      this.ensureResponseBodyState(event.requestId).rejectReady(
+      this.ensureResponseBodyState(event.requestId).markFailed(
         new Error(event.errorText || "Network loading failed.")
       );
       onRequestSettled(event.requestId);
@@ -1010,21 +1012,27 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async clickLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
-    const actionPoint = await this.resolveActionPoint(locator, options);
-    const button = options?.button ?? "left";
-    const clickCount = options?.clickCount ?? 1;
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      const actionPoint = await this.resolveActionPoint(locator, options);
+      const button = options?.button ?? "left";
+      const clickCount = options?.clickCount ?? 1;
 
-    await this.dispatchMouseMove(actionPoint);
-    for (let index = 0; index < clickCount; index += 1) {
-      await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
-      await delay(options?.delay ?? 0);
-      await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
-    }
+      await this.dispatchMouseMove(actionPoint);
+      for (let index = 0; index < clickCount; index += 1) {
+        await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
+        await delay(options?.delay ?? 0);
+        await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
+      }
+    });
   }
 
   async hoverLocator(locator: CdpLocatorState, options?: HoverOptions): Promise<void> {
-    const actionPoint = await this.resolveActionPoint(locator, options);
-    await this.dispatchMouseMove(actionPoint);
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      const actionPoint = await this.resolveActionPoint(locator, options);
+      await this.dispatchMouseMove(actionPoint);
+    });
   }
 
   async fillLocator(
@@ -1166,6 +1174,19 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  private async bringToFront(): Promise<void> {
+    await this.options.client.Page.bringToFront();
+  }
+
+  private async enqueuePointerAction<TResult>(action: () => Promise<TResult>): Promise<TResult> {
+    const run = pointerActionQueue.then(action, action);
+    pointerActionQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
   private async resolveActionPoint(
     locator: CdpLocatorState,
     options?: HoverOptions
@@ -1178,7 +1199,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           ...(locator.pick ? { pick: locator.pick } : {})
         },
         ...(options?.force !== undefined ? { force: options.force } : {}),
-        ...(options?.position ? { position: options.position } : {})
+        ...(options?.position ? { position: options.position } : {}),
+        timeoutMs: options?.timeout ?? DEFAULT_TIMEOUT_MS
       });
     } catch (error) {
       throw wrapLocatorError(locator, error);
@@ -1491,14 +1513,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
 
     let resolveReady!: () => void;
-    let rejectReady!: (error: Error) => void;
-    const ready = new Promise<void>((resolve, reject) => {
+    const ready = new Promise<void>((resolve) => {
       resolveReady = resolve;
-      rejectReady = (error: Error) => reject(error);
     });
     const created: ResponseBodyState = {
+      markFailed: (error: Error) => {
+        created.failure = error;
+        created.resolveReady();
+      },
       ready,
-      rejectReady,
       resolveReady
     };
     this.responseBodies.set(requestId, created);
@@ -1510,6 +1533,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     if (!state.text) {
       state.text = (async () => {
         await state.ready;
+        if (state.failure) {
+          throw state.failure;
+        }
         const response = await (
           this.options.client.Network as typeof this.options.client.Network & {
             getResponseBody(options: {
@@ -1926,6 +1952,10 @@ export function buildChromiumLaunchArgs(
   return [
     `--user-data-dir=${userDataDir}`,
     "--remote-debugging-port=0",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
     "--no-first-run",
     "--no-default-browser-check",
     "--no-startup-window",

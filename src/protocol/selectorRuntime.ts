@@ -21,6 +21,7 @@ export interface SelectorRuntimePayload {
   force?: boolean;
   missingMessage?: string;
   position?: { x: number; y: number };
+  timeoutMs?: number;
 }
 
 function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
@@ -66,7 +67,10 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       return pattern.test(normalizedCandidate);
     }
 
-    return selector.exact ? normalizedCandidate === pattern : normalizedCandidate.includes(pattern);
+    const normalizedPattern = normalize(pattern);
+    return selector.exact
+      ? normalizedCandidate === normalizedPattern
+      : normalizedCandidate.includes(normalizedPattern);
   };
 
   const implicitRole = (element: Element): string | null => {
@@ -123,6 +127,21 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
       const text = parts.join(" ");
       if (text) return normalize(text);
+    }
+
+    const labels =
+      "labels" in element
+        ? Array.from(
+            ((element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement)
+              .labels ?? []) as Iterable<HTMLLabelElement>
+          )
+        : [];
+    if (labels.length) {
+      const labelText = labels
+        .map((label) => normalize((label as HTMLElement).innerText || label.textContent))
+        .filter(Boolean)
+        .join(" ");
+      if (labelText) return normalize(labelText);
     }
 
     if (
@@ -240,7 +259,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     });
   };
 
-  const applyPick = (elements: HTMLElement[], pick?: LocatorPick): HTMLElement[] => {
+  const applyPick = <TElement extends Element>(elements: TElement[], pick?: LocatorPick): TElement[] => {
     if (!pick) {
       return elements;
     }
@@ -254,14 +273,14 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return pickedElement ? [pickedElement] : [];
   };
 
-  const resolveReference = (reference: ProtocolElementHandleReference): HTMLElement[] => {
+  const resolveReference = (reference: ProtocolElementHandleReference): Element[] => {
     const roots: Array<ParentNode | Element> = reference.scope
       ? resolveReference(reference.scope)
       : [document];
 
     if (!reference.chain.length) {
       return applyPick(
-        roots.filter((node): node is HTMLElement => node instanceof HTMLElement),
+        roots.filter((node): node is Element => node instanceof Element),
         reference.pick
       );
     }
@@ -280,7 +299,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
 
     return applyPick(
-      current.filter((node): node is HTMLElement => node instanceof HTMLElement),
+      current.filter((node): node is Element => node instanceof Element),
       reference.pick
     );
   };
@@ -304,7 +323,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return value;
   };
 
-  const isVisible = (element: HTMLElement): boolean => {
+  const isVisible = (element: Element): boolean => {
     const style = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     return (
@@ -316,76 +335,163 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     );
   };
 
-  const firstElement = resolveReference(payload.reference)[0] ?? null;
+  const formatElementForStrictViolation = (element: Element): string => {
+    const tag = element.tagName.toLowerCase();
+    const id = "id" in element && typeof element.id === "string" && element.id ? `#${element.id}` : "";
+    const className =
+      "className" in element &&
+      typeof element.className === "string" &&
+      element.className.trim()
+        ? `.${element.className.trim().replace(/\s+/g, ".")}`
+        : "";
+    const text = normalize(
+      (element instanceof HTMLElement || element instanceof SVGElement
+        ? element.innerText || element.textContent || ""
+        : element.textContent || "")
+    );
+    return `${tag}${id}${className}${text ? ` (${text})` : ""}`;
+  };
+  const resolveSingleElementFrom = (elements: Element[]): Element | null => {
+    if (!payload.reference.pick && elements.length > 1) {
+      const preview = elements
+        .slice(0, 3)
+        .map((element) => formatElementForStrictViolation(element))
+        .join(", ");
+      throw new Error(
+        `strict mode violation: locator resolved to ${elements.length} elements${
+          preview ? `: ${preview}` : ""
+        }`
+      );
+    }
+    return elements[0] ?? null;
+  };
+  const resolveSingleElement = (): Element | null => resolveSingleElementFrom(resolveReference(payload.reference));
   const callUserFunction = (subject: unknown) => {
     const callback = (0, eval)(`(${payload.expression ?? "() => undefined"})`);
     return callback(subject, reviveArgument(payload.arg));
   };
+  const resolveActionPointOnce = () => {
+    const firstElement = resolveSingleElement();
+    if (!firstElement) {
+      throw new Error(payload.missingMessage ?? "No element found.");
+    }
+
+    firstElement.scrollIntoView({
+      block: "center",
+      inline: "center",
+      behavior: "instant"
+    });
+
+    if (!payload.force && !isVisible(firstElement)) {
+      throw new Error("Element is not visible.");
+    }
+
+    const rect = firstElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      throw new Error("Element does not have an actionable bounding box.");
+    }
+
+    const offsetX = payload.position ? payload.position.x : rect.width / 2;
+    const offsetY = payload.position ? payload.position.y : rect.height / 2;
+
+    return {
+      x: rect.left + offsetX,
+      y: rect.top + offsetY
+    };
+  };
+  const shouldRetryActionPointError = (error: unknown): boolean => {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    return (
+      error.message === "No element found." ||
+      error.message === "Element is not visible." ||
+      error.message === "Element does not have an actionable bounding box."
+    );
+  };
+  const resolvedElements = resolveReference(payload.reference);
 
   switch (payload.operation) {
     case "count":
-      return resolveReference(payload.reference).length;
+      return resolvedElements.length;
     case "evaluate":
-      if (!firstElement) {
-        throw new Error(payload.missingMessage ?? "No element found.");
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        return callUserFunction(firstElement);
       }
-      return callUserFunction(firstElement);
     case "evaluateAll":
-      return callUserFunction(resolveReference(payload.reference));
+      return callUserFunction(resolvedElements);
     case "textContent":
-      return firstElement ? firstElement.textContent : null;
+      {
+        const firstElement = resolveSingleElement();
+        return firstElement ? firstElement.textContent : null;
+      }
     case "isVisible":
-      return firstElement ? isVisible(firstElement) : false;
+      {
+        const firstElement = resolveSingleElement();
+        return firstElement ? isVisible(firstElement) : false;
+      }
     case "focus":
-      if (!firstElement) {
-        throw new Error(payload.missingMessage ?? "No element found.");
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        if ("focus" in firstElement && typeof firstElement.focus === "function") {
+          firstElement.focus();
+        }
+        return true;
       }
-      firstElement.focus();
-      return true;
     case "fill":
-      if (!firstElement) {
-        throw new Error(payload.missingMessage ?? "No element found.");
-      }
-      firstElement.focus();
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        if ("focus" in firstElement && typeof firstElement.focus === "function") {
+          firstElement.focus();
+        }
 
-      if (firstElement instanceof HTMLInputElement || firstElement instanceof HTMLTextAreaElement) {
-        firstElement.value = payload.value ?? "";
-      } else if (firstElement.isContentEditable) {
-        firstElement.textContent = payload.value ?? "";
-      } else {
-        throw new Error("Element does not support fill().");
-      }
+        if (firstElement instanceof HTMLInputElement || firstElement instanceof HTMLTextAreaElement) {
+          firstElement.value = payload.value ?? "";
+        } else if (firstElement instanceof HTMLElement && firstElement.isContentEditable) {
+          firstElement.textContent = payload.value ?? "";
+        } else {
+          throw new Error("Element does not support fill().");
+        }
 
-      firstElement.dispatchEvent(new Event("input", { bubbles: true }));
-      firstElement.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
+        firstElement.dispatchEvent(new Event("input", { bubbles: true }));
+        firstElement.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
     case "actionPoint":
-      if (!firstElement) {
-        throw new Error(payload.missingMessage ?? "No element found.");
+      {
+        if (payload.force || !payload.timeoutMs || payload.timeoutMs <= 0) {
+          return resolveActionPointOnce();
+        }
+
+        return new Promise<{ x: number; y: number }>((resolve, reject) => {
+          const deadline = Date.now() + payload.timeoutMs!;
+
+          const tick = () => {
+            try {
+              resolve(resolveActionPointOnce());
+            } catch (error) {
+              if (!shouldRetryActionPointError(error) || Date.now() + 50 > deadline) {
+                reject(error);
+                return;
+              }
+              setTimeout(tick, 50);
+            }
+          };
+
+          tick();
+        });
       }
-
-      firstElement.scrollIntoView({
-        block: "center",
-        inline: "center",
-        behavior: "instant"
-      });
-
-      if (!payload.force && !isVisible(firstElement)) {
-        throw new Error("Element is not visible.");
-      }
-
-      const rect = firstElement.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) {
-        throw new Error("Element does not have an actionable bounding box.");
-      }
-
-      const offsetX = payload.position ? payload.position.x : rect.width / 2;
-      const offsetY = payload.position ? payload.position.y : rect.height / 2;
-
-      return {
-        x: rect.left + offsetX,
-        y: rect.top + offsetY
-      };
     default:
       throw new Error(`Unsupported selector runtime operation: ${payload.operation as string}`);
   }
