@@ -43,6 +43,7 @@ export class McpRuntime {
     | undefined;
   private tabs: BrowserTab[] = [];
   private snapshotCache: SnapshotCacheEntry | undefined;
+  private pendingFileUploadTarget: ClickTarget | undefined;
   private readonly snapshotMode: SnapshotMode;
 
   constructor(
@@ -65,6 +66,7 @@ export class McpRuntime {
       session
     };
     this.tabs = await session.listTabs();
+    this.pendingFileUploadTarget = undefined;
     const version = await session.version();
     const snapshot = this.snapshotMode !== "none" && this.tabs.some((tab) => tab.active)
       ? await this.snapshot()
@@ -84,6 +86,7 @@ export class McpRuntime {
     this.tabs = await session.listTabs();
     if (!this.tabs.some((tab) => tab.active)) {
       this.invalidateSnapshot();
+      this.pendingFileUploadTarget = undefined;
     }
     return this.tabs;
   }
@@ -91,6 +94,7 @@ export class McpRuntime {
   async newTab(url?: string): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
     const session = this.requireConnected();
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     this.tabs = await session.newTab(url);
     const snapshot = this.tabs.some((tab) => tab.active)
       ? await this.snapshot()
@@ -113,6 +117,7 @@ export class McpRuntime {
       throw new McpToolError("invalid_tab_index", `Tab index ${index} does not exist.`);
     }
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     this.tabs = await session.selectTab(tab.id);
     const snapshot = await this.snapshot();
     return {
@@ -129,6 +134,7 @@ export class McpRuntime {
       throw new McpToolError("invalid_tab_index", `Tab index ${index} does not exist.`);
     }
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     this.tabs = await session.closeTab(tab.id);
     const snapshot = this.tabs.some((candidate) => candidate.active)
       ? await this.snapshot()
@@ -179,6 +185,7 @@ export class McpRuntime {
   ): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const resolved = this.resolveTarget(target);
+    const opensFileChooser = await session.isFileInput(resolved);
     const humanOpts = resolveHumanizationOptions(opts?.human as HumanizationOptions | undefined);
 
     await session.hover(resolved);
@@ -193,23 +200,30 @@ export class McpRuntime {
     } as SessionClickOptions);
 
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = opensFileChooser ? resolved : undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
     return this.snapshot();
   }
 
-  async hover(ref: string): Promise<void> {
+  async hover(target: string): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
-    const resolved = this.resolveTarget(ref);
+    const resolved = this.resolveTarget(target);
     await session.hover(resolved);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
   }
 
   async navigate(url: string): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     await session.navigate(normalizeNavigationUrl(url));
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -230,6 +244,7 @@ export class McpRuntime {
       ...(opts?.slowly ? { delayMs: jitter(humanOpts.typingDelayMs) } : {})
     });
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -247,6 +262,7 @@ export class McpRuntime {
     if (delayMs > 0) await delay(delayMs);
     await session.pressKey(key, modifiers);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -261,6 +277,7 @@ export class McpRuntime {
     const resolved = this.resolveTarget(ref);
     const selected = await session.selectOption(resolved, values);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return { selected };
     }
@@ -275,6 +292,7 @@ export class McpRuntime {
     const resolved = this.resolveTarget(ref);
     await session.check(resolved, checked);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -285,6 +303,7 @@ export class McpRuntime {
     const session = this.requireConnected();
     await session.goBack();
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -295,6 +314,7 @@ export class McpRuntime {
     const session = this.requireConnected();
     await session.goForward();
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -305,6 +325,7 @@ export class McpRuntime {
     const session = this.requireConnected();
     await session.resize(width, height);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -330,6 +351,7 @@ export class McpRuntime {
       holdDelayMs: jitter(humanOpts.clickHoldMs)
     });
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -340,6 +362,7 @@ export class McpRuntime {
     const session = this.requireConnected();
     await session.drop(this.resolveTarget(target), payload);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -355,6 +378,7 @@ export class McpRuntime {
     const resolved = ref !== null ? this.resolveTarget(ref) : null;
     await session.scroll(resolved, deltaX, deltaY);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -370,10 +394,17 @@ export class McpRuntime {
     });
   }
 
-  async uploadFile(ref: string, paths: string[]): Promise<BrowserSnapshot | undefined> {
+  async uploadFile(paths: string[]): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
-    const resolved = this.resolveTarget(ref);
-    await session.uploadFile(resolved, paths);
+    if (!this.pendingFileUploadTarget) {
+      throw new McpToolError(
+        "no_file_chooser",
+        "No file chooser visible."
+      );
+    }
+    const target = this.pendingFileUploadTarget;
+    this.pendingFileUploadTarget = undefined;
+    await session.uploadFile(target, paths);
     this.invalidateSnapshot();
     if (this.snapshotMode === "none") {
       return undefined;
@@ -396,6 +427,7 @@ export class McpRuntime {
     })));
     if (delayMs > 0) await delay(delayMs);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -406,6 +438,7 @@ export class McpRuntime {
     const session = this.requireConnected();
     await session.handleDialog(accept, promptText);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
       return undefined;
     }
@@ -426,6 +459,7 @@ export class McpRuntime {
     const session = this.requireConnected();
     const result = await session.runCodeUnsafe(code);
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     return result;
   }
 
@@ -476,8 +510,13 @@ export class McpRuntime {
     this.snapshotCache = undefined;
   }
 
+  hasPendingFileUploadTarget(): boolean {
+    return !!this.pendingFileUploadTarget;
+  }
+
   async close(): Promise<void> {
     this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
     this.tabs = [];
     if (!this.connection) {
       return;
@@ -506,7 +545,7 @@ export class McpRuntime {
     return activeTab;
   }
 
-  private resolveTarget(target: string): ClickTarget {
+  resolveTarget(target: string): ClickTarget {
     const activeTab = this.requireActiveTab();
 
     if (/^(f\d+)?e\d+$/.test(target)) {

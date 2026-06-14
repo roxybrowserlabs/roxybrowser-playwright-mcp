@@ -2,18 +2,21 @@ import { z } from "zod";
 import { defineTool, textResult } from "../tool.js";
 import { formatSnapshot } from "../format.js";
 
+const elementTargetDescription = "Exact target element reference from the page snapshot, or a unique element selector";
+
+const elementSchema = z.object({
+  element: z.string().optional().describe(
+    "Human-readable element description used to obtain permission to interact with the element"
+  ),
+  target: z.string().describe(elementTargetDescription)
+});
+
 const click = defineTool({
   schema: {
     name: "browser_click",
     title: "Browser Click",
     description: "Perform click on a web page. Returns an updated snapshot.",
-    inputSchema: z.object({
-      element: z.string().optional().describe(
-        "Human-readable element description used to obtain permission to interact with the element"
-      ),
-      target: z.string().describe(
-        "Exact target element reference from the page snapshot, or a unique CSS selector"
-      ),
+    inputSchema: elementSchema.extend({
       doubleClick: z.boolean().optional().describe(
         "Whether to perform a double click instead of a single click"
       ),
@@ -47,14 +50,13 @@ const hover = defineTool({
   schema: {
     name: "browser_hover",
     title: "Browser Hover",
-    description: "Hover a previously snapshotted element reference in the active tab.",
-    inputSchema: z.object({
-      ref: z.string().min(1)
-    })
+    description: "Hover over element on page.",
+    inputSchema: elementSchema
   },
   handle: async (args, runtime) => {
-    await runtime.hover(args.ref);
-    return textResult(`Hovered ref "${args.ref}".`);
+    const snap = await runtime.hover(args.target);
+    if (!snap) return textResult(`Hovered "${args.element ?? args.target}".`);
+    return textResult(formatSnapshot(snap));
   }
 });
 
@@ -100,4 +102,4 @@ const scroll = defineTool({
   }
 });
 
-export default [click, drag, hover, scroll];
+export default [];

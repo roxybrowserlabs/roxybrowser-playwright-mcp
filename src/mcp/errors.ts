@@ -8,6 +8,7 @@ export class McpToolError extends Error {
       | "invalid_target"
       | "stale_ref"
       | "no_dialog"
+      | "no_file_chooser"
       | "unsupported_protocol_input"
       | "not_supported"
       | "action_failed"

@@ -467,6 +467,16 @@ const CHECK_ELEMENT_SOURCE = String.raw`(payload) => {
   return { ok: false, reason: 'not_checkable' };
 }`;
 
+const IS_FILE_INPUT_SOURCE = String.raw`(payload) => {
+  const state = globalThis.__roxyMcpState;
+  const element = payload.nodeToken
+    ? state?.elements?.get(payload.nodeToken)
+    : document.querySelector(payload.selector);
+  return !!element
+    && element instanceof HTMLInputElement
+    && element.type === 'file';
+}`;
+
 const SCROLL_ELEMENT_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
   const el = payload.nodeToken
@@ -1645,6 +1655,17 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return evaluateCdp<unknown>(pageClient, source, payload, contextId);
   }
 
+  async isFileInput(target: ClickTarget): Promise<boolean> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    return evaluateCdp<boolean>(
+      pageClient,
+      IS_FILE_INPUT_SOURCE,
+      this.targetArg(target),
+      contextId
+    ).catch(() => false);
+  }
+
   private consoleSummary(tabId: string): { total: number; errors: number; warnings: number } {
     const messages = this.ensureConsoleState(tabId).messages;
     let errors = 0;
@@ -2079,6 +2100,16 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         }`;
     const payload = target ? { ...("nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector }), expression } : { expression };
     return evaluateBiDi<unknown>(this.client, tabId, source, payload);
+  }
+
+  async isFileInput(target: ClickTarget): Promise<boolean> {
+    const tabId = await this.getActiveTabId();
+    return evaluateBiDi<boolean>(
+      this.client,
+      tabId,
+      IS_FILE_INPUT_SOURCE,
+      this.targetArg(target)
+    ).catch(() => false);
   }
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {

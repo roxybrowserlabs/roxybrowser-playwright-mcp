@@ -2,7 +2,6 @@ import type { Tool } from "../tool.js";
 import connect from "./connect.js";
 import common from "./common.js";
 import tabs from "./tabs.js";
-import snapshot from "./snapshot.js";
 import navigate from "./navigate.js";
 import mouse from "./mouse.js";
 import keyboard from "./keyboard.js";
@@ -18,7 +17,6 @@ export const allTools: Tool[] = [
   ...connect,
   ...common,
   ...tabs,
-  ...snapshot,
   ...navigate,
   ...mouse,
   ...keyboard,

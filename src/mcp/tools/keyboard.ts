@@ -47,4 +47,4 @@ const pressKey = defineTool({
   }
 });
 
-export default [type, pressKey];
+export default [];

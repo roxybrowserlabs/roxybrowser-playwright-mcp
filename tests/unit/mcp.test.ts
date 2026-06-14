@@ -132,6 +132,10 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     return `evaluated:${expression}`;
   }
 
+  async isFileInput(target: ClickTarget): Promise<boolean> {
+    return "selector" in target && target.selector.includes("file");
+  }
+
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     this.clickCalls.push({ target, options });
   }
@@ -282,7 +286,6 @@ describe("MCP server", () => {
     const names = tools.tools.map((tool) => tool.name).sort();
 
     expect(names).toEqual([
-      "browser_check",
       "browser_click",
       "browser_close",
       "browser_console_messages",
@@ -295,13 +298,11 @@ describe("MCP server", () => {
       "browser_hover",
       "browser_navigate",
       "browser_navigate_back",
-      "browser_navigate_forward",
       "browser_network_request",
       "browser_network_requests",
       "browser_press_key",
       "browser_resize",
       "browser_run_code_unsafe",
-      "browser_scroll",
       "browser_select_option",
       "browser_snapshot",
       "browser_tabs",
@@ -310,6 +311,50 @@ describe("MCP server", () => {
       "browser_wait_for",
       "roxy_browser_connect"
     ]);
+  });
+
+  it("exposes Playwright-like schemas for hover and file upload", async () => {
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: fakeSessionFactory
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+
+    const tools = await client.listTools();
+    const hoverTool = tools.tools.find((tool) => tool.name === "browser_hover");
+    const uploadTool = tools.tools.find((tool) => tool.name === "browser_file_upload");
+
+    expect(hoverTool?.inputSchema).toEqual({
+      type: "object",
+      properties: {
+        element: {
+          description: "Human-readable element description used to obtain permission to interact with the element",
+          type: "string"
+        },
+        target: {
+          description: "Exact target element reference from the page snapshot, or a unique element selector",
+          type: "string"
+        }
+      },
+      required: ["target"],
+      $schema: "http://json-schema.org/draft-07/schema#"
+    });
+
+    expect(uploadTool?.inputSchema).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "The absolute paths to the files to upload. Can be single file or multiple files. If omitted, file chooser is cancelled."
+        }
+      },
+      additionalProperties: false
+    });
   });
 
   it("passes drop file paths through to the session", async () => {
@@ -386,7 +431,7 @@ describe("MCP server", () => {
     const hoverResult = await client.callTool({
       name: "browser_hover",
       arguments: {
-        ref: "e999"
+        target: "e999"
       }
     });
     expect(hoverResult.isError).toBe(true);
@@ -914,13 +959,30 @@ describe("MCP server", () => {
 
   });
 
+  describe("browser_drag", () => {
+    it("calls session.drag and returns snapshot", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_drag",
+        arguments: { startTarget: "e1", endTarget: "button.dropzone" }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(getSession().dragCalls.length).toBe(1);
+      expect(getSession().dragCalls[0]!.start).toHaveProperty("nodeToken");
+      expect(getSession().dragCalls[0]!.end).toEqual({ selector: "button.dropzone" });
+      expect(textFromResult(result)).toContain("### Snapshot");
+    });
+  });
+
   describe("browser_select_option", () => {
     it("calls session.selectOption and returns selected values with snapshot", async () => {
       const { client, getSession } = await setupTrackingClient();
 
       const result = await client.callTool({
         name: "browser_select_option",
-        arguments: { ref: "e1", values: ["opt1", "opt2"] }
+        arguments: { target: "e1", values: ["opt1", "opt2"] }
       });
 
       expect(result.isError).toBeUndefined();
@@ -935,38 +997,10 @@ describe("MCP server", () => {
 
       await client.callTool({
         name: "browser_select_option",
-        arguments: { ref: "select#lang", values: ["en"] }
+        arguments: { target: "select#lang", values: ["en"] }
       });
 
       expect(getSession().selectOptionCalls[0]!.target).toEqual({ selector: "select#lang" });
-    });
-  });
-
-  describe("browser_check", () => {
-    it("checks element by default", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      const result = await client.callTool({
-        name: "browser_check",
-        arguments: { ref: "e1" }
-      });
-
-      expect(result.isError).toBeUndefined();
-      expect(getSession().checkCalls[0]!.checked).toBe(true);
-      expect(textFromResult(result)).toContain("### Snapshot");
-    });
-
-    it("unchecks element when checked is false", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      const result = await client.callTool({
-        name: "browser_check",
-        arguments: { ref: "e1", checked: false }
-      });
-
-      expect(result.isError).toBeUndefined();
-      expect(getSession().checkCalls[0]!.checked).toBe(false);
-      expect(textFromResult(result)).toContain("### Snapshot");
     });
   });
 
@@ -982,49 +1016,6 @@ describe("MCP server", () => {
       expect(result.isError).toBeUndefined();
       expect(getSession().goBackCount).toBe(1);
       expect(textFromResult(result)).toContain("### Snapshot");
-    });
-  });
-
-  describe("browser_navigate_forward", () => {
-    it("calls session.goForward and returns snapshot", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      const result = await client.callTool({
-        name: "browser_navigate_forward",
-        arguments: {}
-      });
-
-      expect(result.isError).toBeUndefined();
-      expect(getSession().goForwardCount).toBe(1);
-      expect(textFromResult(result)).toContain("### Snapshot");
-    });
-  });
-
-  describe("browser_scroll", () => {
-    it("scrolls whole page when no ref given", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      const result = await client.callTool({
-        name: "browser_scroll",
-        arguments: { deltaY: 500 }
-      });
-
-      expect(result.isError).toBeUndefined();
-      expect(getSession().scrollCalls[0]).toEqual({ target: null, deltaX: 0, deltaY: 500 });
-      expect(textFromResult(result)).toContain("### Snapshot");
-    });
-
-    it("resolves ref to element scroll", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      await client.callTool({
-        name: "browser_scroll",
-        arguments: { ref: "e1", deltaX: 100, deltaY: 200 }
-      });
-
-      expect(getSession().scrollCalls[0]!.target).toHaveProperty("nodeToken");
-      expect(getSession().scrollCalls[0]!.deltaX).toBe(100);
-      expect(getSession().scrollCalls[0]!.deltaY).toBe(200);
     });
   });
 
@@ -1113,26 +1104,66 @@ describe("MCP server", () => {
     it("calls session.uploadFile and returns snapshot", async () => {
       const { client, getSession } = await setupTrackingClient();
 
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "input[type=file]" }
+      });
+
       const result = await client.callTool({
         name: "browser_file_upload",
-        arguments: { ref: "e1", paths: ["/tmp/file.txt"] }
+        arguments: { paths: ["/tmp/file.txt"] }
       });
 
       expect(result.isError).toBeUndefined();
       expect(getSession().uploadFileCalls[0]!.paths).toEqual(["/tmp/file.txt"]);
-      expect(getSession().uploadFileCalls[0]!.target).toHaveProperty("nodeToken");
+      expect(getSession().uploadFileCalls[0]!.target).toEqual({ selector: "input[type=file]" });
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
-    it("passes selector target for non-ref inputs", async () => {
+    it("consumes the most recent file-input click as the chooser target", async () => {
       const { client, getSession } = await setupTrackingClient();
 
       await client.callTool({
+        name: "browser_click",
+        arguments: { target: "input[type=file]" }
+      });
+
+      await client.callTool({
         name: "browser_file_upload",
-        arguments: { ref: "input[type=file]", paths: ["/tmp/a.pdf"] }
+        arguments: { paths: ["/tmp/a.pdf"] }
       });
 
       expect(getSession().uploadFileCalls[0]!.target).toEqual({ selector: "input[type=file]" });
+    });
+
+    it("returns no_file_chooser when no file chooser is pending", async () => {
+      const { client } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_file_upload",
+        arguments: { paths: ["/tmp/a.pdf"] }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain("[no_file_chooser]");
+    });
+
+    it("blocks hover while file chooser modal state is pending", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "input[type=file]" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_hover",
+        arguments: { target: "button.upload" }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain('Tool "browser_hover" does not handle the modal state.');
+      expect(getSession().hoverCalls).toEqual([{ selector: "input[type=file]" }]);
     });
   });
 });

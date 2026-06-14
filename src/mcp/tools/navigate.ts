@@ -75,4 +75,4 @@ const waitFor = defineTool({
   }
 });
 
-export default [navigate, goBack, goForward, waitFor];
+export default [navigate, goBack, waitFor];

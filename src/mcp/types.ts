@@ -90,6 +90,7 @@ export interface ConnectedBrowserSession {
   snapshot(request?: BrowserSnapshotRequest): Promise<BrowserSnapshot>;
   consoleMessages(level?: "error" | "warning" | "info" | "debug", all?: boolean): Promise<BrowserConsoleEntry[]>;
   evaluate(expression: string, target?: ClickTarget): Promise<unknown>;
+  isFileInput(target: ClickTarget): Promise<boolean>;
   click(target: ClickTarget, options: SessionClickOptions): Promise<void>;
   drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void>;
   drop(target: ClickTarget, payload: SessionDropOptions): Promise<void>;

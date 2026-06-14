@@ -2,23 +2,26 @@ import { z } from "zod";
 import { defineTool, textResult } from "../tool.js";
 import { formatSnapshot } from "../format.js";
 
+const elementTargetDescription = "Exact target element reference from the page snapshot, or a unique element selector";
+
+const elementSchema = z.object({
+  element: z.string().optional().describe(
+    "Human-readable element description used to obtain permission"
+  ),
+  target: z.string().describe(elementTargetDescription)
+});
+
 const selectOption = defineTool({
   schema: {
     name: "browser_select_option",
-    title: "Browser Select Option",
-    description: "Select options in a <select> element. Returns selected values and an updated snapshot.",
-    inputSchema: z.object({
-      element: z.string().optional().describe(
-        "Human-readable element description used to obtain permission"
-      ),
-      ref: z.string().describe(
-        "Exact element reference from the page snapshot, or a unique CSS selector"
-      ),
+    title: "Select option",
+    description: "Select an option in a dropdown. Returns selected values and an updated snapshot.",
+    inputSchema: elementSchema.extend({
       values: z.array(z.string()).describe("Option values or visible labels to select")
     })
   },
   handle: async (args, runtime) => {
-    const result = await runtime.selectOption(args.ref, args.values);
+    const result = await runtime.selectOption(args.target, args.values);
     const header = `Selected options: ${result.selected.join(", ")}`;
     if (!result.snapshot) return textResult(header);
     return textResult(`${header}\n\n${formatSnapshot(result.snapshot)}`);
@@ -28,25 +31,27 @@ const selectOption = defineTool({
 const check = defineTool({
   schema: {
     name: "browser_check",
-    title: "Browser Check",
-    description: "Check or uncheck a checkbox or radio button. Returns an updated snapshot.",
-    inputSchema: z.object({
-      element: z.string().optional().describe(
-        "Human-readable element description used to obtain permission"
-      ),
-      ref: z.string().describe(
-        "Exact element reference from the page snapshot, or a unique CSS selector"
-      ),
-      checked: z.boolean().optional().describe(
-        "Whether to check (true) or uncheck (false), defaults to true"
-      )
-    })
+    title: "Check",
+    description: "Check a checkbox or radio button. Returns an updated snapshot.",
+    inputSchema: elementSchema
   },
   handle: async (args, runtime) => {
-    const checked = args.checked ?? true;
-    const snap = await runtime.check(args.ref, checked);
-    const action = checked ? "Checked" : "Unchecked";
-    if (!snap) return textResult(`${action} "${args.element ?? args.ref}".`);
+    const snap = await runtime.check(args.target, true);
+    if (!snap) return textResult(`Checked "${args.element ?? args.target}".`);
+    return textResult(formatSnapshot(snap));
+  }
+});
+
+const uncheck = defineTool({
+  schema: {
+    name: "browser_uncheck",
+    title: "Uncheck",
+    description: "Uncheck a checkbox or radio button. Returns an updated snapshot.",
+    inputSchema: elementSchema
+  },
+  handle: async (args, runtime) => {
+    const snap = await runtime.check(args.target, false);
+    if (!snap) return textResult(`Unchecked "${args.element ?? args.target}".`);
     return textResult(formatSnapshot(snap));
   }
 });
@@ -54,21 +59,27 @@ const check = defineTool({
 const fileUpload = defineTool({
   schema: {
     name: "browser_file_upload",
-    title: "Browser File Upload",
+    title: "Upload files",
     description: "Upload one or multiple files",
     inputSchema: z.object({
-      ref: z.string().optional().describe(
-        "File input element reference from the page snapshot, or a unique CSS selector. If omitted, an active file chooser is expected."
-      ),
       paths: z.array(z.string()).optional().describe("The absolute paths to the files to upload. Can be single file or multiple files. If omitted, file chooser is cancelled.")
-    })
+    }),
+    listedInputSchema: {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "The absolute paths to the files to upload. Can be single file or multiple files. If omitted, file chooser is cancelled."
+        }
+      },
+      additionalProperties: false
+    }
   },
   handle: async (args, runtime) => {
-    if (!args.ref) {
-      throw new Error("A file input ref is required in this implementation.");
-    }
-    const snap = await runtime.uploadFile(args.ref, args.paths ?? []);
-    if (!snap) return textResult(`Uploaded ${args.paths?.length ?? 0} file(s) to "${args.ref}".`);
+    const snap = await runtime.uploadFile(args.paths ?? []);
+    if (!snap) return textResult(`Uploaded ${args.paths?.length ?? 0} file(s).`);
     return textResult(formatSnapshot(snap));
   }
 });
@@ -119,4 +130,4 @@ const drop = defineTool({
   }
 });
 
-export default [selectOption, check, fileUpload, fillForm, drop];
+export default [fillForm, drop];
