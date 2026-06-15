@@ -9,6 +9,7 @@ export interface RoxyBrowserEndpointOptions {
   profileMatch: string;
   browserType?: string | undefined;
   coreType?: string | undefined;
+  coreVersion?: string | undefined;
   windowRemark: string;
   createProfileJsonEnv?: string | undefined;
   debug?: boolean | undefined;
@@ -153,6 +154,10 @@ async function resolveRoxyProfileOrEndpoint(
 
   if (profile) {
     debugRoxyBrowser(options, `Selected matching profile dirId=${profile.dirId ?? "unknown"}.`);
+    if (options.protocol === "bidi" && profile.dirId) {
+      const endpoint = await openRoxyBrowserEndpoint(client, profile.dirId, options);
+      return endpoint;
+    }
     return profile;
   }
 
@@ -305,7 +310,11 @@ async function openRoxyBrowserEndpoint(
     return existingEndpoint;
   }
 
-  throw new Error("RoxyBrowser profile open response did not include a verified CDP endpoint.");
+  throw new Error(
+    options.protocol === "bidi"
+      ? "RoxyBrowser profile open response did not include a verified Firefox BiDi endpoint."
+      : "RoxyBrowser profile open response did not include a verified CDP endpoint."
+  );
 }
 
 function isLikelyProfile(profile: RoxyProfile, options: RoxyBrowserEndpointOptions): boolean {
@@ -344,6 +353,7 @@ function buildRoxyProfilePayload(
     },
     ...(options.browserType ? { browserType: options.browserType } : {}),
     ...(options.coreType ? { coreType: options.coreType } : {}),
+    ...(options.coreVersion ? { coreVersion: options.coreVersion } : {}),
     ...parseJsonEnv(options.createProfileJsonEnv)
   };
 }
@@ -399,6 +409,9 @@ async function extractConnectionEndpoint(
     ?? readString(connection, "wsEndpoint");
 
   if (ws) {
+    if (ws.includes("/devtools/browser/")) {
+      return undefined;
+    }
     return toBidiWsEndpoint(ws);
   }
 

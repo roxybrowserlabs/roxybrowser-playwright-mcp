@@ -15,6 +15,10 @@ export default defineConfig({
     // A single externally provided Firefox BiDi endpoint can only service one
     // active client session at a time, so run the suite in a single worker.
     fileParallelism: false,
+    // Keep a single module graph across files so the shared RoxyBrowser BiDi
+    // connection cache in tests/helpers/bidi.ts is actually reused.
+    isolate: false,
+    globalSetup: ["tests/helpers/bidi.global-setup.ts"],
     environment: "node",
     testTimeout: 60_000,
     hookTimeout: 30_000

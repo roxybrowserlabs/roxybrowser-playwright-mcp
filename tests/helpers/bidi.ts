@@ -1,14 +1,17 @@
-import { afterAll } from "vitest";
 import { firefox } from "../../src/index.js";
 import type { Browser, BrowserContext, Page } from "../../src/types/api.js";
 import {
-  parseNumber,
-  resolveRoxyBrowserEndpoint,
+  closeRoxyBrowserFirefoxBidiProfile,
+  resolveRoxyBrowserFirefoxBidiEndpoint
+} from "../../scripts/roxybrowser-firefox-bidi.mjs";
+import {
   toBidiWsEndpoint
 } from "./roxybrowser.js";
 
 const FIREFOX_EXECUTABLE =
-  process.env.ROXY_BIDI_EXECUTABLE_PATH ?? "/Applications/Firefox.app/Contents/MacOS/firefox";
+  process.env.ROXY_BIDI_EXECUTABLE_PATH
+  ?? process.env.ROXY_EXECUTABLE_PATH
+  ?? "/Applications/Firefox.app/Contents/MacOS/firefox";
 const BIDI_WS_ENDPOINT = process.env.ROXY_BIDI_WS_ENDPOINT;
 const BIDI_SESSION_ID = process.env.ROXY_BIDI_SESSION_ID;
 const ROXYBROWSER_API_PORT = process.env.ROXYBROWSER_API_PORT ?? process.env.ROXY_API_PORT ?? "50000";
@@ -18,17 +21,13 @@ const ROXYBROWSER_PROJECT_ID = process.env.ROXYBROWSER_PROJECT_ID;
 const ROXYBROWSER_PROFILE_ID = process.env.ROXYBROWSER_PROFILE_ID;
 const ROXYBROWSER_PROFILE_NAME = process.env.ROXYBROWSER_PROFILE_NAME ?? "RoxyBrowser Firefox BiDi E2E";
 const ROXYBROWSER_PROFILE_MATCH = process.env.ROXYBROWSER_PROFILE_MATCH ?? "firefox";
+const ROXYBROWSER_CORE_VERSION = process.env.ROXYBROWSER_CORE_VERSION ?? "146";
 const ROXYBROWSER_DEBUG = process.env.ROXYBROWSER_DEBUG === "1";
-const ROXYBROWSER_API_RETRIES = parseNumber(process.env.ROXYBROWSER_API_RETRIES) ?? 2;
-const ROXYBROWSER_FORCE_OPEN = process.env.ROXYBROWSER_FORCE_OPEN !== "0";
 
 let usesExternalBidiEndpoint = false;
 let externalBidiBrowser: Browser | undefined;
 let externalBidiBrowserKey: string | undefined;
-
-afterAll(async () => {
-  await closeExternalBidiBrowser();
-});
+let cachedRoxyBrowserEndpoint: string | undefined;
 
 function bidiHumanOptions() {
   return {
@@ -78,8 +77,11 @@ async function resolveRoxyBrowserBidiEndpoint(): Promise<string | undefined> {
     return undefined;
   }
 
-  return resolveRoxyBrowserEndpoint({
-    protocol: "bidi",
+  if (cachedRoxyBrowserEndpoint) {
+    return cachedRoxyBrowserEndpoint;
+  }
+
+  cachedRoxyBrowserEndpoint = await resolveRoxyBrowserFirefoxBidiEndpoint({
     apiPort: ROXYBROWSER_API_PORT,
     apiToken: ROXYBROWSER_API_TOKEN,
     workspaceId: ROXYBROWSER_WORKSPACE_ID,
@@ -87,34 +89,36 @@ async function resolveRoxyBrowserBidiEndpoint(): Promise<string | undefined> {
     profileId: ROXYBROWSER_PROFILE_ID,
     profileName: ROXYBROWSER_PROFILE_NAME,
     profileMatch: ROXYBROWSER_PROFILE_MATCH,
-    browserType: "firefox",
-    coreType: "firefox",
+    coreType: "Firefox",
+    coreVersion: ROXYBROWSER_CORE_VERSION,
     windowRemark: "firefox bidi e2e",
-    createProfileJsonEnv: "ROXYBROWSER_CREATE_PROFILE_JSON",
     debug: ROXYBROWSER_DEBUG,
-    debugScope: "roxybrowser:e2e:bidi",
-    retries: ROXYBROWSER_API_RETRIES,
-    forceOpen: ROXYBROWSER_FORCE_OPEN,
-    headless: false,
-    useSingleProfileFallback: true,
-    createMissingProfile: true
+    os: process.env.ROXYBROWSER_OS ?? "macOS",
+    osVersion: process.env.ROXYBROWSER_OS_VERSION
   });
+
+  return cachedRoxyBrowserEndpoint;
 }
 
 export async function withBidiPage<T>(
   run: (page: Page, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
-  const browser = await openBidiBrowser();
+  let browser = await openBidiBrowser();
   const keepBrowserOpen = usesExternalBidiEndpoint;
+  let context: BrowserContext | undefined;
 
   try {
-    const context = await browser.newContext(
-      usesExternalBidiEndpoint
-        ? {
-            reuseDefaultUserContext: true
-          }
-        : {}
-    );
+    try {
+      context = await browser.newContext({});
+    } catch (error) {
+      if (!keepBrowserOpen || !isClosedBidiConnectionError(error)) {
+        throw error;
+      }
+
+      await resetExternalBidiBrowserState();
+      browser = await openBidiBrowser();
+      context = await browser.newContext({});
+    }
 
     try {
       const page = await context.newPage();
@@ -145,4 +149,34 @@ async function closeExternalBidiBrowser(): Promise<void> {
 
   await browser.close().catch(() => {});
   await delay(250);
+}
+
+async function resetExternalBidiBrowserState(): Promise<void> {
+  await cleanupExternalBidiTestState();
+  await delay(500);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isClosedBidiConnectionError(error: unknown): boolean {
+  return String(error instanceof Error ? error.message : error).includes(
+    "WebDriver BiDi connection is closed."
+  );
+}
+
+export async function cleanupExternalBidiTestState(): Promise<void> {
+  await closeExternalBidiBrowser();
+  cachedRoxyBrowserEndpoint = undefined;
+  await closeRoxyBrowserFirefoxBidiProfile({
+    apiPort: ROXYBROWSER_API_PORT,
+    apiToken: ROXYBROWSER_API_TOKEN,
+    workspaceId: ROXYBROWSER_WORKSPACE_ID,
+    projectId: ROXYBROWSER_PROJECT_ID,
+    profileId: ROXYBROWSER_PROFILE_ID,
+    coreType: "Firefox",
+    coreVersion: ROXYBROWSER_CORE_VERSION,
+    windowRemark: "firefox bidi e2e"
+  });
 }

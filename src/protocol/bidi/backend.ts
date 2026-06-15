@@ -46,7 +46,7 @@ import type {
 import type { ProtocolCapabilities } from "../capabilities.js";
 import { looksLikeFunctionExpression } from "../evaluate.js";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BidiProtocolClient } from "./client.js";
@@ -1896,6 +1896,7 @@ interface BidiConnectionResult {
 async function launchFirefoxBidi(options: BrowserConnectOptions): Promise<FirefoxLaunchResult> {
   const userDataDir = await mkdtemp(join(tmpdir(), "roxybrowser-bidi-"));
   const executable = options.executablePath ?? defaultFirefoxExecutable();
+  await assertFirefoxExecutable(executable);
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? await pickFreePort();
   const args = buildFirefoxLaunchArgs(options, userDataDir, port);
@@ -1933,9 +1934,20 @@ async function cleanupFirefoxProcess(
       };
 
       proc.once("exit", finish);
-      proc.kill("SIGTERM");
+      proc.once("close", finish);
+      proc.once("error", finish);
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        finish();
+        return;
+      }
       setTimeout(() => {
-        proc.kill("SIGKILL");
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // The process may have failed to spawn or already exited.
+        }
         finish();
       }, 5_000);
     });
@@ -1944,6 +1956,24 @@ async function cleanupFirefoxProcess(
   if (userDataDir) {
     await rm(userDataDir, { force: true, recursive: true });
   }
+}
+
+async function assertFirefoxExecutable(executable: string): Promise<void> {
+  if (!isExplicitExecutablePath(executable)) {
+    return;
+  }
+
+  try {
+    await access(executable);
+  } catch {
+    throw new Error(
+      `Firefox executable was not found at "${executable}". Pass executablePath or set ROXY_EXECUTABLE_PATH/ROXY_BIDI_EXECUTABLE_PATH to a Firefox binary with WebDriver BiDi support.`
+    );
+  }
+}
+
+function isExplicitExecutablePath(executable: string): boolean {
+  return executable.includes("/") || executable.includes("\\");
 }
 
 function waitForFirefoxBiDiEndpoint(

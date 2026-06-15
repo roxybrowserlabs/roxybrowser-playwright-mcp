@@ -345,7 +345,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         ? `.${element.className.trim().replace(/\s+/g, ".")}`
         : "";
     const text = normalize(
-      (element instanceof HTMLElement || element instanceof SVGElement
+      (element instanceof HTMLElement
         ? element.innerText || element.textContent || ""
         : element.textContent || "")
     );

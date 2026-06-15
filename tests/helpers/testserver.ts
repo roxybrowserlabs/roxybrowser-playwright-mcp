@@ -22,6 +22,8 @@ export class TestServer {
   readonly EMPTY_PAGE: string;
   readonly HOST: string;
   readonly HOSTNAME: string;
+  readonly BIND_HOST: string;
+  readonly URL_HOSTNAME: string;
 
   private readonly server = createServer(this.onRequest.bind(this));
   private readonly routes = new Map<string, RouteHandler>();
@@ -45,6 +47,8 @@ export class TestServer {
     this.EMPTY_PAGE = "";
     this.HOST = "";
     this.HOSTNAME = "";
+    this.BIND_HOST = "127.0.0.1";
+    this.URL_HOSTNAME = "localhost";
   }
 
   private async listen(): Promise<void> {
@@ -56,7 +60,7 @@ export class TestServer {
       throw new Error("Failed to bind test server.");
     }
 
-    const prefix = `http://127.0.0.1:${address.port}`;
+    const prefix = `http://${this.URL_HOSTNAME}:${address.port}`;
     (this as { PORT: number }).PORT = address.port;
     (this as { PREFIX: string }).PREFIX = prefix;
     (this as { CROSS_PROCESS_PREFIX: string }).CROSS_PROCESS_PREFIX = prefix;
@@ -140,7 +144,7 @@ export class TestServer {
       request.on("end", () => resolve(Buffer.concat(chunks)));
     });
 
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const url = new URL(request.url ?? "/", `http://${this.URL_HOSTNAME}`);
     const pathWithSearch = url.pathname + url.search;
 
     const subscriber = this.requestSubscribers.get(pathWithSearch);
