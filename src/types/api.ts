@@ -407,11 +407,17 @@ export interface Worker {
   evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
   evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<SmartHandle<R>>;
   on(event: "close", listener: (worker: Worker) => any): this;
+  on(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
   once(event: "close", listener: (worker: Worker) => any): this;
+  once(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
   addListener(event: "close", listener: (worker: Worker) => any): this;
+  addListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
   removeListener(event: "close", listener: (worker: Worker) => any): this;
+  removeListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
   off(event: "close", listener: (worker: Worker) => any): this;
+  off(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
   prependListener(event: "close", listener: (worker: Worker) => any): this;
+  prependListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
   url(): string;
   waitForEvent(
     event: "close",
@@ -422,6 +428,15 @@ export interface Worker {
           timeout?: number;
         }
   ): Promise<Worker>;
+  waitForEvent(
+    event: "console",
+    optionsOrPredicate?:
+      | ((consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>)
+      | {
+          predicate?: (consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<PageConsoleMessage>;
 }
 
 export interface BindingSource {

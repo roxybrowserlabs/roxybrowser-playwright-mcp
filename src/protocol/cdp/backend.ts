@@ -16,6 +16,7 @@ import { LocatorError, NotImplementedInProtocolError, TimeoutError } from "../..
 import { mergeExtraHTTPHeaders } from "../../httpHeaders.js";
 import { RoxyElementHandle } from "../../elementHandle.js";
 import { RoxyJSHandle, createJSHandle } from "../../jsHandle.js";
+import { RoxyWorker, type WorkerDelegate } from "../../worker.js";
 import { createPageResponse } from "../../pageResponse.js";
 import {
   PARSE_EVALUATION_RESULT_SOURCE,
@@ -24,6 +25,7 @@ import {
   wrapWithSerializedEvaluationResult
 } from "../evaluationSerializer.js";
 import type { Disposable, ResolvedAriaRef } from "../../types/api.js";
+import type { PageFunction, SmartHandle, Worker } from "../../types/api.js";
 import {
   createAltTextLocatorSelector,
   createLabelLocatorSelector,
@@ -90,7 +92,12 @@ import type {
 } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
 import { looksLikeFunctionExpression } from "../evaluate.js";
-import { parseEvaluationResultValue, serializeAsCallArgument, type SerializedValue } from "../../utilityScriptSerializers.js";
+import {
+  parseEvaluationResultValue,
+  serializeAsCallArgument,
+  serializeAsCallArgumentNoHandles,
+  type SerializedValue
+} from "../../utilityScriptSerializers.js";
 import type CDP from "chrome-remote-interface";
 
 const chromeRemoteInterface = ("default" in cdpModule
@@ -1369,6 +1376,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private mainFrameId: string | undefined;
   private readonly defaultExecutionContextByFrameId = new Map<string, number>();
   private readonly defaultExecutionContextSessionByFrameId = new Map<string, string | undefined>();
+  private readonly workersByTargetId = new Map<string, { sessionId: string; worker: RoxyWorker }>();
   private readonly pendingDefaultExecutionContextWaiters = new Map<
     string,
     Set<{
@@ -1607,6 +1615,49 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         url?: string;
       };
     }) => {
+      if (event.targetInfo.type === "worker") {
+        const worker = new RoxyWorker(
+          event.targetInfo.url ?? "",
+          new CdpWorkerDelegate(this.options.client, event.sessionId, event.targetInfo.url ?? "")
+        );
+        this.workersByTargetId.set(event.targetInfo.targetId, {
+          sessionId: event.sessionId,
+          worker
+        });
+        this.emit("worker", worker);
+        (this.options.browserClient as CdpClient & {
+          on(event: string, listener: (params: unknown) => void): unknown;
+        }).on?.(`Runtime.consoleAPICalled.${event.sessionId}`, (params: unknown) => {
+          const consoleEvent = params as {
+            args: CdpRemoteObject[];
+            timestamp?: number;
+            type: RawPageEventMap["console"]["type"] extends () => infer T ? T : string;
+          };
+          const args = consoleEvent.args.map((arg) => createCdpConsoleHandle(arg));
+          const message: RawPageEventMap["console"] = {
+            args: () => args,
+            location: () => ({
+              column: 0,
+              columnNumber: 0,
+              line: 0,
+              lineNumber: 0,
+              url: event.targetInfo.url ?? ""
+            }),
+            page: () => null,
+            text: () => args.map((arg) => String(arg)).join(" "),
+            timestamp: () => consoleEvent.timestamp ? consoleEvent.timestamp * 1000 : Date.now(),
+            type: () => consoleEvent.type,
+            worker: () => worker
+          };
+          this.emit("console", message);
+        });
+        const sessionClient = this.options.client as typeof this.options.client & {
+          send(method: string, params?: Record<string, never>, sessionId?: string): Promise<unknown>;
+        };
+        void sessionClient.send("Runtime.enable", {}, event.sessionId).catch(() => {});
+        void sessionClient.send("Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
+        return;
+      }
       if (event.targetInfo.type !== "iframe") {
         const sessionClient = this.options.client as typeof this.options.client & {
           send(method: string, params?: Record<string, never>, sessionId?: string): Promise<unknown>;
@@ -1642,6 +1693,25 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         flatten: true
       }, event.sessionId).catch(() => {});
       void sessionClient.send("Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
+    });
+
+    client.Target?.detachedFromTarget?.((event: {
+      sessionId: string;
+      targetId?: string;
+    }) => {
+      const targetId = event.targetId;
+      if (!targetId) {
+        return;
+      }
+      const worker = this.workersByTargetId.get(targetId);
+      if (!worker) {
+        return;
+      }
+      if (worker.sessionId !== event.sessionId) {
+        return;
+      }
+      this.workersByTargetId.delete(targetId);
+      worker.worker.emitClose();
     });
 
     const onExecutionContextCreated = (event: {
@@ -6459,6 +6529,98 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 }
 
+class CdpWorkerDelegate implements WorkerDelegate {
+  constructor(
+    private readonly client: CdpClient,
+    private readonly sessionId: string,
+    private readonly workerUrl: string
+  ) {}
+
+  url(): string {
+    return this.workerUrl;
+  }
+
+  async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<R> {
+    const response = await this.evaluateInWorker(pageFunction, arg, true);
+    return parseEvaluationResultValue(response.result.value as SerializedValue) as R;
+  }
+
+  async evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<SmartHandle<R>> {
+    const response = await this.evaluateInWorker(pageFunction, arg, true);
+    return createJSHandle(parseEvaluationResultValue(response.result.value as SerializedValue) as R) as SmartHandle<R>;
+  }
+
+  private async evaluateInWorker<R, Arg>(
+    pageFunction: PageFunction<Arg, R>,
+    arg: Arg | undefined,
+    returnByValue: boolean
+  ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }> {
+    const expression = serializePageFunctionForWorker(pageFunction);
+    const serializedArg = serializeAsCallArgumentNoHandles(arg);
+    const functionDeclaration = `async (serializedArg) => {
+      ${PARSE_EVALUATION_RESULT_SOURCE}
+      ${SERIALIZE_EVALUATION_RESULT_SOURCE}
+      const arg = __roxyParseEvaluationResultValue(serializedArg);
+      let result = (0, eval)(${serializeForEvaluation(normalizeEvaluationExpression(expression, typeof pageFunction === "function"))});
+      if (${typeof pageFunction === "function" ? "true" : "false"})
+        result = result(arg);
+      return Promise.resolve(result).then(__roxySerializeEvaluationResult);
+    }`;
+    const runtimeClient = this.client as CdpRuntimeClient & {
+      send(
+        method: "Runtime.evaluate",
+        params: {
+          awaitPromise?: boolean;
+          expression: string;
+          returnByValue?: boolean;
+        },
+        sessionId?: string
+      ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
+      send(
+        method: "Runtime.callFunctionOn",
+        params: {
+          arguments?: Array<{ value?: unknown }>;
+          awaitPromise?: boolean;
+          functionDeclaration: string;
+          objectId?: string;
+          returnByValue?: boolean;
+          userGesture?: boolean;
+        },
+        sessionId?: string
+      ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
+      send(method: "Runtime.releaseObject", params: { objectId: string }, sessionId?: string): Promise<unknown>;
+    };
+    const globalHandle = await runtimeClient.send("Runtime.evaluate", {
+      expression: "globalThis",
+      awaitPromise: true,
+      returnByValue: false
+    }, this.sessionId);
+    if (globalHandle.exceptionDetails) {
+      throw new Error(formatCdpEvaluationError(globalHandle));
+    }
+    const objectId = globalHandle.result.objectId;
+    if (!objectId) {
+      throw new Error("Worker execution context is not available.");
+    }
+    try {
+      const response = await runtimeClient.send("Runtime.callFunctionOn", {
+        functionDeclaration,
+        objectId,
+        arguments: [{ value: serializedArg }],
+        awaitPromise: true,
+        returnByValue,
+        userGesture: true
+      }, this.sessionId);
+      if (response.exceptionDetails) {
+        throw new Error(formatCdpEvaluationError(response));
+      }
+      return response;
+    } finally {
+      await runtimeClient.send("Runtime.releaseObject", { objectId }, this.sessionId).catch(() => {});
+    }
+  }
+}
+
 class CdpJSHandleAdapter<T = unknown> implements ProtocolJSHandleAdapter<T> {
   private disposed = false;
 
@@ -7303,6 +7465,10 @@ function verifyLifecycle(name: string, waitUntil: WaitUntilState): WaitUntilStat
 
 function serializeForEvaluation(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function serializePageFunctionForWorker<R, Arg>(pageFunction: PageFunction<Arg, R>): string {
+  return typeof pageFunction === "string" ? pageFunction : pageFunction.toString();
 }
 
 function extractRemoteValue<TResult>(result: { value?: unknown; type?: string }): TResult {

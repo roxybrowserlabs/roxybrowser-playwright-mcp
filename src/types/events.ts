@@ -112,6 +112,7 @@ export interface RawPageEventMap {
   requestfailed: PageRequestFailure;
   response: PageResponse;
   screencastFrame: ScreencastFrame;
+  worker: Worker;
 }
 
 export interface PageEventMap {

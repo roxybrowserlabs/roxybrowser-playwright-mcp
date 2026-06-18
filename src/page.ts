@@ -637,6 +637,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private readonly pageErrorHistory: PageErrorEntry[] = [];
   private readonly pageErrorHistorySinceNavigation: PageErrorEntry[] = [];
   private readonly requestHistory: Request[] = [];
+  private readonly recordedRequests = new WeakSet<Request>();
   private readonly activeRequests = new Map<string, Request[]>();
   private readonly observedRequestsById = new Map<string, ObservedRequestState>();
   private readonly observedRequestsByUrl = new Map<string, ObservedRequestState[]>();
@@ -2380,6 +2381,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   attachWorker(worker: Worker = new RoxyWorker()): Worker {
     this.pageWorkers.push(worker);
+    worker.once("close", () => {
+      const index = this.pageWorkers.indexOf(worker);
+      if (index !== -1) {
+        this.pageWorkers.splice(index, 1);
+      }
+    });
     this.emit("worker", worker);
     return worker;
   }
@@ -2955,6 +2962,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private emit<K extends PageEventName>(event: K, payload: PageEventMap[K]): void {
     const normalizedPayload = this.normalizePublicEventPayload(event, payload);
+    if (event === "console" && normalizedPayload && typeof normalizedPayload === "object") {
+      const worker = (normalizedPayload as PageConsoleMessage).worker?.();
+      if (worker instanceof RoxyWorker) {
+        worker.emitConsole(normalizedPayload as PageConsoleMessage);
+      }
+    }
     this.recordEvent(event, normalizedPayload as PageEventMap[K]);
 
     const entries = this.listeners.get(event);
@@ -3058,6 +3071,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
     if (event === "request" && payload) {
       const request = payload as unknown as Request;
+      if (this.recordedRequests.has(request)) {
+        return;
+      }
+      this.recordedRequests.add(request);
       const key = `${request.method()}:${request.url()}`;
       const queue = this.activeRequests.get(key) ?? [];
       queue.push(request);
@@ -3118,6 +3135,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     event: Extract<PageEventName, RawPageEventName>,
     payload?: RawPageEventMap[RawPageEventName]
   ): Promise<void> {
+    if (event === "worker" && payload) {
+      this.attachWorker(payload as Worker);
+      return;
+    }
     if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
       await this.refreshFrameSnapshots().catch(() => {});
       return;
