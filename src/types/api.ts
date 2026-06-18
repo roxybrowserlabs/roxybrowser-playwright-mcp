@@ -75,6 +75,10 @@ type PageWaitForSelectorOptionsNotHidden = WaitForSelectorOptions & {
   state?: "visible" | "attached";
 };
 type PageWaitForSelectorOptions = WaitForSelectorOptions;
+type PageWaitForFunctionOptions = {
+  polling?: number | "raf";
+  timeout?: number;
+};
 type ElementHandleWaitForSelectorOptionsNotHidden = WaitForSelectorOptions & {
   state?: "visible" | "attached";
 };
@@ -760,16 +764,8 @@ export interface Page {
     urlOrPredicate: string | RegExp | ((response: Response) => boolean | Promise<boolean>),
     options?: { timeout?: number }
   ): Promise<Response>;
-  waitForFunction<R, Arg>(
-    pageFunction: PageFunction<Arg, R>,
-    arg: Arg,
-    options?: { timeout?: number; polling?: number | "raf" }
-  ): Promise<SmartHandle<R>>;
-  waitForFunction<R>(
-    pageFunction: PageFunction<void, R>,
-    arg?: any,
-    options?: { timeout?: number; polling?: number | "raf" }
-  ): Promise<SmartHandle<R>>;
+  waitForFunction<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
+  waitForFunction<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
   waitForLoadState(
     state?: "load" | "domcontentloaded" | "networkidle",
     options?: { timeout?: number }
@@ -1430,16 +1426,8 @@ export interface Frame {
   evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
   evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
   evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<SmartHandle<R>>;
-  waitForFunction<R, Arg>(
-    pageFunction: PageFunction<Arg, R>,
-    arg: Arg,
-    options?: { timeout?: number; polling?: number | "raf" }
-  ): Promise<SmartHandle<R>>;
-  waitForFunction<R>(
-    pageFunction: PageFunction<void, R>,
-    arg?: any,
-    options?: { timeout?: number; polling?: number | "raf" }
-  ): Promise<SmartHandle<R>>;
+  waitForFunction<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
+  waitForFunction<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
   waitForURL(
     url: string | RegExp | URLPattern | ((url: URL) => boolean),
     options?: WaitForURLOptions

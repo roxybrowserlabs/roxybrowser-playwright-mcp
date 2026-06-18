@@ -136,6 +136,10 @@ type LocatorOptions = {
   hasNotText?: string | RegExp;
   hasText?: string | RegExp;
 };
+type PageWaitForFunctionOptions = {
+  polling?: number | "raf";
+  timeout?: number;
+};
 
 interface ListenerEntry<K extends PageEventName> {
   original: PageEventListener<K>;
@@ -1112,17 +1116,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async waitForFunction<R, Arg>(
     pageFunction: PageFunction<Arg, R>,
     arg: Arg,
-    options?: { timeout?: number; polling?: number | "raf" }
+    options?: PageWaitForFunctionOptions
   ): Promise<SmartHandle<R>>;
   async waitForFunction<R>(
     pageFunction: PageFunction<void, R>,
     arg?: any,
-    options?: { timeout?: number; polling?: number | "raf" }
+    options?: PageWaitForFunctionOptions
   ): Promise<SmartHandle<R>>;
   async waitForFunction<R, Arg>(
     pageFunction: PageFunction<Arg, R>,
     arg?: Arg,
-    options: { timeout?: number; polling?: number | "raf" } = {}
+    options: PageWaitForFunctionOptions = {}
   ): Promise<SmartHandle<R>> {
     const timeout = options.timeout ?? this.defaultTimeoutMs;
     const polling = options.polling ?? "raf";

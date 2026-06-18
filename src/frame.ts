@@ -34,6 +34,10 @@ type LocatorOptions = {
   hasNotText?: string | RegExp;
   hasText?: string | RegExp;
 };
+type PageWaitForFunctionOptions = {
+  polling?: number | "raf";
+  timeout?: number;
+};
 
 export interface RoxyFrameSnapshot {
   id: string;
@@ -134,17 +138,17 @@ export class RoxyFrame implements Frame {
   async waitForFunction<R, Arg>(
     pageFunction: PageFunction<Arg, R>,
     arg: Arg,
-    options?: { timeout?: number; polling?: number | "raf" }
+    options?: PageWaitForFunctionOptions
   ): Promise<SmartHandle<R>>;
   async waitForFunction<R>(
     pageFunction: PageFunction<void, R>,
     arg?: any,
-    options?: { timeout?: number; polling?: number | "raf" }
+    options?: PageWaitForFunctionOptions
   ): Promise<SmartHandle<R>>;
   async waitForFunction<R, Arg>(
     pageFunction: PageFunction<Arg, R>,
     arg?: Arg,
-    options: { timeout?: number; polling?: number | "raf" } = {}
+    options: PageWaitForFunctionOptions = {}
   ): Promise<SmartHandle<R>> {
     const timeout = options.timeout ?? this.roxyPage.defaultTimeout();
     const polling = options.polling ?? "raf";

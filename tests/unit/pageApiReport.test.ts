@@ -74,4 +74,13 @@ describe("generatePageApiReport", () => {
       expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
     }
   );
+
+  it.each(["Page", "Frame"])(
+    "matches upstream Playwright waitForFunction signatures for %s",
+    (interfaceName) => {
+      const report = generateApiMethodSignatureReport(interfaceName, ["waitForFunction"]);
+
+      expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+    }
+  );
 });
