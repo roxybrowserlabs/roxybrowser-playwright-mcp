@@ -116,6 +116,84 @@ describe("page goto contract e2e", () => {
     });
   });
 
+  it("should work when page calls history API in beforeunload", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.evaluate(() => {
+        window.addEventListener(
+          "beforeunload",
+          () => history.replaceState(null, "initial", window.location.href),
+          false
+        );
+      });
+      const response = await page.goto(fixture.server.PREFIX + "/grid.html");
+      expect(response!.status()).toBe(200);
+    });
+  });
+
+  it("should fail when server returns 204", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", (_request, response) => {
+        response.statusCode = 204;
+        response.end();
+      });
+      const error = await page.goto(fixture.server.EMPTY_PAGE).catch((caught) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("net::ERR_ABORTED");
+    });
+  });
+
+  it("should fail when navigating to bad url", async () => {
+    await withPage(async (page) => {
+      const error = await page.goto("asdfasdf").catch((caught) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("Cannot navigate to invalid URL");
+    });
+  });
+
+  it("should not throw if networkidle0 is passed as an option", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE, {
+        waitUntil: "networkidle0" as never
+      });
+    });
+  });
+
+  it("should throw if networkidle2 is passed as an option", async () => {
+    await withPage(async (page) => {
+      const error = await page
+        .goto(fixture.server.EMPTY_PAGE, {
+          waitUntil: "networkidle2" as never
+        })
+        .catch((caught) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("waitUntil: expected one of (load|domcontentloaded|networkidle|commit)");
+    });
+  });
+
+  it("should fail when main resources failed to load", async () => {
+    await withPage(async (page) => {
+      const error = await page
+        .goto("http://localhost:44123/non-existing-url")
+        .catch((caught) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("net::ERR_CONNECTION_REFUSED");
+    });
+  });
+
+  it("should fail when exceeding maximum navigation timeout", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", () => {});
+      const error = await page
+        .goto(fixture.server.PREFIX + "/empty.html", {
+          timeout: 1
+        })
+        .catch((caught) => caught);
+      expect(error.message).toContain("Timeout 1ms exceeded.");
+      expect(error.message).toContain(fixture.server.PREFIX + "/empty.html");
+    });
+  });
+
   it("should work when navigating to data url", async () => {
     await withPage(async (page) => {
       const response = await page.goto("data:text/html,hello");

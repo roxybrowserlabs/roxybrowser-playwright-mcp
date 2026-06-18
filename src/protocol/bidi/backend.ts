@@ -629,7 +629,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async goto(url: string, options: PageGotoOptions = {}): Promise<PageResponse | null> {
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const targetUrl = completeUserURL(url);
     const capture = this.beginNavigationResponseCapture();
     this.resetNavigationState();
@@ -671,7 +671,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async reload(options: PageGotoOptions = {}): Promise<PageResponse | null> {
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const capture = this.beginNavigationResponseCapture();
     this.resetNavigationState();
 
@@ -714,7 +714,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async setContent(html: string, options: PageSetContentOptions = {}): Promise<void> {
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     this.resetNavigationState();
 
     await this.evaluateFunction<void>(
@@ -836,7 +836,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
     timeout = 30_000
   ): Promise<void> {
-    const targetState = state ?? "load";
+    const targetState = verifyLifecycle("state", state ?? "load");
     if (targetState === "commit" || this.isStateSatisfied(targetState)) {
       return;
     }
@@ -2743,7 +2743,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       throw error;
     }
 
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     if (waitUntil !== "commit") {
       await this.waitForLoadState(waitUntil, options.timeout);
     }
@@ -3684,6 +3684,24 @@ function completeUserURL(urlString: string): string {
     return `http://${urlString}`;
   }
   return urlString;
+}
+
+function verifyLifecycle(
+  name: string,
+  waitUntil: NonNullable<PageGotoOptions["waitUntil"]>
+): NonNullable<PageGotoOptions["waitUntil"]> {
+  if ((waitUntil as unknown) === "networkidle0") {
+    waitUntil = "networkidle";
+  }
+  if (
+    waitUntil !== "load" &&
+    waitUntil !== "domcontentloaded" &&
+    waitUntil !== "networkidle" &&
+    waitUntil !== "commit"
+  ) {
+    throw new Error(`${name}: expected one of (load|domcontentloaded|networkidle|commit)`);
+  }
+  return waitUntil;
 }
 
 function isExplicitExecutablePath(executable: string): boolean {

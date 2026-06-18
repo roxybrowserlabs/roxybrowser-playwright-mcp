@@ -1780,6 +1780,25 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         return;
       }
       if (request?.responseStatus === 204) {
+        if (request.type === "Document" && request.frameId && this.isMainFrameId(request.frameId)) {
+          this.ensureResponseBodyState(event.requestId).markFailed(
+            new Error(event.errorText || "Navigation failed.")
+          );
+          this.rejectNavigationFailureCaptures(
+            new Error(event.errorText || "Navigation failed.")
+          );
+          onRequestSettled(event.requestId);
+          this.emit("requestfailed", {
+            errorText: event.errorText,
+            ...(request.frameId ? { frameId: request.frameId } : {}),
+            isNavigationRequest: request.isNavigationRequest ?? false,
+            method: request.method,
+            requestId: event.requestId,
+            resourceType: toPlaywrightResourceType(request.type),
+            url: request.url
+          });
+          return;
+        }
         this.ensureResponseBodyState(event.requestId).resolveReady();
         this.emit("requestfinished", {
           headers: [],
@@ -1819,7 +1838,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async goto(url: string, options: PageGotoOptions = {}): Promise<PageResponse | null> {
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const targetUrl = resolveUrl(url, this.options.contextOptions.baseURL);
     const capture = this.beginNavigationResponseCapture();
     const failureCapture = this.beginNavigationFailureCapture();
@@ -1830,7 +1849,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         withTimeout(
           this.options.client.Page.navigate({ url: targetUrl }),
           options.timeout,
-          `Timeout ${options.timeout}ms exceeded.`
+          `page.goto: Timeout ${options.timeout}ms exceeded.\n${targetUrl}`
         ),
         failureCapture
       );
@@ -1864,7 +1883,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async reload(options: PageGotoOptions = {}): Promise<PageResponse | null> {
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const capture = this.beginNavigationResponseCapture();
     const failureCapture = this.beginNavigationFailureCapture();
     this.resetNavigationState();
@@ -1959,7 +1978,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async setContent(html: string, options: PageSetContentOptions = {}): Promise<void> {
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     this.resetNavigationState();
 
     await this.evaluateFunction<void>(
@@ -2361,7 +2380,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
     timeout = DEFAULT_TIMEOUT_MS
   ): Promise<void> {
-    const targetState = state ?? "load";
+    const targetState = verifyLifecycle("state", state ?? "load");
     if (targetState === "commit" || this.isStateSatisfied(targetState)) {
       return;
     }
@@ -4860,7 +4879,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       return null;
     }
 
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const capture = this.beginNavigationResponseCapture();
     const failureCapture = this.beginNavigationFailureCapture();
     this.resetNavigationState();
@@ -6703,6 +6722,21 @@ function resolveUrl(url: string, baseURL?: string): string {
     return `http://${resolved}`;
   }
   return resolved;
+}
+
+function verifyLifecycle(name: string, waitUntil: WaitUntilState): WaitUntilState {
+  if ((waitUntil as unknown) === "networkidle0") {
+    waitUntil = "networkidle";
+  }
+  if (
+    waitUntil !== "load" &&
+    waitUntil !== "domcontentloaded" &&
+    waitUntil !== "networkidle" &&
+    waitUntil !== "commit"
+  ) {
+    throw new Error(`${name}: expected one of (load|domcontentloaded|networkidle|commit)`);
+  }
+  return waitUntil;
 }
 
 function serializeForEvaluation(value: unknown): string {
