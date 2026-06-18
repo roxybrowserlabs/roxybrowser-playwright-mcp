@@ -1087,6 +1087,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     await this.updateExtraHTTPHeaders();
   }
 
+  screenshotClipOrigin(): "viewport" {
+    return "viewport";
+  }
+
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
     const response = await this.client.browsingContextCaptureScreenshot({
       context: this.contextId,

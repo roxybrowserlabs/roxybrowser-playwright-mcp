@@ -1,4 +1,5 @@
 import { extname } from "node:path";
+import type { ScreenshotClipOrigin } from "./protocol/adapter.js";
 import type { Rect, ScreenshotOptions, ScreenshotType, ViewportSize } from "./types/options.js";
 
 export function determineScreenshotType(options: { path?: string; type?: ScreenshotType }): ScreenshotType | undefined {
@@ -68,7 +69,8 @@ export async function normalizePageScreenshotOptions(
     evaluate<R, Arg>(pageFunction: (arg: Arg) => R | Promise<R>, arg: Arg): Promise<R>;
     evaluate<R>(pageFunction: () => R | Promise<R>, arg?: any): Promise<R>;
     viewportSize(): ViewportSize | null;
-  }
+  },
+  clipOrigin: ScreenshotClipOrigin = "document"
 ): Promise<ScreenshotOptions> {
   const screenshotOptions: ScreenshotOptions = { ...options };
   const viewportSize = page.viewportSize()
@@ -108,7 +110,9 @@ export async function normalizePageScreenshotOptions(
   const viewportClip = options.clip
     ? trimClipToSize(options.clip, viewportSize)
     : { x: 0, y: 0, width: viewportSize.width, height: viewportSize.height };
-  const scrollOffset = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+  const scrollOffset = clipOrigin === "document"
+    ? await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+    : { x: 0, y: 0 };
   const normalizedScrollOffset = isPoint(scrollOffset) ? scrollOffset : { x: 0, y: 0 };
   screenshotOptions.clip = {
     x: normalizedScrollOffset.x + viewportClip.x,
@@ -117,6 +121,38 @@ export async function normalizePageScreenshotOptions(
     height: viewportClip.height
   };
   return screenshotOptions;
+}
+
+export async function normalizeElementScreenshotClip(
+  box: Rect,
+  element: {
+    evaluate<R>(pageFunction: () => R | Promise<R>, arg?: any): Promise<R>;
+  },
+  clipOrigin: ScreenshotClipOrigin = "document"
+): Promise<Rect> {
+  const scrollOffset = clipOrigin === "document"
+    ? await element.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+    : { x: 0, y: 0 };
+  const normalizedScrollOffset = isPoint(scrollOffset) ? scrollOffset : { x: 0, y: 0 };
+  return enclosingIntRect({
+    x: box.x + normalizedScrollOffset.x,
+    y: box.y + normalizedScrollOffset.y,
+    width: box.width,
+    height: box.height
+  });
+}
+
+export function enclosingIntRect(rect: Rect): Rect {
+  const x = Math.floor(rect.x);
+  const y = Math.floor(rect.y);
+  const right = Math.ceil(rect.x + rect.width);
+  const bottom = Math.ceil(rect.y + rect.height);
+  return {
+    x,
+    y,
+    width: right - x,
+    height: bottom - y
+  };
 }
 
 function isPoint(value: unknown): value is { x: number; y: number } {

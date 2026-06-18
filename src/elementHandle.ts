@@ -12,7 +12,7 @@ import {
   preparePageForScreenshot,
   type ScreenshotPageTarget
 } from "./screenshotPreparation.js";
-import { determineScreenshotType, validateScreenshotOptions } from "./screenshotOptions.js";
+import { determineScreenshotType, normalizeElementScreenshotClip, validateScreenshotOptions } from "./screenshotOptions.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   ProtocolElementHandleAdapter,
@@ -307,9 +307,10 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
       if ((options as any)?.__testHookBeforeScreenshot) {
         await (options as any).__testHookBeforeScreenshot();
       }
+      const clip = await normalizeElementScreenshotClip(box, this, this.screenshotClipOrigin());
       const screenshot = await this.adapter.screenshot({
         ...screenshotOptions,
-        clip: box,
+        clip,
         fullPage: false
       });
       if ((options as any)?.__testHookAfterScreenshot) {
@@ -574,6 +575,13 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
 
   private screenshotTaskQueue(): (<T>(task: () => Promise<T>) => Promise<T>) | null {
     return this.frameResolver?.runScreenshotTask?.bind(this.frameResolver) ?? null;
+  }
+
+  private screenshotClipOrigin(): "document" | "viewport" {
+    const candidate = this.frameResolver as (
+      ElementHandleFrameResolver & { screenshotClipOrigin?: () => "document" | "viewport" }
+    ) | undefined;
+    return candidate?.screenshotClipOrigin?.() ?? "document";
   }
 
   private async prepareScreenshotBackground(options: ScreenshotOptions): Promise<() => Promise<void>> {

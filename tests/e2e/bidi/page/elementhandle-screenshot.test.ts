@@ -34,4 +34,15 @@ describe("elementHandle screenshot e2e (bidi/firefox)", () => {
       expect(pngSize(screenshot)).toEqual({ width: 50, height: 60 });
     });
   });
+
+  it("should use enclosing integer rect for fractional dimensions", async () => {
+    await withBidiPage(async (page) => {
+      await page.setContent('<div style="width:48.51px;height:19.8px;border:1px solid black;"></div>');
+      const elementHandle = await page.$("div");
+
+      const screenshot = await elementHandle!.screenshot();
+
+      expect(pngSize(screenshot)).toEqual({ width: 51, height: 22 });
+    });
+  });
 });

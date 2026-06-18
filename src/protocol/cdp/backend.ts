@@ -3109,6 +3109,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     );
   }
 
+  screenshotClipOrigin(): "document" {
+    return "document";
+  }
+
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
     const format = options.type ?? "png";
     const response = await this.options.client.Page.captureScreenshot({

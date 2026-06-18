@@ -108,6 +108,33 @@ describe("elementHandle screenshot contract e2e", () => {
     });
   });
 
+  it("should use enclosing integer rect for fractional dimensions", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<div style="width:48.51px;height:19.8px;border:1px solid black;"></div>');
+      const elementHandle = await page.$("div");
+
+      const screenshot = await elementHandle!.screenshot();
+
+      expect(pngSize(screenshot)).toEqual({ width: 51, height: 22 });
+    });
+  });
+
+  it("should account for scroll offset when clipping element screenshots", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 300, height: 300 });
+      await page.setContent(`
+        <style>body { margin: 0; }</style>
+        <div style="height: 800px"></div>
+        <div id="target" style="width: 40px; height: 30px; background: green"></div>
+      `);
+      const elementHandle = await page.$("#target");
+
+      const screenshot = await elementHandle!.screenshot();
+
+      expect(pngSize(screenshot)).toEqual({ width: 40, height: 30 });
+    });
+  });
+
   it("style option should apply during element screenshot and restore afterwards", async () => {
     await withPage(async (page) => {
       await page.setContent('<div data-test-screenshot="hide" style="width: 20px; height: 20px">target</div>');

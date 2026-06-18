@@ -1492,7 +1492,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
     }
     validateScreenshotOptions(screenshotOptions);
-    const normalizedScreenshotOptions = await normalizePageScreenshotOptions(screenshotOptions, this);
+    const normalizedScreenshotOptions = await normalizePageScreenshotOptions(
+      screenshotOptions,
+      this,
+      this.adapter.screenshotClipOrigin?.() ?? "document"
+    );
     const cleanup = await preparePageForScreenshot(this, normalizedScreenshotOptions);
     const restoreBackground = await this.prepareScreenshotBackground(normalizedScreenshotOptions);
     try {

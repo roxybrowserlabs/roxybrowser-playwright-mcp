@@ -40,6 +40,7 @@ import type { RoutedRequestCall, RoutedRequestDecision } from "./routing.js";
 import type { SerializedValue } from "../utilityScriptSerializers.js";
 
 export type LocatorStrategy = "control" | "css" | "text" | "role" | "xpath";
+export type ScreenshotClipOrigin = "document" | "viewport";
 
 export interface LocatorSelector {
   strategy: LocatorStrategy;
@@ -152,6 +153,7 @@ export interface ProtocolPageAdapter {
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
   setScreenshotBackgroundColor?(color?: { a: number; b: number; g: number; r: number }): Promise<void>;
+  screenshotClipOrigin?(): ScreenshotClipOrigin;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   pdf(options?: PdfOptions): Promise<Buffer>;
   viewportSize(): ViewportSize | null;
