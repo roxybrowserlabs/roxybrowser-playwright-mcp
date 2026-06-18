@@ -263,7 +263,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void> {
-    void options;
+    await this.waitForScrollIntoViewActionability(options ?? {});
     await this.adapter.scrollIntoViewIfNeeded();
   }
 
@@ -343,6 +343,47 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     }
 
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.\nelement is not visible`);
+  }
+
+  private async waitForScrollIntoViewActionability(options: TimeoutOptions): Promise<void> {
+    const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const startTime = Date.now();
+    let retry = 0;
+
+    while (timeout === 0 || Date.now() - startTime <= timeout) {
+      const connected = await this.isConnectedForElementState();
+      if (!connected) {
+        throw new Error("Element is not attached to the DOM");
+      }
+      if (await this.isCssLayoutVisibleForScroll().catch(() => false)) {
+        return;
+      }
+
+      const delay = ACTION_RETRY_DELAYS_MS[Math.min(retry, ACTION_RETRY_DELAYS_MS.length - 1)] ?? 0;
+      retry += 1;
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw new TimeoutError(`Timeout ${timeout}ms exceeded.\nelement is not visible\nretrying scroll into view action`);
+  }
+
+  private async isCssLayoutVisibleForScroll(): Promise<boolean> {
+    return this.evaluate((node) => {
+      if (!(node instanceof Element)) {
+        return false;
+      }
+      let current: Element | null = node;
+      while (current) {
+        const style = current.ownerDocument.defaultView!.getComputedStyle(current);
+        if (style.display === "none") {
+          return false;
+        }
+        current = current.parentElement;
+      }
+      return true;
+    });
   }
 
   async click(options?: ClickOptions): Promise<void> {

@@ -575,8 +575,11 @@ export class RoxyLocator implements Locator {
   }
 
   async scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void> {
-    void options;
-    await this.adapter.scrollIntoViewIfNeeded();
+    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+    if (!handle) {
+      throw new Error("No element found.");
+    }
+    await handle.scrollIntoViewIfNeeded(options);
   }
 
   async selectText(options: SelectTextOptions = {}): Promise<void> {

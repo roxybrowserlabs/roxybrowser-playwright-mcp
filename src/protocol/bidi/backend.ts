@@ -14,6 +14,7 @@ import {
 } from "../evaluationSerializer.js";
 import type { Disposable, ResolvedAriaRef } from "../../types/api.js";
 import {
+  SCROLL_INTO_VIEW_IF_NEEDED_SOURCE,
   SELECTOR_RUNTIME_SOURCE,
   type SelectorRuntimePayload
 } from "../selectorRuntime.js";
@@ -3227,7 +3228,7 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async scrollIntoViewIfNeeded(): Promise<void> {
-    await this.evaluate("(element) => element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })", undefined, true);
+    await this.evaluate(SCROLL_INTO_VIEW_IF_NEEDED_SOURCE, undefined, true);
   }
 
   async selectText(): Promise<void> {
@@ -3425,7 +3426,7 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async scrollIntoViewIfNeeded(): Promise<void> {
-    await this.evaluate("(element) => element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })", undefined);
+    await this.evaluate(SCROLL_INTO_VIEW_IF_NEEDED_SOURCE, undefined);
   }
 
   async selectText(): Promise<void> {

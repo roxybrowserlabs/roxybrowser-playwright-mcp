@@ -4,6 +4,32 @@ import type {
   ProtocolElementHandleReference
 } from "./adapter.js";
 
+export const SCROLL_INTO_VIEW_IF_NEEDED_SOURCE = `(element) => {
+  const hasLayoutBox = (node) => {
+    const rects = node.getClientRects();
+    return rects.length > 0 && Array.from(rects).some((rect) => rect.width > 0 || rect.height > 0);
+  };
+  const findScrollableTarget = (node) => {
+    if (hasLayoutBox(node))
+      return node;
+    const walker = node.ownerDocument.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);
+    let descendant = walker.nextNode();
+    while (descendant) {
+      if (hasLayoutBox(descendant))
+        return descendant;
+      descendant = walker.nextNode();
+    }
+    let ancestor = node.parentElement;
+    while (ancestor) {
+      if (hasLayoutBox(ancestor))
+        return ancestor;
+      ancestor = ancestor.parentElement;
+    }
+    return node;
+  };
+  findScrollableTarget(element).scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+}`;
+
 export interface SelectorRuntimePayload {
   operation:
     | "actionPoint"
