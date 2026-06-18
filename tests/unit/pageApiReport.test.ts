@@ -350,4 +350,29 @@ describe("generatePageApiReport", () => {
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
+
+  it("matches upstream Playwright Locator composition and list signatures", () => {
+    const report = generateApiMethodSignatureReport("Locator", [
+      "all",
+      "allInnerTexts",
+      "allTextContents",
+      "and",
+      "blur",
+      "count",
+      "description",
+      "describe",
+      "elementHandles",
+      "filter",
+      "first",
+      "highlight",
+      "last",
+      "normalize",
+      "nth",
+      "or",
+      "toString",
+      "waitFor"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });

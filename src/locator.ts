@@ -290,22 +290,22 @@ export class RoxyLocator implements Locator {
     ]);
   }
 
-  description(): string | null {
+  description(): null | string {
     const descriptionSelector = [...(this.selectorChain ?? [])].reverse().find(
       (selector: LocatorSelector) => selector.strategy === "control" && selector.value.startsWith("describe=")
     );
     return descriptionSelector ? descriptionSelector.value.slice("describe=".length) : null;
   }
 
-  async all(): Promise<Locator[]> {
+  async all(): Promise<Array<Locator>> {
     return Array.from({ length: await this.count() }, (_value, index) => this.nth(index));
   }
 
-  async allInnerTexts(): Promise<string[]> {
+  async allInnerTexts(): Promise<Array<string>> {
     return this.evaluateAll((elements) => elements.map((element) => (element as HTMLElement).innerText));
   }
 
-  async allTextContents(): Promise<string[]> {
+  async allTextContents(): Promise<Array<string>> {
     return this.evaluateAll((elements) => elements.map((element) => element.textContent || ""));
   }
 
@@ -440,7 +440,7 @@ export class RoxyLocator implements Locator {
     await this.adapter.focus();
   }
 
-  async blur(options?: TimeoutOptions): Promise<void> {
+  async blur(options?: { timeout?: number }): Promise<void> {
     void options;
     await this.adapter.blur();
   }
@@ -502,7 +502,7 @@ export class RoxyLocator implements Locator {
     return this.adapter.getAttribute(name);
   }
 
-  async highlight(_options: { style?: string | Record<string, string | number> } = {}): Promise<Disposable> {
+  async highlight(_options: { style?: string | { [key: string]: string | number } } = {}): Promise<Disposable> {
     return new DisposableStub(() => this.hideHighlight());
   }
 
@@ -673,7 +673,7 @@ export class RoxyLocator implements Locator {
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
 
-  async elementHandles(): Promise<ElementHandle[]> {
+  async elementHandles(): Promise<Array<ElementHandle>> {
     const handles = await this.adapter.elementHandles();
     return handles.map((handle) => new RoxyElementHandle(handle, this.humanDefaults, this.frameResolver));
   }

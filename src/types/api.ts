@@ -1092,13 +1092,13 @@ export interface Locator {
   and(locator: Locator): Locator;
   or(locator: Locator): Locator;
   describe(description: string): Locator;
-  description(): string | null;
+  description(): null|string;
   first(): Locator;
   last(): Locator;
   nth(index: number): Locator;
-  all(): Promise<Locator[]>;
-  allInnerTexts(): Promise<string[]>;
-  allTextContents(): Promise<string[]>;
+  all(): Promise<Array<Locator>>;
+  allInnerTexts(): Promise<Array<string>>;
+  allTextContents(): Promise<Array<string>>;
   count(): Promise<number>;
   evaluate<R, Arg>(
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
@@ -1139,9 +1139,9 @@ export interface Locator {
   pressSequentially(text: string, options?: TypeOptions): Promise<void>;
   press(key: string, options?: PressOptions): Promise<void>;
   focus(options?: TimeoutOptions): Promise<void>;
-  blur(options?: TimeoutOptions): Promise<void>;
+  blur(options?: { timeout?: number; }): Promise<void>;
   getAttribute(name: string, options?: TimeoutOptions): Promise<string | null>;
-  highlight(options?: { style?: string | Record<string, string | number> }): Promise<Disposable>;
+  highlight(options?: { style?: string | { [key: string]: string|number }; }): Promise<Disposable>;
   hideHighlight(): Promise<void>;
   innerHTML(options?: TimeoutOptions): Promise<string>;
   innerText(options?: TimeoutOptions): Promise<string>;
@@ -1176,9 +1176,9 @@ export interface Locator {
   textContent(options?: TimeoutOptions): Promise<string | null>;
   uncheck(options?: ClickOptions): Promise<void>;
   isVisible(options?: TimeoutOptions): Promise<boolean>;
-  waitFor(options?: WaitForSelectorOptions): Promise<void>;
+  waitFor(options?: { state?: "attached"|"detached"|"visible"|"hidden"; timeout?: number; }): Promise<void>;
   elementHandle(options?: { timeout?: number }): Promise<ElementHandle | null>;
-  elementHandles(): Promise<ElementHandle[]>;
+  elementHandles(): Promise<Array<ElementHandle>>;
   toString(): string;
 }
 
