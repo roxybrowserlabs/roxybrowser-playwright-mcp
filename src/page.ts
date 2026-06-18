@@ -2427,59 +2427,57 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async textContent(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
   async textContent(selector: string, options?: SelectorStrictOptions): Promise<string | null> {
-    return (await this.requiredElementHandleForSelector(selector, "page.textContent", options)).textContent();
+    return this.mainFrame().textContent(selector, options);
   }
 
   async innerText(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
   async innerText(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return (await this.requiredElementHandleForSelector(selector, "page.innerText", options)).innerText();
+    return this.mainFrame().innerText(selector, options);
   }
 
   async innerHTML(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
   async innerHTML(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return (await this.requiredElementHandleForSelector(selector, "page.innerHTML", options)).innerHTML();
+    return this.mainFrame().innerHTML(selector, options);
   }
 
   async getAttribute(selector: string, name: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
   async getAttribute(selector: string, name: string, options?: SelectorStrictOptions): Promise<string | null> {
-    return (await this.requiredElementHandleForSelector(selector, "page.getAttribute", options)).getAttribute(name);
+    return this.mainFrame().getAttribute(selector, name, options);
   }
 
   async inputValue(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
   async inputValue(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return (await this.requiredElementHandleForSelector(selector, "page.inputValue", options)).inputValue();
+    return this.mainFrame().inputValue(selector, options);
   }
 
   async isChecked(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
   async isChecked(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return (await this.requiredElementHandleForSelector(selector, "page.isChecked", options)).isChecked();
+    return this.mainFrame().isChecked(selector, options);
   }
 
   async isDisabled(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
   async isDisabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return (await this.requiredElementHandleForSelector(selector, "page.isDisabled", options)).isDisabled();
+    return this.mainFrame().isDisabled(selector, options);
   }
 
   async isEditable(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
   async isEditable(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return (await this.requiredElementHandleForSelector(selector, "page.isEditable", options)).isEditable();
+    return this.mainFrame().isEditable(selector, options);
   }
 
   async isEnabled(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
   async isEnabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return (await this.requiredElementHandleForSelector(selector, "page.isEnabled", options)).isEnabled();
+    return this.mainFrame().isEnabled(selector, options);
   }
 
   async isHidden(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
   async isHidden(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    const handle = await this.$(selector, options?.strict === undefined ? undefined : { strict: options.strict });
-    return handle ? handle.isHidden() : true;
+    return this.mainFrame().isHidden(selector, options);
   }
 
   async isVisible(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
   async isVisible(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    const handle = await this.$(selector, options?.strict === undefined ? undefined : { strict: options.strict });
-    return handle ? handle.isVisible() : false;
+    return this.mainFrame().isVisible(selector, options);
   }
 
   async focus(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<void>;

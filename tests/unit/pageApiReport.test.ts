@@ -183,6 +183,43 @@ describe("generatePageApiReport", () => {
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
 
+  it("matches upstream Playwright Frame selector query and state signatures", () => {
+    const report = generateApiMethodSignatureReport("Frame", [
+      "focus",
+      "getAttribute",
+      "innerHTML",
+      "innerText",
+      "inputValue",
+      "isChecked",
+      "isDisabled",
+      "isEditable",
+      "isEnabled",
+      "isHidden",
+      "isVisible",
+      "textContent"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("matches upstream Playwright Frame action signatures", () => {
+    const report = generateApiMethodSignatureReport("Frame", [
+      "check",
+      "click",
+      "dblclick",
+      "fill",
+      "hover",
+      "press",
+      "selectOption",
+      "setChecked",
+      "tap",
+      "type",
+      "uncheck"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
   it("matches upstream Playwright Page locator and small misc signatures", () => {
     const report = generateApiMethodSignatureReport("Page", [
       "close",

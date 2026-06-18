@@ -17,11 +17,16 @@ import type {
 } from "./types/api.js";
 import type {
   ClickOptions,
+  DispatchEventOptions,
   FillOptions,
+  HoverOptions,
   LoadState,
   PageGotoOptions,
   PageSetContentOptions,
   PressOptions,
+  SelectOptionValue,
+  SelectorStrictOptions,
+  TapOptions,
   TypeOptions,
   WaitForNavigationOptions,
   WaitForSelectorOptions
@@ -38,6 +43,14 @@ type PageWaitForFunctionOptions = {
   polling?: number | "raf";
   timeout?: number;
 };
+type FrameSelectOptionValues =
+  | null
+  | string
+  | ElementHandle
+  | ReadonlyArray<string>
+  | SelectOptionValue
+  | ReadonlyArray<ElementHandle>
+  | ReadonlyArray<SelectOptionValue>;
 
 export interface RoxyFrameSnapshot {
   id: string;
@@ -367,6 +380,60 @@ export class RoxyFrame implements Frame {
     });
   }
 
+  async textContent(selector: string, options?: SelectorStrictOptions): Promise<string | null> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.textContent", options)).textContent();
+  }
+
+  async innerText(selector: string, options?: SelectorStrictOptions): Promise<string> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.innerText", options)).innerText();
+  }
+
+  async innerHTML(selector: string, options?: SelectorStrictOptions): Promise<string> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.innerHTML", options)).innerHTML();
+  }
+
+  async getAttribute(selector: string, name: string, options?: SelectorStrictOptions): Promise<string | null> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.getAttribute", options)).getAttribute(name);
+  }
+
+  async inputValue(selector: string, options?: SelectorStrictOptions): Promise<string> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.inputValue", options)).inputValue();
+  }
+
+  async isChecked(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.isChecked", options)).isChecked();
+  }
+
+  async isDisabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.isDisabled", options)).isDisabled();
+  }
+
+  async isEditable(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.isEditable", options)).isEditable();
+  }
+
+  async isEnabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    return (await this.requiredElementHandleForSelector(selector, "frame.isEnabled", options)).isEnabled();
+  }
+
+  async isHidden(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    const handle = await this.elementHandleForSelector(selector, options);
+    return handle ? handle.isHidden() : true;
+  }
+
+  async isVisible(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    const handle = await this.elementHandleForSelector(selector, options);
+    return handle ? handle.isVisible() : false;
+  }
+
+  async focus(selector: string, options?: SelectorStrictOptions): Promise<void> {
+    await (await this.requiredElementHandleForSelector(selector, "frame.focus", options)).focus();
+  }
+
+  async dispatchEvent(selector: string, type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void> {
+    await this.locator(selector).dispatchEvent(type, eventInit, options);
+  }
+
   async click(selector: string, options?: ClickOptions): Promise<void> {
     await this.roxyPage.prepareForPendingFileChooser();
     await this.locator(selector).click(options);
@@ -374,6 +441,14 @@ export class RoxyFrame implements Frame {
 
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
     await this.locator(selector).dblclick(options);
+  }
+
+  async hover(selector: string, options?: HoverOptions): Promise<void> {
+    await this.locator(selector).hover(options);
+  }
+
+  async tap(selector: string, options?: TapOptions): Promise<void> {
+    await this.locator(selector).tap(options);
   }
 
   async fill(selector: string, value: string, options?: FillOptions): Promise<void> {
@@ -386,5 +461,54 @@ export class RoxyFrame implements Frame {
 
   async press(selector: string, key: string, options?: PressOptions): Promise<void> {
     await this.locator(selector).press(key, options);
+  }
+
+  async check(selector: string, options?: ClickOptions): Promise<void> {
+    await this.locator(selector).check(options);
+  }
+
+  async uncheck(selector: string, options?: ClickOptions): Promise<void> {
+    await this.locator(selector).uncheck(options);
+  }
+
+  async setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
+    await this.locator(selector).setChecked(checked, options);
+  }
+
+  async selectOption(
+    selector: string,
+    values: FrameSelectOptionValues,
+    options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number }
+  ): Promise<Array<string>> {
+    return this.locator(selector).selectOption(values, options);
+  }
+
+  private async elementHandleForSelector(
+    selector: string,
+    options?: { strict?: boolean }
+  ): Promise<ElementHandle | null> {
+    const strict = typeof options?.strict === "boolean"
+      ? options.strict
+      : false;
+    if (strict) {
+      const handles = await this.$$(selector);
+      if (handles.length > 1) {
+        throw new Error(`strict mode violation: selector "${selector}" resolved to ${handles.length} elements`);
+      }
+      return handles[0] ?? null;
+    }
+    return this.$(selector);
+  }
+
+  private async requiredElementHandleForSelector(
+    selector: string,
+    apiName: string,
+    options?: { strict?: boolean }
+  ): Promise<ElementHandle> {
+    const handle = await this.elementHandleForSelector(selector, options);
+    if (!handle) {
+      throw new Error(`${apiName}: Failed to find element matching selector "${selector}"`);
+    }
+    return handle;
   }
 }
