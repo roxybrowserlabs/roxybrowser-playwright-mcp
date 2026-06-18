@@ -232,6 +232,29 @@ describe("page goto contract e2e", () => {
     });
   });
 
+  it("should navigate to dataURL and not fire dataURL requests", async () => {
+    await withPage(async (page) => {
+      const requests: Array<{ url(): string }> = [];
+      page.on("request", (request) => requests.push(request));
+      const dataURL = "data:text/html,<div>yo</div>";
+      const response = await page.goto(dataURL);
+      expect(response).toBe(null);
+      expect(requests.length).toBe(0);
+    });
+  });
+
+  it("should navigate to URL with hash and fire requests without hash", async () => {
+    await withPage(async (page) => {
+      const requests: Array<{ url(): string }> = [];
+      page.on("request", (request) => requests.push(request));
+      const response = await page.goto(fixture.server.EMPTY_PAGE + "#hash");
+      expect(response!.status()).toBe(200);
+      expect(response!.url()).toBe(fixture.server.EMPTY_PAGE);
+      expect(requests.length).toBe(1);
+      expect(requests[0]!.url()).toBe(fixture.server.EMPTY_PAGE);
+    });
+  });
+
   it("should work when navigating to 404", async () => {
     await withPage(async (page) => {
       const response = await page.goto(fixture.server.PREFIX + "/not-found");

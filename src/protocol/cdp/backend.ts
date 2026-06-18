@@ -1327,6 +1327,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     Array<{ name: string; value: string }>
   >();
   private readonly fulfilledRequestIds = new Set<string>();
+  private readonly ignoredRequestIds = new Set<string>();
   private readonly continuedRequestHeaders = new Map<string, Array<{ name: string; value: string }>>();
   private readonly responseBodies = new Map<string, ResponseBodyState>();
   private readonly navigationResponseCaptures = new Set<NavigationResponseCapture>();
@@ -1609,6 +1610,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         loaderId?: string;
         type?: string;
       };
+      if (event.request.url.startsWith("data:")) {
+        this.ignoredRequestIds.add(event.requestId);
+        return;
+      }
       const isFavicon = isFaviconRequestUrl(event.request.url);
       const isNavigationRequest =
         event.requestId === requestEvent.loaderId && requestEvent.type === "Document";
@@ -1666,6 +1671,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     };
 
     client.Network.responseReceived((event) => {
+      if (this.ignoredRequestIds.has(event.requestId)) {
+        return;
+      }
       const responseEvent = event as typeof event & {
         frameId?: string;
         hasExtraInfo?: boolean;
@@ -1717,6 +1725,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
 
     client.Network.responseReceivedExtraInfo?.((event) => {
+      if (this.ignoredRequestIds.has(event.requestId)) {
+        return;
+      }
       const request = this.requestMetadata.get(event.requestId);
       if (request?.isPreflight || request?.isFavicon) {
         return;
@@ -1738,6 +1749,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
 
     client.Network.loadingFinished((event) => {
+      if (this.ignoredRequestIds.delete(event.requestId)) {
+        return;
+      }
       this.flushPendingResponseEvent(event.requestId);
       this.ensureResponseBodyState(event.requestId).resolveReady();
       const request = this.requestMetadata.get(event.requestId);
@@ -1757,6 +1771,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       onRequestSettled(event.requestId);
     });
     client.Network.loadingFailed((event) => {
+      if (this.ignoredRequestIds.delete(event.requestId)) {
+        return;
+      }
       this.flushPendingResponseEvent(event.requestId);
       const request = this.requestMetadata.get(event.requestId);
       if (request?.isPreflight || request?.isFavicon) {
