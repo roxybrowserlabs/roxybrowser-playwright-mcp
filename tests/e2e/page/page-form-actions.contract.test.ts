@@ -112,6 +112,26 @@ describe("page form action contract e2e", () => {
     });
   });
 
+  it("throws Playwright-like errors for non-fillable elements and non-string values", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<select><option>value1</option></select><div>plain</div><textarea></textarea>");
+
+      await expect(page.fill("select", "")).rejects.toThrow(
+        "Element is not an <input>, <textarea> or [contenteditable] element"
+      );
+      await expect(page.locator("div").fill("text")).rejects.toThrow(
+        "Element is not an <input>, <textarea> or [contenteditable] element"
+      );
+
+      await expect(page.fill("textarea", 123 as unknown as string)).rejects.toThrow(
+        "value: expected string, got number"
+      );
+      await expect(page.locator("textarea").fill(123 as unknown as string)).rejects.toThrow(
+        "value: expected string, got number"
+      );
+    });
+  });
+
   it("fill input event.composed crosses shadow dom boundary like Playwright", async () => {
     await withPage(async (page) => {
       await page.setContent(`

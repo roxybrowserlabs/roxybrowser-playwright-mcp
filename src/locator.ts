@@ -1,4 +1,5 @@
 import { TimeoutError } from "./errors.js";
+import { assertFillValue } from "./assertions.js";
 import type { HumanController } from "./human/types.js";
 import { resolveHumanizationOptions } from "./human/profile.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
@@ -408,6 +409,7 @@ export class RoxyLocator implements Locator {
   }
 
   async fill(value: string, options?: FillOptions): Promise<void> {
+    assertFillValue(value);
     await this.beforeAction?.(this, options);
     await this.humanController.fill(this.adapter, value, options);
   }

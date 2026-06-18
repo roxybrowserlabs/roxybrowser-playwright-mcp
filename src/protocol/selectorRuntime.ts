@@ -1005,7 +1005,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         } else if (firstElement instanceof HTMLElement && firstElement.isContentEditable) {
           firstElement.textContent = payload.value ?? "";
         } else {
-          throw new Error("Element does not support fill().");
+          throw new Error("Element is not an <input>, <textarea> or [contenteditable] element");
         }
 
         firstElement.dispatchEvent(new Event("input", { bubbles: true, composed: true }));

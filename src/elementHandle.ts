@@ -1,4 +1,5 @@
 import { TimeoutError } from "./errors.js";
+import { assertFillValue } from "./assertions.js";
 import { DefaultHumanController } from "./human/controller.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
@@ -287,6 +288,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async fill(value: string, options?: FillOptions): Promise<void> {
+    assertFillValue(value);
     await this.humanController.fill(this.adapter, value, options);
   }
 

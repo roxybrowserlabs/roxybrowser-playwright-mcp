@@ -77,6 +77,22 @@ describe("elementHandle misc contract e2e", () => {
     });
   });
 
+  it("matches Playwright fill errors for non-fillable elements and non-string values", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<select><option>value1</option></select><textarea></textarea>");
+
+      const select = await page.$("select");
+      await expect(select!.fill("")).rejects.toThrow(
+        "Element is not an <input>, <textarea> or [contenteditable] element"
+      );
+
+      const textarea = await page.$("textarea");
+      await expect(textarea!.fill(123 as unknown as string)).rejects.toThrow(
+        "value: expected string, got number"
+      );
+    });
+  });
+
   it("checks and unchecks boxes", async () => {
     await withPage(async (page) => {
       await page.setContent(`<input id="checkbox" type="checkbox">`);
