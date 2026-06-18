@@ -2,6 +2,15 @@ import { extname } from "node:path";
 import type { ScreenshotClipOrigin } from "./protocol/adapter.js";
 import type { Rect, ScreenshotOptions, ScreenshotType, ViewportSize } from "./types/options.js";
 
+export type InternalScreenshotOptions = ScreenshotOptions & {
+  __fitsViewport?: boolean;
+};
+
+export interface NormalizedScreenshot {
+  fitsViewport: boolean;
+  options: InternalScreenshotOptions;
+}
+
 export function determineScreenshotType(options: { path?: string; type?: ScreenshotType }): ScreenshotType | undefined {
   if (options.type) {
     return options.type;
@@ -71,8 +80,8 @@ export async function normalizePageScreenshotOptions(
     viewportSize(): ViewportSize | null;
   },
   clipOrigin: ScreenshotClipOrigin = "document"
-): Promise<ScreenshotOptions> {
-  const screenshotOptions: ScreenshotOptions = { ...options };
+): Promise<NormalizedScreenshot> {
+  const screenshotOptions: InternalScreenshotOptions = { ...options };
   const viewportSize = page.viewportSize()
     ?? await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
 
@@ -101,10 +110,12 @@ export async function normalizePageScreenshotOptions(
       };
     });
     const fullPageSize = isSize(evaluatedFullPageSize) ? evaluatedFullPageSize : viewportSize;
+    const fitsViewport = fullPageSize.width <= viewportSize.width && fullPageSize.height <= viewportSize.height;
     screenshotOptions.clip = options.clip
       ? trimClipToSize(options.clip, fullPageSize)
       : { x: 0, y: 0, width: fullPageSize.width, height: fullPageSize.height };
-    return screenshotOptions;
+    screenshotOptions.__fitsViewport = fitsViewport;
+    return { fitsViewport, options: screenshotOptions };
   }
 
   const viewportClip = options.clip
@@ -120,7 +131,18 @@ export async function normalizePageScreenshotOptions(
     width: viewportClip.width,
     height: viewportClip.height
   };
-  return screenshotOptions;
+  screenshotOptions.__fitsViewport = true;
+  return { fitsViewport: true, options: screenshotOptions };
+}
+
+export function screenshotOptionsWithFitsViewport(
+  options: ScreenshotOptions,
+  fitsViewport: boolean
+): InternalScreenshotOptions {
+  return {
+    ...options,
+    __fitsViewport: fitsViewport
+  };
 }
 
 export async function normalizeElementScreenshotClip(

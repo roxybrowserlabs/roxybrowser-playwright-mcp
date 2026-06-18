@@ -1,5 +1,5 @@
 import type { Locator } from "./types/api.js";
-import type { Rect, ScreenshotOptions } from "./types/options.js";
+import type { Rect, ScreenshotOptions, ViewportSize } from "./types/options.js";
 
 declare global {
   interface Window {
@@ -13,6 +13,7 @@ export interface ScreenshotEvaluationTarget {
 
 export interface ScreenshotPageTarget {
   frames(): ScreenshotEvaluationTarget[];
+  viewportSize(): ViewportSize | null;
 }
 
 type ScreenshotPreparationOptions = Pick<ScreenshotOptions, "animations" | "caret" | "style">;

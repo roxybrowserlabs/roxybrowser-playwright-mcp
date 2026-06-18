@@ -85,6 +85,7 @@ describe("RoxyPage", () => {
     const screenshot = await page.screenshot({ path: outputPath });
 
     expect(adapter.screenshot).toHaveBeenCalledWith({
+      __fitsViewport: true,
       clip: {
         height: 720,
         width: 1280,
@@ -116,6 +117,7 @@ describe("RoxyPage", () => {
     const screenshot = await page.screenshot({ path: outputPath });
 
     expect(adapter.screenshot).toHaveBeenCalledWith({
+      __fitsViewport: true,
       clip: {
         height: 720,
         width: 1280,

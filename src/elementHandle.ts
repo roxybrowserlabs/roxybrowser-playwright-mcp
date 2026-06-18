@@ -12,7 +12,12 @@ import {
   preparePageForScreenshot,
   type ScreenshotPageTarget
 } from "./screenshotPreparation.js";
-import { determineScreenshotType, normalizeElementScreenshotClip, validateScreenshotOptions } from "./screenshotOptions.js";
+import {
+  determineScreenshotType,
+  normalizeElementScreenshotClip,
+  screenshotOptionsWithFitsViewport,
+  validateScreenshotOptions
+} from "./screenshotOptions.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   ProtocolElementHandleAdapter,
@@ -308,8 +313,12 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
         await (options as any).__testHookBeforeScreenshot();
       }
       const clip = await normalizeElementScreenshotClip(box, this, this.screenshotClipOrigin());
+      const viewportSize = this.screenshotPageTarget()?.viewportSize();
+      const fitsViewport = viewportSize
+        ? box.width <= viewportSize.width && box.height <= viewportSize.height
+        : true;
       const screenshot = await this.adapter.screenshot({
-        ...screenshotOptions,
+        ...screenshotOptionsWithFitsViewport(screenshotOptions, fitsViewport),
         clip,
         fullPage: false
       });

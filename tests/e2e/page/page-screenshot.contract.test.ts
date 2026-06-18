@@ -380,6 +380,49 @@ describe("page screenshot contract e2e", () => {
       expect(events).toEqual(["failing-before", "second-before"]);
     });
   });
+
+  it("quality option should work for jpeg", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 300, height: 300 });
+      await page.setContent(`
+        <style>
+          body { margin: 0; }
+          main {
+            width: 300px;
+            height: 300px;
+            background:
+              radial-gradient(circle at 30px 30px, red, transparent 70px),
+              linear-gradient(45deg, #123456, #abcdef);
+          }
+        </style>
+        <main></main>
+      `);
+
+      const zeroQuality = await page.screenshot({ type: "jpeg", quality: 0 });
+      const highQuality = await page.screenshot({ type: "jpeg", quality: 100 });
+
+      expect(zeroQuality.byteLength).toBeLessThan(highQuality.byteLength);
+    });
+  });
+
+  it("should not issue resize event", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<main style=\"width: 600px; height: 600px; background: green\"></main>");
+      await page.evaluate(() => {
+        (window as typeof window & { __resizeTriggered?: boolean }).__resizeTriggered = false;
+        window.addEventListener("resize", () => {
+          (window as typeof window & { __resizeTriggered?: boolean }).__resizeTriggered = true;
+        });
+      });
+
+      await page.screenshot();
+
+      const resizeTriggered = await page.evaluate(() =>
+        Boolean((window as typeof window & { __resizeTriggered?: boolean }).__resizeTriggered)
+      );
+      expect(resizeTriggered).toBe(false);
+    });
+  });
 });
 
 async function until(predicate: () => boolean): Promise<void> {

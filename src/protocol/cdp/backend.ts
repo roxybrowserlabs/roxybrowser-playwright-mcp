@@ -100,6 +100,7 @@ import {
   serializeAsCallArgumentNoHandles,
   type SerializedValue
 } from "../../utilityScriptSerializers.js";
+import type { InternalScreenshotOptions } from "../../screenshotOptions.js";
 import type CDP from "chrome-remote-interface";
 
 const chromeRemoteInterface = ("default" in cdpModule
@@ -3113,10 +3114,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     return "document";
   }
 
-  async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
+  async screenshot(options: InternalScreenshotOptions = {}): Promise<Buffer> {
     const format = options.type ?? "png";
     const response = await this.options.client.Page.captureScreenshot({
-      captureBeyondViewport: options.fullPage ?? false,
+      captureBeyondViewport: !(options.__fitsViewport ?? !options.fullPage),
       ...(options.clip
         ? {
             clip: {
