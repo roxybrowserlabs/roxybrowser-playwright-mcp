@@ -38,6 +38,7 @@ import type {
   ClickOptions,
   BrowserConnectOptions,
   BrowserContextOptions,
+  DispatchEventOptions,
   FillOptions,
   HoverOptions,
   MouseButton,
@@ -2942,6 +2943,66 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
     await this.page.focusLocator(this.state);
   }
 
+  async blur(): Promise<void> {
+    await this.evaluate("(element) => element.blur()", undefined, true);
+  }
+
+  async count(): Promise<number> {
+    return this.page.countSelector({
+      chain: this.state.chain,
+      ...(this.state.pick ? { pick: this.state.pick } : {})
+    });
+  }
+
+  async dispatchEvent(
+    type: string,
+    eventInit?: unknown,
+    options?: DispatchEventOptions
+  ): Promise<void> {
+    void options;
+    await this.page.dispatchEvent(this.state.chain, type, eventInit);
+  }
+
+  async evaluate<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction?: boolean
+  ): Promise<TResult> {
+    return this.page.evaluateOnReference(
+      {
+        chain: this.state.chain,
+        ...(this.state.pick ? { pick: this.state.pick } : {})
+      },
+      expression,
+      arg,
+      `Could not resolve ${formatSelectorChain(this.state.chain)} to DOM Element`,
+      isFunction
+    );
+  }
+
+  async evaluateAll<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction?: boolean
+  ): Promise<TResult> {
+    return this.page.evaluateOnReferenceAll(
+      {
+        chain: this.state.chain,
+        ...(this.state.pick ? { pick: this.state.pick } : {})
+      },
+      expression,
+      arg,
+      isFunction
+    );
+  }
+
+  async boundingBox(): Promise<Rect | null> {
+    return this.page.boundingBoxReference({
+      chain: this.state.chain,
+      ...(this.state.pick ? { pick: this.state.pick } : {})
+    });
+  }
+
   async getAttribute(name: string): Promise<string | null> {
     return this.page.getAttributeLocator(this.state, name);
   }
@@ -2994,6 +3055,33 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
 
   async isVisible(): Promise<boolean> {
     return this.page.isVisibleLocator(this.state);
+  }
+
+  async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
+    void await this.elementHandle();
+    return this.page.screenshot(options);
+  }
+
+  async scrollIntoViewIfNeeded(): Promise<void> {
+    await this.evaluate("(element) => element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })", undefined, true);
+  }
+
+  async selectText(): Promise<void> {
+    await this.evaluate(`(element) => {
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+        element.select();
+        return;
+      }
+      const selection = element.ownerDocument.getSelection();
+      const range = element.ownerDocument.createRange();
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }`, undefined, true);
+  }
+
+  async tap(options?: TapOptions): Promise<void> {
+    await this.page.tap(this.state.chain, options);
   }
 
   async elementHandle(): Promise<ProtocolElementHandleAdapter> {
@@ -3111,6 +3199,47 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
 
   async boundingBox(): Promise<Rect | null> {
     return this.page.boundingBoxReference(this.reference());
+  }
+
+  async dispatchEvent(type: string, eventInit?: unknown): Promise<void> {
+    await this.evaluate(
+      `(element, payload) => {
+        const event = new Event(payload.type, {
+          bubbles: true,
+          cancelable: true
+        });
+        Object.assign(event, payload.eventInit ?? {});
+        element.dispatchEvent(event);
+      }`,
+      { type, eventInit }
+    );
+  }
+
+  async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
+    void await this.boundingBox();
+    return this.page.screenshot(options);
+  }
+
+  async scrollIntoViewIfNeeded(): Promise<void> {
+    await this.evaluate("(element) => element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })", undefined);
+  }
+
+  async selectText(): Promise<void> {
+    await this.evaluate(`(element) => {
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+        element.select();
+        return;
+      }
+      const selection = element.ownerDocument.getSelection();
+      const range = element.ownerDocument.createRange();
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }`, undefined);
+  }
+
+  async tap(options?: TapOptions): Promise<void> {
+    await this.page.tap(this.reference().chain, options);
   }
 
   async click(options?: ClickOptions): Promise<void> {

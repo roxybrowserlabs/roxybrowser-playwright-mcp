@@ -1,4 +1,4 @@
-export type SupportedProtocol = "cdp" | "bidi" | "webdriver";
+export type SupportedProtocol = "cdp" | "bidi";
 export type BrowserName = "chromium" | "firefox";
 export type ChromiumChannel =
   | "chromium"

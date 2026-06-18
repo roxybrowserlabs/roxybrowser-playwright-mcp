@@ -7,7 +7,7 @@
 - Keep the public API familiar to Playwright users.
 - Route all browser operations through a protocol-agnostic adapter layer.
 - Start with `chrome-remote-interface` over CDP.
-- Reserve clean extension points for future BiDi and WebDriver backends.
+- Keep CDP and BiDi as the supported protocol backends.
 - Make click, type, hover, and scroll behavior humanized by default instead of adding a second API.
 
 ## Package layout
@@ -15,7 +15,6 @@
 - `src/browser*.ts`: public browser, context, and browser type objects.
 - `src/page.ts` and `src/locator.ts`: Playwright-style page and locator APIs.
 - `src/protocol/*`: protocol abstraction plus CDP and BiDi backend entry points.
-- `src/protocol/webdriver-classic/*`: classic WebDriver bootstrap placeholder kept separate from the BiDi backend's third-party `webdriver` package dependency.
 - `src/human/*`: humanization profiles and controller contracts.
 - `docs/architecture.md`: detailed architecture notes and implementation plan.
 

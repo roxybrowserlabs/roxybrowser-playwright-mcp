@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-export interface PageApiReport {
+export interface ApiSurfaceReport {
+  interfaceName: string;
   upstreamMethods: string[];
   currentMethods: string[];
   missingMethods: string[];
@@ -12,8 +13,11 @@ export interface PageApiReport {
   extraProperties: string[];
 }
 
+export interface PageApiReport extends ApiSurfaceReport {}
+
 function extractInterfaceBody(source: string, interfaceName: string): string {
-  const interfaceStart = source.indexOf(`export interface ${interfaceName} {`);
+  const interfaceMatch = new RegExp(`export\\s+interface\\s+${interfaceName}(?:\\s*<[^>{}]+>)?\\s*(?:extends\\s+[^{}]+)?\\s*\\{`).exec(source);
+  const interfaceStart = interfaceMatch?.index ?? -1;
   if (interfaceStart === -1) {
     throw new Error(`Could not find interface ${interfaceName}.`);
   }
@@ -61,11 +65,11 @@ function extractProperties(source: string, interfaceName: string): string[] {
   return [...new Set(properties)];
 }
 
-export function generatePageApiReport(options?: {
+export function generateApiSurfaceReport(interfaceName: string, options?: {
   repoRoot?: string;
   upstreamTypesPath?: string;
   currentTypesPath?: string;
-}): PageApiReport {
+}): ApiSurfaceReport {
   const repoRoot = options?.repoRoot ?? resolve(import.meta.dirname, "..");
   const upstreamTypesPath =
     options?.upstreamTypesPath ??
@@ -75,16 +79,17 @@ export function generatePageApiReport(options?: {
   const upstreamSource = readFileSync(upstreamTypesPath, "utf8");
   const currentSource = readFileSync(currentTypesPath, "utf8");
 
-  const upstreamMethods = extractMethods(upstreamSource, "Page");
-  const currentMethods = extractMethods(currentSource, "Page");
-  const upstreamProperties = extractProperties(upstreamSource, "Page");
-  const currentProperties = extractProperties(currentSource, "Page");
+  const upstreamMethods = extractMethods(upstreamSource, interfaceName);
+  const currentMethods = extractMethods(currentSource, interfaceName);
+  const upstreamProperties = extractProperties(upstreamSource, interfaceName);
+  const currentProperties = extractProperties(currentSource, interfaceName);
   const currentMethodSet = new Set(currentMethods);
   const upstreamMethodSet = new Set(upstreamMethods);
   const currentPropertySet = new Set(currentProperties);
   const upstreamPropertySet = new Set(upstreamProperties);
 
   return {
+    interfaceName,
     upstreamMethods,
     currentMethods,
     missingMethods: upstreamMethods.filter((method) => !currentMethodSet.has(method)),
@@ -96,11 +101,21 @@ export function generatePageApiReport(options?: {
   };
 }
 
+export function generatePageApiReport(options?: {
+  repoRoot?: string;
+  upstreamTypesPath?: string;
+  currentTypesPath?: string;
+}): PageApiReport {
+  return generateApiSurfaceReport("Page", options);
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const report = generatePageApiReport();
+  const reports = ["Page", "Locator", "FrameLocator", "ElementHandle", "JSHandle", "Frame"]
+    .map((interfaceName) => generateApiSurfaceReport(interfaceName));
   console.log(
     JSON.stringify(
-      {
+      reports.map((report) => ({
+        interfaceName: report.interfaceName,
         upstreamCount: report.upstreamMethods.length,
         currentCount: report.currentMethods.length,
         missingCount: report.missingMethods.length,
@@ -113,7 +128,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         extraMethods: report.extraMethods,
         missingProperties: report.missingProperties,
         extraProperties: report.extraProperties
-      },
+      })),
       null,
       2
     )

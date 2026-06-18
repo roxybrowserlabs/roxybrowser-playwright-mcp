@@ -82,17 +82,25 @@ function __roxySerializeEvaluationResult(value) {
     }
     if (isArrayBuffer(value))
       return { ab: { b: typedArrayToBase64(new Uint8Array(value)) } };
-    const existingId = visitorInfo.visited.get(value);
+    const getVisited = (object) => {
+      for (const entry of visitorInfo.visited) {
+        if (entry.object === object)
+          return entry.id;
+      }
+      return undefined;
+    };
+    const setVisited = (object, id) => visitorInfo.visited.push({ object, id });
+    const existingId = getVisited(value);
     if (existingId)
       return { ref: existingId };
     if (Array.isArray(value)) {
       const id = ++visitorInfo.lastId;
-      visitorInfo.visited.set(value, id);
+      setVisited(value, id);
       return { a: value.map((entry) => serialize(entry, visitorInfo)), id };
     }
     if (typeof value === "object") {
       const id = ++visitorInfo.lastId;
-      visitorInfo.visited.set(value, id);
+      setVisited(value, id);
       const o = [];
       for (const name of Object.keys(value)) {
         let item;
@@ -117,12 +125,12 @@ function __roxySerializeEvaluationResult(value) {
     }
     return { v: "undefined" };
   };
-  return serialize(value, { visited: new Map(), lastId: 0 });
+  return serialize(value, { visited: [], lastId: 0 });
 }
 `;
 
 export const PARSE_EVALUATION_RESULT_SOURCE = String.raw`
-function __roxyParseEvaluationResultValue(value, handles = [], refs = new Map()) {
+function __roxyParseEvaluationResultValue(value, handles = [], refs = []) {
   const typedArrayConstructors = {
     i8: Int8Array,
     ui8: Uint8Array,
@@ -147,7 +155,7 @@ function __roxyParseEvaluationResultValue(value, handles = [], refs = new Map())
     return undefined;
   if (typeof value === "object" && value) {
     if ("ref" in value)
-      return refs.get(value.ref);
+      return refs.find(entry => entry.id === value.ref)?.value;
     if ("v" in value) {
       if (value.v === "undefined")
         return undefined;
@@ -179,14 +187,14 @@ function __roxyParseEvaluationResultValue(value, handles = [], refs = new Map())
       return new RegExp(value.r.p, value.r.f);
     if ("a" in value) {
       const result = [];
-      refs.set(value.id, result);
+      refs.push({ id: value.id, value: result });
       for (const a of value.a)
         result.push(__roxyParseEvaluationResultValue(a, handles, refs));
       return result;
     }
     if ("o" in value) {
       const result = {};
-      refs.set(value.id, result);
+      refs.push({ id: value.id, value: result });
       for (const { k, v } of value.o) {
         if (k === "__proto__")
           continue;

@@ -372,6 +372,11 @@ export interface ProtocolElementHandleAdapter {
   contentFrameId?(): Promise<string | null>;
   ownerFrameId?(): Promise<string | null>;
   boundingBox(): Promise<Rect | null>;
+  dispatchEvent(type: string, eventInit?: unknown): Promise<void>;
+  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  scrollIntoViewIfNeeded(): Promise<void>;
+  selectText(): Promise<void>;
+  tap(options?: TapOptions): Promise<void>;
   click(options?: ClickOptions): Promise<void>;
   dblclick(options?: ClickOptions): Promise<void>;
   check(options?: ClickOptions): Promise<void>;
@@ -418,6 +423,17 @@ export interface ProtocolLocatorAdapter {
   type(value: string, options?: TypeOptions): Promise<void>;
   press(key: string, options?: PressOptions): Promise<void>;
   focus(): Promise<void>;
+  blur(): Promise<void>;
+  count(): Promise<number>;
+  dispatchEvent(type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void>;
+  evaluate<TResult>(expression: string, arg?: unknown, isFunction?: boolean): Promise<TResult>;
+  evaluateAll<TResult>(expression: string, arg?: unknown, isFunction?: boolean): Promise<TResult>;
+  evaluateHandle?<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction?: boolean
+  ): Promise<ProtocolJSHandleAdapter<TResult>>;
+  boundingBox(): Promise<Rect | null>;
   getAttribute(name: string): Promise<string | null>;
   innerHTML(): Promise<string>;
   innerText(): Promise<string>;
@@ -428,6 +444,10 @@ export interface ProtocolLocatorAdapter {
   isEnabled(): Promise<boolean>;
   isHidden(): Promise<boolean>;
   selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue>): Promise<string[]>;
+  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  scrollIntoViewIfNeeded(): Promise<void>;
+  selectText(): Promise<void>;
+  tap(options?: TapOptions): Promise<void>;
   textContent(): Promise<string | null>;
   uncheck(options?: ClickOptions): Promise<void>;
   isVisible(): Promise<boolean>;

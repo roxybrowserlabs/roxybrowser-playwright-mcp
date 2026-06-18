@@ -12,11 +12,16 @@ import { parseSelectorChain } from "./selectors.js";
 import type { ElementHandle, Frame, JSHandle, PageFunctionOn, SmartHandle } from "./types/api.js";
 import type {
   ClickOptions,
+  FilePayload,
   FillOptions,
   HoverOptions,
   PressOptions,
   Rect,
+  ScreenshotOptions,
   SelectOptionValue,
+  SetInputFilesOptions,
+  TapOptions,
+  TimeoutOptions,
   TypeOptions,
   WaitForSelectorOptions
 } from "./types/options.js";
@@ -218,6 +223,45 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     return this.adapter.boundingBox();
   }
 
+  async dispatchEvent(type: string, eventInit?: unknown): Promise<void> {
+    await this.adapter.dispatchEvent(type, eventInit);
+  }
+
+  async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
+    return this.adapter.screenshot(options);
+  }
+
+  async scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void> {
+    void options;
+    await this.adapter.scrollIntoViewIfNeeded();
+  }
+
+  async selectText(options?: TimeoutOptions): Promise<void> {
+    void options;
+    await this.adapter.selectText();
+  }
+
+  async tap(options?: TapOptions): Promise<void> {
+    await this.adapter.tap(options);
+  }
+
+  async waitForElementState(
+    state: "disabled" | "enabled" | "hidden" | "stable" | "visible",
+    options: TimeoutOptions = {}
+  ): Promise<void> {
+    const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const startTime = Date.now();
+    while (timeout === 0 || Date.now() - startTime <= timeout) {
+      if (state === "visible" && await this.isVisible().catch(() => false)) return;
+      if (state === "hidden" && await this.isHidden().catch(() => true)) return;
+      if (state === "enabled" && await this.isEnabled().catch(() => false)) return;
+      if (state === "disabled" && await this.isDisabled().catch(() => false)) return;
+      if (state === "stable") return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
+  }
+
   async click(options?: ClickOptions): Promise<void> {
     await this.humanController.click(this.adapter, options);
   }
@@ -311,6 +355,51 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   ): Promise<string[]> {
     return this.adapter.selectOption(values);
   }
+
+  async setInputFiles(
+    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    _options?: SetInputFilesOptions
+  ): Promise<void> {
+    const payloads = normalizeFilePayloads(files);
+    await this.evaluate(
+      (element, entries) => {
+        const input = element as HTMLInputElement | null;
+        if (!input || input.tagName !== "INPUT" || input.type !== "file") {
+          throw new Error("Node is not an HTMLInputElement of type file.");
+        }
+
+        const dataTransfer = new DataTransfer();
+        for (const entry of entries) {
+          const bytes = Uint8Array.from(atob(entry.base64), (char) => char.charCodeAt(0));
+          dataTransfer.items.add(
+            new File([bytes], entry.name, {
+              type: entry.mimeType
+            })
+          );
+        }
+        input.files = dataTransfer.files;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      },
+      payloads
+    );
+  }
+}
+
+function normalizeFilePayloads(
+  files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>
+): Array<{ base64: string; mimeType: string; name: string }> {
+  const entries = Array.isArray(files) ? files : [files];
+  return entries.map((entry) => {
+    if (typeof entry === "string") {
+      throw new Error("File paths are not supported by ElementHandle.setInputFiles yet.");
+    }
+    return {
+      base64: entry.buffer.toString("base64"),
+      mimeType: entry.mimeType,
+      name: entry.name
+    };
+  });
 }
 
 export function serializeEvaluationArgument(value: unknown): unknown {

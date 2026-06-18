@@ -2,7 +2,6 @@ import { RoxyBrowser } from "./browser.js";
 import { resolveHumanizationOptions } from "./human/profile.js";
 import { BidiBrowserAdapterFactory } from "./protocol/bidi/backend.js";
 import { CdpBrowserAdapterFactory } from "./protocol/cdp/backend.js";
-import { ClassicWebDriverBrowserAdapterFactory } from "./protocol/webdriver-classic/backend.js";
 import type { ProtocolBrowserAdapterFactory } from "./protocol/adapter.js";
 import type { Browser, BrowserType } from "./types/api.js";
 import type {
@@ -96,12 +95,10 @@ export class RoxyBrowserType implements BrowserType {
 
 export const chromium: BrowserType = new RoxyBrowserType("chromium", {
   cdp: new CdpBrowserAdapterFactory(),
-  bidi: new BidiBrowserAdapterFactory(),
-  webdriver: new ClassicWebDriverBrowserAdapterFactory()
+  bidi: new BidiBrowserAdapterFactory()
 });
 
 export const firefox: BrowserType = new RoxyBrowserType("firefox", {
   cdp: new CdpBrowserAdapterFactory(),
-  bidi: new BidiBrowserAdapterFactory(),
-  webdriver: new ClassicWebDriverBrowserAdapterFactory()
+  bidi: new BidiBrowserAdapterFactory()
 });

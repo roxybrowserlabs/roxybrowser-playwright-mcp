@@ -35,7 +35,8 @@ import type {
   ViewportSize,
   WaitForNavigationOptions,
   WaitForURLOptions,
-  WaitForSelectorOptions
+  WaitForSelectorOptions,
+  TimeoutOptions
 } from "./options.js";
 import type { PageConsoleMessage, PageErrorEntry } from "./events.js";
 import type {
@@ -1035,6 +1036,15 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   contentFrame(): Promise<Frame | null>;
   ownerFrame(): Promise<Frame | null>;
   boundingBox(): Promise<Rect | null>;
+  dispatchEvent(type: string, eventInit?: unknown): Promise<void>;
+  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void>;
+  selectText(options?: TimeoutOptions): Promise<void>;
+  tap(options?: TapOptions): Promise<void>;
+  waitForElementState(
+    state: "disabled" | "enabled" | "hidden" | "stable" | "visible",
+    options?: TimeoutOptions
+  ): Promise<void>;
   click(options?: ClickOptions): Promise<void>;
   hover(options?: HoverOptions): Promise<void>;
   fill(value: string, options?: FillOptions): Promise<void>;
@@ -1056,6 +1066,10 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   setChecked(checked: boolean, options?: ClickOptions): Promise<void>;
   uncheck(options?: ClickOptions): Promise<void>;
   selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue>): Promise<string[]>;
+  setInputFiles(
+    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    options?: SetInputFilesOptions
+  ): Promise<void>;
   dblclick(options?: ClickOptions): Promise<void>;
 }
 
@@ -1072,6 +1086,7 @@ export interface JSHandle<T = unknown> extends Disposable {
   ): Promise<SmartHandle<R>>;
   jsonValue(): Promise<T>;
   asElement(): ElementHandle | null;
+  dispose(): Promise<void>;
   getProperties(): Promise<Map<string, JSHandle>>;
   getProperty(propertyName: string): Promise<JSHandle>;
   [Symbol.asyncDispose](): Promise<void>;
@@ -1079,6 +1094,7 @@ export interface JSHandle<T = unknown> extends Disposable {
 
 export interface Locator {
   _roxySelectorChain?(): LocatorSelector[] | null;
+  page(): Page;
   locator(selector: string): Locator;
   frameLocator(selector: string): FrameLocator;
   contentFrame(): FrameLocator;
@@ -1089,32 +1105,94 @@ export interface Locator {
   getByTestId(testId: string | RegExp): Locator;
   getByRole(role: string, options?: GetByRoleOptions): Locator;
   getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator;
+  filter(options?: {
+    has?: Locator;
+    hasNot?: Locator;
+    hasNotText?: string | RegExp;
+    hasText?: string | RegExp;
+    visible?: boolean;
+  }): Locator;
+  and(locator: Locator): Locator;
+  or(locator: Locator): Locator;
+  describe(description: string): Locator;
+  description(): string | null;
   first(): Locator;
   last(): Locator;
   nth(index: number): Locator;
+  all(): Promise<Locator[]>;
+  allInnerTexts(): Promise<string[]>;
+  allTextContents(): Promise<string[]>;
+  count(): Promise<number>;
+  evaluate<R, Arg>(
+    pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
+    arg: Arg,
+    options?: TimeoutOptions
+  ): Promise<R>;
+  evaluate<R>(
+    pageFunction: PageFunctionOn<SVGElement | HTMLElement, void, R>,
+    options?: TimeoutOptions
+  ): Promise<R>;
+  evaluateAll<R, Arg>(
+    pageFunction: PageFunctionOn<Element[], Arg, R>,
+    arg: Arg
+  ): Promise<R>;
+  evaluateAll<R>(
+    pageFunction: PageFunctionOn<Element[], void, R>
+  ): Promise<R>;
+  evaluateHandle<R, Arg>(
+    pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
+    arg: Arg,
+    options?: TimeoutOptions
+  ): Promise<SmartHandle<R>>;
+  evaluateHandle<R>(
+    pageFunction: PageFunctionOn<SVGElement | HTMLElement, void, R>,
+    options?: TimeoutOptions
+  ): Promise<SmartHandle<R>>;
+  boundingBox(options?: TimeoutOptions): Promise<Rect | null>;
   dblclick(options?: ClickOptions): Promise<void>;
   check(options?: ClickOptions): Promise<void>;
+  clear(options?: FillOptions): Promise<void>;
   click(options?: ClickOptions): Promise<void>;
+  dispatchEvent(type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void>;
+  dragTo(target: Locator, options?: DragAndDropOptions): Promise<void>;
+  drop(payload: unknown, options?: TimeoutOptions): Promise<void>;
   hover(options?: HoverOptions): Promise<void>;
   fill(value: string, options?: FillOptions): Promise<void>;
   type(value: string, options?: TypeOptions): Promise<void>;
+  pressSequentially(text: string, options?: TypeOptions): Promise<void>;
   press(key: string, options?: PressOptions): Promise<void>;
-  focus(): Promise<void>;
-  getAttribute(name: string): Promise<string | null>;
-  innerHTML(): Promise<string>;
-  innerText(): Promise<string>;
-  inputValue(): Promise<string>;
-  isChecked(): Promise<boolean>;
-  isDisabled(): Promise<boolean>;
-  isEditable(): Promise<boolean>;
-  isEnabled(): Promise<boolean>;
-  isHidden(): Promise<boolean>;
-  selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue>): Promise<string[]>;
-  textContent(): Promise<string | null>;
+  focus(options?: TimeoutOptions): Promise<void>;
+  blur(options?: TimeoutOptions): Promise<void>;
+  getAttribute(name: string, options?: TimeoutOptions): Promise<string | null>;
+  highlight(options?: { style?: string | Record<string, string | number> }): Promise<Disposable>;
+  hideHighlight(): Promise<void>;
+  innerHTML(options?: TimeoutOptions): Promise<string>;
+  innerText(options?: TimeoutOptions): Promise<string>;
+  inputValue(options?: TimeoutOptions): Promise<string>;
+  isChecked(options?: TimeoutOptions): Promise<boolean>;
+  isDisabled(options?: TimeoutOptions): Promise<boolean>;
+  isEditable(options?: TimeoutOptions): Promise<boolean>;
+  isEnabled(options?: TimeoutOptions): Promise<boolean>;
+  isHidden(options?: TimeoutOptions): Promise<boolean>;
+  ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
+  normalize(): Promise<Locator>;
+  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void>;
+  selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue> | null, options?: TimeoutOptions): Promise<string[]>;
+  selectText(options?: TimeoutOptions): Promise<void>;
+  setChecked(checked: boolean, options?: ClickOptions): Promise<void>;
+  setInputFiles(
+    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    options?: SetInputFilesOptions
+  ): Promise<void>;
+  tap(options?: TapOptions): Promise<void>;
+  textContent(options?: TimeoutOptions): Promise<string | null>;
   uncheck(options?: ClickOptions): Promise<void>;
-  isVisible(): Promise<boolean>;
-  elementHandle(options?: { timeout?: number }): Promise<ElementHandle>;
+  isVisible(options?: TimeoutOptions): Promise<boolean>;
+  waitFor(options?: WaitForSelectorOptions): Promise<void>;
+  elementHandle(options?: { timeout?: number }): Promise<ElementHandle | null>;
   elementHandles(): Promise<ElementHandle[]>;
+  toString(): string;
 }
 
 export interface FrameLocator {

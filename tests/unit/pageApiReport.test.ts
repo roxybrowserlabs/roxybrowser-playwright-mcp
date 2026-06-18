@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generatePageApiReport } from "../../src/pageApiReport.js";
+import { generateApiSurfaceReport, generatePageApiReport } from "../../src/pageApiReport.js";
 
 describe("generatePageApiReport", () => {
   it("tracks the upstream Playwright Page gap against our public Page type", () => {
@@ -34,4 +34,16 @@ describe("generatePageApiReport", () => {
     expect(report.extraMethods).toEqual([]);
     expect(report.extraProperties).toEqual([]);
   });
+
+  it.each(["ElementHandle", "FrameLocator", "JSHandle", "Locator"])(
+    "tracks the upstream Playwright %s gap against our public type",
+    (interfaceName) => {
+      const report = generateApiSurfaceReport(interfaceName);
+
+      expect(report.missingMethods).toEqual([]);
+      expect(report.missingProperties).toEqual([]);
+      expect(report.extraMethods).toEqual([]);
+      expect(report.extraProperties).toEqual([]);
+    }
+  );
 });
