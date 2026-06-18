@@ -79,6 +79,12 @@ type ElementHandleWaitForSelectorOptionsNotHidden = WaitForSelectorOptions & {
   state?: "visible" | "attached";
 };
 type ElementHandleWaitForSelectorOptions = WaitForSelectorOptions;
+type LocatorOptions = {
+  has?: Locator;
+  hasNot?: Locator;
+  hasNotText?: string | RegExp;
+  hasText?: string | RegExp;
+};
 
 export type ElementCallback<TResult, TArg = unknown> = (
   element: unknown,
@@ -1095,7 +1101,12 @@ export interface Page {
   ): Frame | null;
   frames(): Array<Frame>;
   mainFrame(): Frame;
-  locator(selector: string): Locator;
+  locator(selector: string, options?: {
+    has?: Locator;
+    hasNot?: Locator;
+    hasNotText?: string|RegExp;
+    hasText?: string|RegExp;
+  }): Locator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
   getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator;
   getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator;
@@ -1280,7 +1291,12 @@ export interface JSHandle<T = unknown> extends Disposable {
 export interface Locator {
   _roxySelectorChain?(): LocatorSelector[] | null;
   page(): Page;
-  locator(selector: string): Locator;
+  locator(selectorOrLocator: string|Locator, options?: {
+    has?: Locator;
+    hasNot?: Locator;
+    hasNotText?: string|RegExp;
+    hasText?: string|RegExp;
+  }): Locator;
   frameLocator(selector: string): FrameLocator;
   contentFrame(): FrameLocator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
@@ -1385,7 +1401,12 @@ export interface FrameLocator {
   last(): FrameLocator;
   nth(index: number): FrameLocator;
   frameLocator(selector: string): FrameLocator;
-  locator(selector: string): Locator;
+  locator(selectorOrLocator: string|Locator, options?: {
+    has?: Locator;
+    hasNot?: Locator;
+    hasNotText?: string|RegExp;
+    hasText?: string|RegExp;
+  }): Locator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
   getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator;
   getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator;
@@ -1444,7 +1465,12 @@ export interface Frame {
   $$eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
   $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
   $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
-  locator(selector: string): Locator;
+  locator(selector: string, options?: {
+    has?: Locator;
+    hasNot?: Locator;
+    hasNotText?: string|RegExp;
+    hasText?: string|RegExp;
+  }): Locator;
   frameLocator(selector: string): FrameLocator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
   getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator;

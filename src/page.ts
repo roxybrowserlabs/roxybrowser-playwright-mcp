@@ -130,6 +130,13 @@ import type {
   SelectorStrictOptions
 } from "./types/options.js";
 
+type LocatorOptions = {
+  has?: Locator;
+  hasNot?: Locator;
+  hasNotText?: string | RegExp;
+  hasText?: string | RegExp;
+};
+
 interface ListenerEntry<K extends PageEventName> {
   original: PageEventListener<K>;
   wrapped: PageEventListener<K>;
@@ -2088,8 +2095,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.frameMap.get("main")!;
   }
 
-  locator(selector: string): Locator {
-    return this.createLocatorFromChain(parseSelectorChain(selector));
+  locator(selector: string, options?: LocatorOptions): Locator {
+    const locator = this.createLocatorFromChain(parseSelectorChain(selector));
+    return options ? locator.filter(options) : locator;
   }
 
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {

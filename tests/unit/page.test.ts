@@ -582,7 +582,8 @@ describe("RoxyPage", () => {
       hoverBeforeClickMs: 110
     });
 
-    const cssLocator = page.locator(".target");
+    const filterSpy = vi.spyOn(RoxyLocator.prototype, "filter");
+    const cssLocator = page.locator(".target", { hasText: "Ready" });
     const textLocator = page.getByText(/hello/i, { exact: true });
     const roleLocator = page.getByRole("button", { name: "Send" });
 
@@ -593,9 +594,11 @@ describe("RoxyPage", () => {
       strategy: "css",
       value: ".target"
     });
+    expect(filterSpy).toHaveBeenCalledWith({ hasText: "Ready" });
     expect(adapter.getByText).toHaveBeenCalledWith(/hello/i, { exact: true });
     expect(adapter.getByRole).toHaveBeenCalledWith("button", { name: "Send" });
     expect(locatorAdapter).toBeTruthy();
+    filterSpy.mockRestore();
   });
 
   it("creates frame locators from page selectors", () => {

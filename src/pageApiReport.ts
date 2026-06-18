@@ -60,7 +60,82 @@ function extractMethods(source: string, interfaceName: string): string[] {
 }
 
 function normalizeSignature(signature: string): string {
-  return signature.trim().replace(/\s+/g, " ");
+  return signature
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\s*\|\s*/g, "|");
+}
+
+function findDeclarationEnd(source: string, start: number): number {
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let blockComment = false;
+  let lineComment = false;
+  let quote: "'" | "\"" | "`" | null = null;
+
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    const nextCharacter = source[index + 1];
+
+    if (lineComment) {
+      if (character === "\n") {
+        lineComment = false;
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (character === "*" && nextCharacter === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (character === "/" && nextCharacter === "/") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && nextCharacter === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === "\"" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") {
+      parenDepth += 1;
+      continue;
+    }
+    if (character === ")") {
+      parenDepth -= 1;
+      continue;
+    }
+    if (character === "{") {
+      braceDepth += 1;
+      continue;
+    }
+    if (character === "}") {
+      braceDepth -= 1;
+      continue;
+    }
+    if (character === ";" && parenDepth === 0 && braceDepth === 0) {
+      return index + 1;
+    }
+  }
+
+  return -1;
 }
 
 function extractMethodSignatures(
@@ -71,11 +146,13 @@ function extractMethodSignatures(
   const body = extractInterfaceBody(source, interfaceName);
   const methodNameSet = methodNames ? new Set(methodNames) : null;
   const signatures: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
-  const declarationPattern = /^\s{2}([\$A-Za-z_][\w$]*)\s*(?:<[^(\n]+>)?\([^;]+;/gm;
+  const declarationPattern = /^\s{2}([\$A-Za-z_][\w$]*)\s*(?:<[^(\n]+>)?\(/gm;
 
   for (const match of body.matchAll(declarationPattern)) {
     const methodName = match[1];
-    const declaration = match[0];
+    const declarationStart = match.index ?? -1;
+    const declarationEnd = declarationStart === -1 ? -1 : findDeclarationEnd(body, declarationStart);
+    const declaration = declarationEnd === -1 ? null : body.slice(declarationStart, declarationEnd);
     if (!methodName || !declaration || (methodNameSet && !methodNameSet.has(methodName))) {
       continue;
     }

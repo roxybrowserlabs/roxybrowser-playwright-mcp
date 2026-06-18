@@ -58,14 +58,15 @@ const DEFAULT_LOCATOR_HUMAN_DEFAULTS = resolveHumanizationOptions({ enabled: fal
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 
 type ActionOptionsLike = { force?: boolean } | undefined;
-type LocatorFilterOptions = {
+type LocatorOptions = {
   has?: Locator;
   hasNot?: Locator;
   hasNotText?: string | RegExp;
   hasText?: string | RegExp;
+};
+type LocatorFilterOptions = LocatorOptions & {
   visible?: boolean;
 };
-
 class DisposableStub implements Disposable {
   constructor(private readonly callback: () => Promise<void> | void) {}
 
@@ -132,9 +133,13 @@ export class RoxyLocator implements Locator {
     );
   }
 
-  locator(selector: string): Locator {
+  locator(selectorOrLocator: string | Locator, options?: LocatorOptions): Locator {
+    if (typeof selectorOrLocator !== "string") {
+      return selectorOrLocator.filter(options);
+    }
+    const selector = selectorOrLocator;
     const chain = parseSelectorChain(selector);
-    return new RoxyLocator(
+    const locator = new RoxyLocator(
       chainLocator(this.adapter, selector),
       this.humanController,
       [...(this.selectorChain ?? []), ...chain],
@@ -143,6 +148,7 @@ export class RoxyLocator implements Locator {
       this.frameResolver,
       this.ownerPage
     );
+    return options ? locator.filter(options) : locator;
   }
 
   frameLocator(selector: string): FrameLocator {
@@ -714,8 +720,8 @@ export class RoxyFrameLocator implements FrameLocator {
     return this.contentLocator.frameLocator(selector);
   }
 
-  locator(selector: string): Locator {
-    return this.contentLocator.locator(selector);
+  locator(selectorOrLocator: string | Locator, options?: LocatorOptions): Locator {
+    return this.contentLocator.locator(selectorOrLocator, options);
   }
 
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {

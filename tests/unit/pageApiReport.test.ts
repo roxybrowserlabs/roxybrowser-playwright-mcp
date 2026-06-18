@@ -65,4 +65,13 @@ describe("generatePageApiReport", () => {
       expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
     }
   );
+
+  it.each(["Page", "Frame", "Locator", "FrameLocator"])(
+    "matches upstream Playwright locator signatures for %s",
+    (interfaceName) => {
+      const report = generateApiMethodSignatureReport(interfaceName, ["locator"]);
+
+      expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+    }
+  );
 });

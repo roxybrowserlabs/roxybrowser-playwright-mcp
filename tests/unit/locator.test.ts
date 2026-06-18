@@ -25,6 +25,32 @@ describe("RoxyLocator", () => {
     expect(nested).toBeInstanceOf(RoxyLocator);
   });
 
+  it("applies Playwright locator filter options when nesting locators", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    const childAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => childAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller);
+    const hasText = /submit/i;
+    const filterSpy = vi.spyOn(RoxyLocator.prototype, "filter");
+
+    const nested = locator.locator(".child", { hasText });
+
+    expect(rootAdapter.locator).toHaveBeenCalledWith({
+      strategy: "css",
+      value: ".child"
+    });
+    expect(filterSpy).toHaveBeenCalledWith({ hasText });
+    expect(nested).toBeInstanceOf(RoxyLocator);
+    filterSpy.mockRestore();
+  });
+
   it("builds frame locators by inserting an enter-frame control step", () => {
     const rootAdapter = createLocatorAdapterStub();
     const frameAdapter = createLocatorAdapterStub();

@@ -28,6 +28,13 @@ import type {
 } from "./types/options.js";
 import { urlMatches } from "./urlMatch.js";
 
+type LocatorOptions = {
+  has?: Locator;
+  hasNot?: Locator;
+  hasNotText?: string | RegExp;
+  hasText?: string | RegExp;
+};
+
 export interface RoxyFrameSnapshot {
   id: string;
   name: string;
@@ -307,8 +314,9 @@ export class RoxyFrame implements Frame {
     );
   }
 
-  locator(selector: string): Locator {
-    return this.roxyPage.locatorInFrame(this.snapshot, selector);
+  locator(selector: string, options?: LocatorOptions): Locator {
+    const locator = this.roxyPage.locatorInFrame(this.snapshot, selector);
+    return options ? locator.filter(options) : locator;
   }
 
   frameLocator(selector: string): FrameLocator {
