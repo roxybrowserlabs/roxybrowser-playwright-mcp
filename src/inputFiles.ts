@@ -7,7 +7,7 @@ const fileUploadSizeLimit = 50 * 1024 * 1024;
 
 export type InputFiles = string | FilePayload | string[] | FilePayload[];
 
-interface FileUploadPayload {
+export interface FileUploadPayload {
   base64: string;
   lastModifiedMs?: number;
   mimeType: string;
@@ -15,7 +15,7 @@ interface FileUploadPayload {
   webkitRelativePath?: string;
 }
 
-interface ResolvedInputFiles {
+export interface ResolvedInputFiles {
   directoryUpload: boolean;
   multiple: boolean;
   payloads: FileUploadPayload[];
@@ -73,7 +73,7 @@ export async function setInputFilesOnElement(
   );
 }
 
-async function convertInputFiles(files: InputFiles): Promise<ResolvedInputFiles> {
+export async function convertInputFiles(files: InputFiles): Promise<ResolvedInputFiles> {
   const items = Array.isArray(files) ? [...files] : [files];
   if (items.some((item) => typeof item === "string")) {
     if (!items.every((item) => typeof item === "string")) {

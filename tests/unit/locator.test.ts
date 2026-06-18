@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RoxyFrameLocator, RoxyLocator } from "../../src/locator.js";
-import { createLocatorAdapterStub } from "../helpers/fakes.js";
+import { createElementHandleAdapterStub, createLocatorAdapterStub } from "../helpers/fakes.js";
 
 describe("RoxyLocator", () => {
   it("builds nested css locators from the adapter", () => {
@@ -210,5 +210,40 @@ describe("RoxyLocator", () => {
     expect(adapter.uncheck).toHaveBeenCalledWith(undefined);
     expect(await locator.textContent()).toBe("text-value");
     expect(await locator.isVisible()).toBe(true);
+  });
+
+  it("dispatches drop through an element handle with normalized payloads", async () => {
+    const adapter = createLocatorAdapterStub();
+    const elementAdapter = createElementHandleAdapterStub();
+    adapter.elementHandle = vi.fn(async () => elementAdapter);
+    const locator = new RoxyLocator(adapter);
+
+    await locator.drop(
+      {
+        data: { "text/plain": "hello" },
+        files: { name: "note.txt", mimeType: "text/plain", buffer: Buffer.from("file-body") }
+      },
+      { position: { x: 3, y: 4 }, timeout: 25 }
+    );
+
+    expect(adapter.elementHandle).toHaveBeenCalledTimes(1);
+    expect(elementAdapter.evaluate).toHaveBeenCalledTimes(1);
+    const [source, payload] = vi.mocked(elementAdapter.evaluate).mock.calls[0]!;
+    expect(source).toEqual(expect.stringContaining("new DataTransfer()"));
+    expect(payload).toEqual({
+      data: { "text/plain": "hello" },
+      files: [{
+        buffer: Buffer.from("file-body").toString("base64"),
+        mimeType: "text/plain",
+        name: "note.txt"
+      }],
+      position: { x: 3, y: 4 }
+    });
+  });
+
+  it("requires locator.drop to include files or data", async () => {
+    const locator = new RoxyLocator(createLocatorAdapterStub());
+
+    await expect(locator.drop({})).rejects.toThrow('At least one of "files" or "data" must be provided.');
   });
 });

@@ -1,3 +1,5 @@
+import { readFile, stat } from "node:fs/promises";
+import { basename, extname, resolve } from "node:path";
 import { TimeoutError } from "./errors.js";
 import { assertFillValue } from "./assertions.js";
 import type { HumanController } from "./human/types.js";
@@ -5,7 +7,7 @@ import { resolveHumanizationOptions } from "./human/profile.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyElementHandle, serializeEvaluationArgument, type ElementHandleFrameResolver } from "./elementHandle.js";
-import type { InputFiles } from "./inputFiles.js";
+import { convertInputFiles, type InputFiles } from "./inputFiles.js";
 import { normalizeSelectOptionValues } from "./selectOptionValues.js";
 import { createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
 import {
@@ -32,7 +34,6 @@ import type {
   AriaSnapshotOptions,
   ClickOptions,
   DispatchEventOptions,
-  DragAndDropOptions,
   FillOptions,
   GetByAltTextOptions,
   GetByLabelOptions,
@@ -69,11 +70,107 @@ type LocatorOptions = {
 type LocatorFilterOptions = LocatorOptions & {
   visible?: boolean;
 };
+type LocatorClearOptions = { force?: boolean; noWaitAfter?: boolean; timeout?: number };
+type LocatorDragToOptions = {
+  force?: boolean;
+  noWaitAfter?: boolean;
+  sourcePosition?: { x: number; y: number };
+  steps?: number;
+  targetPosition?: { x: number; y: number };
+  timeout?: number;
+  trial?: boolean;
+};
+type LocatorDropPayload = {
+  files?: string | Array<string> | { name: string; mimeType: string; buffer: Buffer } | Array<{ name: string; mimeType: string; buffer: Buffer }>;
+  data?: { [key: string]: string };
+};
+type LocatorDropOptions = { position?: { x: number; y: number }; timeout?: number };
+type LocatorPressSequentiallyOptions = { delay?: number; noWaitAfter?: boolean; timeout?: number };
+type LocatorDropFilePayload = {
+  buffer: string;
+  lastModifiedMs?: number;
+  mimeType: string;
+  name: string;
+};
 class DisposableStub implements Disposable {
   constructor(private readonly callback: () => Promise<void> | void) {}
 
   dispose(): Promise<void> | void {
     return this.callback();
+  }
+}
+
+async function convertDropFiles(files: LocatorDropPayload["files"]): Promise<LocatorDropFilePayload[]> {
+  if (files === undefined) {
+    return [];
+  }
+  const items = Array.isArray(files) ? files : [files];
+  if (items.every((item) => typeof item === "string")) {
+    return Promise.all(items.map(async (filePath) => {
+      const resolved = resolve(filePath);
+      const [buffer, fileStat] = await Promise.all([
+        readFile(resolved),
+        stat(resolved)
+      ]);
+      return {
+        buffer: buffer.toString("base64"),
+        lastModifiedMs: fileStat.mtimeMs,
+        mimeType: inferDropMimeType(resolved),
+        name: basename(resolved)
+      };
+    }));
+  }
+  const resolved = await convertInputFiles(items as InputFiles);
+  return resolved.payloads.map((payload) => ({
+    buffer: payload.base64,
+    mimeType: payload.mimeType,
+    name: payload.name,
+    ...(payload.lastModifiedMs === undefined ? {} : { lastModifiedMs: payload.lastModifiedMs })
+  }));
+}
+
+function inferDropMimeType(filePath: string): string {
+  const extension = extname(filePath).toLowerCase();
+  switch (extension) {
+    case ".avif":
+      return "image/avif";
+    case ".bmp":
+      return "image/bmp";
+    case ".css":
+      return "text/css";
+    case ".csv":
+      return "text/csv";
+    case ".gif":
+      return "image/gif";
+    case ".htm":
+    case ".html":
+      return "text/html";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".js":
+    case ".mjs":
+      return "text/javascript";
+    case ".json":
+      return "application/json";
+    case ".md":
+      return "text/markdown";
+    case ".pdf":
+      return "application/pdf";
+    case ".png":
+      return "image/png";
+    case ".svg":
+      return "image/svg+xml";
+    case ".txt":
+      return "text/plain";
+    case ".webp":
+      return "image/webp";
+    case ".xml":
+      return "application/xml";
+    case ".zip":
+      return "application/zip";
+    default:
+      return "application/octet-stream";
   }
 }
 
@@ -337,15 +434,15 @@ export class RoxyLocator implements Locator {
     );
   }
 
-  async evaluateAll<R, Arg>(
-    pageFunction: PageFunctionOn<Element[], Arg, R>,
+  async evaluateAll<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(
+    pageFunction: PageFunctionOn<E[], Arg, R>,
     arg: Arg
   ): Promise<R>;
-  async evaluateAll<R>(
-    pageFunction: PageFunctionOn<Element[], void, R>
+  async evaluateAll<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(
+    pageFunction: PageFunctionOn<E[], void, R>
   ): Promise<R>;
-  async evaluateAll<R, Arg>(
-    pageFunction: PageFunctionOn<Element[], Arg, R>,
+  async evaluateAll<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(
+    pageFunction: PageFunctionOn<E[], Arg, R>,
     arg?: Arg
   ): Promise<R> {
     assertMaxArguments(arguments.length, 2);
@@ -402,7 +499,7 @@ export class RoxyLocator implements Locator {
     await this.adapter.check(options);
   }
 
-  async clear(options?: FillOptions): Promise<void> {
+  async clear(options?: LocatorClearOptions): Promise<void> {
     await this.fill("", options);
   }
 
@@ -432,7 +529,7 @@ export class RoxyLocator implements Locator {
     await this.humanController.press(this.adapter, key, options);
   }
 
-  async pressSequentially(text: string, options?: TypeOptions): Promise<void> {
+  async pressSequentially(text: string, options?: LocatorPressSequentiallyOptions): Promise<void> {
     await this.type(text, options);
   }
 
@@ -453,7 +550,7 @@ export class RoxyLocator implements Locator {
     await this.adapter.dispatchEvent(type, eventInit, options);
   }
 
-  async dragTo(target: Locator, options?: DragAndDropOptions): Promise<void> {
+  async dragTo(target: Locator, options?: LocatorDragToOptions): Promise<void> {
     const waitOptions = options?.timeout === undefined ? {} : { timeout: options.timeout };
     const sourceHandle = await this.elementHandle(waitOptions);
     if (!sourceHandle) {
@@ -494,8 +591,73 @@ export class RoxyLocator implements Locator {
     );
   }
 
-  async drop(_payload: unknown, _options?: TimeoutOptions): Promise<void> {
-    throw new Error("locator.drop is not implemented yet.");
+  async drop(payload: LocatorDropPayload, options?: LocatorDropOptions): Promise<void> {
+    const hasFiles = payload.files !== undefined && (Array.isArray(payload.files) ? payload.files.length > 0 : true);
+    const hasData = payload.data !== undefined && Object.keys(payload.data).length > 0;
+    if (!hasFiles && !hasData) {
+      throw new Error('At least one of "files" or "data" must be provided.');
+    }
+
+    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+    if (!handle) {
+      throw new Error("No element found.");
+    }
+    const files = hasFiles ? await convertDropFiles(payload.files) : [];
+    const data = payload.data ?? {};
+    const result = await handle.evaluate(
+      (element, dropPayload) => {
+        if (!element.isConnected) {
+          return "error:notconnected" as const;
+        }
+        const dataTransfer = new DataTransfer();
+        for (const file of dropPayload.files) {
+          const bytes = Uint8Array.from(atob(file.buffer), (char) => char.charCodeAt(0));
+          const fileOptions: FilePropertyBag = { type: file.mimeType || "application/octet-stream" };
+          if (file.lastModifiedMs !== undefined) {
+            fileOptions.lastModified = file.lastModifiedMs;
+          }
+          dataTransfer.items.add(new File([bytes], file.name, fileOptions));
+        }
+        for (const [type, value] of Object.entries(dropPayload.data)) {
+          dataTransfer.setData(type, value);
+        }
+        const rect = element.getBoundingClientRect();
+        const point = dropPayload.position ?? {
+          x: rect.width / 2,
+          y: rect.height / 2
+        };
+        const clientX = rect.left + point.x;
+        const clientY = rect.top + point.y;
+        const makeEvent = (type: string) => new DragEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          clientX,
+          clientY,
+          composed: true,
+          dataTransfer
+        });
+        element.dispatchEvent(makeEvent("dragenter"));
+        const over = makeEvent("dragover");
+        element.dispatchEvent(over);
+        if (!over.defaultPrevented) {
+          element.dispatchEvent(makeEvent("dragleave"));
+          return "not-accepted" as const;
+        }
+        element.dispatchEvent(makeEvent("drop"));
+        return "accepted" as const;
+      },
+      {
+        data,
+        files,
+        position: options?.position
+      }
+    );
+    if (result === "error:notconnected") {
+      throw new Error("Element is not attached to the DOM.");
+    }
+    if (result === "not-accepted") {
+      throw new Error("Drop target did not accept the drop; its dragover handler did not call preventDefault().");
+    }
   }
 
   async getAttribute(name: string): Promise<string | null> {
@@ -652,7 +814,7 @@ export class RoxyLocator implements Locator {
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
 
-  async elementHandle(options: { timeout?: number } = {}): Promise<ElementHandle | null> {
+  async elementHandle(options: { timeout?: number } = {}): Promise<null | ElementHandle<SVGElement | HTMLElement>> {
     const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
     const startTime = Date.now();
     let lastError: unknown;

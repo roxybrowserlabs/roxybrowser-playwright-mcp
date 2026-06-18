@@ -7,7 +7,6 @@ import type {
   BrowserContextOptions,
   BrowserConnectOptions,
   ClickOptions,
-  DragAndDropOptions,
   ConnectOverCDPOptions,
   DispatchEventOptions,
   EmulateMediaOptions,
@@ -1109,13 +1108,8 @@ export interface Locator {
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, void, R>,
     options?: TimeoutOptions
   ): Promise<R>;
-  evaluateAll<R, Arg>(
-    pageFunction: PageFunctionOn<Element[], Arg, R>,
-    arg: Arg
-  ): Promise<R>;
-  evaluateAll<R>(
-    pageFunction: PageFunctionOn<Element[], void, R>
-  ): Promise<R>;
+  evaluateAll<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
+  evaluateAll<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E[], void, R>): Promise<R>;
   evaluateHandle<R, Arg>(
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
     arg: Arg,
@@ -1128,15 +1122,15 @@ export interface Locator {
   boundingBox(options?: TimeoutOptions): Promise<Rect | null>;
   dblclick(options?: ClickOptions): Promise<void>;
   check(options?: ClickOptions): Promise<void>;
-  clear(options?: FillOptions): Promise<void>;
+  clear(options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   click(options?: ClickOptions): Promise<void>;
   dispatchEvent(type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void>;
-  dragTo(target: Locator, options?: DragAndDropOptions): Promise<void>;
-  drop(payload: unknown, options?: TimeoutOptions): Promise<void>;
+  dragTo(target: Locator, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  drop(payload: { files?: string|Array<string>|{ name: string; mimeType: string; buffer: Buffer; }|Array<{ name: string; mimeType: string; buffer: Buffer; }>; data?: { [key: string]: string; }; }, options?: { position?: { x: number; y: number; }; timeout?: number; }): Promise<void>;
   hover(options?: HoverOptions): Promise<void>;
   fill(value: string, options?: FillOptions): Promise<void>;
   type(value: string, options?: TypeOptions): Promise<void>;
-  pressSequentially(text: string, options?: TypeOptions): Promise<void>;
+  pressSequentially(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   press(key: string, options?: PressOptions): Promise<void>;
   focus(options?: TimeoutOptions): Promise<void>;
   blur(options?: { timeout?: number; }): Promise<void>;
@@ -1177,7 +1171,7 @@ export interface Locator {
   uncheck(options?: ClickOptions): Promise<void>;
   isVisible(options?: TimeoutOptions): Promise<boolean>;
   waitFor(options?: { state?: "attached"|"detached"|"visible"|"hidden"; timeout?: number; }): Promise<void>;
-  elementHandle(options?: { timeout?: number }): Promise<ElementHandle | null>;
+  elementHandle(options?: { timeout?: number; }): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
   elementHandles(): Promise<Array<ElementHandle>>;
   toString(): string;
 }
