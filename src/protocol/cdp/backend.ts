@@ -4091,7 +4091,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     options?: PressOptions
   ): Promise<void> {
     await this.runLocatorOperation<boolean>(locator, {
-      operation: "focus"
+      operation: "focus",
+      resetSelectionIfNotFocused: true
     });
 
     const keyDefinition = resolveKeyDefinition(key);
@@ -4854,7 +4855,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     await this.runSelectorOperation<boolean>({
       operation: "focus",
-      reference
+      reference,
+      resetSelectionIfNotFocused: true
     });
 
     const keyDefinition = resolveKeyDefinition(key);

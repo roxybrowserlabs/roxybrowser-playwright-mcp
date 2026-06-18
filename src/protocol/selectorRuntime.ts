@@ -41,6 +41,7 @@ export interface SelectorRuntimePayload {
   position?: { x: number; y: number };
   timeoutMs?: number;
   waitForEnabled?: boolean;
+  resetSelectionIfNotFocused?: boolean;
 }
 
 function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
@@ -86,6 +87,23 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
 
   const tagNameOf = (node: unknown): string =>
     isElementNode(node) ? node.tagName.toLowerCase() : "";
+  const activelyFocused = (node: Node): boolean => {
+    const root = node.getRootNode();
+    const activeElement = root instanceof Document || root instanceof ShadowRoot ? root.activeElement : null;
+    return activeElement === node && !!node.ownerDocument && node.ownerDocument.hasFocus();
+  };
+  const focusElement = (element: Element): void => {
+    const wasFocused = activelyFocused(element);
+    if ("focus" in element && typeof element.focus === "function") {
+      element.focus();
+      element.focus();
+    }
+    if (payload.resetSelectionIfNotFocused && !wasFocused && element instanceof HTMLInputElement) {
+      try {
+        element.setSelectionRange(0, 0);
+      } catch {}
+    }
+  };
 
   const isFrameElement = (node: unknown): node is HTMLIFrameElement | HTMLFrameElement => {
     const tagName = tagNameOf(node);
@@ -1031,9 +1049,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         if (!firstElement) {
           throw new Error(payload.missingMessage ?? "No element found.");
         }
-        if ("focus" in firstElement && typeof firstElement.focus === "function") {
-          firstElement.focus();
-        }
+        focusElement(firstElement);
         return true;
       }
     case "check":

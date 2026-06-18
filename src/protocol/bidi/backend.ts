@@ -1950,7 +1950,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async pressLocator(locator: BidiLocatorState, key: string, options?: PressOptions): Promise<void> {
     await this.runLocatorOperation<boolean>(locator, {
-      operation: "focus"
+      operation: "focus",
+      resetSelectionIfNotFocused: true
     });
 
     const bidiKey = toBiDiKeyValue(key);
@@ -2389,7 +2390,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     await this.runSelectorOperation<boolean>({
       operation: "focus",
-      reference
+      reference,
+      resetSelectionIfNotFocused: true
     });
 
     const bidiKey = toBiDiKeyValue(key);
