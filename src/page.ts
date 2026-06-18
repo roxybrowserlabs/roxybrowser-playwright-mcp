@@ -2411,40 +2411,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   async dragAndDrop(source: string, target: string, options: DragAndDropOptions = {}): Promise<void> {
-    const sourceHandle = await this.requiredElementHandleForSelector(source, "page.dragAndDrop", options);
-    const targetHandle = await this.requiredElementHandleForSelector(target, "page.dragAndDrop", options);
-    if (options.trial) {
-      return;
-    }
-
-    await sourceHandle.evaluate(
-      (sourceElement, payload) => {
-        const sourceNode = sourceElement as Element | null;
-        const targetNode = payload.target as unknown as Element | null;
-        if (!sourceNode || !targetNode) {
-          throw new Error("Drag source or target is not available.");
-        }
-
-        const createEvent = (type: string, dataTransfer: DataTransfer) => {
-          const event = new DragEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            dataTransfer
-          });
-          return event;
-        };
-
-        const dataTransfer = new DataTransfer();
-        sourceNode.dispatchEvent(createEvent("dragstart", dataTransfer));
-        targetNode.dispatchEvent(createEvent("dragenter", dataTransfer));
-        targetNode.dispatchEvent(createEvent("dragover", dataTransfer));
-        targetNode.dispatchEvent(createEvent("drop", dataTransfer));
-        sourceNode.dispatchEvent(createEvent("dragend", dataTransfer));
-      },
-      {
-        target: targetHandle
-      }
-    );
+    await this.mainFrame().dragAndDrop(source, target, options);
   }
 
   async emulateMedia(options?: { colorScheme?: null|"light"|"dark"|"no-preference"; contrast?: null|"no-preference"|"more"; forcedColors?: null|"active"|"none"; media?: null|"screen"|"print"; reducedMotion?: null|"reduce"|"no-preference"; }): Promise<void>;

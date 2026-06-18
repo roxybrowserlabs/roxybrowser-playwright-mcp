@@ -20,6 +20,7 @@ import type {
 } from "./types/api.js";
 import type {
   ClickOptions,
+  DragAndDropOptions,
   DispatchEventOptions,
   FillOptions,
   AddScriptTagOptions,
@@ -453,6 +454,10 @@ export class RoxyFrame implements Frame {
 
   async dispatchEvent(selector: string, type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void> {
     await this.locator(selector).dispatchEvent(type, eventInit, options);
+  }
+
+  async dragAndDrop(source: string, target: string, options?: DragAndDropOptions): Promise<void> {
+    await this.locator(source).dragTo(this.locator(target), options);
   }
 
   async click(selector: string, options?: ClickOptions): Promise<void> {

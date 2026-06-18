@@ -1268,6 +1268,7 @@ export interface Frame {
   addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
   addStyleTag(options?: { content?: string; path?: string; url?: string; }): Promise<ElementHandle>;
   dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
+  dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   textContent(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
   innerText(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
   innerHTML(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;

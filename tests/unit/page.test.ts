@@ -63,7 +63,11 @@ describe("RoxyPage", () => {
     expect(adapter.waitForLoadState).toHaveBeenCalledWith("load", 30000);
     expect(adapter.ariaSnapshot).toHaveBeenCalledWith({ mode: "ai", depth: 2 });
     expect(adapter.resolveAriaRef).toHaveBeenCalledWith("e1");
-    expect(adapter.screenshot).toHaveBeenCalledWith({ type: "png" });
+    expect(adapter.screenshot).toHaveBeenCalledWith({
+      __fitsViewport: true,
+      clip: { height: 720, width: 1280, x: 0, y: 0 },
+      type: "png"
+    });
     expect(adapter.close).toHaveBeenCalledWith({});
   });
 
@@ -716,8 +720,8 @@ describe("RoxyPage", () => {
       value: ".target"
     });
     expect(filterSpy).toHaveBeenCalledWith({ hasText: "Ready" });
-    expect(adapter.getByText).toHaveBeenCalledWith(/hello/i, { exact: true });
-    expect(adapter.getByRole).toHaveBeenCalledWith("button", { name: "Send" });
+    expect(locatorAdapter.getByText).toHaveBeenCalledWith(/hello/i, { exact: true });
+    expect(locatorAdapter.getByRole).toHaveBeenCalledWith("button", { name: "Send" });
     expect(locatorAdapter).toBeTruthy();
     filterSpy.mockRestore();
   });
@@ -818,11 +822,12 @@ describe("RoxyPage", () => {
     page.getByTestId("id");
     page.getByTitle("Hint");
 
-    expect(adapter.getByAltText).toHaveBeenCalledWith("logo", undefined);
-    expect(adapter.getByLabel).toHaveBeenCalledWith("Name", undefined);
-    expect(adapter.getByPlaceholder).toHaveBeenCalledWith("Search", undefined);
-    expect(adapter.getByTestId).toHaveBeenCalledWith("id");
-    expect(adapter.getByTitle).toHaveBeenCalledWith("Hint", undefined);
+    const locatorAdapter = adapter.locator.mock.results[0]!.value;
+    expect(locatorAdapter.getByAltText).toHaveBeenCalledWith("logo", undefined);
+    expect(locatorAdapter.getByLabel).toHaveBeenCalledWith("Name", undefined);
+    expect(locatorAdapter.getByPlaceholder).toHaveBeenCalledWith("Search", undefined);
+    expect(locatorAdapter.getByTestId).toHaveBeenCalledWith("id");
+    expect(locatorAdapter.getByTitle).toHaveBeenCalledWith("Hint", undefined);
   });
 
   it("forwards page.setChecked to the main frame", async () => {
@@ -1845,17 +1850,8 @@ describe("RoxyPage", () => {
     await page.dispatchEvent("button", "click", { bubbles: false });
     await page.requestGC();
 
-    expect(adapter.createHandleReference).toHaveBeenCalledWith({
-      chain: [
-        {
-          strategy: "css",
-          value: "button"
-        }
-      ],
-      pick: { kind: "first" }
-    });
-    const elementAdapter = adapter.createHandle.mock.results[0]!.value;
-    expect(elementAdapter.dispatchEvent).toHaveBeenCalledWith("click", { bubbles: false });
+    const locatorAdapter = adapter.locator.mock.results[0]!.value;
+    expect(locatorAdapter.dispatchEvent).toHaveBeenCalledWith("click", { bubbles: false }, undefined);
     expect(adapter.requestGC).toHaveBeenCalledTimes(1);
   });
 
@@ -2009,7 +2005,7 @@ describe("RoxyPage", () => {
       pick: {
         kind: "first"
       }
-    });
+    }, 'Failed to find element matching selector "div >> text=Hello"');
   });
 
   it("proxies page query and eval helpers to the page adapter", async () => {
@@ -2048,7 +2044,7 @@ describe("RoxyPage", () => {
       pick: {
         kind: "first"
       }
-    });
+    }, 'Failed to find element matching selector "div"');
     expect(adapter.evaluateOnReference).toHaveBeenCalledWith({
       chain: [
         {
@@ -2102,26 +2098,26 @@ describe("RoxyPage", () => {
     expect(values).toEqual(["selector-value"]);
     expect(self).toBe("handle-value");
 
-    const queryHandle = await vi.mocked(adapter.query).mock.results[0]?.value;
-    expect(queryHandle?.query).toHaveBeenCalledWith([
+    const handleAdapter = adapter.createHandle.mock.results[0]!.value;
+    expect(handleAdapter.query).toHaveBeenCalledWith([
       {
         strategy: "css",
         value: "span"
       }
     ]);
-    expect(queryHandle?.queryAll).toHaveBeenCalledWith([
+    expect(handleAdapter.queryAll).toHaveBeenCalledWith([
       {
         strategy: "css",
         value: "span"
       }
     ]);
-    expect(queryHandle?.evalOnSelector).toHaveBeenCalledWith([
+    expect(handleAdapter.evalOnSelector).toHaveBeenCalledWith([
       {
         strategy: "css",
         value: "span"
       }
     ], expect.stringContaining("suffix"), true, "!");
-    expect(queryHandle?.evalOnSelectorAll).toHaveBeenCalledWith([
+    expect(handleAdapter.evalOnSelectorAll).toHaveBeenCalledWith([
       {
         strategy: "css",
         value: "span"
@@ -3384,9 +3380,7 @@ describe("RoxyPage", () => {
     const filePath = join(directory, "hello.txt");
     await writeFile(filePath, "hello");
 
-    const handle = await page.$("input[type=file]");
-    const querySpy = vi.spyOn(page, "$").mockResolvedValue(handle);
-    const evaluateSpy = vi.spyOn(handle!, "evaluate");
+    const setInputFilesSpy = vi.spyOn(page.mainFrame(), "setInputFiles").mockResolvedValue(undefined);
     await page.setInputFiles("input[type=file]", filePath);
     await page.setInputFiles("input[type=file]", {
       name: "data.json",
@@ -3394,11 +3388,15 @@ describe("RoxyPage", () => {
       buffer: Buffer.from('{"ok":true}')
     });
 
-    expect(querySpy).toHaveBeenCalled();
-    expect(evaluateSpy).toHaveBeenCalled();
+    expect(setInputFilesSpy).toHaveBeenNthCalledWith(1, "input[type=file]", filePath, undefined);
+    expect(setInputFilesSpy).toHaveBeenNthCalledWith(2, "input[type=file]", {
+      name: "data.json",
+      mimeType: "application/json",
+      buffer: Buffer.from('{"ok":true}')
+    }, undefined);
   });
 
-  it("drags and drops via element handle evaluation", async () => {
+  it("forwards page.dragAndDrop to the main frame", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
       enabled: true,
@@ -3410,21 +3408,11 @@ describe("RoxyPage", () => {
       typingVarianceMs: 35,
       hoverBeforeClickMs: 110
     });
+    const dragAndDropSpy = vi.spyOn(page.mainFrame(), "dragAndDrop").mockResolvedValue(undefined);
 
-    const source = await page.$("#source");
-    const target = await page.$("#target");
-    const querySpy = vi
-      .spyOn(page, "$")
-      .mockResolvedValueOnce(source)
-      .mockResolvedValueOnce(target);
-    const evaluateSpy = vi.spyOn(source!, "evaluate");
+    await page.dragAndDrop("#source", "#target", { trial: true });
 
-    await page.dragAndDrop("#source", "#target");
-
-    expect(querySpy).toHaveBeenCalledTimes(2);
-    expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Function), {
-      target: expect.any(RoxyElementHandle)
-    });
+    expect(dragAndDropSpy).toHaveBeenCalledWith("#source", "#target", { trial: true });
   });
 
   it("adds and removes locator handlers around locator actions", async () => {
