@@ -5776,11 +5776,26 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
   async dispatchEvent(type: string, eventInit?: unknown): Promise<void> {
     await this.evaluate(
       `(element, payload) => {
-        const event = new Event(payload.type, {
-          bubbles: true,
-          cancelable: true
-        });
-        Object.assign(event, payload.eventInit ?? {});
+        const createDOMEvent = (type, eventInit) => {
+          const baseInit = {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            ...(eventInit && typeof eventInit === "object" ? eventInit : {})
+          };
+          if (type.startsWith("mouse") || type === "click" || type === "dblclick" || type === "contextmenu")
+            return new MouseEvent(type, baseInit);
+          if (type === "wheel")
+            return new WheelEvent(type, baseInit);
+          if (type.startsWith("drag") || type === "drop")
+            return new DragEvent(type, baseInit);
+          if (type.startsWith("key"))
+            return new KeyboardEvent(type, baseInit);
+          if (type === "input")
+            return new InputEvent(type, baseInit);
+          return new Event(type, baseInit);
+        };
+        const event = createDOMEvent(payload.type, payload.eventInit);
         element.dispatchEvent(event);
       }`,
       { type, eventInit }

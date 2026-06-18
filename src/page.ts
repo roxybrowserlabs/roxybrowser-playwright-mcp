@@ -2139,7 +2139,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async emulateMedia(options: EmulateMediaOptions = {}): Promise<void> {
-    this.emulatedMedia = { ...options };
+    this.emulatedMedia = {
+      ...this.emulatedMedia,
+      ...options
+    };
     await this.applyEmulatedMedia();
   }
 
@@ -3707,36 +3710,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       globalThis.matchMedia = ((query: string) => {
         const original = globalState.__roxyOriginalMatchMedia!(query);
         const normalized = query.replace(/\s+/g, "").toLowerCase();
+        const emulated = globalState.__roxyEmulatedMediaState ?? {};
+        const hasOverride = (key: keyof EmulateMediaOptions) =>
+          emulated[key] !== undefined && emulated[key] !== null;
+        const featureValue = () => normalized.replace(/[()]/g, "").split(":").pop() ?? "";
         const matchesOverride = (() => {
-          if (
-            globalState.__roxyEmulatedMediaState?.media &&
-            (normalized === "screen" || normalized === "print" || normalized === `(prefers-color-scheme:${globalState.__roxyEmulatedMediaState.media})`)
-          ) {
-            return globalState.__roxyEmulatedMediaState.media === normalized.replace(/[()]/g, "").split(":").pop();
+          if (hasOverride("media") && (normalized === "screen" || normalized === "print")) {
+            return emulated.media === normalized;
           }
-          if (
-            normalized.startsWith("(prefers-color-scheme:") &&
-            globalState.__roxyEmulatedMediaState?.colorScheme
-          ) {
-            return normalized.includes(globalState.__roxyEmulatedMediaState.colorScheme);
+          if (normalized.startsWith("(prefers-color-scheme:") && hasOverride("colorScheme")) {
+            return featureValue() === String(emulated.colorScheme);
           }
-          if (
-            normalized.startsWith("(prefers-reduced-motion:") &&
-            globalState.__roxyEmulatedMediaState?.reducedMotion
-          ) {
-            return normalized.includes(globalState.__roxyEmulatedMediaState.reducedMotion);
+          if (normalized.startsWith("(prefers-reduced-motion:") && hasOverride("reducedMotion")) {
+            return featureValue() === String(emulated.reducedMotion);
           }
-          if (
-            normalized.startsWith("(prefers-contrast:") &&
-            globalState.__roxyEmulatedMediaState?.contrast
-          ) {
-            return normalized.includes(globalState.__roxyEmulatedMediaState.contrast);
+          if (normalized.startsWith("(prefers-contrast:") && hasOverride("contrast")) {
+            return featureValue() === String(emulated.contrast);
           }
-          if (
-            normalized.startsWith("(forced-colors:") &&
-            globalState.__roxyEmulatedMediaState?.forcedColors
-          ) {
-            return normalized.includes(globalState.__roxyEmulatedMediaState.forcedColors);
+          if (normalized.startsWith("(forced-colors:") && hasOverride("forcedColors")) {
+            return featureValue() === String(emulated.forcedColors);
           }
           return original.matches;
         })();

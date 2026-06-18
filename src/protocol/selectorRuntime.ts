@@ -593,6 +593,30 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
     throw new Error("Node does not expose innerHTML.");
   };
+  const createDOMEvent = (type: string, eventInit: any): Event => {
+    const baseInit = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      ...(eventInit && typeof eventInit === "object" ? eventInit : {})
+    };
+    if (type.startsWith("mouse") || type === "click" || type === "dblclick" || type === "contextmenu") {
+      return new MouseEvent(type, baseInit);
+    }
+    if (type === "wheel") {
+      return new WheelEvent(type, baseInit);
+    }
+    if (type.startsWith("drag") || type === "drop") {
+      return new DragEvent(type, baseInit);
+    }
+    if (type.startsWith("key")) {
+      return new KeyboardEvent(type, baseInit);
+    }
+    if (type === "input") {
+      return new InputEvent(type, baseInit);
+    }
+    return new Event(type, baseInit);
+  };
 
   const formatElementForStrictViolation = (element: Element): string => {
     const tag = element.tagName.toLowerCase();
@@ -775,11 +799,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           throw new Error(payload.missingMessage ?? "No element found.");
         }
         const eventInit = reviveArgument(payload.arg);
-        const event = new Event(String(payload.name ?? "event"), {
-          bubbles: true,
-          cancelable: true,
-          ...(eventInit && typeof eventInit === "object" ? eventInit as EventInit : {})
-        });
+        const event = createDOMEvent(String(payload.name ?? "event"), eventInit);
         firstElement.dispatchEvent(event);
         return undefined;
       }

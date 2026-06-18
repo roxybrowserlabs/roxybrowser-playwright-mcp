@@ -22,9 +22,9 @@ describe("page basic contract e2e", () => {
       await page.goto(fixture.server.EMPTY_PAGE + "#hash");
       expect(await page.url()).toBe(fixture.server.EMPTY_PAGE + "#hash");
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         window.location.hash = "dynamic";
-      }`);
+      });
 
       expect(await page.url()).toBe(fixture.server.EMPTY_PAGE + "#dynamic");
     });
@@ -40,15 +40,15 @@ describe("page basic contract e2e", () => {
   it("emits close on popups closed via window.close()", async () => {
     await withPage(async (page) => {
       const popupPromise = page.waitForEvent("popup");
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         window.__newPage = window.open("about:blank");
-      }`);
+      });
       const popup = await popupPromise;
 
       const closePromise = popup.waitForEvent("close");
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         window.__newPage.close();
-      }`);
+      });
 
       await expect(closePromise).resolves.toBe(popup);
     });
@@ -56,7 +56,7 @@ describe("page basic contract e2e", () => {
 
   it("has navigator.webdriver set to true", async () => {
     await withPage(async (page) => {
-      expect(await page.evaluate(`() => navigator.webdriver`)).toBe(true);
+      expect(await page.evaluate(() => navigator.webdriver)).toBe(true);
     });
   });
 });
