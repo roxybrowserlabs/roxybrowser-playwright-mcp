@@ -553,7 +553,12 @@ function isAdapterBackedPageEvent(event: PageEventName): event is Extract<PageEv
   return event !== "popup" && event !== "filechooser";
 }
 
-function installFileChooserBridgeRuntime() {
+function installFileChooserBridgeRuntime(frameId?: string | null) {
+  if (frameId !== undefined) {
+    (globalThis as typeof globalThis & {
+      __roxyFileChooserFrameId?: string | null;
+    }).__roxyFileChooserFrameId = frameId;
+  }
   const resolveBridgeScope = (): (typeof globalThis & Record<string, unknown>) => {
     try {
       return (globalThis.top ?? globalThis) as typeof globalThis & Record<string, unknown>;
@@ -583,9 +588,13 @@ function installFileChooserBridgeRuntime() {
     }
     const handleId = `handle:${++bridgeScope.__roxyNextHandleId!}`;
     bridgeScope.__roxyHandleStore![handleId] = element;
+    const frameId = (globalThis as typeof globalThis & {
+      __roxyFileChooserFrameId?: string | null;
+    }).__roxyFileChooserFrameId
+      ?? (globalThis.frameElement as Element | null)?.getAttribute("data-roxy-frame-id")
+      ?? null;
     return {
-      frameId:
-        (globalThis.frameElement as Element | null)?.getAttribute("data-roxy-frame-id") ?? null,
+      frameId,
       handleId
     };
   };
@@ -2551,8 +2560,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async click(selector: string, options?: ClickOptions): Promise<void> {
-    await this.waitForFileChooserInterceptionIfPending();
-    await (await this.requiredElementHandleForSelector(selector, "page.click", options)).click(options);
+    await this.mainFrame().click(selector, options);
   }
 
   async hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
@@ -4463,7 +4471,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.refreshFrameSnapshots().catch(() => {});
     const calls: ExposedBindingCall[] = [];
     const drain = async (targetFrame: RoxyFrame | null): Promise<void> => {
-      const pending = await (targetFrame ? targetFrame.evaluate : this.evaluate).call(targetFrame ?? this, () => {
+      const drainPendingCalls = () => {
         const store = (globalThis as typeof globalThis & {
           __roxyBindingCalls?: Array<{
             id: string;
@@ -4475,7 +4483,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         const pending = [...(store.__roxyBindingCalls ?? [])];
         store.__roxyBindingCalls = [];
         return pending;
-      }) as Array<{ id: string; name: string; serializedArgs: SerializedValue[]; frameId: string | null }>;
+      };
+      const pending = (targetFrame
+        ? await this.evaluateInFrame(targetFrame.snapshotState(), drainPendingCalls)
+        : await this.evaluate(drainPendingCalls)) as Array<{
+          id: string;
+          name: string;
+          serializedArgs: SerializedValue[];
+          frameId: string | null;
+        }>;
       for (const call of pending) {
         calls.push({
           ...call,
@@ -4549,20 +4565,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           };
         }
   ): Promise<void> {
-    const evaluate = targetFrame ? targetFrame.evaluate.bind(targetFrame) : this.evaluate.bind(this);
-    await evaluate(
-      ({ callId, payload }) => {
-        const store = (globalThis as typeof globalThis & {
-          __roxyBindingResults?: Record<string, unknown>;
-        });
-        store.__roxyBindingResults ??= {};
-        store.__roxyBindingResults[callId] = payload;
-      },
-      {
+    const resolveCall = ({ callId, payload }: {
+      callId: string;
+      payload: typeof result;
+    }) => {
+      const store = (globalThis as typeof globalThis & {
+        __roxyBindingResults?: Record<string, unknown>;
+      });
+      store.__roxyBindingResults ??= {};
+      store.__roxyBindingResults[callId] = payload;
+    };
+    const payload = {
         callId: id,
         payload: result
-      }
-    );
+    };
+    if (targetFrame) {
+      await this.evaluateInFrame(targetFrame.snapshotState(), resolveCall, payload);
+    } else {
+      await this.evaluate(resolveCall, payload);
+    }
   }
 
   private async reinstallExposedBindings(): Promise<void> {
@@ -4595,12 +4616,21 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private async installFileChooserRuntimeIntoCurrentFrames(): Promise<void> {
     await this.refreshFrameSnapshots().catch(() => {});
-    await this.adapter.evaluate<void>(serializePageFunction(installFileChooserBridgeRuntime)).catch(() => {});
+    await this.adapter.evaluate<void>(
+      installFileChooserBridgeRuntime.toString(),
+      null,
+      true
+    ).catch(() => {});
     for (const frame of this.frames()) {
       if (frame === this.mainFrame()) {
         continue;
       }
-      await this.evaluateInFrame((frame as RoxyFrame).snapshotState(), installFileChooserBridgeRuntime).catch(
+      const frameSnapshot = (frame as RoxyFrame).snapshotState();
+      await this.evaluateInFrame<void, string | null>(
+        frameSnapshot,
+        installFileChooserBridgeRuntime,
+        frameSnapshot.id
+      ).catch(
         () => {}
       );
     }
@@ -4636,14 +4666,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return;
     }
 
-    const frame = payload.frameId ? this.frameById(payload.frameId) : null;
+    const frameSnapshot = payload.frameId
+      ? (this.frameById(payload.frameId) as RoxyFrame | null)?.snapshotState()
+      : null;
     const element = this.createElementHandle(
       this.adapter.createHandle({
         chain: [],
-        ...(frame
+        ...(frameSnapshot?.nativeFrameId
+          ? { protocolFrameId: frameSnapshot.nativeFrameId }
+          : frameSnapshot
           ? {
               scope: {
-                chain: frame.snapshotState().ownerElementChain,
+                chain: frameSnapshot.ownerElementChain,
                 pick: { kind: "first" as const }
               }
             }
@@ -4926,8 +4960,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.refreshFrameSnapshots().catch(() => {});
     await Promise.all(
       this.frames()
-        .filter((frame) => frame !== this.mainFrame())
-        .map((frame) => frame.evaluate(install, name).catch(() => {}))
+        .filter((frame): frame is RoxyFrame => frame instanceof RoxyFrame && frame !== this.mainFrame())
+        .map((frame) => this.evaluateInFrame(frame.snapshotState(), install, name).catch(() => {}))
     );
   }
 

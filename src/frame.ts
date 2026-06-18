@@ -312,6 +312,7 @@ export class RoxyFrame implements Frame {
     pageFunction: string | ElementCallback<TResult, TArg>,
     arg?: TArg
   ): Promise<TResult> {
+    await this.roxyPage.prepareForPendingFileChooser();
     return this.roxyPage.evalOnSelectorInFrame(
       this.snapshot,
       selector,
@@ -337,6 +338,7 @@ export class RoxyFrame implements Frame {
     pageFunction: string | ElementArrayCallback<TResult, TArg>,
     arg?: TArg
   ): Promise<TResult> {
+    await this.roxyPage.prepareForPendingFileChooser();
     return this.roxyPage.evalOnSelectorAllInFrame(
       this.snapshot,
       selector,
