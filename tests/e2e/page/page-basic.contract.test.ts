@@ -82,6 +82,16 @@ describe("page basic contract e2e", () => {
     });
   });
 
+  it("returns frame title", async () => {
+    fixture.server.setContent("/frame-title.html", "<title>Frame title</title><body>child</body>", "text/html");
+    await withPage(async (page) => {
+      await page.setContent(`<title>Main title</title><iframe src="${fixture.server.PREFIX}/frame-title.html"></iframe>`);
+      const frame = page.frames()[1]!;
+      expect(await page.title()).toBe("Main title");
+      expect(await frame.title()).toBe("Frame title");
+    });
+  });
+
   it("page.title should not throw during navigation", async () => {
     await withPage(async (page) => {
       await page.setContent("<title>hello</title>");

@@ -1060,7 +1060,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async title(): Promise<string> {
-    return this.adapter.title();
+    return this.mainFrame().title();
   }
 
   async content(): Promise<string> {
@@ -3136,6 +3136,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       window.location.href = targetUrl;
     }, url);
     return navigationPromise;
+  }
+
+  async titleInFrame(frame: RoxyFrameSnapshot): Promise<string> {
+    if (frame.parentId === null) {
+      return this.adapter.title();
+    }
+    return this.evaluateInFrame(frame, () => document.title);
   }
 
   async contentInFrame(frame: RoxyFrameSnapshot): Promise<string> {

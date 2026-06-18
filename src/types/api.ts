@@ -1218,6 +1218,7 @@ export interface Frame {
   name(): string;
   goto(url: string, options?: PageGotoOptions): Promise<Response | null>;
   setContent(html: string, options?: PageSetContentOptions): Promise<void>;
+  title(): Promise<string>;
   evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
   evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;

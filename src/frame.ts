@@ -120,6 +120,10 @@ export class RoxyFrame implements Frame {
     await this.roxyPage.setContentInFrame(this.snapshot, html, options);
   }
 
+  async title(): Promise<string> {
+    return this.roxyPage.titleInFrame(this.snapshot);
+  }
+
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   async evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<R> {

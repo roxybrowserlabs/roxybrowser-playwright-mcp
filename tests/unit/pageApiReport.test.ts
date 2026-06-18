@@ -177,7 +177,8 @@ describe("generatePageApiReport", () => {
       "isEnabled",
       "isHidden",
       "isVisible",
-      "textContent"
+      "textContent",
+      "title"
     ]);
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
