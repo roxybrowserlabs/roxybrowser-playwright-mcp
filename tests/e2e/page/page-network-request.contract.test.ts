@@ -378,6 +378,24 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("does not allow accessing frame on popup main request", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<a target=_blank href="${fixture.server.EMPTY_PAGE}">click me</a>`);
+      const requestPromise = page.context().waitForEvent("request");
+      const popupPromise = page.context().waitForEvent("page");
+      const clicked = page.getByText("click me").click();
+      const request = await requestPromise;
+
+      expect(request.isNavigationRequest()).toBe(true);
+      expect(() => request.frame()).toThrow("Frame for this navigation request is not available");
+
+      const response = await request.response();
+      await response!.finished();
+      await popupPromise;
+      await clicked;
+    });
+  });
+
   it("page.reload returns 304 status code using Chromium semantics", async () => {
     await withPage(async (page) => {
       let requestNumber = 0;

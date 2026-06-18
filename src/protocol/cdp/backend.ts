@@ -112,6 +112,7 @@ const CDP_CAPABILITIES: ProtocolCapabilities = {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
+const REQUEST_EXTRA_INFO_FALLBACK_MS = 250;
 let pointerActionQueue = Promise.resolve();
 
 function toPlaywrightResourceType(type?: string): string {
@@ -153,6 +154,10 @@ function toPlaywrightResourceType(type?: string): string {
 
 function isFaviconRequestUrl(url: string): boolean {
   return url.endsWith("/favicon.ico");
+}
+
+function isBufferedNetworkEvent(event: RawPageEventName): event is "request" | "response" | "requestfinished" | "requestfailed" {
+  return event === "request" || event === "response" || event === "requestfinished" || event === "requestfailed";
 }
 
 const PAGE_PAPER_FORMATS: Record<string, { width: number; height: number }> = {
@@ -838,6 +843,8 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Map<string, ProtocolPageAdapter>();
   private readonly pendingPages = new Map<string, Promise<ProtocolPageAdapter>>();
   private readonly manuallyCreatedTargetIds = new Set<string>();
+  private readonly creatingPageTargetIds = new Set<string>();
+  private pendingManualPageCreations = 0;
   private readonly pageListeners = new Set<
     (
       page: ProtocolPageAdapter,
@@ -859,12 +866,27 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
   async newPage(): Promise<ProtocolPageAdapter> {
     await this.targetDiscoveryReady;
-    const response = await this.state.browserClient.Target.createTarget({
-      url: "about:blank",
-      ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
-    });
+    this.pendingManualPageCreations += 1;
+    let response: { targetId: string };
+    try {
+      response = await this.state.browserClient.Target.createTarget({
+        url: "about:blank",
+        ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
+      });
+    } catch (error) {
+      this.pendingManualPageCreations = Math.max(0, this.pendingManualPageCreations - 1);
+      throw error;
+    }
+    if (!this.creatingPageTargetIds.has(response.targetId)) {
+      this.pendingManualPageCreations = Math.max(0, this.pendingManualPageCreations - 1);
+    }
+    this.creatingPageTargetIds.add(response.targetId);
     this.manuallyCreatedTargetIds.add(response.targetId);
 
+    const autoAttached = this.pendingPages.get(response.targetId);
+    if (autoAttached) {
+      return autoAttached;
+    }
     return this.getOrCreatePage(response.targetId);
   }
 
@@ -919,6 +941,20 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   }
 
   private async initializeTargetDiscovery(): Promise<void> {
+    this.state.browserClient.Target.attachedToTarget?.((event: {
+      sessionId: string;
+      targetInfo: {
+        targetId: string;
+        type: string;
+        browserContextId?: string;
+        openerId?: string;
+        canAccessOpener?: boolean;
+        url?: string;
+      };
+      waitingForDebugger?: boolean;
+    }) => {
+      void this.handleTargetAttached(event);
+    });
     this.state.browserClient.Target.targetCreated?.((event: {
       targetInfo: {
         targetId: string;
@@ -931,6 +967,11 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       void this.handleTargetCreated(event.targetInfo);
     });
 
+    await this.state.browserClient.Target.setAutoAttach?.({
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true
+    }).catch(() => {});
     await this.state.browserClient.Target.setDiscoverTargets?.({
       discover: true
     });
@@ -938,6 +979,68 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       void this.discoverTargets().catch(() => {});
     }, 100);
     await this.discoverTargets();
+  }
+
+  private async handleTargetAttached(event: {
+    sessionId: string;
+    targetInfo: {
+      targetId: string;
+      type: string;
+      browserContextId?: string;
+      openerId?: string;
+      canAccessOpener?: boolean;
+      url?: string;
+    };
+    waitingForDebugger?: boolean;
+  }): Promise<void> {
+    const { targetInfo } = event;
+    if (this.closing) {
+      await this.state.browserClient.Target.detachFromTarget?.({ sessionId: event.sessionId }).catch(() => {});
+      return;
+    }
+    if (targetInfo.type !== "page") {
+      if (!this.matchesBrowserContextTarget(targetInfo)) {
+        await this.state.browserClient.Target.detachFromTarget?.({ sessionId: event.sessionId }).catch(() => {});
+        return;
+      }
+      await sendBrowserCommandInSession(this.state.browserClient, "Runtime.enable", {}, event.sessionId).catch(() => {});
+      await sendBrowserCommandInSession(this.state.browserClient, "Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
+      return;
+    }
+    if (!this.matchesTargetInfo(targetInfo)) {
+      await this.state.browserClient.Target.detachFromTarget?.({ sessionId: event.sessionId }).catch(() => {});
+      return;
+    }
+    if (this.pages.has(targetInfo.targetId) || this.pendingPages.has(targetInfo.targetId)) {
+      await sendBrowserCommandInSession(this.state.browserClient, "Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
+      return;
+    }
+
+    const isPendingManualPage =
+      this.pendingManualPageCreations > 0 &&
+      !targetInfo.openerId &&
+      (!targetInfo.url || targetInfo.url === "about:blank");
+    if (isPendingManualPage) {
+      this.pendingManualPageCreations = Math.max(0, this.pendingManualPageCreations - 1);
+      this.creatingPageTargetIds.add(targetInfo.targetId);
+      this.manuallyCreatedTargetIds.add(targetInfo.targetId);
+    }
+
+    const pagePromise = this.getOrCreatePage(targetInfo.targetId, {
+      client: createSessionTargetClient(this.state.browserClient, event.sessionId),
+      fallbackUrl: targetInfo.url ?? "about:blank",
+      hasWindowOpener: targetInfo.canAccessOpener ?? true,
+      openerTargetId: targetInfo.openerId ?? null,
+      emitPage: !this.manuallyCreatedTargetIds.has(targetInfo.targetId),
+      sessionId: event.sessionId
+    });
+    this.pendingPages.set(targetInfo.targetId, pagePromise);
+    void pagePromise.catch(() => {});
+    void pagePromise.finally(() => {
+      if (this.pendingPages.get(targetInfo.targetId) === pagePromise) {
+        this.pendingPages.delete(targetInfo.targetId);
+      }
+    });
   }
 
   private async discoverTargets(): Promise<void> {
@@ -1020,13 +1123,24 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     return !this.browserContextId && !targetInfo.browserContextId;
   }
 
+  private matchesBrowserContextTarget(targetInfo: {
+    browserContextId?: string;
+  }): boolean {
+    if (targetInfo.browserContextId === this.browserContextId) {
+      return true;
+    }
+    return !this.browserContextId && !targetInfo.browserContextId;
+  }
+
   private async getOrCreatePage(
     targetId: string,
     options: {
+      client?: CdpClient;
       fallbackUrl?: string;
       openerTargetId?: string | null;
       hasWindowOpener?: boolean;
       emitPage?: boolean;
+      sessionId?: string;
     } = {}
   ): Promise<ProtocolPageAdapter> {
     const existing = this.pages.get(targetId);
@@ -1042,32 +1156,42 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     const pagePromise = (async () => {
       let page: ProtocolPageAdapter;
       try {
-        const client = await connectToTarget(this.state.connection, targetId);
+        const client = options.client ?? await connectToTarget(this.state.connection, targetId);
         page = await CdpPageAdapter.create({
           browserClient: this.state.browserClient,
           client,
           targetId,
           contextOptions: this.options,
+          initialNavigationFrameUnavailable: Boolean(options.openerTargetId),
+          ...(options.sessionId
+            ? {
+                resumeOnInitialized: async () => {
+                  await sendBrowserCommandInSession(this.state.browserClient, "Runtime.runIfWaitingForDebugger", {}, options.sessionId!).catch(() => {});
+                }
+              }
+            : {}),
           onClosed: (closedTargetId) => {
             this.pages.delete(closedTargetId);
             this.pendingPages.delete(closedTargetId);
             this.manuallyCreatedTargetIds.delete(closedTargetId);
+            this.creatingPageTargetIds.delete(closedTargetId);
           }
         });
       } catch (error) {
-        if (!options.emitPage) {
+        if (!options.emitPage || options.client) {
           throw error;
         }
         page = createTransientClosedPageAdapter(options.fallbackUrl ?? "about:blank");
       }
       this.pages.set(targetId, page);
 
-      if (options.emitPage) {
+      if (options.emitPage && !this.creatingPageTargetIds.has(targetId)) {
         const opener = options.openerTargetId
           ? await this.resolveKnownPage(options.openerTargetId)
           : null;
         await this.emitPage(page, opener, options.hasWindowOpener ?? true);
       }
+      this.creatingPageTargetIds.delete(targetId);
 
       return page;
     })();
@@ -1292,6 +1416,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly screencastOverlays = new Map<string, CdpScreencastOverlayState>();
   private readonly stateWaiters = new Set<StateWaiter>();
   private readonly eventListeners = new Map<RawPageEventName, Set<RawPageEventListener<RawPageEventName>>>();
+  private readonly earlyNetworkEvents = new Map<
+    "request" | "response" | "requestfinished" | "requestfailed",
+    Array<RawPageEventMap["request"] | RawPageEventMap["response"] | RawPageEventMap["requestfailed"]>
+  >();
   private readonly requestMetadata = new Map<
     string,
     {
@@ -1355,6 +1483,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client: CdpClient;
     targetId: string;
     contextOptions: BrowserContextOptions;
+    initialNavigationFrameUnavailable?: boolean;
+    resumeOnInitialized?: () => Promise<void>;
     onClosed: (targetId: string) => void;
   }): Promise<CdpPageAdapter> {
     const page = new CdpPageAdapter(options);
@@ -1368,6 +1498,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       client: CdpClient;
       targetId: string;
       contextOptions: BrowserContextOptions;
+      initialNavigationFrameUnavailable?: boolean;
+      resumeOnInitialized?: () => Promise<void>;
       onClosed: (targetId: string) => void;
     }
   ) {
@@ -1385,18 +1517,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private async initialize(): Promise<void> {
     const { client } = this.options;
-    await Promise.all([
-      client.Page.enable(),
-      client.Page.setLifecycleEventsEnabled({ enabled: true }).catch(() => {}),
-      client.Runtime.enable(),
-      client.DOM.enable({}),
-      client.Network.enable({}),
-      client.Target?.setAutoAttach?.({
-        autoAttach: true,
-        waitForDebuggerOnStart: false,
-        flatten: true
-      }).catch(() => {})
-    ]);
+    const initializeCommand = async (command: Promise<unknown> | undefined) => {
+      if (!command) {
+        return;
+      }
+      await command;
+    };
 
     client.Page.domContentEventFired(() => {
       this.domContentLoaded = true;
@@ -1482,6 +1608,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       };
     }) => {
       if (event.targetInfo.type !== "iframe") {
+        const sessionClient = this.options.client as typeof this.options.client & {
+          send(method: string, params?: Record<string, never>, sessionId?: string): Promise<unknown>;
+        };
+        void sessionClient.send("Runtime.enable", {}, event.sessionId).catch(() => {});
+        void sessionClient.send("Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
         return;
       }
       this.nativeFrames.set(event.targetInfo.targetId, {
@@ -1654,13 +1785,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.activeRequests += 1;
       this.networkIdleReached = false;
       this.clearNetworkIdleTimer();
+      const frameId =
+        this.options.initialNavigationFrameUnavailable && isNavigationRequest
+          ? undefined
+          : requestEvent.frameId;
       this.requestMetadata.set(event.requestId, {
         ...(isFavicon ? { isFavicon: true } : {}),
         isNavigationRequest,
         method: event.request.method,
         url: event.request.url,
         ...(isPreflightRequest ? { isPreflight: true } : {}),
-        ...(requestEvent.frameId ? { frameId: requestEvent.frameId } : {}),
+        ...(frameId ? { frameId } : {}),
         ...(requestEvent.type ? { type: requestEvent.type } : {})
       });
       if (isPreflightRequest) {
@@ -1671,7 +1806,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
       this.queueRequestEvent(event.requestId, {
         headers: requestHeaders,
-        ...(requestEvent.frameId ? { frameId: requestEvent.frameId } : {}),
+        ...(frameId ? { frameId } : {}),
         isNavigationRequest,
         method: event.request.method,
         ...(event.request.postData !== undefined ? { postData: event.request.postData } : {}),
@@ -1896,6 +2031,24 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
     });
 
+    await Promise.all([
+      initializeCommand(client.Page.enable()),
+      initializeCommand(client.Page.getFrameTree?.().then((response) => {
+        this.syncNativeFrameTree(response.frameTree);
+        this.mainFrameId = response.frameTree.frame.id;
+        this.currentUrl = response.frameTree.frame.url ?? this.currentUrl;
+      }).catch(() => {})),
+      initializeCommand(client.Page.setLifecycleEventsEnabled({ enabled: true }).catch(() => {})),
+      initializeCommand(client.Runtime.enable()),
+      initializeCommand(client.DOM.enable({})),
+      initializeCommand(client.Network.enable({})),
+      initializeCommand(client.Target?.setAutoAttach?.({
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true
+      }).catch(() => {})),
+      initializeCommand(this.options.resumeOnInitialized?.())
+    ]);
     await this.applyContextOptions();
     await this.syncLifecycleStateFromDocument();
     this.maybeArmNetworkIdleTimer();
@@ -2807,6 +2960,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.eventListeners.get(event) ?? new Set<RawPageEventListener<RawPageEventName>>();
     listeners.add(listener as RawPageEventListener<RawPageEventName>);
     this.eventListeners.set(event, listeners);
+    this.replayEarlyNetworkEvents(event, listener);
 
     return () => {
       const registeredListeners = this.eventListeners.get(event);
@@ -5008,7 +5162,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     queued.fallbackTimer = setTimeout(() => {
       delete queued.fallbackTimer;
       this.flushPendingRequestEvent(requestId);
-    }, 50);
+    }, REQUEST_EXTRA_INFO_FALLBACK_MS);
     pending.push(queued);
     this.pendingRequestEvents.set(requestId, pending);
   }
@@ -5721,6 +5875,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private emit<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void {
     const listeners = this.eventListeners.get(event);
     if (!listeners) {
+      this.bufferEarlyNetworkEvent(event, payload);
       return;
     }
 
@@ -5731,6 +5886,31 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
 
       (listener as (eventPayload: RawPageEventMap[K]) => void)(payload);
+    }
+  }
+
+  private bufferEarlyNetworkEvent<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void {
+    if (!isBufferedNetworkEvent(event) || payload === undefined) {
+      return;
+    }
+    const events = this.earlyNetworkEvents.get(event) ?? [];
+    events.push(payload as RawPageEventMap["request"] | RawPageEventMap["response"] | RawPageEventMap["requestfailed"]);
+    if (events.length > 100) {
+      events.shift();
+    }
+    this.earlyNetworkEvents.set(event, events);
+  }
+
+  private replayEarlyNetworkEvents<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): void {
+    if (!isBufferedNetworkEvent(event)) {
+      return;
+    }
+    const events = this.earlyNetworkEvents.get(event);
+    if (!events?.length) {
+      return;
+    }
+    for (const payload of events) {
+      (listener as (eventPayload: typeof payload) => void)(payload);
     }
   }
 }
@@ -6415,6 +6595,126 @@ async function connectToTarget(
     port: connection.port,
     target: targetId
   });
+}
+
+function createSessionTargetClient(browserClient: CdpClient, sessionId: string): CdpClient {
+  const browserEventClient = browserClient as CdpClient & {
+    once(event: string, listener: (...args: unknown[]) => void): CdpClient;
+    removeListener(event: string, listener: (...args: unknown[]) => void): CdpClient;
+  };
+  const sessionClient = Object.create(browserClient) as CdpClient & {
+    close(): Promise<void>;
+    on(event: string, listener: (...args: unknown[]) => void): CdpClient;
+    once(event: string, listener: (...args: unknown[]) => void): CdpClient;
+    removeListener(event: string, listener: (...args: unknown[]) => void): CdpClient;
+  };
+  const browserEventName = (event: string) => {
+    if (!event.includes(".") || event === "disconnect" || event === "ready" || event === "error" || event === "connect") {
+      return event;
+    }
+    return event.endsWith(`.${sessionId}`) ? event : `${event}.${sessionId}`;
+  };
+
+  sessionClient.send = ((method: string, params?: Record<string, unknown>, explicitSessionId?: string) =>
+    sendBrowserCommandInSession(browserClient, method, params ?? {}, explicitSessionId ?? sessionId)) as CdpClient["send"];
+  sessionClient.close = async () => {
+    await browserClient.Target.detachFromTarget?.({ sessionId }).catch(() => {});
+  };
+  sessionClient.on = ((event: string, listener: (...args: unknown[]) => void) =>
+    browserClient.on(browserEventName(event), listener)) as typeof sessionClient.on;
+  sessionClient.once = ((event: string, listener: (...args: unknown[]) => void) =>
+    browserEventClient.once(browserEventName(event), listener)) as typeof sessionClient.once;
+  sessionClient.removeListener = ((event: string, listener: (...args: unknown[]) => void) =>
+    browserEventClient.removeListener(browserEventName(event), listener)) as typeof sessionClient.removeListener;
+
+  for (const domain of Object.keys(browserClient)) {
+    const originalDomain = (browserClient as Record<string, unknown>)[domain];
+    if (!originalDomain || typeof originalDomain !== "object") {
+      continue;
+    }
+    (sessionClient as Record<string, unknown>)[domain] = createSessionDomainProxy(browserClient, domain, originalDomain, sessionId);
+  }
+
+  return sessionClient as CdpClient;
+}
+
+function createSessionDomainProxy(
+  browserClient: CdpClient,
+  domainName: string,
+  originalDomain: object,
+  sessionId: string
+): object {
+  const domain = Object.create(originalDomain) as Record<string, unknown>;
+  for (const property of Object.keys(originalDomain)) {
+    const originalValue = (originalDomain as Record<string, unknown>)[property];
+    if (typeof originalValue !== "function") {
+      domain[property] = originalValue;
+      continue;
+    }
+    const metadata = originalValue as { category?: string };
+    if (metadata.category === "command") {
+      domain[property] = ((params?: Record<string, unknown>, explicitSessionId?: string, callback?: unknown) =>
+        (originalValue as (...args: unknown[]) => unknown)(
+          params,
+          typeof explicitSessionId === "string" ? explicitSessionId : sessionId,
+          typeof explicitSessionId === "function" ? explicitSessionId : callback
+        )) as typeof originalValue;
+      continue;
+    }
+    if (metadata.category === "event") {
+      domain[property] = ((explicitSessionIdOrHandler?: string | ((...args: unknown[]) => void), handler?: (...args: unknown[]) => void) =>
+        typeof explicitSessionIdOrHandler === "function"
+          ? (originalValue as (...args: unknown[]) => unknown)(sessionId, explicitSessionIdOrHandler)
+          : (originalValue as (...args: unknown[]) => unknown)(explicitSessionIdOrHandler ?? sessionId, handler)) as typeof originalValue;
+      continue;
+    }
+    if (property === "on") {
+      domain[property] = ((eventName: string, handler: (...args: unknown[]) => void) =>
+        (originalValue as (...args: unknown[]) => unknown)(eventName, sessionId, handler)) as typeof originalValue;
+      continue;
+    }
+    domain[property] = originalValue.bind(originalDomain);
+  }
+  for (const property of Object.keys(browserClient)) {
+    if (!property.startsWith(`${domainName}.`)) {
+      continue;
+    }
+    const originalValue = (browserClient as Record<string, unknown>)[property];
+    if (typeof originalValue !== "function") {
+      continue;
+    }
+    const shortName = property.slice(domainName.length + 1);
+    if (shortName in domain) {
+      continue;
+    }
+    const metadata = originalValue as { category?: string };
+    if (metadata.category === "command") {
+      domain[shortName] = ((params?: Record<string, unknown>, explicitSessionId?: string, callback?: unknown) =>
+        (originalValue as (...args: unknown[]) => unknown)(
+          params,
+          typeof explicitSessionId === "string" ? explicitSessionId : sessionId,
+          typeof explicitSessionId === "function" ? explicitSessionId : callback
+        )) as typeof originalValue;
+    } else if (metadata.category === "event") {
+      domain[shortName] = ((explicitSessionIdOrHandler?: string | ((...args: unknown[]) => void), handler?: (...args: unknown[]) => void) =>
+        typeof explicitSessionIdOrHandler === "function"
+          ? (originalValue as (...args: unknown[]) => unknown)(sessionId, explicitSessionIdOrHandler)
+          : (originalValue as (...args: unknown[]) => unknown)(explicitSessionIdOrHandler ?? sessionId, handler)) as typeof originalValue;
+    }
+  }
+  return domain;
+}
+
+function sendBrowserCommandInSession(
+  browserClient: CdpClient,
+  method: string,
+  params: Record<string, unknown>,
+  sessionId: string
+): Promise<unknown> {
+  const client = browserClient as CdpClient & {
+    send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<unknown>;
+  };
+  return client.send(method, params, sessionId);
 }
 
 async function resolveConnectionDetails(
