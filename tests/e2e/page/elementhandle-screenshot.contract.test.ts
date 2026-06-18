@@ -83,4 +83,28 @@ describe("elementHandle screenshot contract e2e", () => {
       await rm(directory, { force: true, recursive: true });
     }
   });
+
+  it("should timeout waiting for visible", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<div style="width: 50px; height: 0"></div>');
+      const div = await page.$("div");
+
+      const error = await div!.screenshot({ timeout: 300 }).catch((caught: Error) => caught);
+
+      expect(error.message).toContain("elementHandle.screenshot: Timeout 300ms exceeded");
+      expect(error.message).toContain("element is not visible");
+    });
+  });
+
+  it("should take screenshot of disabled button", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 500, height: 500 });
+      await page.setContent("<button disabled>Click me</button>");
+      const button = await page.$("button");
+
+      const screenshot = await button!.screenshot();
+
+      expect(screenshot).toBeInstanceOf(Buffer);
+    });
+  });
 });

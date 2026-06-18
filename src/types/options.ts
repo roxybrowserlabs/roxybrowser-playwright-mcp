@@ -1,3 +1,5 @@
+import type { Locator } from "./api.js";
+
 export type SupportedProtocol = "cdp" | "bidi";
 export type BrowserName = "chromium" | "firefox";
 export type ChromiumChannel =
@@ -274,10 +276,17 @@ export interface GetByTitleOptions extends ExactTextLocatorOptions {}
 export type ScreenshotType = "jpeg" | "png";
 
 export interface ScreenshotOptions {
+  animations?: "disabled" | "allow";
+  caret?: "hide" | "initial";
   clip?: Rect;
   fullPage?: boolean;
+  mask?: Locator[];
+  maskColor?: string;
+  omitBackground?: boolean;
   path?: string;
   quality?: number;
+  scale?: "css" | "device";
+  style?: string;
   timeout?: number;
   type?: ScreenshotType;
 }

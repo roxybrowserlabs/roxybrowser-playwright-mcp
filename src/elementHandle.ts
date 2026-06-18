@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, extname } from "node:path";
+import { dirname } from "node:path";
 import { TimeoutError } from "./errors.js";
 import { assertFillValue } from "./assertions.js";
 import { DefaultHumanController } from "./human/controller.js";
@@ -7,6 +7,7 @@ import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import { RoxyJSHandle, createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
 import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
+import { determineScreenshotType, validateScreenshotOptions } from "./screenshotOptions.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   ProtocolElementHandleAdapter,
@@ -261,7 +262,22 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
-    await this.waitForElementState("visible", options);
+    const screenshotOptions: ScreenshotOptions = { ...options };
+    if (!screenshotOptions.type) {
+      const inferredType = determineScreenshotType(options ?? {});
+      if (inferredType) {
+        screenshotOptions.type = inferredType;
+      }
+    }
+    validateScreenshotOptions(screenshotOptions);
+    try {
+      await this.waitForElementState("visible", options);
+    } catch (error) {
+      if (error instanceof TimeoutError) {
+        throw new TimeoutError(`elementHandle.screenshot: Timeout ${options?.timeout ?? DEFAULT_WAIT_TIMEOUT_MS}ms exceeded\nelement is not visible`);
+      }
+      throw error;
+    }
     await this.scrollIntoViewIfNeeded(options);
     const box = await this.boundingBox();
     if (!box) {
@@ -274,10 +290,9 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
       throw new Error("Node has 0 height.");
     }
     const screenshot = await this.adapter.screenshot({
-      ...options,
+      ...screenshotOptions,
       clip: box,
-      fullPage: false,
-      type: options?.type ?? inferScreenshotType(options?.path)
+      fullPage: false
     });
     if (options?.path) {
       await mkdir(dirname(options.path), { recursive: true });
@@ -516,19 +531,6 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   ): Promise<void> {
     await setInputFilesOnElement(this, files);
   }
-}
-
-function inferScreenshotType(path?: string): "jpeg" | "png" {
-  if (!path) {
-    return "png";
-  }
-
-  const extension = extname(path).toLowerCase();
-  if (extension === ".jpg" || extension === ".jpeg") {
-    return "jpeg";
-  }
-
-  return "png";
 }
 
 export async function normalizeSelectOptionValues(

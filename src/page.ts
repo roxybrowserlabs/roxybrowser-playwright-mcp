@@ -19,6 +19,7 @@ import { RoxyJSHandle, createRemoteJSHandle } from "./jsHandle.js";
 import { createSmartHandle } from "./jsHandle.js";
 import { RoxyLocator } from "./locator.js";
 import { RoxyScreencast } from "./screencast.js";
+import { determineScreenshotType, validateScreenshotOptions } from "./screenshotOptions.js";
 import { isRegExp, isURLPattern, resolveGlobToRegexPattern, type URLMatch, urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
 import { RoxyWorker } from "./worker.js";
@@ -1471,15 +1472,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
-    const screenshotOptions: ScreenshotOptions = options.type
-      ? options
-      : {
-          ...options,
-          type: inferScreenshotType(options.path)
-        };
+    const screenshotOptions: ScreenshotOptions = { ...options };
+    if (!screenshotOptions.type) {
+      const inferredType = determineScreenshotType(options);
+      if (inferredType) {
+        screenshotOptions.type = inferredType;
+      }
+    }
+    validateScreenshotOptions(screenshotOptions);
     const data = await this.adapter.screenshot(screenshotOptions);
 
     if (options.path) {
+      await mkdir(dirname(options.path), { recursive: true });
       await writeFile(options.path, data);
     }
 
@@ -5783,19 +5787,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       target.setAttribute("data-roxy-highlight-target", "true");
     });
   }
-}
-
-function inferScreenshotType(path?: string): ScreenshotType {
-  if (!path) {
-    return "png";
-  }
-
-  const extension = extname(path).toLowerCase();
-  if (extension === ".jpg" || extension === ".jpeg") {
-    return "jpeg";
-  }
-
-  return "png";
 }
 
 function inferMimeType(path: string): string {

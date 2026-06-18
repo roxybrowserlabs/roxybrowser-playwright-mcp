@@ -92,6 +92,69 @@ describe("RoxyPage", () => {
     expect(await readFile(outputPath)).toEqual(Buffer.from("fake-screenshot"));
   });
 
+  it("creates screenshot output subdirectories", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const directory = await mkdtemp(join(tmpdir(), "roxy-page-test-"));
+    const outputPath = join(directory, "these", "are", "directories", "screenshot.png");
+
+    const screenshot = await page.screenshot({ path: outputPath });
+
+    expect(adapter.screenshot).toHaveBeenCalledWith({
+      path: outputPath,
+      type: "png"
+    });
+    expect(screenshot).toEqual(Buffer.from("fake-screenshot"));
+    expect(await readFile(outputPath)).toEqual(Buffer.from("fake-screenshot"));
+  });
+
+  it("throws for unsupported screenshot path mime type", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const error = await page.screenshot({ path: "file.txt" }).catch((caught: Error) => caught);
+
+    expect(error.message).toContain('path: unsupported mime type "text/plain"');
+    expect(adapter.screenshot).not.toHaveBeenCalled();
+  });
+
+  it("throws when png screenshot uses quality", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const error = await page.screenshot({ quality: 10 }).catch((caught: Error) => caught);
+
+    expect(error.message).toContain("options.quality is unsupported for the png");
+    expect(adapter.screenshot).not.toHaveBeenCalled();
+  });
+
   it("delegates pdf generation to the adapter and writes the buffer to disk", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
