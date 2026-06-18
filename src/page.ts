@@ -1015,32 +1015,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
   async addScriptTag(options: AddScriptTagOptions = {}): Promise<ElementHandle<Node>> {
-    if (!options.url && !options.path && !options.content) {
-      throw new Error("Provide an object with a `url`, `path` or `content` property");
-    }
-    const content = options.path
-      ? addSourceUrlToScript(await readFile(options.path, "utf8"), options.path)
-      : options.content;
-    const adapterOptions: AddScriptTagOptions = {
-      ...options,
-      ...(content !== undefined ? { content } : {})
-    };
-    return this.createElementHandle(await this.adapter.addScriptTag(adapterOptions));
+    return this.mainFrame().addScriptTag(options);
   }
 
   async addStyleTag(options?: { content?: string; path?: string; url?: string; }): Promise<ElementHandle>;
   async addStyleTag(options: AddStyleTagOptions = {}): Promise<ElementHandle<Node>> {
-    if (!options.url && !options.path && !options.content) {
-      throw new Error("Provide an object with a `url`, `path` or `content` property");
-    }
-    const content = options.path
-      ? `${await readFile(options.path, "utf8")}/*# sourceURL=${options.path.replace(/\n/g, "")}*/`
-      : options.content;
-    const adapterOptions: AddStyleTagOptions = {
-      ...options,
-      ...(content !== undefined ? { content } : {})
-    };
-    return this.createElementHandle(await this.adapter.addStyleTag(adapterOptions));
+    return this.mainFrame().addStyleTag(options);
   }
 
   async goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
@@ -3176,6 +3156,30 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     );
   }
 
+  async addScriptTagInFrame(
+    frame: RoxyFrameSnapshot,
+    options: AddScriptTagOptions = {}
+  ): Promise<ElementHandle> {
+    const adapterOptions = await this.normalizeScriptTagOptions(options);
+    if (!frame.ownerElementChain.length) {
+      return this.createElementHandle(await this.adapter.addScriptTag(adapterOptions));
+    }
+
+    throw new Error("frame.addScriptTag is not yet implemented for child frames.");
+  }
+
+  async addStyleTagInFrame(
+    frame: RoxyFrameSnapshot,
+    options: AddStyleTagOptions = {}
+  ): Promise<ElementHandle> {
+    const adapterOptions = await this.normalizeStyleTagOptions(options);
+    if (!frame.ownerElementChain.length) {
+      return this.createElementHandle(await this.adapter.addStyleTag(adapterOptions));
+    }
+
+    throw new Error("frame.addStyleTag is not yet implemented for child frames.");
+  }
+
   locatorInFrame(frame: RoxyFrameSnapshot, selector: string): Locator {
     const chain = parseSelectorChain(selector);
     if (frame.nativeFrameId && this.adapter.locatorInFrame) {
@@ -3239,12 +3243,30 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.rootLocatorForFrame(frame).getByTitle(text, options);
   }
 
-  private async resolveAssetContent(
-    options: AddScriptTagOptions | AddStyleTagOptions
-  ): Promise<string | undefined> {
-    if (options.content) return options.content;
-    if (options.path) return readFile(options.path, "utf8");
-    return undefined;
+  private async normalizeScriptTagOptions(options: AddScriptTagOptions): Promise<AddScriptTagOptions> {
+    if (!options.url && !options.path && !options.content) {
+      throw new Error("Provide an object with a `url`, `path` or `content` property");
+    }
+    const content = options.path
+      ? addSourceUrlToScript(await readFile(options.path, "utf8"), options.path)
+      : options.content;
+    return {
+      ...options,
+      ...(content !== undefined ? { content } : {})
+    };
+  }
+
+  private async normalizeStyleTagOptions(options: AddStyleTagOptions): Promise<AddStyleTagOptions> {
+    if (!options.url && !options.path && !options.content) {
+      throw new Error("Provide an object with a `url`, `path` or `content` property");
+    }
+    const content = options.path
+      ? `${await readFile(options.path, "utf8")}/*# sourceURL=${options.path.replace(/\n/g, "")}*/`
+      : options.content;
+    return {
+      ...options,
+      ...(content !== undefined ? { content } : {})
+    };
   }
 
   private matchesURL(

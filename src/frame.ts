@@ -19,6 +19,8 @@ import type {
   ClickOptions,
   DispatchEventOptions,
   FillOptions,
+  AddScriptTagOptions,
+  AddStyleTagOptions,
   HoverOptions,
   LoadState,
   PageGotoOptions,
@@ -394,6 +396,14 @@ export class RoxyFrame implements Frame {
         : "";
       return doctype + document.documentElement.outerHTML;
     });
+  }
+
+  async addScriptTag(options: AddScriptTagOptions = {}): Promise<ElementHandle> {
+    return this.roxyPage.addScriptTagInFrame(this.snapshot, options);
+  }
+
+  async addStyleTag(options: AddStyleTagOptions = {}): Promise<ElementHandle> {
+    return this.roxyPage.addStyleTagInFrame(this.snapshot, options);
   }
 
   async textContent(selector: string, options?: SelectorStrictOptions): Promise<string | null> {

@@ -1264,6 +1264,8 @@ export interface Frame {
   getByRole(role: string, options?: GetByRoleOptions): Locator;
   getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator;
   content(): Promise<string>;
+  addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
+  addStyleTag(options?: { content?: string; path?: string; url?: string; }): Promise<ElementHandle>;
   dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
   textContent(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
   innerText(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;

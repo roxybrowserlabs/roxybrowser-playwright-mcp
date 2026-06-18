@@ -185,6 +185,8 @@ describe("generatePageApiReport", () => {
 
   it("matches upstream Playwright Frame selector query and state signatures", () => {
     const report = generateApiMethodSignatureReport("Frame", [
+      "addScriptTag",
+      "addStyleTag",
       "focus",
       "getAttribute",
       "innerHTML",
