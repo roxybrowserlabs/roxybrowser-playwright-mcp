@@ -685,6 +685,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       cookies: [],
       origins: []
     }),
+    on: () => this.detachedContextFallback,
+    once: () => this.detachedContextFallback,
+    addListener: () => this.detachedContextFallback,
+    removeListener: () => this.detachedContextFallback,
+    off: () => this.detachedContextFallback,
+    waitForEvent: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
     close: async () => {}
   };
 

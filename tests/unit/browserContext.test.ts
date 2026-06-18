@@ -71,6 +71,32 @@ describe("RoxyBrowserContext", () => {
     expect(await popup.opener()).toBe(opener);
   });
 
+  it("emits page events for discovered pages like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const openerAdapter = createPageAdapterStub();
+    const popupAdapter = createPageAdapterStub();
+    adapter.newPage = async () => openerAdapter;
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await context.newPage();
+    const popupPromise = context.waitForEvent("page");
+
+    await adapter.emitPage(popupAdapter, openerAdapter);
+
+    const popup = await popupPromise;
+    expect(popup).toBeInstanceOf(RoxyPage);
+    expect(popup.context()).toBe(context);
+  });
+
   it("closes via the context adapter", async () => {
     const adapter = createBrowserContextAdapterStub();
     const context = new RoxyBrowserContext(adapter, {

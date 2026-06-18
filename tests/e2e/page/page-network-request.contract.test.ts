@@ -57,6 +57,18 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("bubbles request events to browser context like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const requestPromise = page.context().waitForEvent("request", (request) =>
+        request.url().endsWith("/digits/1.png")
+      );
+      await page.evaluate(() => fetch("/digits/1.png"));
+      const request = await requestPromise;
+      expect(request.frame()).toBe(page.mainFrame());
+    });
+  });
+
   it("works for a redirect", async () => {
     await withPage(async (page) => {
       fixture.server.setRedirect("/foo.html", "/empty.html");

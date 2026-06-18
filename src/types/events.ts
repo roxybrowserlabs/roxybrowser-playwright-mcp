@@ -1,4 +1,4 @@
-import type { Dialog, FileChooser, Frame, JSHandle, Page, Request, Response, Worker } from "./api.js";
+import type { BrowserContext, Dialog, FileChooser, Frame, JSHandle, Page, Request, Response, Worker } from "./api.js";
 import type { Header } from "./options.js";
 
 export interface PageRequest {
@@ -133,8 +133,20 @@ export interface PageEventMap {
   worker: Worker;
 }
 
+export interface BrowserContextEventMap {
+  close: BrowserContext;
+  console: PageConsoleMessage;
+  dialog: Dialog;
+  page: Page;
+  request: Request;
+  requestfailed: Request;
+  requestfinished: Request;
+  response: Response;
+}
+
 export type RawPageEventName = keyof RawPageEventMap;
 export type PageEventName = keyof PageEventMap;
+export type BrowserContextEventName = keyof BrowserContextEventMap;
 
 export type RawPageEventListener<K extends RawPageEventName> = RawPageEventMap[K] extends void
   ? () => void
@@ -146,4 +158,12 @@ export type PageEventListener<K extends PageEventName> = PageEventMap[K] extends
 
 export type PageEventPredicate<K extends PageEventName> = (
   payload: PageEventMap[K]
+) => boolean | Promise<boolean>;
+
+export type BrowserContextEventListener<K extends BrowserContextEventName> = (
+  payload: BrowserContextEventMap[K]
+) => void;
+
+export type BrowserContextEventPredicate<K extends BrowserContextEventName> = (
+  payload: BrowserContextEventMap[K]
 ) => boolean | Promise<boolean>;

@@ -39,7 +39,7 @@ import type {
   WaitForSelectorOptions,
   TimeoutOptions
 } from "./options.js";
-import type { PageConsoleMessage, PageErrorEntry } from "./events.js";
+import type { BrowserContextEventListener, BrowserContextEventName, BrowserContextEventPredicate, PageConsoleMessage, PageErrorEntry } from "./events.js";
 import type {
   PageEventListener,
   PageEventMap,
@@ -188,6 +188,20 @@ export interface BrowserContext {
       }>;
     }>;
   }>;
+  on<K extends BrowserContextEventName>(event: K, listener: BrowserContextEventListener<K>): this;
+  once<K extends BrowserContextEventName>(event: K, listener: BrowserContextEventListener<K>): this;
+  addListener<K extends BrowserContextEventName>(event: K, listener: BrowserContextEventListener<K>): this;
+  removeListener<K extends BrowserContextEventName>(event: K, listener: BrowserContextEventListener<K>): this;
+  off<K extends BrowserContextEventName>(event: K, listener: BrowserContextEventListener<K>): this;
+  waitForEvent<K extends BrowserContextEventName>(
+    event: K,
+    optionsOrPredicate?:
+      | BrowserContextEventPredicate<K>
+      | {
+          predicate?: BrowserContextEventPredicate<K>;
+          timeout?: number;
+        }
+  ): Promise<import("./events.js").BrowserContextEventMap[K]>;
   close(): Promise<void>;
 }
 

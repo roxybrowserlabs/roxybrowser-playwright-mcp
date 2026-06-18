@@ -13,8 +13,30 @@ import type {
   ProtocolBrowserContextAdapter,
   ProtocolPageAdapter
 } from "./protocol/adapter.js";
-import type { BrowserContext, Clock, Page } from "./types/api.js";
+import type { BrowserContext, Clock, Dialog, Page, Request, Response } from "./types/api.js";
+import type {
+  BrowserContextEventListener,
+  BrowserContextEventMap,
+  BrowserContextEventName,
+  BrowserContextEventPredicate,
+  PageConsoleMessage
+} from "./types/events.js";
 import type { BrowserContextOptions, RecordVideoOptions } from "./types/options.js";
+
+const DEFAULT_CONTEXT_EVENT_TIMEOUT_MS = 30_000;
+const BUBBLED_PAGE_EVENTS = [
+  "console",
+  "dialog",
+  "request",
+  "requestfailed",
+  "requestfinished",
+  "response"
+] as const;
+
+interface ContextListenerEntry<K extends BrowserContextEventName> {
+  original: BrowserContextEventListener<K>;
+  wrapped: BrowserContextEventListener<K>;
+}
 
 export class RoxyBrowserContext implements BrowserContext {
   private readonly pageSet = new Set<RoxyPage>();
@@ -22,7 +44,10 @@ export class RoxyBrowserContext implements BrowserContext {
   private readonly adapterByPage = new WeakMap<RoxyPage, ProtocolPageAdapter>();
   private readonly pendingPageRegistrations = new Map<ProtocolPageAdapter, Promise<RoxyPage>>();
   private readonly clockDelegate = new RoxyBrowserContextClockDelegate();
+  private readonly listeners = new Map<BrowserContextEventName, Set<ContextListenerEntry<BrowserContextEventName>>>();
+  private readonly pageEventDisposers = new WeakMap<RoxyPage, Array<() => void>>();
   private readonly disposeAdapterPageListener: (() => void) | null;
+  private closed = false;
   private videoOutputDirPromise: Promise<string> | null = null;
   readonly clock: Clock = new RoxyClock(this.clockDelegate);
   readonly request = new RoxyAPIRequestContext();
@@ -52,6 +77,10 @@ export class RoxyBrowserContext implements BrowserContext {
   }
 
   async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
     try {
       this.disposeAdapterPageListener?.();
       await Promise.all(
@@ -62,6 +91,7 @@ export class RoxyBrowserContext implements BrowserContext {
     } finally {
       await this.request.dispose();
       await this.adapter.close();
+      this.emit("close", this);
     }
   }
 
@@ -96,6 +126,13 @@ export class RoxyBrowserContext implements BrowserContext {
 
   detachPage(page: RoxyPage): void {
     this.pageSet.delete(page);
+    const disposers = this.pageEventDisposers.get(page);
+    if (disposers) {
+      for (const dispose of disposers) {
+        dispose();
+      }
+      this.pageEventDisposers.delete(page);
+    }
     const adapter = this.adapterByPage.get(page);
     if (adapter) {
       this.pageByAdapter.delete(adapter);
@@ -105,6 +142,126 @@ export class RoxyBrowserContext implements BrowserContext {
     this.clockDelegate.detachPage(page);
   }
 
+  on<K extends BrowserContextEventName>(
+    event: K,
+    listener: BrowserContextEventListener<K>
+  ): this {
+    return this.addListener(event, listener);
+  }
+
+  once<K extends BrowserContextEventName>(
+    event: K,
+    listener: BrowserContextEventListener<K>
+  ): this {
+    const wrapped = ((payload: BrowserContextEventMap[K]) => {
+      this.removeListener(event, listener);
+      listener(payload);
+    }) as BrowserContextEventListener<K>;
+    const entries = this.ensureListenerSet(event);
+    entries.add({
+      original: listener as BrowserContextEventListener<BrowserContextEventName>,
+      wrapped: wrapped as BrowserContextEventListener<BrowserContextEventName>
+    });
+    return this;
+  }
+
+  addListener<K extends BrowserContextEventName>(
+    event: K,
+    listener: BrowserContextEventListener<K>
+  ): this {
+    const entries = this.ensureListenerSet(event);
+    entries.add({
+      original: listener as BrowserContextEventListener<BrowserContextEventName>,
+      wrapped: listener as BrowserContextEventListener<BrowserContextEventName>
+    });
+    return this;
+  }
+
+  removeListener<K extends BrowserContextEventName>(
+    event: K,
+    listener: BrowserContextEventListener<K>
+  ): this {
+    const entries = this.listeners.get(event);
+    if (!entries) {
+      return this;
+    }
+    for (const entry of Array.from(entries)) {
+      if (entry.original === listener) {
+        entries.delete(entry);
+      }
+    }
+    if (entries.size === 0) {
+      this.listeners.delete(event);
+    }
+    return this;
+  }
+
+  off<K extends BrowserContextEventName>(
+    event: K,
+    listener: BrowserContextEventListener<K>
+  ): this {
+    return this.removeListener(event, listener);
+  }
+
+  async waitForEvent<K extends BrowserContextEventName>(
+    event: K,
+    optionsOrPredicate?:
+      | BrowserContextEventPredicate<K>
+      | {
+          predicate?: BrowserContextEventPredicate<K>;
+          timeout?: number;
+        }
+  ): Promise<BrowserContextEventMap[K]> {
+    const predicate =
+      typeof optionsOrPredicate === "function"
+        ? optionsOrPredicate
+        : optionsOrPredicate?.predicate;
+    const timeout =
+      typeof optionsOrPredicate === "function"
+        ? DEFAULT_CONTEXT_EVENT_TIMEOUT_MS
+        : optionsOrPredicate?.timeout ?? DEFAULT_CONTEXT_EVENT_TIMEOUT_MS;
+
+    return new Promise<BrowserContextEventMap[K]>((resolve, reject) => {
+      const timer =
+        timeout === 0
+          ? null
+          : setTimeout(() => {
+              cleanup();
+              reject(new Error(`Timeout ${timeout}ms exceeded while waiting for event "${String(event)}"`));
+            }, timeout);
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        this.removeListener(event, listener);
+        if (event !== "close") {
+          this.removeListener("close", closeListener as BrowserContextEventListener<"close">);
+        }
+      };
+      const closeListener = (() => {
+        cleanup();
+        reject(new Error("Browser context has been closed."));
+      }) as BrowserContextEventListener<"close">;
+      const listener = (async (payload: BrowserContextEventMap[K]) => {
+        try {
+          if (predicate && !(await predicate(payload))) {
+            return;
+          }
+          cleanup();
+          resolve(payload);
+        } catch (error) {
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      }) as BrowserContextEventListener<K>;
+
+      if (event !== "close") {
+        this.on("close", closeListener);
+      }
+      this.on(event, listener);
+    });
+  }
+
   private async attachDiscoveredPage(
     pageAdapter: ProtocolPageAdapter,
     openerAdapter: ProtocolPageAdapter | null,
@@ -112,6 +269,7 @@ export class RoxyBrowserContext implements BrowserContext {
   ): Promise<void> {
     const page = await this.registerPage(pageAdapter);
     if (!openerAdapter) {
+      this.emit("page", page);
       return;
     }
 
@@ -121,6 +279,7 @@ export class RoxyBrowserContext implements BrowserContext {
     }
 
     page.setOpener(hasWindowOpener ? opener : null);
+    this.emit("page", page);
     opener.emitPopup(page);
   }
 
@@ -149,6 +308,7 @@ export class RoxyBrowserContext implements BrowserContext {
     this.pageSet.add(page);
     this.pageByAdapter.set(pageAdapter, page);
     this.adapterByPage.set(page, pageAdapter);
+    this.attachPageEventBubbling(page);
 
     try {
       await this.clockDelegate.attachPage(page);
@@ -231,5 +391,44 @@ export class RoxyBrowserContext implements BrowserContext {
       width: 800,
       height: 450
     };
+  }
+
+  private ensureListenerSet<K extends BrowserContextEventName>(
+    event: K
+  ): Set<ContextListenerEntry<BrowserContextEventName>> {
+    const existing = this.listeners.get(event);
+    if (existing) {
+      return existing;
+    }
+    const created = new Set<ContextListenerEntry<BrowserContextEventName>>();
+    this.listeners.set(event, created);
+    return created;
+  }
+
+  private emit<K extends BrowserContextEventName>(
+    event: K,
+    payload: BrowserContextEventMap[K]
+  ): boolean {
+    const entries = this.listeners.get(event);
+    if (!entries?.size) {
+      return false;
+    }
+    for (const entry of Array.from(entries)) {
+      const listener = entry.wrapped as BrowserContextEventListener<K>;
+      listener(payload);
+    }
+    return true;
+  }
+
+  private attachPageEventBubbling(page: RoxyPage): void {
+    const disposers: Array<() => void> = [];
+    for (const event of BUBBLED_PAGE_EVENTS) {
+      const listener = ((payload: PageConsoleMessage | Dialog | Request | Response) => {
+        this.emit(event, payload as BrowserContextEventMap[typeof event]);
+      }) as never;
+      page.on(event, listener);
+      disposers.push(() => page.off(event, listener));
+    }
+    this.pageEventDisposers.set(page, disposers);
   }
 }
