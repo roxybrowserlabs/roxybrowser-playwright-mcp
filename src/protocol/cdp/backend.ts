@@ -1319,6 +1319,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       };
     }>
   >();
+  private readonly pendingResponseFallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly responseExtraInfoHeaders = new Map<
     string,
     Array<Array<{ name: string; value: string }>>
@@ -1728,6 +1729,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           }
         });
         this.pendingResponseEvents.set(event.requestId, pending);
+        if (!this.pendingResponseFallbackTimers.has(event.requestId)) {
+          this.pendingResponseFallbackTimers.set(
+            event.requestId,
+            setTimeout(() => {
+              this.pendingResponseFallbackTimers.delete(event.requestId);
+              this.flushPendingResponseEvent(event.requestId);
+            }, 50)
+          );
+        }
         return;
       }
       this.emitResponseReceived(responseEvent);
@@ -1745,6 +1755,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         mapCdpHeaders(event.headers, "\n");
       const pending = this.pendingResponseEvents.get(event.requestId);
       if (pending?.length) {
+        const fallbackTimer = this.pendingResponseFallbackTimers.get(event.requestId);
+        if (fallbackTimer) {
+          clearTimeout(fallbackTimer);
+          this.pendingResponseFallbackTimers.delete(event.requestId);
+        }
         const next = pending.shift()!;
         if (pending.length === 0) {
           this.pendingResponseEvents.delete(event.requestId);
@@ -5281,6 +5296,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     if (!pending?.length) {
       this.responseExtraInfoHeaders.delete(requestId);
       return;
+    }
+    const fallbackTimer = this.pendingResponseFallbackTimers.get(requestId);
+    if (fallbackTimer) {
+      clearTimeout(fallbackTimer);
+      this.pendingResponseFallbackTimers.delete(requestId);
     }
     this.pendingResponseEvents.delete(requestId);
     for (const entry of pending) {

@@ -299,9 +299,9 @@ describe("page network response e2e", () => {
 
       await Promise.all([
         fixture.server.waitForRequest("/existing-response.json"),
-        page.evaluate(`(url) => {
+        page.evaluate((url) => {
           void fetch(url);
-        }`, fixture.server.PREFIX + "/existing-response.json")
+        }, fixture.server.PREFIX + "/existing-response.json")
       ]);
 
       const request = await requestPromise;
@@ -625,9 +625,9 @@ describe("page network response e2e", () => {
 
       await Promise.all([
         fixture.server.waitForRequest("/stream.txt"),
-        page.evaluate(`(url) => {
+        page.evaluate((url) => {
           void fetch(url);
-        }`, fixture.server.PREFIX + "/stream.txt")
+        }, fixture.server.PREFIX + "/stream.txt")
       ]);
 
       const response = await responsePromise;
