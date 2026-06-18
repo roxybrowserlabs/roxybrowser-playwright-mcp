@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { generateApiSurfaceReport, generatePageApiReport } from "../../src/pageApiReport.js";
+import {
+  generateApiMethodSignatureReport,
+  generateApiSurfaceReport,
+  generatePageApiReport
+} from "../../src/pageApiReport.js";
 
 describe("generatePageApiReport", () => {
   it("tracks the upstream Playwright Page gap against our public Page type", () => {
@@ -44,6 +48,21 @@ describe("generatePageApiReport", () => {
       expect(report.missingProperties).toEqual([]);
       expect(report.extraMethods).toEqual([]);
       expect(report.extraProperties).toEqual([]);
+    }
+  );
+
+  it.each(["Page", "Frame", "ElementHandle"])(
+    "matches upstream Playwright selector overload signatures for %s",
+    (interfaceName) => {
+      const report = generateApiMethodSignatureReport(interfaceName, [
+        "$",
+        "$$",
+        "$eval",
+        "$$eval",
+        "waitForSelector"
+      ]);
+
+      expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
     }
   );
 });

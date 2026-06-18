@@ -2,7 +2,7 @@ import { createSmartHandle } from "./jsHandle.js";
 import { serializePageFunction } from "./evaluation.js";
 import { serializeEvaluationArgument } from "./elementHandle.js";
 import { TimeoutError } from "./errors.js";
-import type { PageFunction, SmartHandle, Worker } from "./types/api.js";
+import type { PageFunction, SmartHandle, Unboxed, Worker } from "./types/api.js";
 import type { PageConsoleMessage } from "./types/events.js";
 
 export interface WorkerDelegate {
@@ -30,7 +30,7 @@ export class RoxyWorker implements Worker {
     if (typeof pageFunction === "string") {
       return (0, eval)(pageFunction) as R;
     }
-    return pageFunction(serializeEvaluationArgument(arg) as Arg);
+    return pageFunction(serializeEvaluationArgument(arg) as Unboxed<Arg>);
   }
 
   async evaluateHandle<R, Arg>(
@@ -48,7 +48,7 @@ export class RoxyWorker implements Worker {
     const result =
       typeof pageFunction === "string"
         ? ((0, eval)(serializePageFunction(pageFunction)) as R)
-        : await pageFunction(serializeEvaluationArgument(arg) as Arg);
+        : await pageFunction(serializeEvaluationArgument(arg) as Unboxed<Arg>);
     return createSmartHandle(result);
   }
 

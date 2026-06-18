@@ -6,7 +6,7 @@ import type {
   ProtocolJSHandleAdapter
 } from "./protocol/adapter.js";
 import type { SerializedValue } from "./utilityScriptSerializers.js";
-import type { ElementHandle, JSHandle, PageFunctionOn, SmartHandle } from "./types/api.js";
+import type { ElementHandle, JSHandle, PageFunctionOn, SmartHandle, Unboxed } from "./types/api.js";
 
 function cloneJsonValue<T>(value: T): T {
   if (value === null || value === undefined) {
@@ -60,7 +60,7 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
       return (0, eval)(pageFunction) as R;
     }
 
-    return pageFunction(this.value as O, serializeEvaluationArgument(arg) as Arg);
+    return pageFunction(this.value as O, serializeEvaluationArgument(arg) as Unboxed<Arg>);
   }
 
   async evaluateHandle<R, Arg, O extends T = T>(
@@ -90,7 +90,7 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
     const result =
       typeof pageFunction === "string"
         ? ((0, eval)(serializePageFunction(pageFunction)) as R)
-        : await pageFunction(this.value as O, serializeEvaluationArgument(arg) as Arg);
+        : await pageFunction(this.value as O, serializeEvaluationArgument(arg) as Unboxed<Arg>);
     return createSmartHandle(result);
   }
 

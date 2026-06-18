@@ -11,7 +11,7 @@ import type {
   ProtocolElementHandleReference
 } from "./protocol/adapter.js";
 import { parseSelectorChain } from "./selectors.js";
-import type { ElementHandle, Frame, JSHandle, PageFunctionOn, SmartHandle } from "./types/api.js";
+import type { ElementHandle, ElementHandleForTag, Frame, JSHandle, PageFunctionOn, SmartHandle } from "./types/api.js";
 import type {
   ClickOptions,
   FillOptions,
@@ -58,16 +58,24 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     return this.adapter.ownerFrameId?.() ?? null;
   }
 
+  async $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
+  async $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
   async $(selector: string): Promise<ElementHandle | null> {
     const handle = await this.adapter.query(parseSelectorChain(selector));
     return handle ? new RoxyElementHandle(handle, this.humanDefaults, this.frameResolver) : null;
   }
 
+  async $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
+  async $$(selector: string): Promise<ElementHandle<SVGElement | HTMLElement>[]>;
   async $$(selector: string): Promise<ElementHandle[]> {
     const handles = await this.adapter.queryAll(parseSelectorChain(selector));
     return handles.map((handle) => new RoxyElementHandle(handle, this.humanDefaults, this.frameResolver));
   }
 
+  async $eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], Arg, R>, arg: Arg): Promise<R>;
+  async $eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<R>;
+  async $eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], void, R>, arg?: any): Promise<R>;
+  async $eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, void, R>, arg?: any): Promise<R>;
   async $eval<TResult, TArg = unknown>(
     selector: string,
     pageFunction: string | ((element: unknown, arg: TArg) => TResult | Promise<TResult>),
@@ -82,6 +90,10 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     );
   }
 
+  async $$eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], Arg, R>, arg: Arg): Promise<R>;
+  async $$eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
+  async $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
+  async $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
   async $$eval<TResult, TArg = unknown>(
     selector: string,
     pageFunction: string | ((elements: unknown[], arg: TArg) => TResult | Promise<TResult>),
@@ -190,6 +202,22 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     return new RoxyJSHandle((value as Record<string, unknown>)[propertyName]);
   }
 
+  async waitForSelector<K extends keyof HTMLElementTagNameMap>(
+    selector: K,
+    options?: WaitForSelectorOptions & { state?: "visible" | "attached" }
+  ): Promise<ElementHandleForTag<K>>;
+  async waitForSelector(
+    selector: string,
+    options?: WaitForSelectorOptions & { state?: "visible" | "attached" }
+  ): Promise<ElementHandle<SVGElement | HTMLElement>>;
+  async waitForSelector<K extends keyof HTMLElementTagNameMap>(
+    selector: K,
+    options: WaitForSelectorOptions
+  ): Promise<ElementHandleForTag<K> | null>;
+  async waitForSelector(
+    selector: string,
+    options: WaitForSelectorOptions
+  ): Promise<null | ElementHandle<SVGElement | HTMLElement>>;
   async waitForSelector(
     selector: string,
     options: WaitForSelectorOptions = {}

@@ -6,10 +6,12 @@ import type {
   ElementArrayCallback,
   ElementCallback,
   ElementHandle,
+  ElementHandleForTag,
   Frame,
   FrameLocator,
   Locator,
   PageFunction,
+  PageFunctionOn,
   Response,
   SmartHandle
 } from "./types/api.js";
@@ -212,6 +214,22 @@ export class RoxyFrame implements Frame {
     }
   }
 
+  async waitForSelector<K extends keyof HTMLElementTagNameMap>(
+    selector: K,
+    options?: WaitForSelectorOptions & { state?: "visible" | "attached" }
+  ): Promise<ElementHandleForTag<K>>;
+  async waitForSelector(
+    selector: string,
+    options?: WaitForSelectorOptions & { state?: "visible" | "attached" }
+  ): Promise<ElementHandle<SVGElement | HTMLElement>>;
+  async waitForSelector<K extends keyof HTMLElementTagNameMap>(
+    selector: K,
+    options: WaitForSelectorOptions
+  ): Promise<ElementHandleForTag<K> | null>;
+  async waitForSelector(
+    selector: string,
+    options: WaitForSelectorOptions
+  ): Promise<null | ElementHandle<SVGElement | HTMLElement>>;
   async waitForSelector(
     selector: string,
     options: WaitForSelectorOptions = {}
@@ -243,14 +261,22 @@ export class RoxyFrame implements Frame {
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
 
+  async $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
+  async $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
   async $(selector: string): Promise<ElementHandle | null> {
     return this.roxyPage.queryInFrame(this.snapshot, selector);
   }
 
+  async $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
+  async $$(selector: string): Promise<ElementHandle<SVGElement | HTMLElement>[]>;
   async $$(selector: string): Promise<ElementHandle[]> {
     return this.roxyPage.queryAllInFrame(this.snapshot, selector);
   }
 
+  async $eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], Arg, R>, arg: Arg): Promise<R>;
+  async $eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<R>;
+  async $eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], void, R>, arg?: any): Promise<R>;
+  async $eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, void, R>, arg?: any): Promise<R>;
   async $eval<TResult, TArg = unknown>(
     selector: string,
     pageFunction: string | ElementCallback<TResult, TArg>,
@@ -264,6 +290,10 @@ export class RoxyFrame implements Frame {
     );
   }
 
+  async $$eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], Arg, R>, arg: Arg): Promise<R>;
+  async $$eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
+  async $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
+  async $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
   async $$eval<TResult, TArg = unknown>(
     selector: string,
     pageFunction: string | ElementArrayCallback<TResult, TArg>,

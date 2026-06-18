@@ -5,6 +5,8 @@ export interface ApiSurfaceReport {
   interfaceName: string;
   upstreamMethods: string[];
   currentMethods: string[];
+  upstreamMethodSignatures: Record<string, string[]>;
+  currentMethodSignatures: Record<string, string[]>;
   missingMethods: string[];
   extraMethods: string[];
   upstreamProperties: string[];
@@ -57,6 +59,33 @@ function extractMethods(source: string, interfaceName: string): string[] {
   return [...new Set(methods)];
 }
 
+function normalizeSignature(signature: string): string {
+  return signature.trim().replace(/\s+/g, " ");
+}
+
+function extractMethodSignatures(
+  source: string,
+  interfaceName: string,
+  methodNames?: string[]
+): Record<string, string[]> {
+  const body = extractInterfaceBody(source, interfaceName);
+  const methodNameSet = methodNames ? new Set(methodNames) : null;
+  const signatures: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
+  const declarationPattern = /^\s{2}([\$A-Za-z_][\w$]*)\s*(?:<[^(\n]+>)?\([^;]+;/gm;
+
+  for (const match of body.matchAll(declarationPattern)) {
+    const methodName = match[1];
+    const declaration = match[0];
+    if (!methodName || !declaration || (methodNameSet && !methodNameSet.has(methodName))) {
+      continue;
+    }
+    signatures[methodName] ??= [];
+    signatures[methodName].push(normalizeSignature(declaration));
+  }
+
+  return signatures;
+}
+
 function extractProperties(source: string, interfaceName: string): string[] {
   const body = extractInterfaceBody(source, interfaceName);
   const properties = [...body.matchAll(/^\s{2}(?:readonly\s+)?([\$A-Za-z_][\w$]*)\s*:\s*[^;]+;/gm)]
@@ -81,6 +110,8 @@ export function generateApiSurfaceReport(interfaceName: string, options?: {
 
   const upstreamMethods = extractMethods(upstreamSource, interfaceName);
   const currentMethods = extractMethods(currentSource, interfaceName);
+  const upstreamMethodSignatures = extractMethodSignatures(upstreamSource, interfaceName);
+  const currentMethodSignatures = extractMethodSignatures(currentSource, interfaceName);
   const upstreamProperties = extractProperties(upstreamSource, interfaceName);
   const currentProperties = extractProperties(currentSource, interfaceName);
   const currentMethodSet = new Set(currentMethods);
@@ -92,12 +123,35 @@ export function generateApiSurfaceReport(interfaceName: string, options?: {
     interfaceName,
     upstreamMethods,
     currentMethods,
+    upstreamMethodSignatures,
+    currentMethodSignatures,
     missingMethods: upstreamMethods.filter((method) => !currentMethodSet.has(method)),
     extraMethods: currentMethods.filter((method) => !upstreamMethodSet.has(method)),
     upstreamProperties,
     currentProperties,
     missingProperties: upstreamProperties.filter((property) => !currentPropertySet.has(property)),
     extraProperties: currentProperties.filter((property) => !upstreamPropertySet.has(property))
+  };
+}
+
+export function generateApiMethodSignatureReport(interfaceName: string, methodNames: string[], options?: {
+  repoRoot?: string;
+  upstreamTypesPath?: string;
+  currentTypesPath?: string;
+}): Pick<ApiSurfaceReport, "interfaceName" | "upstreamMethodSignatures" | "currentMethodSignatures"> {
+  const repoRoot = options?.repoRoot ?? resolve(import.meta.dirname, "..");
+  const upstreamTypesPath =
+    options?.upstreamTypesPath ??
+    resolve(repoRoot, "library/playwright/packages/playwright-core/types/types.d.ts");
+  const currentTypesPath = options?.currentTypesPath ?? resolve(repoRoot, "src/types/api.ts");
+
+  const upstreamSource = readFileSync(upstreamTypesPath, "utf8");
+  const currentSource = readFileSync(currentTypesPath, "utf8");
+
+  return {
+    interfaceName,
+    upstreamMethodSignatures: extractMethodSignatures(upstreamSource, interfaceName, methodNames),
+    currentMethodSignatures: extractMethodSignatures(currentSource, interfaceName, methodNames)
   };
 }
 

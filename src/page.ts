@@ -62,6 +62,7 @@ import type {
   ElementCallback,
   Disposable,
   ElementHandle,
+  ElementHandleForTag,
   FileChooser,
   Frame,
   FrameLocator,
@@ -82,6 +83,7 @@ import type {
   Keyboard,
   Mouse,
   PageFunction,
+  PageFunctionOn,
   Screencast,
   SmartHandle,
   Touchscreen,
@@ -1367,6 +1369,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.refreshFrameSnapshots();
   }
 
+  async waitForSelector<K extends keyof HTMLElementTagNameMap>(
+    selector: K,
+    options?: WaitForSelectorOptions & { state?: "visible" | "attached" }
+  ): Promise<ElementHandleForTag<K>>;
+  async waitForSelector(
+    selector: string,
+    options?: WaitForSelectorOptions & { state?: "visible" | "attached" }
+  ): Promise<ElementHandle<SVGElement | HTMLElement>>;
+  async waitForSelector<K extends keyof HTMLElementTagNameMap>(
+    selector: K,
+    options: WaitForSelectorOptions
+  ): Promise<ElementHandleForTag<K> | null>;
+  async waitForSelector(
+    selector: string,
+    options: WaitForSelectorOptions
+  ): Promise<null | ElementHandle<SVGElement | HTMLElement>>;
   async waitForSelector(
     selector: string,
     options: WaitForSelectorOptions = {}
@@ -1971,15 +1989,23 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     });
   }
 
+  async $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
+  async $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
   async $(selector: string, options?: { strict?: boolean }): Promise<ElementHandle | null> {
     return this.elementHandleForSelector(selector, options);
   }
 
+  async $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
+  async $$(selector: string): Promise<ElementHandle<SVGElement | HTMLElement>[]>;
   async $$(selector: string): Promise<ElementHandle[]> {
     const handles = await this.adapter.queryAll(parseSelectorChain(selector));
     return handles.map((handle) => this.createElementHandle(handle));
   }
 
+  async $eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], Arg, R>, arg: Arg): Promise<R>;
+  async $eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<R>;
+  async $eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], void, R>, arg?: any): Promise<R>;
+  async $eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, void, R>, arg?: any): Promise<R>;
   async $eval<TResult, TArg = unknown>(
     selector: string,
     pageFunction: string | ElementCallback<TResult, TArg>,
@@ -1995,6 +2021,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     );
   }
 
+  async $$eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], Arg, R>, arg: Arg): Promise<R>;
+  async $$eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
+  async $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
+  async $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
   async $$eval<TResult, TArg = unknown>(
     selector: string,
     pageFunction: string | ElementArrayCallback<TResult, TArg>,
@@ -2350,12 +2380,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async isHidden(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    const handle = await this.$(selector, options);
+    const handle = await this.$(selector, options?.strict === undefined ? undefined : { strict: options.strict });
     return handle ? handle.isHidden() : true;
   }
 
   async isVisible(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    const handle = await this.$(selector, options);
+    const handle = await this.$(selector, options?.strict === undefined ? undefined : { strict: options.strict });
     return handle ? handle.isVisible() : false;
   }
 

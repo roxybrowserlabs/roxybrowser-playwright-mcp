@@ -54,9 +54,31 @@ export interface Disposable {
   dispose(): Promise<void> | void;
 }
 
-export type PageFunction<Arg, R> = string | ((arg: Arg) => R | Promise<R>);
-export type PageFunctionOn<T, Arg, R> = string | ((value: T, arg: Arg) => R | Promise<R>);
-export type SmartHandle<T> = T extends Node ? ElementHandle<T> : JSHandle<T>;
+export type NoHandles<Arg> = Arg extends JSHandle ? never : (Arg extends object ? { [Key in keyof Arg]: NoHandles<Arg[Key]> } : Arg);
+export type Unboxed<Arg> =
+  Arg extends ElementHandle<infer T> ? T :
+  Arg extends JSHandle<infer T> ? T :
+  Arg extends NoHandles<Arg> ? Arg :
+  Arg extends [infer A0] ? [Unboxed<A0>] :
+  Arg extends [infer A0, infer A1] ? [Unboxed<A0>, Unboxed<A1>] :
+  Arg extends [infer A0, infer A1, infer A2] ? [Unboxed<A0>, Unboxed<A1>, Unboxed<A2>] :
+  Arg extends [infer A0, infer A1, infer A2, infer A3] ? [Unboxed<A0>, Unboxed<A1>, Unboxed<A2>, Unboxed<A3>] :
+  Arg extends Array<infer T> ? Array<Unboxed<T>> :
+  Arg extends object ? { [Key in keyof Arg]: Unboxed<Arg[Key]> } :
+  Arg;
+export type PageFunction<Arg, R> = string | ((arg: Unboxed<Arg>) => R | Promise<R>);
+export type PageFunctionOn<On, Arg2, R> = string | ((on: On, arg2: Unboxed<Arg2>) => R | Promise<R>);
+export type SmartHandle<T> = [T] extends [Node] ? ElementHandle<T> : JSHandle<T>;
+export type ElementHandleForTag<K extends keyof HTMLElementTagNameMap> = ElementHandle<HTMLElementTagNameMap[K]>;
+
+type PageWaitForSelectorOptionsNotHidden = WaitForSelectorOptions & {
+  state?: "visible" | "attached";
+};
+type PageWaitForSelectorOptions = WaitForSelectorOptions;
+type ElementHandleWaitForSelectorOptionsNotHidden = WaitForSelectorOptions & {
+  state?: "visible" | "attached";
+};
+type ElementHandleWaitForSelectorOptions = WaitForSelectorOptions;
 
 export type ElementCallback<TResult, TArg = unknown> = (
   element: unknown,
@@ -746,7 +768,10 @@ export interface Page {
     state?: "load" | "domcontentloaded" | "networkidle",
     options?: { timeout?: number }
   ): Promise<void>;
-  waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<ElementHandle | null>;
+  waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
+  waitForSelector(selector: string, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
+  waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: PageWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;
+  waitForSelector(selector: string, options: PageWaitForSelectorOptions): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
   ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   context(): BrowserContext;
@@ -1047,18 +1072,18 @@ export interface Page {
           timeout?: number;
         }
   ): Promise<Worker>;
-  $(selector: string, options?: { strict?: boolean }): Promise<ElementHandle | null>;
-  $$(selector: string): Promise<ElementHandle[]>;
-  $eval<TResult, TArg = unknown>(
-    selector: string,
-    pageFunction: string | ElementCallback<TResult, TArg>,
-    arg?: TArg
-  ): Promise<TResult>;
-  $$eval<TResult, TArg = unknown>(
-    selector: string,
-    pageFunction: string | ElementArrayCallback<TResult, TArg>,
-    arg?: TArg
-  ): Promise<TResult>;
+  $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
+  $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
+  $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
+  $$(selector: string): Promise<ElementHandle<SVGElement | HTMLElement>[]>;
+  $eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], Arg, R>, arg: Arg): Promise<R>;
+  $eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<R>;
+  $eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], void, R>, arg?: any): Promise<R>;
+  $eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, void, R>, arg?: any): Promise<R>;
+  $$eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], Arg, R>, arg: Arg): Promise<R>;
+  $$eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
+  $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
+  $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
   frameLocator(selector: string): FrameLocator;
   frame(
     frameSelector:
@@ -1170,19 +1195,22 @@ export interface Page {
 }
 
 export interface ElementHandle<T = Node> extends JSHandle<T> {
-  $(selector: string): Promise<ElementHandle | null>;
-  $$(selector: string): Promise<ElementHandle[]>;
-  $eval<TResult, TArg = unknown>(
-    selector: string,
-    pageFunction: string | ElementCallback<TResult, TArg>,
-    arg?: TArg
-  ): Promise<TResult>;
-  $$eval<TResult, TArg = unknown>(
-    selector: string,
-    pageFunction: string | ElementArrayCallback<TResult, TArg>,
-    arg?: TArg
-  ): Promise<TResult>;
-  waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<ElementHandle | null>;
+  $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
+  $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
+  $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
+  $$(selector: string): Promise<ElementHandle<SVGElement | HTMLElement>[]>;
+  $eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], Arg, R>, arg: Arg): Promise<R>;
+  $eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<R>;
+  $eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], void, R>, arg?: any): Promise<R>;
+  $eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, void, R>, arg?: any): Promise<R>;
+  $$eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], Arg, R>, arg: Arg): Promise<R>;
+  $$eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
+  $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
+  $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
+  waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: ElementHandleWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
+  waitForSelector(selector: string, options?: ElementHandleWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
+  waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: ElementHandleWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;
+  waitForSelector(selector: string, options: ElementHandleWaitForSelectorOptions): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
   contentFrame(): Promise<Frame | null>;
   ownerFrame(): Promise<Frame | null>;
   boundingBox(): Promise<Rect | null>;
@@ -1400,19 +1428,22 @@ export interface Frame {
     state?: "load" | "domcontentloaded" | "networkidle",
     options?: { timeout?: number }
   ): Promise<void>;
-  waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<ElementHandle | null>;
-  $(selector: string): Promise<ElementHandle | null>;
-  $$(selector: string): Promise<ElementHandle[]>;
-  $eval<TResult, TArg = unknown>(
-    selector: string,
-    pageFunction: string | ElementCallback<TResult, TArg>,
-    arg?: TArg
-  ): Promise<TResult>;
-  $$eval<TResult, TArg = unknown>(
-    selector: string,
-    pageFunction: string | ElementArrayCallback<TResult, TArg>,
-    arg?: TArg
-  ): Promise<TResult>;
+  waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
+  waitForSelector(selector: string, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
+  waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: PageWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;
+  waitForSelector(selector: string, options: PageWaitForSelectorOptions): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
+  $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
+  $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
+  $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
+  $$(selector: string): Promise<ElementHandle<SVGElement | HTMLElement>[]>;
+  $eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], Arg, R>, arg: Arg): Promise<R>;
+  $eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<R>;
+  $eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], void, R>, arg?: any): Promise<R>;
+  $eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E, void, R>, arg?: any): Promise<R>;
+  $$eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], Arg, R>, arg: Arg): Promise<R>;
+  $$eval<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
+  $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
+  $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
   locator(selector: string): Locator;
   frameLocator(selector: string): FrameLocator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
