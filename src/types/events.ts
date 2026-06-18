@@ -97,6 +97,12 @@ export interface ScreencastFrame {
   viewportHeight: number;
 }
 
+export interface PageFrameNavigation {
+  frameId?: string;
+  parentFrameId?: string | null;
+  url?: string;
+}
+
 export interface RawPageEventMap {
   close: void;
   console: PageConsoleMessage;
@@ -104,7 +110,7 @@ export interface RawPageEventMap {
   domcontentloaded: void;
   frameattached: void;
   framedetached: void;
-  framenavigated: void;
+  framenavigated: PageFrameNavigation;
   load: void;
   pageerror: PageErrorEntry;
   request: PageRequest;

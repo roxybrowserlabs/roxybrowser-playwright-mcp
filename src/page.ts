@@ -1237,9 +1237,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     filter?: "all" | "since-navigation";
   }): Promise<Array<PageConsoleMessage>> {
     const source =
-      options?.filter === "since-navigation"
-        ? this.consoleMessageHistorySinceNavigation
-        : this.consoleMessageHistory;
+      options?.filter === "all"
+        ? this.consoleMessageHistory
+        : this.consoleMessageHistorySinceNavigation;
     return [...source];
   }
 
@@ -1257,9 +1257,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     filter?: "all" | "since-navigation";
   }): Promise<Array<PageErrorEntry>> {
     const source =
-      options?.filter === "since-navigation"
-        ? this.pageErrorHistorySinceNavigation
-        : this.pageErrorHistory;
+      options?.filter === "all"
+        ? this.pageErrorHistory
+        : this.pageErrorHistorySinceNavigation;
     return [...source];
   }
 
@@ -3094,10 +3094,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return;
     }
 
-    if (event === "load" || event === "domcontentloaded") {
-      this.consoleMessageHistorySinceNavigation.length = 0;
-      this.pageErrorHistorySinceNavigation.length = 0;
-    }
+  }
+
+  private resetHistorySinceNavigation(): void {
+    this.consoleMessageHistorySinceNavigation.length = 0;
+    this.pageErrorHistorySinceNavigation.length = 0;
   }
 
   private initializeInternalEventRecording(): void {
@@ -3105,6 +3106,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       const dispose = this.adapter.on(
         event,
         (async (payload?: RawPageEventMap[typeof event]) => {
+          if (event === "framenavigated" && this.isRawMainFrameNavigation(payload)) {
+            this.resetHistorySinceNavigation();
+          }
           if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
             await this.refreshFrameSnapshots().catch(() => {});
             return;
@@ -3124,6 +3128,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (event === "worker" && payload) {
       this.attachWorker(payload as Worker);
       return;
+    }
+    if (event === "framenavigated" && this.isRawMainFrameNavigation(payload)) {
+      this.resetHistorySinceNavigation();
     }
     if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
       await this.refreshFrameSnapshots().catch(() => {});
@@ -3237,6 +3244,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       postDataText: postData.text,
       url: payload.url
     };
+    if (this.isMainFrameNavigationRequest(state)) {
+      this.resetHistorySinceNavigation();
+    }
     const request = this.createObservedRequest(state);
     state.request = request;
     if (state.redirectedFrom) {
@@ -3460,6 +3470,40 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
 
     return null;
+  }
+
+  private isMainFrameNavigationRequest(state: ObservedRequestState): boolean {
+    if (!state.isNavigationRequest) {
+      return false;
+    }
+    if (!state.frameId) {
+      return true;
+    }
+    const mainFrame = this.mainFrame();
+    if (mainFrame instanceof RoxyFrame) {
+      const snapshot = mainFrame.snapshotState();
+      return state.frameId === snapshot.id || state.frameId === snapshot.nativeFrameId;
+    }
+    return false;
+  }
+
+  private isRawMainFrameNavigation(payload: unknown): boolean {
+    if (!payload || typeof payload !== "object") {
+      return true;
+    }
+    const navigation = payload as { frameId?: string; parentFrameId?: string | null };
+    if (navigation.parentFrameId !== undefined) {
+      return navigation.parentFrameId === null;
+    }
+    if (!navigation.frameId) {
+      return true;
+    }
+    const mainFrame = this.mainFrame();
+    if (mainFrame instanceof RoxyFrame) {
+      const snapshot = mainFrame.snapshotState();
+      return navigation.frameId === snapshot.id || navigation.frameId === snapshot.nativeFrameId;
+    }
+    return false;
   }
 
   private observeSyntheticObservedRequest(

@@ -173,4 +173,25 @@ describe("page event pageerror contract e2e", () => {
       expect(errors[0]!.message).toContain("error3");
     });
   });
+
+  it("pageErrors defaults to since-navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setContent("/page1", `<script>throw new Error("page1 error");</script>`, "text/html");
+      fixture.server.setContent("/page2", `<script>throw new Error("page2 error");</script>`, "text/html");
+
+      await page.goto(fixture.server.PREFIX + "/page1").catch(() => null);
+      await page.goto(fixture.server.PREFIX + "/page2").catch(() => null);
+
+      const all = await page.pageErrors({ filter: "all" });
+      expect(all.map((error) => error.message)).toContain("page1 error");
+      expect(all.map((error) => error.message)).toContain("page2 error");
+
+      const defaultErrors = await page.pageErrors();
+      expect(defaultErrors.map((error) => error.message)).not.toContain("page1 error");
+      expect(defaultErrors.map((error) => error.message)).toContain("page2 error");
+      expect((await page.pageErrors({ filter: "since-navigation" })).map((error) => error.message)).toEqual(
+        defaultErrors.map((error) => error.message)
+      );
+    });
+  });
 });

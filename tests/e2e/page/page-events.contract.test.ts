@@ -198,6 +198,25 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("consoleMessages defaults to since-navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => console.log("before navigation"));
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.evaluate(() => console.log("after navigation"));
+
+      const all = await page.consoleMessages({ filter: "all" });
+      expect(all.map((message) => message.text())).toContain("before navigation");
+      expect(all.map((message) => message.text())).toContain("after navigation");
+
+      const defaultMessages = await page.consoleMessages();
+      expect(defaultMessages.map((message) => message.text())).not.toContain("before navigation");
+      expect(defaultMessages.map((message) => message.text())).toContain("after navigation");
+      expect((await page.consoleMessages({ filter: "since-navigation" })).map((message) => message.text())).toEqual(
+        defaultMessages.map((message) => message.text())
+      );
+    });
+  });
+
   it("fires domcontentloaded and load during navigation", async () => {
     await withPage(async (page) => {
       const events: string[] = [];

@@ -1617,7 +1617,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.currentUrl = event.frame.url ?? this.currentUrl;
         void this.syncCurrentUrlFromDocument();
       }
-      this.emit("framenavigated", undefined);
+      this.emit("framenavigated", {
+        frameId: event.frame.id,
+        parentFrameId: event.frame.parentId ?? null,
+        url: event.frame.url
+      });
 
       if (event.type === "BackForwardCacheRestore") {
         this.domContentLoaded = true;

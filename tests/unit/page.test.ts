@@ -2974,7 +2974,7 @@ describe("RoxyPage", () => {
       type: () => "log",
       worker: () => null
     });
-    adapter.emit("load", undefined);
+    adapter.emit("framenavigated", { frameId: "main", parentFrameId: null, url: "https://example.com/after" });
     adapter.emit("console", {
       args: () => [],
       location: () => ({
@@ -2991,15 +2991,12 @@ describe("RoxyPage", () => {
       worker: () => null
     });
 
-    expect((await page.consoleMessages()).map((message) => message.text())).toEqual([
+    expect((await page.consoleMessages({ filter: "all" })).map((message) => message.text())).toEqual([
       "before",
       "after"
     ]);
-    expect(
-      (await page.consoleMessages({ filter: "since-navigation" })).map((message) =>
-        message.text()
-      )
-    ).toEqual(["after"]);
+    expect((await page.consoleMessages()).map((message) => message.text())).toEqual(["after"]);
+    expect((await page.consoleMessages({ filter: "since-navigation" })).map((message) => message.text())).toEqual(["after"]);
 
     await page.clearConsoleMessages();
     expect(await page.consoleMessages()).toEqual([]);
@@ -3065,16 +3062,15 @@ describe("RoxyPage", () => {
     });
 
     adapter.emit("pageerror", Object.assign(new Error("before"), { timestamp: 1 }));
-    adapter.emit("domcontentloaded", undefined);
+    adapter.emit("framenavigated", { frameId: "main", parentFrameId: null, url: "https://example.com/after" });
     adapter.emit("pageerror", Object.assign(new Error("after"), { timestamp: 2 }));
 
-    expect((await page.pageErrors()).map((error) => error.message)).toEqual([
+    expect((await page.pageErrors({ filter: "all" })).map((error) => error.message)).toEqual([
       "before",
       "after"
     ]);
-    expect((await page.pageErrors({ filter: "since-navigation" })).map((error) => error.message)).toEqual([
-      "after"
-    ]);
+    expect((await page.pageErrors()).map((error) => error.message)).toEqual(["after"]);
+    expect((await page.pageErrors({ filter: "since-navigation" })).map((error) => error.message)).toEqual(["after"]);
 
     await page.clearPageErrors();
     expect(await page.pageErrors()).toEqual([]);
