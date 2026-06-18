@@ -16,8 +16,10 @@ import type { Disposable, ResolvedAriaRef } from "../../types/api.js";
 import {
   SCROLL_INTO_VIEW_IF_NEEDED_SOURCE,
   SELECTOR_RUNTIME_SOURCE,
+  type SelectOptionRetryResult,
   type SelectorRuntimePayload
 } from "../selectorRuntime.js";
+import type { NormalizedSelectOption } from "../../selectOptionValues.js";
 import {
   createChapterOverlayHtml,
   RENDER_SCREencast_OVERLAYS_SOURCE
@@ -1214,9 +1216,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async selectOption(
     selector: LocatorSelector[],
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    return this.selectOptionLocator({ chain: selector }, values);
+    return this.selectOptionLocator({ chain: selector }, values, options);
   }
 
   async startCSSCoverage(_options?: { resetOnNavigation?: boolean }): Promise<void> {
@@ -2106,16 +2109,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async selectOptionLocator(
     locator: BidiLocatorState,
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    const normalized = Array.isArray(values) ? values : [values];
-    const payloadValues = normalized.map((entry) =>
-      typeof entry === "string" ? { value: entry } : entry
-    );
-    return this.runLocatorOperation<string[]>(locator, {
+    return this.runSelectOptionWithRetry(() => this.runLocatorOperation<string[] | SelectOptionRetryResult>(locator, {
       operation: "selectOption",
-      values: payloadValues
-    });
+      values
+    }), options?.timeout);
   }
 
   async textContentLocator(locator: BidiLocatorState): Promise<string | null> {
@@ -2207,17 +2207,14 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async selectOptionReference(
     reference: ProtocolElementHandleReference,
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    const normalized = Array.isArray(values) ? values : [values];
-    const payloadValues = normalized.map((entry) =>
-      typeof entry === "string" ? { value: entry } : entry
-    );
-    return this.runSelectorOperation<string[]>({
+    return this.runSelectOptionWithRetry(() => this.runSelectorOperation<string[] | SelectOptionRetryResult>({
       operation: "selectOption",
       reference,
-      values: payloadValues
-    });
+      values
+    }), options?.timeout);
   }
 
   private async resolveActionPoint(
@@ -2246,6 +2243,24 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         ...(locator.pick ? { pick: locator.pick } : {})
       }
     });
+  }
+
+  private async runSelectOptionWithRetry(
+    action: () => Promise<string[] | SelectOptionRetryResult>,
+    timeout: number | undefined
+  ): Promise<string[]> {
+    const effectiveTimeout = timeout ?? 30_000;
+    const deadline = Date.now() + effectiveTimeout;
+    while (true) {
+      const result = await action();
+      if (!isSelectOptionRetryResult(result)) {
+        return result;
+      }
+      if (effectiveTimeout === 0 || Date.now() + 50 > deadline) {
+        throw new TimeoutError(`page.selectOption: Timeout ${effectiveTimeout}ms exceeded.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
 
   async countSelector(reference: ProtocolElementHandleReference): Promise<number> {
@@ -3269,9 +3284,10 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async selectOption(
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    return this.page.selectOptionLocator(this.state, values);
+    return this.page.selectOptionLocator(this.state, values, options);
   }
 
   async isVisible(): Promise<boolean> {
@@ -3611,9 +3627,10 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async selectOption(
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    return this.page.selectOptionReference(this.reference(), values);
+    return this.page.selectOptionReference(this.reference(), values, options);
   }
 }
 
@@ -4128,6 +4145,10 @@ function defaultFirefoxExecutable(): string {
     default:
       return "firefox";
   }
+}
+
+function isSelectOptionRetryResult(value: string[] | SelectOptionRetryResult): value is SelectOptionRetryResult {
+  return !Array.isArray(value) && value.__needsRetry === true;
 }
 
 function normalizeConsoleMessageType(

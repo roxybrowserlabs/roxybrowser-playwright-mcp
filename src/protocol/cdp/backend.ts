@@ -38,6 +38,7 @@ import {
 import {
   SCROLL_INTO_VIEW_IF_NEEDED_SOURCE,
   SELECTOR_RUNTIME_SOURCE,
+  type SelectOptionRetryResult,
   type SelectorRuntimePayload
 } from "../selectorRuntime.js";
 import {
@@ -101,6 +102,7 @@ import {
   type SerializedValue
 } from "../../utilityScriptSerializers.js";
 import type { InternalScreenshotOptions } from "../../screenshotOptions.js";
+import type { NormalizedSelectOption } from "../../selectOptionValues.js";
 import type CDP from "chrome-remote-interface";
 
 const chromeRemoteInterface = ("default" in cdpModule
@@ -3308,9 +3310,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async selectOption(
     selector: LocatorSelector[],
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    return this.selectOptionLocator({ chain: selector }, values);
+    return this.selectOptionLocator({ chain: selector }, values, options);
   }
 
   async tap(selector: LocatorSelector[], options?: TapOptions): Promise<void> {
@@ -4280,16 +4283,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async selectOptionLocator(
     locator: CdpLocatorState,
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    const normalized = Array.isArray(values) ? values : [values];
-    const payloadValues = normalized.map((entry) =>
-      typeof entry === "string" ? { value: entry } : entry
-    );
-    return this.runLocatorOperation<string[]>(locator, {
+    return this.runSelectOptionWithRetry(() => this.runLocatorOperation<string[] | SelectOptionRetryResult>(locator, {
       operation: "selectOption",
-      values: payloadValues
-    });
+      values
+    }), options?.timeout);
   }
 
   async textContentLocator(locator: CdpLocatorState): Promise<string | null> {
@@ -4373,17 +4373,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async selectOptionReference(
     reference: ProtocolElementHandleReference,
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    const normalized = Array.isArray(values) ? values : [values];
-    const payloadValues = normalized.map((entry) =>
-      typeof entry === "string" ? { value: entry } : entry
-    );
-    return this.runSelectorOperation<string[]>({
+    return this.runSelectOptionWithRetry(() => this.runSelectorOperation<string[] | SelectOptionRetryResult>({
       operation: "selectOption",
       reference,
-      values: payloadValues
-    });
+      values
+    }), options?.timeout);
   }
 
   private async applyContextOptions(): Promise<void> {
@@ -4583,6 +4580,24 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
     } catch (error) {
       throw wrapLocatorError(locator, error);
+    }
+  }
+
+  private async runSelectOptionWithRetry(
+    action: () => Promise<string[] | SelectOptionRetryResult>,
+    timeout: number | undefined
+  ): Promise<string[]> {
+    const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_MS;
+    const deadline = Date.now() + effectiveTimeout;
+    while (true) {
+      const result = await action();
+      if (!isSelectOptionRetryResult(result)) {
+        return result;
+      }
+      if (effectiveTimeout === 0 || Date.now() + 50 > deadline) {
+        throw new TimeoutError(`page.selectOption: Timeout ${effectiveTimeout}ms exceeded.`);
+      }
+      await delay(50);
     }
   }
 
@@ -6599,9 +6614,10 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async selectOption(
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    return this.page.selectOptionLocator(this.state, values);
+    return this.page.selectOptionLocator(this.state, values, options);
   }
 
   async isVisible(): Promise<boolean> {
@@ -6964,9 +6980,10 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async selectOption(
-    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]> {
-    return this.page.selectOptionReference(this.reference(), values);
+    return this.page.selectOptionReference(this.reference(), values, options);
   }
 }
 
@@ -8710,6 +8727,10 @@ function delay(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, timeoutMs);
   });
+}
+
+function isSelectOptionRetryResult(value: string[] | SelectOptionRetryResult): value is SelectOptionRetryResult {
+  return !Array.isArray(value) && value.__needsRetry === true;
 }
 
 function createScreencastHighlightBox(point: ActionPoint): {

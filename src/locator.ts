@@ -6,6 +6,7 @@ import type { ResolvedHumanizationOptions } from "./human/types.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyElementHandle, serializeEvaluationArgument, type ElementHandleFrameResolver } from "./elementHandle.js";
 import type { InputFiles } from "./inputFiles.js";
+import { normalizeSelectOptionValues } from "./selectOptionValues.js";
 import { createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
 import {
   createAltTextLocatorSelector,
@@ -562,12 +563,22 @@ export class RoxyLocator implements Locator {
   }
 
   async selectOption(
-    values: string | SelectOptionValue | Array<string | SelectOptionValue> | null,
-    options?: TimeoutOptions
-  ): Promise<string[]> {
-    void options;
-    await this.beforeAction?.(this, undefined);
-    return this.adapter.selectOption(values === null ? [] : values);
+    values:
+      | null
+      | string
+      | ElementHandle
+      | ReadonlyArray<string>
+      | SelectOptionValue
+      | ReadonlyArray<ElementHandle>
+      | ReadonlyArray<SelectOptionValue>,
+    options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number }
+  ): Promise<Array<string>> {
+    await this.beforeAction?.(this, options);
+    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+    if (!handle) {
+      throw new TimeoutError(`locator.elementHandle: Timeout ${options?.timeout ?? DEFAULT_WAIT_TIMEOUT_MS}ms exceeded.`);
+    }
+    return this.adapter.selectOption(await normalizeSelectOptionValues(handle, values), options);
   }
 
   async screenshot(options?: ScreenshotOptions): Promise<Buffer> {

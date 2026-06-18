@@ -4,7 +4,6 @@ import { dirname, extname } from "node:path";
 import { createApiResponse, fetchWithRetries, RoxyAPIRequestContext } from "./apiRequestContext.js";
 import {
   RoxyElementHandle,
-  normalizeSelectOptionValues,
   type ElementHandleFrameResolver,
   serializeEvaluationArgument
 } from "./elementHandle.js";
@@ -43,6 +42,7 @@ import type {
 } from "./protocol/adapter.js";
 import type { RoutedRequestCall, RoutedRequestDecision, RoutedResponseData } from "./protocol/routing.js";
 import { parseSelectorChain } from "./selectors.js";
+import { normalizeSelectOptionValues } from "./selectOptionValues.js";
 import type {
   PageEventListener,
   PageEventMap,
@@ -154,17 +154,17 @@ type PlaywrightSelectOptionValues =
   | ReadonlyArray<string>
   | PlaywrightSelectOptionValue
   | ReadonlyArray<ElementHandle>
-  | ReadonlyArray<PlaywrightSelectOptionValue>;
+  | ReadonlyArray<PlaywrightSelectOptionValue | null>;
 type InternalSelectOptionValues =
   | null
   | string
   | SelectOptionValue
   | ElementHandle
-  | Array<string | SelectOptionValue | ElementHandle>;
+  | Array<string | SelectOptionValue | ElementHandle | null>;
 
 function normalizeSelectOptionValuesForInternal(values: PlaywrightSelectOptionValues): InternalSelectOptionValues {
   return Array.isArray(values)
-    ? [...values] as Array<string | SelectOptionValue | ElementHandle>
+    ? [...values] as Array<string | SelectOptionValue | ElementHandle | null>
     : values as InternalSelectOptionValues;
 }
 
@@ -2595,7 +2595,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     options?: SelectorStrictOptions & { force?: boolean; noWaitAfter?: boolean; }
   ): Promise<string[]> {
     const handle = await this.requiredElementHandleForSelector(selector, "page.selectOption", options);
-    return handle.selectOption(await normalizeSelectOptionValues(handle, normalizeSelectOptionValuesForInternal(values)));
+    return handle.selectOption(
+      await normalizeSelectOptionValues(handle, normalizeSelectOptionValuesForInternal(values)),
+      options
+    );
   }
 
   async bringToFront(): Promise<void> {
@@ -2658,7 +2661,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async tap(selector: string, options?: TapOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.tap", options)).tap(options);
+    await this.locator(selector).tap(options);
   }
 
   async close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;

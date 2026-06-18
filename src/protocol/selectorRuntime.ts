@@ -3,6 +3,7 @@ import type {
   LocatorSelector,
   ProtocolElementHandleReference
 } from "./adapter.js";
+import type { NormalizedSelectOption } from "../selectOptionValues.js";
 
 export const SCROLL_INTO_VIEW_IF_NEEDED_SOURCE = `(element) => {
   const hasLayoutBox = (node) => {
@@ -29,6 +30,11 @@ export const SCROLL_INTO_VIEW_IF_NEEDED_SOURCE = `(element) => {
   };
   findScrollableTarget(element).scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
 }`;
+
+export interface SelectOptionRetryResult {
+  __needsRetry: true;
+  reason: string;
+}
 
 export interface SelectorRuntimePayload {
   operation:
@@ -59,7 +65,7 @@ export interface SelectorRuntimePayload {
   isFunction?: boolean;
   arg?: unknown;
   value?: string;
-  values?: Array<{ value?: string; label?: string; index?: number }>;
+  values?: NormalizedSelectOption[];
   checked?: boolean;
   name?: string;
   force?: boolean;
@@ -1152,32 +1158,63 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         }
         const requested = payload.values ?? [];
         const options = Array.from(firstElement.options);
+        const findMatch = (candidate: { value?: string; label?: string; index?: number }) => {
+          return options.find((option, index) => {
+            if (candidate.index !== undefined && index !== candidate.index) {
+              return false;
+            }
+            if (candidate.value !== undefined && option.value !== candidate.value) {
+              return false;
+            }
+            if (candidate.label !== undefined && option.label !== candidate.label) {
+              return false;
+            }
+            if (candidate.index === undefined && candidate.value === undefined && candidate.label === undefined) {
+              return false;
+            }
+            return true;
+          }) ?? (
+            candidate.index === undefined && candidate.label === undefined && candidate.value !== undefined
+              ? options.find((option) => option.label === candidate.value)
+              : undefined
+          );
+        };
+        const isOptionEnabled = (option: HTMLOptionElement): boolean => {
+          let parent = option.parentElement;
+          while (parent) {
+            if (parent instanceof HTMLOptGroupElement && parent.disabled) {
+              return false;
+            }
+            parent = parent.parentElement;
+          }
+          return !option.disabled;
+        };
+        const matchedOptions: HTMLOptionElement[] = [];
+        for (const candidate of requested) {
+          const match = findMatch(candidate);
+          if (!match) {
+            return {
+              __needsRetry: true,
+              reason: "No matching option"
+            };
+          }
+          if (isDisabled(firstElement) || !isOptionEnabled(match)) {
+            throw new Error("option being selected is not enabled");
+          }
+          matchedOptions.push(match);
+          if (!firstElement.multiple) {
+            break;
+          }
+        }
         const selectedValues: string[] = [];
 
-        if (firstElement.multiple) {
+        if (firstElement.multiple || requested.length === 0) {
           for (const option of options) {
             option.selected = false;
           }
         }
 
-        for (const candidate of requested) {
-          const match = options.find((option, index) => {
-            if (candidate.index !== undefined) {
-              return index === candidate.index;
-            }
-            if (candidate.value !== undefined) {
-              return option.value === candidate.value;
-            }
-            if (candidate.label !== undefined) {
-              return option.label === candidate.label;
-            }
-            return false;
-          });
-
-          if (!match) {
-            continue;
-          }
-
+        for (const match of matchedOptions) {
           match.selected = true;
           selectedValues.push(match.value);
           if (!firstElement.multiple) {

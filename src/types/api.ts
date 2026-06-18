@@ -1037,10 +1037,13 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
     values:
       | null
       | string
-      | SelectOptionValue
       | ElementHandle
-      | Array<string | SelectOptionValue | ElementHandle>
-  ): Promise<string[]>;
+      | ReadonlyArray<string>
+      | SelectOptionValue
+      | ReadonlyArray<ElementHandle>
+      | ReadonlyArray<SelectOptionValue>,
+    options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number }
+  ): Promise<Array<string>>;
   setInputFiles(
     files: string | FilePayload | string[] | FilePayload[],
     options?: SetInputFilesOptions
@@ -1158,7 +1161,17 @@ export interface Locator {
   normalize(): Promise<Locator>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void>;
-  selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue> | null, options?: TimeoutOptions): Promise<string[]>;
+  selectOption(
+    values:
+      | null
+      | string
+      | ElementHandle
+      | ReadonlyArray<string>
+      | SelectOptionValue
+      | ReadonlyArray<ElementHandle>
+      | ReadonlyArray<SelectOptionValue>,
+    options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number }
+  ): Promise<Array<string>>;
   selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
   setChecked(checked: boolean, options?: ClickOptions): Promise<void>;
   setInputFiles(

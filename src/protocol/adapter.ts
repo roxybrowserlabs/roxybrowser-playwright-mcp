@@ -38,6 +38,7 @@ import type { Disposable, ResolvedAriaRef } from "../types/api.js";
 import type { ProtocolCapabilities } from "./capabilities.js";
 import type { RoutedRequestCall, RoutedRequestDecision } from "./routing.js";
 import type { SerializedValue } from "../utilityScriptSerializers.js";
+import type { NormalizedSelectOption } from "../selectOptionValues.js";
 
 export type LocatorStrategy = "control" | "css" | "text" | "role" | "xpath";
 export type ScreenshotClipOrigin = "document" | "viewport";
@@ -173,7 +174,8 @@ export interface ProtocolPageAdapter {
   setChecked(selector: LocatorSelector[], checked: boolean, options?: ClickOptions): Promise<void>;
   selectOption(
     selector: LocatorSelector[],
-    values: string | SelectOptionValue | Array<string | SelectOptionValue>
+    values: NormalizedSelectOption[],
+    options?: { timeout?: number }
   ): Promise<string[]>;
   bringToFront(): Promise<void>;
   isClosed(): boolean;
@@ -415,7 +417,7 @@ export interface ProtocolElementHandleAdapter {
   isVisible(): Promise<boolean>;
   focus(): Promise<void>;
   uncheck(options?: ClickOptions): Promise<void>;
-  selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue>): Promise<string[]>;
+  selectOption(values: NormalizedSelectOption[], options?: { timeout?: number }): Promise<string[]>;
 }
 
 export interface ProtocolLocatorAdapter {
@@ -461,7 +463,7 @@ export interface ProtocolLocatorAdapter {
   isEditable(): Promise<boolean>;
   isEnabled(): Promise<boolean>;
   isHidden(): Promise<boolean>;
-  selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue>): Promise<string[]>;
+  selectOption(values: NormalizedSelectOption[], options?: { timeout?: number }): Promise<string[]>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(): Promise<void>;
   selectText(): Promise<void>;
