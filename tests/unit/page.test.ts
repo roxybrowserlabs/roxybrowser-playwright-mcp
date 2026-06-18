@@ -1961,7 +1961,7 @@ describe("RoxyPage", () => {
     expect(await (await page.waitForFunction(() => 5, {}, { polling: 1, timeout: 100 })).jsonValue()).toBe(5);
   });
 
-  it("routes page.tap through a locator instance", async () => {
+  it("forwards page.tap to the main frame", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
       enabled: true,
@@ -1973,15 +1973,11 @@ describe("RoxyPage", () => {
       typingVarianceMs: 35,
       hoverBeforeClickMs: 110
     });
-    const locator = page.locator(".action");
-    const tapSpy = vi.spyOn(locator, "tap");
-    const locatorSpy = vi.spyOn(page, "locator").mockReturnValue(locator);
+    const tapSpy = vi.spyOn(page.mainFrame(), "tap").mockResolvedValue(undefined);
 
     await page.tap(".action", { timeout: 123 });
 
-    expect(locatorSpy).toHaveBeenCalledWith(".action");
-    expect(locatorSpy).toHaveBeenCalledTimes(1);
-    expect(tapSpy).toHaveBeenCalledWith({ timeout: 123 });
+    expect(tapSpy).toHaveBeenCalledWith(".action", { timeout: 123 });
     expect(adapter.tap).not.toHaveBeenCalled();
   });
 

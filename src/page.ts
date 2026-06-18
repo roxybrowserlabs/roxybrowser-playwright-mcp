@@ -2555,7 +2555,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.dblclick", options)).dblclick(options);
+    await this.mainFrame().dblclick(selector, options);
   }
 
   async click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
@@ -2585,7 +2585,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async tap(selector: string, options?: TapOptions): Promise<void> {
-    await this.locator(selector).tap(options);
+    await this.mainFrame().tap(selector, options);
   }
 
   async close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;
