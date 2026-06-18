@@ -115,6 +115,10 @@ export class TestServer {
     this.csp.set(path, csp);
   }
 
+  setExtraHeaders(path: string, headers: Record<string, string>): void {
+    this.extraHeaders.set(path, headers);
+  }
+
   setRedirect(from: string, to: string): void {
     this.setRoute(from, (request, response) => {
       const headers = this.extraHeaders.get(request.url ?? "") ?? {};
@@ -187,6 +191,12 @@ export class TestServer {
       response.statusCode = 200;
       response.setHeader("Content-Type", contentTypeFor(filePath));
       response.setHeader("Cache-Control", "no-cache, no-store");
+      const extraHeaders = this.extraHeaders.get(pathWithSearch);
+      if (extraHeaders) {
+        for (const [name, value] of Object.entries(extraHeaders)) {
+          response.setHeader(name, value);
+        }
+      }
       const csp = this.csp.get(pathWithSearch);
       if (csp !== undefined) {
         response.setHeader("Content-Security-Policy", csp);

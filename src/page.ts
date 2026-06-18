@@ -3239,7 +3239,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private observeAdapterResponse(payload: PageResponse): Response {
     const state = this.findObservedRequestForResponse(payload);
     const response = this.createObservedResponse(payload, state?.request ?? null);
-    if (state && !state.response) {
+    if (state && !state.response && state.url === payload.url) {
       state.response = response;
       state.responsePromiseResolve(response);
       const location = response.headers()["location"];
@@ -3372,6 +3372,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (!response) {
       return null;
     }
+    if (response.requestId) {
+      const state = this.observedRequestsById.get(response.requestId);
+      if (state?.response) {
+        return state.response;
+      }
+    }
     return this.normalizePublicEventPayload("response", response) as unknown as Response;
   }
 
@@ -3452,7 +3458,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private findObservedRequestForResponse(payload: PageResponse): ObservedRequestState | null {
     if (payload.requestId) {
-      return this.observedRequestsById.get(payload.requestId) ?? null;
+      const state = this.observedRequestsById.get(payload.requestId) ?? null;
+      if (state && !state.response && state.url === payload.url) {
+        return state;
+      }
+      const byUrl = this.observedRequestsByUrl.get(payload.url)?.find((entry) => entry.response === null) ?? null;
+      return byUrl;
     }
     return this.observedRequestsByUrl.get(payload.url)?.find((entry) => entry.response === null) ?? null;
   }

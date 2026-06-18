@@ -226,4 +226,109 @@ describe("page network request contract e2e", () => {
       expect(requests[0]!.resourceType()).toBe("eventsource");
     });
   });
+
+  it("reports raw headers", async () => {
+    await withPage(async (page) => {
+      let expectedHeaders: Array<{ name: string; value: string }> = [];
+      fixture.server.setRoute("/headers", (request, response) => {
+        expectedHeaders = [];
+        for (let i = 0; i < request.rawHeaders.length; i += 2) {
+          expectedHeaders.push({
+            name: request.rawHeaders[i]!,
+            value: request.rawHeaders[i + 1]!
+          });
+        }
+        response.end();
+      });
+
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const [request] = await Promise.all([
+        page.waitForRequest("**/*"),
+        page.evaluate(() => fetch("/headers", {
+          headers: [
+            ["header-a", "value-a"],
+            ["header-b", "value-b"],
+            ["header-a", "value-a-1"],
+            ["header-a", "value-a-2"]
+          ]
+        }))
+      ]);
+      const headers = await request.headersArray();
+      expect(headers.sort((a, b) => a.name.localeCompare(b.name))).toEqual(
+        expectedHeaders.sort((a, b) => a.name.localeCompare(b.name))
+      );
+      expect(await request.headerValue("header-a")).toEqual("value-a, value-a-1, value-a-2");
+      expect(await request.headerValue("not-there")).toEqual(null);
+    });
+  });
+
+  it("reports raw response headers in redirects", async () => {
+    await withPage(async (page) => {
+      fixture.server.setExtraHeaders("/redirect/1.html", { "sec-test-header": "1.html" });
+      fixture.server.setExtraHeaders("/redirect/2.html", { "sec-test-header": "2.html" });
+      fixture.server.setExtraHeaders("/empty.html", { "sec-test-header": "empty.html" });
+      fixture.server.setRedirect("/redirect/1.html", "/redirect/2.html");
+      fixture.server.setRedirect("/redirect/2.html", "/empty.html");
+
+      const expectedUrls = ["/redirect/1.html", "/redirect/2.html", "/empty.html"].map(
+        (path) => fixture.server.PREFIX + path
+      );
+      const expectedHeaders = ["1.html", "2.html", "empty.html"];
+
+      const response = await page.goto(fixture.server.PREFIX + "/redirect/1.html");
+      const redirectChain: string[] = [];
+      const headersChain: Array<string | undefined> = [];
+      for (let request = response!.request(); request; request = request.redirectedFrom()) {
+        redirectChain.unshift(request.url());
+        const redirectResponse = await request.response();
+        const headers = await redirectResponse!.allHeaders();
+        headersChain.unshift(headers["sec-test-header"]);
+      }
+
+      expect(redirectChain).toEqual(expectedUrls);
+      expect(headersChain).toEqual(expectedHeaders);
+    });
+  });
+
+  it("reports all cookies in one header", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.evaluate(() => {
+        document.cookie = "myCookie=myValue";
+        document.cookie = "myOtherCookie=myOtherValue";
+      });
+      const response = await page.goto(fixture.server.EMPTY_PAGE);
+      const cookie = (await response!.request().allHeaders())["cookie"];
+      expect(cookie).toBe("myCookie=myValue; myOtherCookie=myOtherValue");
+    });
+  });
+
+  it("page.reload returns 304 status code using Chromium semantics", async () => {
+    await withPage(async (page) => {
+      let requestNumber = 0;
+      fixture.server.setRoute("/test.html", (_request, response) => {
+        ++requestNumber;
+        const headers = {
+          "cf-cache-status": "DYNAMIC",
+          "Content-Type": "text/html;charset=UTF-8",
+          "Last-Modified": "Fri, 05 Jan 2024 01:56:20 GMT",
+          Vary: "Access-Control-Request-Headers"
+        };
+        if (requestNumber === 1) {
+          response.writeHead(200, headers);
+        } else {
+          response.writeHead(304, "Not Modified", headers);
+        }
+        response.write("<div>Test</div>");
+        response.end();
+      });
+      const response1 = await page.goto(fixture.server.PREFIX + "/test.html");
+      expect(response1!.status()).toBe(200);
+      const response2 = await page.reload();
+      expect(requestNumber).toBe(2);
+      expect(response2!.status()).toBe(200);
+      expect(response2!.statusText()).toBe("OK");
+      expect(await response2!.text()).toBe("<div>Test</div>");
+    });
+  });
 });

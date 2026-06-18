@@ -237,6 +237,12 @@ interface CdpRuntimeClient {
   send(method: "Runtime.releaseObject", params: { objectId: string }): Promise<unknown>;
 }
 
+type CdpPendingRequestEvent = {
+  fallbackTimer?: ReturnType<typeof setTimeout>;
+  payload: RawPageEventMap["request"];
+  responseCallbacks: Array<() => void>;
+};
+
 interface CdpDomClient {
   send(
     method: "DOM.getBoxModel",
@@ -1320,10 +1326,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }>
   >();
   private readonly pendingResponseFallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly pendingRequestEvents = new Map<string, CdpPendingRequestEvent[]>();
+  private readonly requestExtraInfoHeaders = new Map<
+    string,
+    Array<Array<{ name: string; value: string }>>
+  >();
   private readonly responseExtraInfoHeaders = new Map<
     string,
     Array<Array<{ name: string; value: string }>>
   >();
+  private readonly responseExtraInfoDiscardCounts = new Map<string, number>();
   private readonly fulfilledDocumentResponseHeaders = new Map<
     string,
     Array<{ name: string; value: string }>
@@ -1627,7 +1639,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const isNavigationRequest =
         event.requestId === requestEvent.loaderId && requestEvent.type === "Document";
       if (event.redirectResponse) {
+        this.flushPendingRequestEvent(event.requestId);
         this.emitRedirectResponse(requestEvent, event.redirectResponse);
+        this.discardNextResponseExtraInfo(event.requestId);
       }
       const isPreflightRequest =
         event.request.method === "OPTIONS" && requestEvent.initiator?.type === "preflight";
@@ -1655,7 +1669,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (isFavicon) {
         return;
       }
-      this.emit("request", {
+      this.queueRequestEvent(event.requestId, {
         headers: requestHeaders,
         ...(requestEvent.frameId ? { frameId: requestEvent.frameId } : {}),
         isNavigationRequest,
@@ -1668,6 +1682,38 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
     });
 
+    client.Network.requestWillBeSentExtraInfo?.((event) => {
+      if (this.ignoredRequestIds.has(event.requestId)) {
+        return;
+      }
+      const request = this.requestMetadata.get(event.requestId);
+      if (request?.isPreflight || request?.isFavicon) {
+        return;
+      }
+      const headers = mapCdpHeaders(event.headers, "\n");
+      const pending = this.pendingRequestEvents.get(event.requestId);
+      if (pending?.length) {
+        const next = pending.shift()!;
+        if (next.fallbackTimer) {
+          clearTimeout(next.fallbackTimer);
+        }
+        if (pending.length === 0) {
+          this.pendingRequestEvents.delete(event.requestId);
+        }
+        this.emit("request", {
+          ...next.payload,
+          headers
+        });
+        for (const callback of next.responseCallbacks) {
+          callback();
+        }
+        return;
+      }
+      const queued = this.requestExtraInfoHeaders.get(event.requestId) ?? [];
+      queued.push(headers);
+      this.requestExtraInfoHeaders.set(event.requestId, queued);
+    });
+
     client.Fetch?.requestPaused?.((event) => {
       void this.handleFetchRequestPaused(event);
     });
@@ -1675,6 +1721,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const onRequestSettled = (requestId?: string) => {
       this.activeRequests = Math.max(0, this.activeRequests - 1);
       if (requestId) {
+        this.flushPendingRequestEvent(requestId);
+        this.requestExtraInfoHeaders.delete(requestId);
+        this.responseExtraInfoDiscardCounts.delete(requestId);
         this.requestMetadata.delete(requestId);
       }
       this.maybeArmNetworkIdleTimer();
@@ -1698,49 +1747,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         return;
       }
       const fromCache = Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache);
-      if (responseEvent.hasExtraInfo && !fromCache) {
-        const extraInfoHeaders = this.shiftResponseExtraInfoHeaders(event.requestId);
-        if (extraInfoHeaders) {
-          this.emitResponseReceived(responseEvent, extraInfoHeaders);
-          return;
-        }
-        const pending = this.pendingResponseEvents.get(event.requestId) ?? [];
-        pending.push({
-          event: {
-            requestId: event.requestId,
-            ...(responseEvent.frameId ? { frameId: responseEvent.frameId } : {}),
-            response: {
-              ...(event.response.fromDiskCache !== undefined
-                ? { fromDiskCache: event.response.fromDiskCache }
-                : {}),
-              ...(event.response.fromServiceWorker !== undefined
-                ? { fromServiceWorker: event.response.fromServiceWorker }
-                : {}),
-              ...(event.response.fromPrefetchCache !== undefined
-                ? { fromPrefetchCache: event.response.fromPrefetchCache }
-                : {}),
-              headers: event.response.headers,
-              mimeType: event.response.mimeType,
-              status: event.response.status,
-              statusText: event.response.statusText,
-              url: event.response.url
-            },
-            ...(responseEvent.type ? { type: responseEvent.type } : {})
-          }
-        });
-        this.pendingResponseEvents.set(event.requestId, pending);
-        if (!this.pendingResponseFallbackTimers.has(event.requestId)) {
-          this.pendingResponseFallbackTimers.set(
-            event.requestId,
-            setTimeout(() => {
-              this.pendingResponseFallbackTimers.delete(event.requestId);
-              this.flushPendingResponseEvent(event.requestId);
-            }, 50)
-          );
-        }
+      if (this.runAfterPendingRequestEvent(event.requestId, () => {
+        this.handleNetworkResponseReceived(responseEvent, fromCache);
+      })) {
         return;
       }
-      this.emitResponseReceived(responseEvent);
+      this.handleNetworkResponseReceived(responseEvent, fromCache);
     });
 
     client.Network.responseReceivedExtraInfo?.((event) => {
@@ -1749,6 +1761,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
       const request = this.requestMetadata.get(event.requestId);
       if (request?.isPreflight || request?.isFavicon) {
+        return;
+      }
+      const discardCount = this.responseExtraInfoDiscardCounts.get(event.requestId) ?? 0;
+      if (discardCount > 0) {
+        if (discardCount === 1) {
+          this.responseExtraInfoDiscardCounts.delete(event.requestId);
+        } else {
+          this.responseExtraInfoDiscardCounts.set(event.requestId, discardCount - 1);
+        }
         return;
       }
       const headers = parseCdpHeadersText((event as typeof event & { headersText?: string }).headersText) ??
@@ -1878,6 +1899,70 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.applyContextOptions();
     await this.syncLifecycleStateFromDocument();
     this.maybeArmNetworkIdleTimer();
+  }
+
+  private handleNetworkResponseReceived(
+    responseEvent: {
+      frameId?: string;
+      hasExtraInfo?: boolean;
+      requestId: string;
+      response: {
+        fromDiskCache?: boolean;
+        fromServiceWorker?: boolean;
+        fromPrefetchCache?: boolean;
+        headers: Record<string, string | number | boolean>;
+        mimeType: string;
+        status: number;
+        statusText: string;
+        url: string;
+      };
+      type?: string;
+    },
+    fromCache: boolean
+  ): void {
+    if (responseEvent.hasExtraInfo && !fromCache) {
+      const extraInfoHeaders = this.shiftResponseExtraInfoHeaders(responseEvent.requestId);
+      if (extraInfoHeaders) {
+        this.emitResponseReceived(responseEvent, extraInfoHeaders);
+        return;
+      }
+      const pending = this.pendingResponseEvents.get(responseEvent.requestId) ?? [];
+      pending.push({
+        event: {
+          requestId: responseEvent.requestId,
+          ...(responseEvent.frameId ? { frameId: responseEvent.frameId } : {}),
+          response: {
+            ...(responseEvent.response.fromDiskCache !== undefined
+              ? { fromDiskCache: responseEvent.response.fromDiskCache }
+              : {}),
+            ...(responseEvent.response.fromServiceWorker !== undefined
+              ? { fromServiceWorker: responseEvent.response.fromServiceWorker }
+              : {}),
+            ...(responseEvent.response.fromPrefetchCache !== undefined
+              ? { fromPrefetchCache: responseEvent.response.fromPrefetchCache }
+              : {}),
+            headers: responseEvent.response.headers,
+            mimeType: responseEvent.response.mimeType,
+            status: responseEvent.response.status,
+            statusText: responseEvent.response.statusText,
+            url: responseEvent.response.url
+          },
+          ...(responseEvent.type ? { type: responseEvent.type } : {})
+        }
+      });
+      this.pendingResponseEvents.set(responseEvent.requestId, pending);
+      if (!this.pendingResponseFallbackTimers.has(responseEvent.requestId)) {
+        this.pendingResponseFallbackTimers.set(
+          responseEvent.requestId,
+          setTimeout(() => {
+            this.pendingResponseFallbackTimers.delete(responseEvent.requestId);
+            this.flushPendingResponseEvent(responseEvent.requestId);
+          }, 50)
+        );
+      }
+      return;
+    }
+    this.emitResponseReceived(responseEvent);
   }
 
   async goto(url: string, options: PageGotoOptions = {}): Promise<PageResponse | null> {
@@ -4905,6 +4990,68 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   }
 
+  private queueRequestEvent(requestId: string, payload: RawPageEventMap["request"]): void {
+    const extraInfoHeaders = this.shiftRequestExtraInfoHeaders(requestId);
+    if (extraInfoHeaders) {
+      this.emit("request", {
+        ...payload,
+        headers: extraInfoHeaders
+      });
+      return;
+    }
+
+    const pending = this.pendingRequestEvents.get(requestId) ?? [];
+    const queued: CdpPendingRequestEvent = {
+      payload,
+      responseCallbacks: []
+    };
+    queued.fallbackTimer = setTimeout(() => {
+      delete queued.fallbackTimer;
+      this.flushPendingRequestEvent(requestId);
+    }, 50);
+    pending.push(queued);
+    this.pendingRequestEvents.set(requestId, pending);
+  }
+
+  private flushPendingRequestEvent(requestId: string): void {
+    const pending = this.pendingRequestEvents.get(requestId);
+    if (!pending?.length) {
+      return;
+    }
+    const next = pending.shift()!;
+    if (next.fallbackTimer) {
+      clearTimeout(next.fallbackTimer);
+    }
+    if (pending.length === 0) {
+      this.pendingRequestEvents.delete(requestId);
+    }
+    this.emit("request", next.payload);
+    for (const callback of next.responseCallbacks) {
+      callback();
+    }
+  }
+
+  private shiftRequestExtraInfoHeaders(requestId: string): Array<{ name: string; value: string }> | null {
+    const queued = this.requestExtraInfoHeaders.get(requestId);
+    if (!queued?.length) {
+      return null;
+    }
+    const headers = queued.shift() ?? null;
+    if (queued.length === 0) {
+      this.requestExtraInfoHeaders.delete(requestId);
+    }
+    return headers;
+  }
+
+  private runAfterPendingRequestEvent(requestId: string, callback: () => void): boolean {
+    const pending = this.pendingRequestEvents.get(requestId);
+    if (!pending?.length) {
+      return false;
+    }
+    pending[0]!.responseCallbacks.push(callback);
+    return true;
+  }
+
   private isStateSatisfied(state: WaitUntilState): boolean {
     if (this.sameDocumentNavigation && this.allowSameDocumentNavigationToResolveWaiters) {
       return true;
@@ -4938,6 +5085,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         continue;
       }
       this.ensureResponseBodyState(requestId).markFailed(new Error("Frame was detached."));
+      this.flushPendingRequestEvent(requestId);
       this.requestMetadata.delete(requestId);
       this.activeRequests = Math.max(0, this.activeRequests - 1);
     }
@@ -5116,7 +5264,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const url = previousRequest?.url ?? redirectResponse.url;
     const method = previousRequest?.method ?? event.request.method;
     const isNavigationRequest = previousRequest?.isNavigationRequest ?? false;
-
     this.emit("response", createPageResponse({
       fromCache: Boolean(redirectResponse.fromDiskCache || redirectResponse.fromPrefetchCache),
       ...(frameId ? { frameId } : {}),
@@ -5324,6 +5471,21 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.responseExtraInfoHeaders.delete(requestId);
     }
     return headers;
+  }
+
+  private discardNextResponseExtraInfo(requestId: string): void {
+    const queued = this.responseExtraInfoHeaders.get(requestId);
+    if (queued?.length) {
+      queued.shift();
+      if (queued.length === 0) {
+        this.responseExtraInfoHeaders.delete(requestId);
+      }
+      return;
+    }
+    this.responseExtraInfoDiscardCounts.set(
+      requestId,
+      (this.responseExtraInfoDiscardCounts.get(requestId) ?? 0) + 1
+    );
   }
 
   private clearNetworkIdleTimer(): void {
