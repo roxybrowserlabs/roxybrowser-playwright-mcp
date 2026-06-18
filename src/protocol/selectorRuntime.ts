@@ -538,6 +538,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     );
   };
   const isDisabled = (element: Element): boolean => {
+    if (element instanceof HTMLOptionElement && element.parentElement instanceof HTMLOptGroupElement && element.parentElement.disabled) {
+      return true;
+    }
     if (
       element instanceof HTMLButtonElement ||
       element instanceof HTMLInputElement ||
@@ -887,6 +890,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     );
   };
   const resolvedElements = resolveReference(payload.reference);
+  const firstResolvedNode = (): Node | null => resolveReference(payload.reference)[0] ?? null;
 
   switch (payload.operation) {
     case "count":
@@ -945,8 +949,8 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
     case "textContent":
       {
-        const firstElement = resolveSingleElement();
-        return firstElement ? firstElement.textContent : null;
+        const firstNode = firstResolvedNode();
+        return firstNode ? firstNode.textContent : null;
       }
     case "innerText":
       {
@@ -980,7 +984,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     case "isChecked":
       {
         const firstElement = resolveSingleElement();
-        return firstElement ? isChecked(firstElement) : false;
+        return firstElement ? checkedState(firstElement) : false;
       }
     case "checkedState":
       {
