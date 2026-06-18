@@ -1070,17 +1070,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async content(): Promise<string> {
-    return this.adapter.content();
+    return this.mainFrame().content();
   }
 
   async setContent(html: string, options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
-    await this.adapter.setContent(html, {
-      ...options,
-      timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
-    });
-    await this.reinstallExposedBindings();
-    await this.refreshFrameSnapshots();
+    return this.mainFrame().setContent(html, options);
   }
 
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
@@ -3125,6 +3120,55 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async refreshFramesForExternalMutation(): Promise<void> {
     await this.refreshFrameSnapshots();
+  }
+
+  async contentInFrame(frame: RoxyFrameSnapshot): Promise<string> {
+    if (frame.parentId === null) {
+      return this.adapter.content();
+    }
+    return this.evaluateInFrame(frame, () => {
+      const doctype = document.doctype ? new XMLSerializer().serializeToString(document.doctype) : "";
+      const documentElement = document.documentElement.cloneNode(true);
+      if (documentElement instanceof Element) {
+        documentElement.querySelectorAll([
+          "#__roxy_screencast_actions_style__",
+          "#__roxy_screencast_overlay_style__",
+          "x-pw-action-overlays",
+          "x-pw-user-overlays",
+          "[data-roxy-highlight-overlay]"
+        ].join(",")).forEach((node) => node.remove());
+      }
+      return doctype + (documentElement as Element).outerHTML;
+    });
+  }
+
+  async setContentInFrame(
+    frame: RoxyFrameSnapshot,
+    html: string,
+    options?: PageSetContentOptions
+  ): Promise<void> {
+    if (frame.parentId === null) {
+      await this.adapter.setContent(html, {
+        ...options,
+        timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
+      });
+      await this.reinstallExposedBindings();
+      await this.refreshFrameSnapshots();
+      return;
+    }
+
+    await this.evaluateInFrame(frame, (content) => {
+      document.open();
+      document.write(content);
+      document.close();
+    }, html);
+    if (options?.waitUntil !== "commit") {
+      await this.waitForLoadState(
+        options?.waitUntil,
+        options?.timeout === undefined ? {} : { timeout: options.timeout }
+      );
+    }
+    await this.refreshFramesForExternalMutation();
   }
 
   async evalOnSelectorInFrame<TResult, TArg = unknown>(

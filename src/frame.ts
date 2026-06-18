@@ -121,18 +121,7 @@ export class RoxyFrame implements Frame {
   }
 
   async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
-    await this.evaluate((content) => {
-      document.open();
-      document.write(content);
-      document.close();
-    }, html);
-    if (options?.waitUntil !== "commit") {
-      await this.roxyPage.waitForLoadState(
-        options?.waitUntil,
-        options?.timeout === undefined ? {} : { timeout: options.timeout }
-      );
-    }
-    await this.roxyPage.refreshFramesForExternalMutation();
+    await this.roxyPage.setContentInFrame(this.snapshot, html, options);
   }
 
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
@@ -390,12 +379,7 @@ export class RoxyFrame implements Frame {
   }
 
   async content(): Promise<string> {
-    return this.evaluate(() => {
-      const doctype = document.doctype
-        ? new XMLSerializer().serializeToString(document.doctype)
-        : "";
-      return doctype + document.documentElement.outerHTML;
-    });
+    return this.roxyPage.contentInFrame(this.snapshot);
   }
 
   async addScriptTag(options: AddScriptTagOptions = {}): Promise<ElementHandle> {
