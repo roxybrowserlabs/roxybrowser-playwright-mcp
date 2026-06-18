@@ -1025,7 +1025,12 @@ export interface Page {
   ): Promise<void>;
   selectOption(
     selector: string,
-    values: string | SelectOptionValue | Array<string | SelectOptionValue>,
+    values:
+      | null
+      | string
+      | SelectOptionValue
+      | ElementHandle
+      | Array<string | SelectOptionValue | ElementHandle>,
     options?: SelectorStrictOptions
   ): Promise<string[]>;
   bringToFront(): Promise<void>;
@@ -1097,7 +1102,14 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   check(options?: ClickOptions): Promise<void>;
   setChecked(checked: boolean, options?: ClickOptions): Promise<void>;
   uncheck(options?: ClickOptions): Promise<void>;
-  selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue>): Promise<string[]>;
+  selectOption(
+    values:
+      | null
+      | string
+      | SelectOptionValue
+      | ElementHandle
+      | Array<string | SelectOptionValue | ElementHandle>
+  ): Promise<string[]>;
   setInputFiles(
     files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
     options?: SetInputFilesOptions

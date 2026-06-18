@@ -145,6 +145,9 @@ describe("page form action contract e2e", () => {
 
       expect(await page.selectOption("select", { label: "Green" })).toEqual(["green"]);
       expect(await page.selectOption("select", { index: 0 })).toEqual(["red"]);
+
+      const blueOption = await page.$("option[value=blue]");
+      expect(await page.selectOption("select", blueOption!)).toEqual(["blue"]);
     });
   });
 
@@ -164,6 +167,11 @@ describe("page form action contract e2e", () => {
       expect(values).toEqual(["blue", "green"]);
       expect(await page.evaluate(() => window.input)).toEqual(["blue", "green"]);
       expect(await page.evaluate(() => window.changed)).toEqual(["blue", "green"]);
+
+      expect(await page.selectOption("select", null)).toEqual([]);
+      expect(await page.$eval("select", (select) =>
+        Array.from((select as HTMLSelectElement).options).every((option) => !option.selected)
+      )).toBe(true);
     });
   });
 });

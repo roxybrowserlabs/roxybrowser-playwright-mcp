@@ -2,7 +2,12 @@ import { STATUS_CODES } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname } from "node:path";
 import { createApiResponse, fetchWithRetries, RoxyAPIRequestContext } from "./apiRequestContext.js";
-import { RoxyElementHandle, type ElementHandleFrameResolver, serializeEvaluationArgument } from "./elementHandle.js";
+import {
+  RoxyElementHandle,
+  normalizeSelectOptionValues,
+  type ElementHandleFrameResolver,
+  serializeEvaluationArgument
+} from "./elementHandle.js";
 import { TimeoutError } from "./errors.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyFrame, type RoxyFrameSnapshot } from "./frame.js";
@@ -2242,10 +2247,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async selectOption(
     selector: string,
-    values: string | SelectOptionValue | Array<string | SelectOptionValue>,
+    values:
+      | null
+      | string
+      | SelectOptionValue
+      | ElementHandle
+      | Array<string | SelectOptionValue | ElementHandle>,
     options?: SelectorStrictOptions
   ): Promise<string[]> {
-    return (await this.requiredElementHandleForSelector(selector, "page.selectOption", options)).selectOption(values);
+    const handle = await this.requiredElementHandleForSelector(selector, "page.selectOption", options);
+    return handle.selectOption(await normalizeSelectOptionValues(handle, values));
   }
 
   async bringToFront(): Promise<void> {

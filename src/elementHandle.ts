@@ -351,9 +351,14 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async selectOption(
-    values: string | SelectOptionValue | Array<string | SelectOptionValue>
+    values:
+      | null
+      | string
+      | SelectOptionValue
+      | ElementHandle
+      | Array<string | SelectOptionValue | ElementHandle>
   ): Promise<string[]> {
-    return this.adapter.selectOption(values);
+    return this.adapter.selectOption(await normalizeSelectOptionValues(this, values));
   }
 
   async setInputFiles(
@@ -400,6 +405,42 @@ function normalizeFilePayloads(
       name: entry.name
     };
   });
+}
+
+export async function normalizeSelectOptionValues(
+  select: ElementHandle,
+  values:
+    | null
+    | string
+    | SelectOptionValue
+    | ElementHandle
+    | Array<string | SelectOptionValue | ElementHandle>
+): Promise<string | SelectOptionValue | Array<string | SelectOptionValue>> {
+  if (values === null) {
+    return [];
+  }
+  const entries = Array.isArray(values) ? values : [values];
+  const normalized: Array<string | SelectOptionValue> = [];
+  for (const entry of entries) {
+    if (entry instanceof RoxyElementHandle) {
+      const index = await select.evaluate((selectElement, optionElement) => {
+        if (!(selectElement instanceof HTMLSelectElement)) {
+          throw new Error("Element is not a <select> element.");
+        }
+        if (!(optionElement instanceof HTMLOptionElement)) {
+          throw new Error("Element is not an <option> element.");
+        }
+        return Array.from(selectElement.options).indexOf(optionElement);
+      }, entry);
+      if (index === -1) {
+        throw new Error("Option element is not in the <select> element.");
+      }
+      normalized.push({ index });
+      continue;
+    }
+    normalized.push(entry as string | SelectOptionValue);
+  }
+  return Array.isArray(values) ? normalized : normalized[0]!;
 }
 
 export function serializeEvaluationArgument(value: unknown): unknown {
