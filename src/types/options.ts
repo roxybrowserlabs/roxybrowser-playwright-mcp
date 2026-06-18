@@ -13,6 +13,7 @@ export type ChromiumChannel =
 export type WaitUntilState = "load" | "domcontentloaded" | "networkidle" | "commit";
 export type LoadState = Exclude<WaitUntilState, "commit">;
 export type MouseButton = "left" | "right" | "middle";
+export type KeyboardModifier = "Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift";
 export type HumanProfileName = "cautious" | "balanced" | "fast";
 
 export interface Header {
@@ -146,6 +147,7 @@ export interface WaitForSelectorOptions extends TimeoutOptions {
 
 export interface HoverOptions extends SelectorStrictOptions, HumanizedOption {
   force?: boolean;
+  modifiers?: KeyboardModifier[];
   trial?: boolean;
   position?: Point;
 }
@@ -241,7 +243,7 @@ export interface SetInputFilesOptions extends SelectorStrictOptions {
 }
 
 export interface TapOptions extends HoverOptions {
-  modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">;
+  noWaitAfter?: boolean;
 }
 
 export interface GetByTextOptions {

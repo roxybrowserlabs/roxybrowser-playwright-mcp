@@ -168,6 +168,69 @@ describe("page click contract e2e", () => {
     });
   });
 
+  it("applies and restores click modifiers like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <button>Click me</button>
+        <script>
+          window.__clicks = [];
+          document.querySelector('button').addEventListener('click', event => {
+            window.__clicks.push({
+              altKey: event.altKey,
+              ctrlKey: event.ctrlKey,
+              metaKey: event.metaKey,
+              shiftKey: event.shiftKey
+            });
+          });
+        </script>
+      `);
+
+      await page.click("button", { modifiers: ["Shift"] });
+      await page.click("button");
+
+      expect(await page.evaluate(() => window.__clicks)).toEqual([
+        {
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: true
+        },
+        {
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false
+        }
+      ]);
+    });
+  });
+
+  it("applies click modifiers through locator actions", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <button>Click me</button>
+        <script>
+          window.__clicks = [];
+          document.querySelector('button').addEventListener('click', event => {
+            window.__clicks.push({
+              ctrlKey: event.ctrlKey,
+              shiftKey: event.shiftKey
+            });
+          });
+        </script>
+      `);
+
+      await page.locator("button").click({ modifiers: ["Shift"] });
+
+      expect(await page.evaluate(() => window.__clicks)).toEqual([
+        {
+          ctrlKey: false,
+          shiftKey: true
+        }
+      ]);
+    });
+  });
+
   it("clicks a button after navigation", async () => {
     await withPage(async (page) => {
       fixture.server.setContent(

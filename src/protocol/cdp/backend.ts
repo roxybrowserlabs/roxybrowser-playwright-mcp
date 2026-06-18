@@ -56,6 +56,7 @@ import type {
   GetByTextOptions,
   GetByRoleOptions,
   HoverOptions,
+  KeyboardModifier,
   LaunchOptions,
   MouseButton,
   PageCloseOptions,
@@ -1534,6 +1535,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private currentViewportSize: ViewportSize | null = null;
   private currentMousePosition: ActionPoint = { x: 0, y: 0 };
   private readonly pressedKeyboardModifiers = new Set<string>();
+  private pointerActionModifiers: Set<string> | null = null;
   private readonly jsCoverageState: CdpJsCoverageState = {
     enabled: false,
     eventListeners: [],
@@ -3958,13 +3960,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const button = options?.button ?? "left";
       const clickCount = options?.clickCount ?? 1;
 
-      await this.dispatchMouseMove(actionPoint);
-      await this.showScreencastAction("click", actionPoint);
-      for (let index = 0; index < clickCount; index += 1) {
-        await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
-        await delay(options?.delay ?? 0);
-        await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
-      }
+      await this.withPointerActionModifiers(options?.modifiers, async () => {
+        await this.dispatchMouseMove(actionPoint);
+        await this.showScreencastAction("click", actionPoint);
+        for (let index = 0; index < clickCount; index += 1) {
+          await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
+          await delay(options?.delay ?? 0);
+          await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
+        }
+      });
     });
   }
 
@@ -3972,7 +3976,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.enqueuePointerAction(async () => {
       await this.bringToFront();
       const actionPoint = await this.resolveActionPoint(locator, options);
-      await this.dispatchMouseMove(actionPoint);
+      await this.withPointerActionModifiers(options?.modifiers, async () => {
+        await this.dispatchMouseMove(actionPoint);
+      });
     });
   }
 
@@ -4299,7 +4305,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       x: point.x,
       y: point.y,
       button: "none",
-      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+      modifiers: keyboardModifierMask(this.activePointerModifiers())
     });
   }
 
@@ -4320,8 +4326,32 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       y: point.y,
       button,
       clickCount,
-      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+      modifiers: keyboardModifierMask(this.activePointerModifiers())
     });
+  }
+
+  private activePointerModifiers(): Iterable<string> {
+    return this.pointerActionModifiers ?? this.pressedKeyboardModifiers;
+  }
+
+  private async withPointerActionModifiers<TResult>(
+    modifiers: KeyboardModifier[] | undefined,
+    action: () => Promise<TResult>
+  ): Promise<TResult> {
+    const previous = this.pointerActionModifiers;
+    const actionModifiers = new Set(this.pressedKeyboardModifiers);
+    for (const modifier of modifiers ?? []) {
+      const normalized = normalizeShortcutKey(modifier);
+      if (isKeyboardModifier(normalized)) {
+        actionModifiers.add(normalized);
+      }
+    }
+    try {
+      this.pointerActionModifiers = actionModifiers;
+      return await action();
+    } finally {
+      this.pointerActionModifiers = previous;
+    }
   }
 
   private async enqueuePointerAction<TResult>(action: () => Promise<TResult>): Promise<TResult> {
@@ -4631,13 +4661,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const button = options?.button ?? "left";
     const clickCount = options?.clickCount ?? 1;
 
-    await this.dispatchMouseMove(actionPoint);
-    await this.showScreencastAction("click", actionPoint);
-    for (let index = 0; index < clickCount; index += 1) {
-      await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
-      await delay(options?.delay ?? 0);
-      await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
-    }
+    await this.withPointerActionModifiers(options?.modifiers, async () => {
+      await this.dispatchMouseMove(actionPoint);
+      await this.showScreencastAction("click", actionPoint);
+      for (let index = 0; index < clickCount; index += 1) {
+        await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
+        await delay(options?.delay ?? 0);
+        await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
+      }
+    });
   }
 
   async setCheckedReference(
@@ -4676,7 +4708,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       ...(options?.force !== undefined ? { force: options.force } : {}),
       ...(options?.position ? { position: options.position } : {})
     });
-    await this.dispatchMouseMove(actionPoint);
+    await this.withPointerActionModifiers(options?.modifiers, async () => {
+      await this.dispatchMouseMove(actionPoint);
+    });
   }
 
   async fillReference(
