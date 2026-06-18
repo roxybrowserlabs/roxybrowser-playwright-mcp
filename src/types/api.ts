@@ -1117,29 +1117,10 @@ export interface Page {
   pdf(options?: PdfOptions): Promise<Buffer>;
   pickLocator(): Promise<Locator>;
   removeLocatorHandler(locator: Locator): Promise<void>;
-  route(
-    url: string | RegExp | URLPattern | ((url: URL) => boolean),
-    handler: (route: Route, request: Request) => Promise<any> | any,
-    options?: { times?: number }
-  ): Promise<Disposable>;
-  routeFromHAR(
-    har: string,
-    options?: {
-      notFound?: "abort" | "fallback";
-      update?: boolean;
-      updateContent?: "embed" | "attach";
-      updateMode?: "full" | "minimal";
-      url?: string | RegExp;
-    }
-  ): Promise<void>;
-  routeWebSocket(
-    url: string | RegExp | URLPattern | ((url: URL) => boolean),
-    handler: (websocketroute: WebSocketRoute) => Promise<any> | any
-  ): Promise<void>;
-  unroute(
-    url: string | RegExp | URLPattern | ((url: URL) => boolean),
-    handler?: (route: Route, request: Request) => Promise<any> | any
-  ): Promise<void>;
+  route(url: string|RegExp|URLPattern|((url: URL) => boolean), handler: ((route: Route, request: Request) => Promise<any>|any), options?: { times?: number; }): Promise<Disposable>;
+  routeFromHAR(har: string, options?: { notFound?: "abort"|"fallback"; update?: boolean; updateContent?: "embed"|"attach"; updateMode?: "full"|"minimal"; url?: string|RegExp; }): Promise<void>;
+  routeWebSocket(url: string|RegExp|URLPattern|((url: URL) => boolean), handler: ((websocketroute: WebSocketRoute) => Promise<any>|any)): Promise<void>;
+  unroute(url: string|RegExp|URLPattern|((url: URL) => boolean), handler?: ((route: Route, request: Request) => Promise<any>|any)): Promise<void>;
   unrouteAll(options?: {
     behavior?: "wait" | "ignoreErrors" | "default";
   }): Promise<void>;

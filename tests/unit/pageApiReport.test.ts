@@ -83,4 +83,16 @@ describe("generatePageApiReport", () => {
       expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
     }
   );
+
+  it("matches upstream Playwright Page routing signatures", () => {
+    const report = generateApiMethodSignatureReport("Page", [
+      "route",
+      "routeFromHAR",
+      "routeWebSocket",
+      "unroute",
+      "unrouteAll"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });
