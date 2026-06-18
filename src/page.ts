@@ -1025,13 +1025,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async goto(url: string, options?: PageGotoOptions): Promise<Response | null> {
-    const response = await this.adapter.goto(url, {
-      ...options,
-      timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
-    });
-    await this.reinstallExposedBindings();
-    await this.refreshFrameSnapshots();
-    return this.toPublicResponse(response);
+    return this.mainFrame().goto(url, options);
   }
 
   url(): string {
@@ -3120,6 +3114,28 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async refreshFramesForExternalMutation(): Promise<void> {
     await this.refreshFrameSnapshots();
+  }
+
+  async gotoInFrame(frame: RoxyFrameSnapshot, url: string, options: PageGotoOptions = {}): Promise<Response | null> {
+    if (frame.parentId === null) {
+      const response = await this.adapter.goto(url, {
+        ...options,
+        timeout: options.timeout ?? this.defaultNavigationTimeoutMs
+      });
+      await this.reinstallExposedBindings();
+      await this.refreshFrameSnapshots();
+      return this.toPublicResponse(response);
+    }
+
+    const frameObject = this.frameById(frame.id);
+    if (!frameObject) {
+      throw new Error("Navigating frame was detached!");
+    }
+    const navigationPromise = frameObject.waitForNavigation(options);
+    await this.evaluateInFrame(frame, (targetUrl) => {
+      window.location.href = targetUrl;
+    }, url);
+    return navigationPromise;
   }
 
   async contentInFrame(frame: RoxyFrameSnapshot): Promise<string> {

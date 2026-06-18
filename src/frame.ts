@@ -113,11 +113,7 @@ export class RoxyFrame implements Frame {
     if (this.detached) {
       throw new Error("Navigating frame was detached!");
     }
-    const navigationPromise = this.waitForNavigation(options);
-    await this.evaluate((targetUrl) => {
-      window.location.href = targetUrl;
-    }, url);
-    return navigationPromise;
+    return this.roxyPage.gotoInFrame(this.snapshot, url, options);
   }
 
   async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
