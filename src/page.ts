@@ -1131,7 +1131,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async waitForTimeout(timeout: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, timeout));
+    await this.mainFrame().waitForTimeout(timeout);
   }
 
   async prepareForPendingFileChooser(): Promise<void> {

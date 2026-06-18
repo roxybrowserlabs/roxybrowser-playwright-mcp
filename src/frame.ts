@@ -183,6 +183,10 @@ export class RoxyFrame implements Frame {
     throw new TimeoutError(`${apiName}: Timeout ${timeout}ms exceeded.`);
   }
 
+  async waitForTimeout(timeout: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, timeout));
+  }
+
   async waitForURL(
     url: string | RegExp | URLPattern | ((url: URL) => boolean),
     options: WaitForNavigationOptions = {}

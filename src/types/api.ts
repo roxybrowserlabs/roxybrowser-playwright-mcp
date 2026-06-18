@@ -1234,6 +1234,7 @@ export interface Frame {
     state?: "load" | "domcontentloaded" | "networkidle",
     options?: { timeout?: number }
   ): Promise<void>;
+  waitForTimeout(timeout: number): Promise<void>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
   waitForSelector(selector: string, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: PageWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;
