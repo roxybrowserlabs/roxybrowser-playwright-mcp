@@ -1722,16 +1722,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this;
   }
 
-  removeAllListeners(event?: PageEventName): this;
+  removeAllListeners(type?: string): this;
+  removeAllListeners(type: string|undefined, options: { behavior?: 'wait'|'ignoreErrors'|'default' }): Promise<void>;
   removeAllListeners(
-    event: PageEventName | undefined,
-    options: { behavior?: RemoveAllListenersBehavior }
-  ): Promise<void>;
-  removeAllListeners(
-    event?: PageEventName,
+    event?: string,
     options?: { behavior?: RemoveAllListenersBehavior }
   ): this | Promise<void> {
-    this.removeAllListenersInternal(event);
+    this.removeAllListenersInternal(event as PageEventName | undefined);
     if (!options) {
       return this;
     }
@@ -1741,7 +1738,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.rejectionHandler = (error) => {
         errors.push(error);
       };
-      return this.waitForPendingHandlers(event).then(() => {
+      return this.waitForPendingHandlers(event as PageEventName | undefined).then(() => {
         if (errors.length > 0) {
           throw errors[0];
         }
@@ -2060,11 +2057,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.locator(selector).contentFrame();
   }
 
+  frame(frameSelector: string|{ name?: string; url?: string|RegExp|URLPattern|((url: URL) => boolean); }): null|Frame;
   frame(
     frameSelector:
       | {
           name?: string | RegExp;
-          url?: string | RegExp;
+          url?: string | RegExp | URLPattern | ((url: URL) => boolean);
         }
       | string
   ): Frame | null {
@@ -2086,9 +2084,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         const urlMatched =
           frameSelector.url === undefined
             ? true
-            : typeof frameSelector.url === "string"
-              ? frame.url() === frameSelector.url
-              : frameSelector.url.test(frame.url());
+            : urlMatches(this.baseURL(), frame.url(), frameSelector.url);
         return nameMatched && urlMatched;
       }) ?? null
     );
@@ -2109,18 +2105,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return options ? locator.filter(options) : locator;
   }
 
+  getByText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {
     return new RoxyLocator(this.adapter.getByText(text, options), this.humanController, null, undefined, this.humanDefaults, this);
   }
 
+  getByAltText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator {
     return new RoxyLocator(this.adapter.getByAltText(text, options), this.humanController, null, undefined, this.humanDefaults, this);
   }
 
+  getByLabel(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator {
     return new RoxyLocator(this.adapter.getByLabel(text, options), this.humanController, null, undefined, this.humanDefaults, this);
   }
 
+  getByPlaceholder(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): Locator {
     return new RoxyLocator(this.adapter.getByPlaceholder(text, options), this.humanController, null, undefined, this.humanDefaults, this);
   }
@@ -2129,10 +2129,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return new RoxyLocator(this.adapter.getByTestId(testId), this.humanController, null, undefined, this.humanDefaults, this);
   }
 
+  getByRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: { checked?: boolean; description?: string|RegExp; disabled?: boolean; exact?: boolean; expanded?: boolean; includeHidden?: boolean; level?: number; name?: string|RegExp; pressed?: boolean; selected?: boolean; }): Locator;
   getByRole(role: string, options?: GetByRoleOptions): Locator {
     return new RoxyLocator(this.adapter.getByRole(role, options), this.humanController, null, undefined, this.humanDefaults, this);
   }
 
+  getByTitle(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator {
     return new RoxyLocator(this.adapter.getByTitle(text, options), this.humanController, null, undefined, this.humanDefaults, this);
   }
@@ -2486,7 +2488,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await (await this.requiredElementHandleForSelector(selector, "page.setChecked", options)).setChecked(checked, options);
   }
 
-  async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
+  async setExtraHTTPHeaders(headers: { [key: string]: string; }): Promise<void> {
     await this.adapter.setExtraHTTPHeaders(normalizeExtraHTTPHeaders(headers));
   }
 
@@ -2555,6 +2557,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.defaultTimeoutMs = timeout;
   }
 
+  async setViewportSize(viewportSize: { width: number; height: number; }): Promise<void>;
   async setViewportSize(viewportSize: ViewportSize): Promise<void> {
     await this.adapter.setViewportSize(viewportSize);
     this.currentViewportSize = viewportSize;
@@ -2601,6 +2604,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await (await this.requiredElementHandleForSelector(selector, "page.tap", options)).tap(options);
   }
 
+  async close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;
   async close(options: PageCloseOptions = {}): Promise<void> {
     if (options.runBeforeUnload) {
       await this.adapter.close(options);

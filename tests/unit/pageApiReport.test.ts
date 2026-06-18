@@ -182,4 +182,22 @@ describe("generatePageApiReport", () => {
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
+
+  it("matches upstream Playwright Page locator and small misc signatures", () => {
+    const report = generateApiMethodSignatureReport("Page", [
+      "close",
+      "frame",
+      "getByAltText",
+      "getByLabel",
+      "getByPlaceholder",
+      "getByRole",
+      "getByText",
+      "getByTitle",
+      "removeAllListeners",
+      "setExtraHTTPHeaders",
+      "setViewportSize"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });

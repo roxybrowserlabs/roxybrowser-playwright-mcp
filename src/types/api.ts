@@ -881,13 +881,8 @@ export interface Page {
   prependListener(event: 'response', listener: (response: Response) => any): this;
   prependListener(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
   prependListener(event: 'worker', listener: (worker: Worker) => any): this;
-  removeAllListeners(event?: PageEventName): this;
-  removeAllListeners(
-    event: PageEventName | undefined,
-    options: {
-      behavior?: "wait" | "ignoreErrors" | "default";
-    }
-  ): Promise<void>;
+  removeAllListeners(type?: string): this;
+  removeAllListeners(type: string|undefined, options: { behavior?: 'wait'|'ignoreErrors'|'default' }): Promise<void>;
   waitForEvent(event: 'close', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
   waitForEvent(event: 'console', optionsOrPredicate?: { predicate?: (consoleMessage: ConsoleMessage) => boolean | Promise<boolean>, timeout?: number } | ((consoleMessage: ConsoleMessage) => boolean | Promise<boolean>)): Promise<ConsoleMessage>;
   waitForEvent(event: 'crash', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
@@ -920,14 +915,7 @@ export interface Page {
   $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
   $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
   frameLocator(selector: string): FrameLocator;
-  frame(
-    frameSelector:
-      | {
-          name?: string | RegExp;
-          url?: string | RegExp;
-        }
-      | string
-  ): Frame | null;
+  frame(frameSelector: string|{ name?: string; url?: string|RegExp|URLPattern|((url: URL) => boolean); }): null|Frame;
   frames(): Array<Frame>;
   mainFrame(): Frame;
   locator(selector: string, options?: {
@@ -936,13 +924,13 @@ export interface Page {
     hasNotText?: string|RegExp;
     hasText?: string|RegExp;
   }): Locator;
-  getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
-  getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator;
-  getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator;
-  getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): Locator;
+  getByText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByAltText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByLabel(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByPlaceholder(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByTestId(testId: string | RegExp): Locator;
-  getByRole(role: string, options?: GetByRoleOptions): Locator;
-  getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator;
+  getByRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: { checked?: boolean; description?: string|RegExp; disabled?: boolean; exact?: boolean; expanded?: boolean; includeHidden?: boolean; level?: number; name?: string|RegExp; pressed?: boolean; selected?: boolean; }): Locator;
+  getByTitle(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   cancelPickLocator(): Promise<void>;
   hideHighlight(): Promise<void>;
   opener(): Promise<null|Page>;
@@ -976,7 +964,7 @@ export interface Page {
   dragAndDrop(source: string, target: string, options?: DragAndDropOptions): Promise<void>;
   emulateMedia(options?: EmulateMediaOptions): Promise<void>;
   setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
+  setExtraHTTPHeaders(headers: { [key: string]: string; }): Promise<void>;
   setInputFiles(
     selector: string,
     files: string | FilePayload | string[] | FilePayload[],
@@ -1003,7 +991,7 @@ export interface Page {
   requestGC(): Promise<void>;
   setDefaultNavigationTimeout(timeout: number): void;
   setDefaultTimeout(timeout: number): void;
-  setViewportSize(viewportSize: ViewportSize): Promise<void>;
+  setViewportSize(viewportSize: { width: number; height: number; }): Promise<void>;
   viewportSize(): null|{ width: number; height: number; };
   tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
@@ -1012,7 +1000,7 @@ export interface Page {
   fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
-  close(options?: PageCloseOptions): Promise<void>;
+  close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;
 }
 
 export interface ElementHandle<T = Node> extends JSHandle<T> {
