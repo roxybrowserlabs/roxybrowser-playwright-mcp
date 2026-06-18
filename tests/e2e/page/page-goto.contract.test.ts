@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withPage } from "../../helpers/browser.js";
@@ -326,6 +327,109 @@ describe("page goto contract e2e", () => {
         .catch((caught) => caught);
       expect(error.message).toContain('"referer" is already specified as extra HTTP header');
       expect(error.message).toContain(fixture.server.PREFIX + "/grid.html");
+    });
+  });
+
+  it("should override referrer-policy", async () => {
+    await withPage(async (page) => {
+      const grid = await readFile(fixture.asset("grid.html"), "utf8");
+      fixture.server.setRoute("/grid.html", (_request, response) => {
+        response.setHeader("Referrer-Policy", "no-referrer");
+        response.setHeader("Content-Type", "text/html; charset=utf-8");
+        response.end(grid);
+      });
+      const [request1, request2] = await Promise.all([
+        fixture.server.waitForRequest("/grid.html"),
+        fixture.server.waitForRequest("/digits/1.png"),
+        page.goto(fixture.server.PREFIX + "/grid.html", {
+          referer: "http://microsoft.com/"
+        })
+      ]);
+      expect(request1.headers.referer).toBe("http://microsoft.com/");
+      expect(request2.headers.referer).toBe(undefined);
+      expect(page.url()).toBe(fixture.server.PREFIX + "/grid.html");
+    });
+  });
+
+  it("should fail when canceled by another navigation", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/one-style.html", () => {});
+      const failed = page.goto(fixture.server.PREFIX + "/one-style.html").catch((caught) => caught);
+      await fixture.server.waitForRequest("/one-style.html");
+      await page.goto(fixture.server.PREFIX + "/empty.html");
+      const error = await failed;
+      expect(error.message).toBeTruthy();
+    });
+  });
+
+  it("should work with lazy loading iframes", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/frames/lazy-frame.html");
+      expect(page.frames().length).toBe(2);
+    });
+  });
+
+  it("should not throw unhandled rejections on invalid url", async () => {
+    await withPage(async (page) => {
+      const error = await page.goto("https://www.youtube Panel Title.com/").catch((caught) => caught);
+      expect(String(error)).toContain("Panel Title");
+    });
+  });
+
+  it("should not crash when RTCPeerConnection is used", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/rtc.html", (_request, response) => {
+        response.end(`
+          <!DOCTYPE html>
+          <html>
+            <body>
+              <script>
+                window.RTCPeerConnection && new window.RTCPeerConnection({
+                  iceServers: []
+                });
+              </script>
+            </body>
+          </html>
+        `);
+      });
+      await page.goto(fixture.server.PREFIX + "/rtc.html");
+      await page.evaluate(() => {
+        window.RTCPeerConnection && new window.RTCPeerConnection({
+          iceServers: []
+        });
+      });
+    });
+  });
+
+  it("should properly wait for load", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/slow.js", async (_request, response) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        response.writeHead(200, { "Content-Type": "application/javascript" });
+        response.end("window.results.push('slow module');export const foo = 'slow';");
+      });
+      await page.goto(fixture.server.PREFIX + "/load-event/load-event.html");
+      const results = await page.evaluate("window.results");
+      expect(results).toEqual([
+        "script tag after after module",
+        "slow module",
+        "module",
+        "DOMContentLoaded",
+        "load"
+      ]);
+    });
+  });
+
+  it("should return when navigation is committed if commit is specified", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/script.js", () => {});
+      fixture.server.setRoute("/empty.html", (_request, response) => {
+        response.setHeader("content-type", "text/html");
+        response.end('<title>Hello</title><script src="script.js"></script>');
+      });
+      const response = await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "commit" });
+      expect(response!.status()).toBe(200);
+      expect(await page.title()).toBe("Hello");
     });
   });
 });

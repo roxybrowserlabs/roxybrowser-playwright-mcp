@@ -3701,6 +3701,9 @@ async function assertFirefoxExecutable(executable: string): Promise<void> {
 }
 
 function completeUserURL(urlString: string): string {
+  if (/\s/.test(urlString)) {
+    throw new Error(`Invalid URL: ${urlString}`);
+  }
   if (urlString.startsWith("localhost") || urlString.startsWith("127.0.0.1")) {
     return `http://${urlString}`;
   }

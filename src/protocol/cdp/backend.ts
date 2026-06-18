@@ -400,6 +400,7 @@ interface NavigationResponseCapture {
 }
 
 interface NavigationFailureCapture {
+  targetUrl?: string;
   reject: (error: Error) => void;
 }
 
@@ -1799,10 +1800,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (request?.responseStatus === 204) {
         if (request.type === "Document" && request.frameId && this.isMainFrameId(request.frameId)) {
           this.ensureResponseBodyState(event.requestId).markFailed(
-            new Error(event.errorText || "Navigation failed.")
+            new Error(formatNavigationFailureMessage(event.errorText || "Navigation failed.", request.url))
           );
           this.rejectNavigationFailureCaptures(
-            new Error(event.errorText || "Navigation failed.")
+            new Error(formatNavigationFailureMessage(event.errorText || "Navigation failed.", request.url)),
+            request.url
           );
           onRequestSettled(event.requestId);
           this.emit("requestfailed", {
@@ -1830,11 +1832,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         return;
       }
       this.ensureResponseBodyState(event.requestId).markFailed(
-        new Error(event.errorText || "Network loading failed.")
+        new Error(formatNavigationFailureMessage(event.errorText || "Network loading failed.", request?.url))
       );
       if (request?.type === "Document" && request.frameId && this.isMainFrameId(request.frameId)) {
         this.rejectNavigationFailureCaptures(
-          new Error(event.errorText || "Navigation failed.")
+          new Error(formatNavigationFailureMessage(event.errorText || "Navigation failed.", request.url)),
+          request.url
         );
       }
       onRequestSettled(event.requestId);
@@ -1859,7 +1862,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const targetUrl = resolveUrl(url, this.options.contextOptions.baseURL);
     const referer = this.resolveNavigationReferer(options, targetUrl);
     const capture = this.beginNavigationResponseCapture();
-    const failureCapture = this.beginNavigationFailureCapture();
+    const failureCapture = this.beginNavigationFailureCapture(targetUrl);
     this.resetNavigationState();
 
     try {
@@ -1911,7 +1914,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async reload(options: PageGotoOptions = {}): Promise<PageResponse | null> {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const capture = this.beginNavigationResponseCapture();
-    const failureCapture = this.beginNavigationFailureCapture();
+    const failureCapture = this.beginNavigationFailureCapture(this.currentUrl);
     this.resetNavigationState();
 
     try {
@@ -4927,7 +4930,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const capture = this.beginNavigationResponseCapture();
-    const failureCapture = this.beginNavigationFailureCapture();
+    const failureCapture = this.beginNavigationFailureCapture(nextEntry.url);
     this.resetNavigationState();
     this.allowSameDocumentNavigationToResolveWaiters = true;
     try {
@@ -5332,12 +5335,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   }
 
-  private beginNavigationFailureCapture(): NavigationFailureCapture {
+  private beginNavigationFailureCapture(targetUrl?: string): NavigationFailureCapture {
     let reject!: (error: Error) => void;
     const failure = new Promise<never>((_resolve, rejectCallback) => {
       reject = rejectCallback;
     });
-    const capture: NavigationFailureCapture = { reject };
+    const capture: NavigationFailureCapture = {
+      ...(targetUrl ? { targetUrl } : {}),
+      reject
+    };
     this.navigationFailureCaptures.add(capture);
     // The promise is consumed through raceNavigationFailure; keep a catch here so
     // cleanup after a successful navigation cannot leave a dangling rejection.
@@ -5350,8 +5356,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.navigationFailureCaptures.delete(capture);
   }
 
-  private rejectNavigationFailureCaptures(error: Error): void {
+  private rejectNavigationFailureCaptures(error: Error, failedUrl?: string): void {
     for (const capture of Array.from(this.navigationFailureCaptures)) {
+      if (failedUrl && capture.targetUrl && stripHash(capture.targetUrl) !== stripHash(failedUrl)) {
+        continue;
+      }
       capture.reject(error);
     }
   }
@@ -6763,6 +6772,9 @@ async function safelyCloseClient(client: CdpClient): Promise<void> {
 }
 
 function resolveUrl(url: string, baseURL?: string): string {
+  if (/\s/.test(url)) {
+    throw new Error(`Cannot navigate to invalid URL: ${url}`);
+  }
   const resolved = baseURL ? new URL(url, baseURL).toString() : url;
   if (resolved.startsWith("localhost") || resolved.startsWith("127.0.0.1")) {
     return `http://${resolved}`;
@@ -7472,6 +7484,15 @@ function shouldCaptureNavigationResponseUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function stripHash(url: string): string {
+  const index = url.indexOf("#");
+  return index === -1 ? url : url.slice(0, index);
+}
+
+function formatNavigationFailureMessage(message: string, url?: string): string {
+  return url && !message.includes(url) ? `${message} at ${url}` : message;
 }
 
 function matchesNavigationResponseUrl(
