@@ -1,5 +1,6 @@
 import { createSmartHandle } from "./jsHandle.js";
 import type { RoxyPage } from "./page.js";
+import { assertFillValue } from "./assertions.js";
 import { TimeoutError } from "./errors.js";
 import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import type { LocatorSelector } from "./protocol/adapter.js";
@@ -468,7 +469,9 @@ export class RoxyFrame implements Frame {
   }
 
   async fill(selector: string, value: string, options?: FillOptions): Promise<void> {
-    await this.locator(selector).fill(value, options);
+    assertFillValue(value);
+    const apiName = this.snapshot.parentId === null ? "page.fill" : "frame.fill";
+    await (await this.requiredElementHandleForSelector(selector, apiName, options)).fill(value, options);
   }
 
   async type(selector: string, value: string, options?: TypeOptions): Promise<void> {

@@ -1251,8 +1251,15 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           firstElement.dispatchEvent(new Event("change", { bubbles: true }));
           return true;
         };
-        const waitResult = waitForFillActionability(firstElement);
-        return waitResult instanceof Promise ? waitResult.then(fillElement) : fillElement();
+        if (payload.timeoutMs !== undefined) {
+          const waitResult = waitForFillActionability(firstElement);
+          return waitResult instanceof Promise ? waitResult.then(fillElement) : fillElement();
+        }
+        const error = fillActionabilityError(firstElement);
+        if (error) {
+          throw new Error(error);
+        }
+        return fillElement();
       }
     case "actionPoint":
       {

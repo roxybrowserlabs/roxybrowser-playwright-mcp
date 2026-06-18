@@ -4126,12 +4126,34 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const actionPoint = await this.resolveActionPoint(locator);
       void this.showScreencastAction("fill", actionPoint).catch(() => {});
     } catch {}
-    await this.runLocatorOperation<boolean>(locator, {
-      operation: "fill",
-      ...(options?.force !== undefined ? { force: options.force } : {}),
-      timeoutMs: options?.timeout ?? DEFAULT_TIMEOUT_MS,
-      value
-    });
+    await this.runFillLocatorWithRetry(locator, value, options);
+  }
+
+  private async runFillLocatorWithRetry(
+    locator: CdpLocatorState,
+    value: string,
+    options?: FillOptions
+  ): Promise<void> {
+    const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
+    const deadline = Date.now() + timeout;
+    while (true) {
+      try {
+        await this.runLocatorOperation<boolean>(locator, {
+          operation: "fill",
+          ...(options?.force !== undefined ? { force: options.force } : {}),
+          value
+        });
+        return;
+      } catch (error) {
+        if (options?.force || !shouldRetryFillActionabilityError(error)) {
+          throw error;
+        }
+        if (timeout === 0 || Date.now() + 50 > deadline) {
+          throw error;
+        }
+        await delay(50);
+      }
+    }
   }
 
   async typeLocator(
@@ -8616,6 +8638,18 @@ function shouldRetryActionPointError(error: unknown): boolean {
       message === "Element does not have an actionable bounding box." ||
       message === "Element intercepts pointer events."
     )
+  );
+}
+
+function shouldRetryFillActionabilityError(error: unknown): boolean {
+  const message = error instanceof Error
+    ? error.message.replace(/^(LocatorError:\s*)?(Error:\s*)?/, "").replace(/\s+Selector:.*$/s, "")
+    : "";
+  return (
+    message === "No element found." ||
+    message === "Element is not visible." ||
+    message === "Element is not enabled." ||
+    message === "Element is not editable."
   );
 }
 

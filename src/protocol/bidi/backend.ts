@@ -525,8 +525,15 @@ function locatorOperation(payload: LocatorPayload) {
           firstElement.dispatchEvent(new Event("change", { bubbles: true }));
           return true;
         };
-        const waitResult = waitForFillActionability(firstElement);
-        return waitResult instanceof Promise ? waitResult.then(fillElement) : fillElement();
+        if (payload.timeoutMs !== undefined) {
+          const waitResult = waitForFillActionability(firstElement);
+          return waitResult instanceof Promise ? waitResult.then(fillElement) : fillElement();
+        }
+        const error = fillActionabilityError(firstElement);
+        if (error) {
+          throw new Error(error);
+        }
+        return fillElement();
       }
     case "actionPoint":
       if (!firstElement) {
@@ -1973,16 +1980,38 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async fillLocator(locator: BidiLocatorState, value: string, options?: FillOptions): Promise<void> {
-    await this.runLocatorOperation<boolean>(locator, {
-      operation: "fill",
-      ...(options?.force !== undefined ? { force: options.force } : {}),
-      timeoutMs: options?.timeout ?? 30_000,
-      value
-    });
+    await this.runFillLocatorWithRetry(locator, value, options);
     try {
       const point = await this.resolveActionPoint(locator);
       await this.showScreencastAction("fill", point);
     } catch {}
+  }
+
+  private async runFillLocatorWithRetry(
+    locator: BidiLocatorState,
+    value: string,
+    options?: FillOptions
+  ): Promise<void> {
+    const timeout = options?.timeout ?? 30_000;
+    const deadline = Date.now() + timeout;
+    while (true) {
+      try {
+        await this.runLocatorOperation<boolean>(locator, {
+          operation: "fill",
+          ...(options?.force !== undefined ? { force: options.force } : {}),
+          value
+        });
+        return;
+      } catch (error) {
+        if (options?.force || !shouldRetryFillActionabilityError(error)) {
+          throw error;
+        }
+        if (timeout === 0 || Date.now() + 50 > deadline) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
   }
 
   async typeLocator(locator: BidiLocatorState, value: string, options?: TypeOptions): Promise<void> {
@@ -3948,6 +3977,18 @@ function completeUserURL(urlString: string): string {
     return `http://${urlString}`;
   }
   return urlString;
+}
+
+function shouldRetryFillActionabilityError(error: unknown): boolean {
+  const message = error instanceof Error
+    ? error.message.replace(/^(LocatorError:\s*)?(Error:\s*)?/, "").replace(/\s+Selector:.*$/s, "")
+    : "";
+  return (
+    message === "No element found." ||
+    message === "Element is not visible." ||
+    message === "Element is not enabled." ||
+    message === "Element is not editable."
+  );
 }
 
 function verifyLifecycle(

@@ -7,7 +7,6 @@ import {
   type ElementHandleFrameResolver,
   serializeEvaluationArgument
 } from "./elementHandle.js";
-import { assertFillValue } from "./assertions.js";
 import { TimeoutError } from "./errors.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyFrame, type RoxyFrameSnapshot } from "./frame.js";
@@ -2563,8 +2562,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   async fill(selector: string, value: string, options?: FillOptions): Promise<void> {
-    assertFillValue(value);
-    await (await this.requiredElementHandleForSelector(selector, "page.fill", options)).fill(value, options);
+    await this.mainFrame().fill(selector, value, options);
   }
 
   async type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
