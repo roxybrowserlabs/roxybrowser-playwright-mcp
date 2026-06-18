@@ -1025,7 +1025,8 @@ export interface Page {
   ): Promise<void>;
   selectOption(
     selector: string,
-    values: string | SelectOptionValue | Array<string | SelectOptionValue>
+    values: string | SelectOptionValue | Array<string | SelectOptionValue>,
+    options?: SelectorStrictOptions
   ): Promise<string[]>;
   bringToFront(): Promise<void>;
   isClosed(): boolean;

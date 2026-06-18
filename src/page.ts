@@ -2119,11 +2119,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async check(selector: string, options?: ClickOptions): Promise<void> {
-    await this.locator(selector).check(options);
+    await (await this.requiredElementHandleForSelector(selector, "page.check", options)).check(options);
   }
 
   async uncheck(selector: string, options?: ClickOptions): Promise<void> {
-    await this.locator(selector).uncheck(options);
+    await (await this.requiredElementHandleForSelector(selector, "page.uncheck", options)).uncheck(options);
   }
 
   async dragAndDrop(
@@ -2131,14 +2131,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     target: string,
     options: DragAndDropOptions = {}
   ): Promise<void> {
-    const sourceHandle = await this.$(source);
-    if (!sourceHandle) {
-      throw new Error(`page.dragAndDrop: Failed to find source element matching selector "${source}"`);
-    }
-    const targetHandle = await this.$(target);
-    if (!targetHandle) {
-      throw new Error(`page.dragAndDrop: Failed to find target element matching selector "${target}"`);
-    }
+    const sourceHandle = await this.requiredElementHandleForSelector(source, "page.dragAndDrop", options);
+    const targetHandle = await this.requiredElementHandleForSelector(target, "page.dragAndDrop", options);
     if (options.trial) {
       return;
     }
@@ -2182,7 +2176,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
-    await this.adapter.setChecked(parseSelectorChain(selector), checked, options);
+    await (await this.requiredElementHandleForSelector(selector, "page.setChecked", options)).setChecked(checked, options);
   }
 
   async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
@@ -2202,15 +2196,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async setInputFiles(
     selector: string | ElementHandle,
     files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
-    _options?: SetInputFilesOptions
+    options?: SetInputFilesOptions
   ): Promise<void> {
     const handle =
       typeof selector === "string"
-        ? await this.$(selector)
+        ? await this.requiredElementHandleForSelector(selector, "page.setInputFiles", options)
         : selector;
-    if (!handle) {
-      throw new Error(`page.setInputFiles: Failed to find element matching selector "${selector}"`);
-    }
     const payloads = await this.normalizeFilePayloads(files);
     await handle.evaluate(
       (element, entries) => {
@@ -2251,9 +2242,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async selectOption(
     selector: string,
-    values: string | SelectOptionValue | Array<string | SelectOptionValue>
+    values: string | SelectOptionValue | Array<string | SelectOptionValue>,
+    options?: SelectorStrictOptions
   ): Promise<string[]> {
-    return this.locator(selector).selectOption(values);
+    return (await this.requiredElementHandleForSelector(selector, "page.selectOption", options)).selectOption(values);
   }
 
   async bringToFront(): Promise<void> {
@@ -2299,15 +2291,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async type(selector: string, value: string, options?: TypeOptions): Promise<void> {
-    await this.locator(selector).type(value, options);
+    await (await this.requiredElementHandleForSelector(selector, "page.type", options)).type(value, options);
   }
 
   async press(selector: string, key: string, options?: PressOptions): Promise<void> {
-    await this.locator(selector).press(key, options);
+    await (await this.requiredElementHandleForSelector(selector, "page.press", options)).press(key, options);
   }
 
   async tap(selector: string, options?: TapOptions): Promise<void> {
-    await this.adapter.tap(parseSelectorChain(selector), options);
+    await (await this.requiredElementHandleForSelector(selector, "page.tap", options)).tap(options);
   }
 
   async close(options: PageCloseOptions = {}): Promise<void> {

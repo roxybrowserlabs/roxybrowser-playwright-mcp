@@ -169,11 +169,11 @@ export interface SelectOption {
 
 export type SelectOptionValue = string | SelectOption;
 
-export interface TypeOptions extends TimeoutOptions, HumanizedOption {
+export interface TypeOptions extends SelectorStrictOptions, HumanizedOption {
   delay?: number;
 }
 
-export interface PressOptions extends TimeoutOptions, HumanizedOption {
+export interface PressOptions extends SelectorStrictOptions, HumanizedOption {
   delay?: number;
   noWaitAfter?: boolean;
 }
@@ -234,7 +234,7 @@ export interface PdfOptions {
   width?: string | number;
 }
 
-export interface SetInputFilesOptions extends TimeoutOptions {
+export interface SetInputFilesOptions extends SelectorStrictOptions {
   noWaitAfter?: boolean;
 }
 

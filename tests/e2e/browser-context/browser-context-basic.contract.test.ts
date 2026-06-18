@@ -133,6 +133,29 @@ describe("browser context contract e2e", () => {
           expect(await loosePage.textContent("span")).toBe("span1");
           await expect(strictPage.textContent("span")).rejects.toThrow(/strict mode violation/);
           expect(await strictPage.textContent("span", { strict: false })).toBe("span1");
+
+          await strictPage.setContent(`<button>button1</button><button>target</button>`);
+          await expect(strictPage.click("button")).rejects.toThrow(/strict mode violation/);
+          await strictPage.click("button", { strict: false });
+
+          await strictPage.setContent(`<input><div><input></div>`);
+          await expect(strictPage.type("input", "abc")).rejects.toThrow(/strict mode violation/);
+          await strictPage.type("input", "abc", { strict: false });
+          await expect(strictPage.press("input", "Backspace")).rejects.toThrow(/strict mode violation/);
+          await strictPage.press("input", "Backspace", { strict: false });
+
+          await strictPage.setContent(`<input type="checkbox"><div><input type="checkbox"></div>`);
+          await expect(strictPage.check("input")).rejects.toThrow(/strict mode violation/);
+          await strictPage.check("input", { strict: false });
+          await expect(strictPage.uncheck("input")).rejects.toThrow(/strict mode violation/);
+          await strictPage.uncheck("input", { strict: false });
+
+          await strictPage.setContent(`
+            <select><option value="a">A</option></select>
+            <div><select><option value="b">B</option></select></div>
+          `);
+          await expect(strictPage.selectOption("select", "a")).rejects.toThrow(/strict mode violation/);
+          expect(await strictPage.selectOption("select", "a", { strict: false })).toEqual(["a"]);
         } finally {
           await loosePage.close();
           await strictPage.close();
