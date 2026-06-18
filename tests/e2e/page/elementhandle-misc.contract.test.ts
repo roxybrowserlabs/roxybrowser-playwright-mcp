@@ -103,6 +103,26 @@ describe("elementHandle misc contract e2e", () => {
     });
   });
 
+  it("checks aria roles by clicking and honors trial", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div role="checkbox" id="checkbox">CHECKBOX</div>
+        <script>
+          checkbox.addEventListener('click', () => checkbox.setAttribute('aria-checked', 'true'));
+        </script>
+      `);
+      const checkbox = await page.$("div");
+
+      await checkbox!.check();
+      expect(await page.evaluate(() => checkbox.getAttribute("aria-checked"))).toBe("true");
+
+      await page.setContent(`<input id="input" type="checkbox">`);
+      const input = await page.$("input");
+      await input!.check({ trial: true });
+      expect(await page.evaluate(() => input.checked)).toBe(false);
+    });
+  });
+
   it("selects a single option", async () => {
     await withPage(async (page) => {
       await page.setContent(`

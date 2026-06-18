@@ -489,6 +489,7 @@ interface ScreencastActionAnnotationState {
 interface LocatorPayload {
   operation:
     | "actionPoint"
+    | "checkedState"
     | "fill"
     | "focus"
     | "isVisible"
@@ -3941,18 +3942,33 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async checkLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
-    await this.runLocatorOperation<boolean>(locator, {
-      operation: "check",
-      checked: true,
-      ...(options?.force !== undefined ? { force: options.force } : {})
-    });
+    await this.setCheckedLocator(locator, true, options);
   }
 
   async uncheckLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
+    await this.setCheckedLocator(locator, false, options);
+  }
+
+  private async setCheckedLocator(locator: CdpLocatorState, checked: boolean, options?: ClickOptions): Promise<void> {
     await this.runLocatorOperation<boolean>(locator, {
       operation: "check",
-      checked: false,
-      ...(options?.force !== undefined ? { force: options.force } : {})
+      checked
+    });
+    if (await this.checkedStateLocator(locator) === checked) {
+      return;
+    }
+    if (options?.trial) {
+      return;
+    }
+    await this.clickLocator(locator, options);
+    if (await this.checkedStateLocator(locator) !== checked) {
+      throw new Error(`Clicking the checkbox did not change its state`);
+    }
+  }
+
+  private async checkedStateLocator(locator: CdpLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "checkedState"
     });
   }
 
@@ -4101,14 +4117,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.runSelectorOperation<boolean>({
       operation: "focus",
       reference
-    });
-  }
-
-  async checkReference(reference: ProtocolElementHandleReference, checked: boolean): Promise<void> {
-    await this.runSelectorOperation<boolean>({
-      operation: "check",
-      reference,
-      checked
     });
   }
 
@@ -4519,6 +4527,35 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       await delay(options?.delay ?? 0);
       await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
     }
+  }
+
+  async setCheckedReference(
+    reference: ProtocolElementHandleReference,
+    checked: boolean,
+    options?: ClickOptions
+  ): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "check",
+      reference,
+      checked
+    });
+    if (await this.checkedStateReference(reference) === checked) {
+      return;
+    }
+    if (options?.trial) {
+      return;
+    }
+    await this.clickReference(reference, options);
+    if (await this.checkedStateReference(reference) !== checked) {
+      throw new Error(`Clicking the checkbox did not change its state`);
+    }
+  }
+
+  private async checkedStateReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "checkedState",
+      reference
+    });
   }
 
   async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
@@ -6497,8 +6534,7 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async check(options?: ClickOptions): Promise<void> {
-    void options;
-    await this.page.checkReference(this.reference(), true);
+    await this.page.setCheckedReference(this.reference(), true, options);
   }
 
   async hover(options?: HoverOptions): Promise<void> {
@@ -6566,8 +6602,7 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async uncheck(options?: ClickOptions): Promise<void> {
-    void options;
-    await this.page.checkReference(this.reference(), false);
+    await this.page.setCheckedReference(this.reference(), false, options);
   }
 
   async selectOption(

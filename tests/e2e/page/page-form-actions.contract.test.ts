@@ -128,6 +128,51 @@ describe("page form action contract e2e", () => {
     });
   });
 
+  it("checks and unchecks aria checkbox-like roles by clicking", async () => {
+    await withPage(async (page) => {
+      for (const role of ["checkbox", "menuitemcheckbox", "option", "radio", "switch", "menuitemradio", "treeitem"]) {
+        await page.setContent(`
+          <div role="${role}" id="checkbox">CHECKBOX</div>
+          <script>
+            checkbox.addEventListener('click', () => checkbox.setAttribute('aria-checked', 'true'));
+          </script>
+        `);
+        await page.check("div");
+        expect(await page.evaluate(() => checkbox.getAttribute("aria-checked"))).toBe("true");
+
+        await page.setContent(`
+          <div role="${role}" id="checkbox" aria-checked="true">CHECKBOX</div>
+          <script>
+            checkbox.addEventListener('click', () => checkbox.setAttribute('aria-checked', 'false'));
+          </script>
+        `);
+        await page.uncheck("div");
+        expect(await page.evaluate(() => checkbox.getAttribute("aria-checked"))).toBe("false");
+      }
+    });
+  });
+
+  it("matches Playwright check error and trial semantics", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div>Check me</div>");
+      await expect(page.check("div")).rejects.toThrow("Not a checkbox or radio button");
+
+      await page.setContent("<div role=button>Check me</div>");
+      await expect(page.check("div")).rejects.toThrow("Not a checkbox or radio button");
+
+      await page.setContent(`<input id="checkbox" type="checkbox">`);
+      await page.check("input", { trial: true });
+      expect(await page.evaluate(() => checkbox.checked)).toBe(false);
+
+      await page.setContent(`<input id="checkbox" type="checkbox" checked>`);
+      await page.uncheck("input", { trial: true });
+      expect(await page.evaluate(() => checkbox.checked)).toBe(true);
+
+      await page.setContent(`<input type="radio" name="test" checked id="radio">`);
+      await expect(page.uncheck("#radio")).rejects.toThrow("Cannot uncheck radio button");
+    });
+  });
+
   it("selects options by value, label and index", async () => {
     await withPage(async (page) => {
       await page.setContent(`

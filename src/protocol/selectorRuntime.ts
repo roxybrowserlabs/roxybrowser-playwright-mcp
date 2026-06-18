@@ -9,6 +9,7 @@ export interface SelectorRuntimePayload {
     | "actionPoint"
     | "boundingBox"
     | "check"
+    | "checkedState"
     | "count"
     | "createHandle"
     | "dispatchEvent"
@@ -571,6 +572,28 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     const ariaChecked = element.getAttribute("aria-checked");
     return ariaChecked === "true" || ariaChecked === "mixed";
   };
+  const checkboxLikeRoles = new Set([
+    "checkbox",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "radio",
+    "switch",
+    "treeitem"
+  ]);
+  const checkedState = (element: Element): boolean => {
+    if (element instanceof HTMLInputElement) {
+      const type = element.type.toLowerCase();
+      if (type !== "checkbox" && type !== "radio") {
+        throw new Error("Not a checkbox or radio button");
+      }
+      return element.checked;
+    }
+    if (!checkboxLikeRoles.has(element.getAttribute("role") ?? "")) {
+      throw new Error("Not a checkbox or radio button");
+    }
+    return isChecked(element);
+  };
   const inputValue = (element: Element): string => {
     if (
       element instanceof HTMLInputElement ||
@@ -850,6 +873,14 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         const firstElement = resolveSingleElement();
         return firstElement ? isChecked(firstElement) : false;
       }
+    case "checkedState":
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        return checkedState(firstElement);
+      }
     case "isDisabled":
       {
         const firstElement = resolveSingleElement();
@@ -888,22 +919,10 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           throw new Error(payload.missingMessage ?? "No element found.");
         }
         const desired = payload.checked ?? true;
-        if (firstElement instanceof HTMLInputElement) {
-          const type = firstElement.type.toLowerCase();
-          if (type !== "checkbox" && type !== "radio") {
-            throw new Error("Not a checkbox or radio button.");
-          }
-          firstElement.checked = desired;
-        } else if (
-          firstElement.getAttribute("role") === "checkbox" ||
-          firstElement.getAttribute("role") === "radio"
-        ) {
-          firstElement.setAttribute("aria-checked", desired ? "true" : "false");
-        } else {
-          throw new Error("Not a checkbox or radio button.");
+        if (firstElement instanceof HTMLInputElement && firstElement.type.toLowerCase() === "radio" && !desired) {
+          throw new Error("Cannot uncheck radio button");
         }
-        firstElement.dispatchEvent(new Event("input", { bubbles: true }));
-        firstElement.dispatchEvent(new Event("change", { bubbles: true }));
+        checkedState(firstElement);
         return true;
       }
     case "selectOption":
