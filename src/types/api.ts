@@ -37,7 +37,8 @@ import type {
   WaitForNavigationOptions,
   WaitForURLOptions,
   WaitForSelectorOptions,
-  TimeoutOptions
+  TimeoutOptions,
+  SelectorStrictOptions
 } from "./options.js";
 import type { BrowserContextEventListener, BrowserContextEventName, BrowserContextEventPredicate, PageConsoleMessage, PageErrorEntry } from "./events.js";
 import type {
@@ -933,7 +934,7 @@ export interface Page {
           timeout?: number;
         }
   ): Promise<Worker>;
-  $(selector: string): Promise<ElementHandle | null>;
+  $(selector: string, options?: { strict?: boolean }): Promise<ElementHandle | null>;
   $$(selector: string): Promise<ElementHandle[]>;
   $eval<TResult, TArg = unknown>(
     selector: string,
@@ -999,18 +1000,18 @@ export interface Page {
   }): Promise<void>;
   video(): Video | null;
   workers(): Array<Worker>;
-  textContent(selector: string): Promise<string | null>;
-  innerText(selector: string): Promise<string>;
-  innerHTML(selector: string): Promise<string>;
-  getAttribute(selector: string, name: string): Promise<string | null>;
-  inputValue(selector: string): Promise<string>;
-  isChecked(selector: string): Promise<boolean>;
-  isDisabled(selector: string): Promise<boolean>;
-  isEditable(selector: string): Promise<boolean>;
-  isEnabled(selector: string): Promise<boolean>;
-  isHidden(selector: string): Promise<boolean>;
-  isVisible(selector: string): Promise<boolean>;
-  focus(selector: string): Promise<void>;
+  textContent(selector: string, options?: SelectorStrictOptions): Promise<string | null>;
+  innerText(selector: string, options?: SelectorStrictOptions): Promise<string>;
+  innerHTML(selector: string, options?: SelectorStrictOptions): Promise<string>;
+  getAttribute(selector: string, name: string, options?: SelectorStrictOptions): Promise<string | null>;
+  inputValue(selector: string, options?: SelectorStrictOptions): Promise<string>;
+  isChecked(selector: string, options?: SelectorStrictOptions): Promise<boolean>;
+  isDisabled(selector: string, options?: SelectorStrictOptions): Promise<boolean>;
+  isEditable(selector: string, options?: SelectorStrictOptions): Promise<boolean>;
+  isEnabled(selector: string, options?: SelectorStrictOptions): Promise<boolean>;
+  isHidden(selector: string, options?: SelectorStrictOptions): Promise<boolean>;
+  isVisible(selector: string, options?: SelectorStrictOptions): Promise<boolean>;
+  focus(selector: string, options?: SelectorStrictOptions): Promise<void>;
   check(selector: string, options?: ClickOptions): Promise<void>;
   uncheck(selector: string, options?: ClickOptions): Promise<void>;
   dragAndDrop(source: string, target: string, options?: DragAndDropOptions): Promise<void>;

@@ -105,6 +105,10 @@ export interface TimeoutOptions {
   timeout?: number;
 }
 
+export interface SelectorStrictOptions extends TimeoutOptions {
+  strict?: boolean;
+}
+
 export interface PageGotoOptions extends TimeoutOptions {
   referer?: string;
   waitUntil?: WaitUntilState;
@@ -135,10 +139,11 @@ export type WaitForSelectorState = "attached" | "detached" | "hidden" | "visible
 
 export interface WaitForSelectorOptions extends TimeoutOptions {
   state?: WaitForSelectorState;
+  strict?: boolean;
   waitFor?: WaitForSelectorState;
 }
 
-export interface HoverOptions extends TimeoutOptions, HumanizedOption {
+export interface HoverOptions extends SelectorStrictOptions, HumanizedOption {
   force?: boolean;
   trial?: boolean;
   position?: Point;
@@ -151,7 +156,7 @@ export interface ClickOptions extends HoverOptions {
   noWaitAfter?: boolean;
 }
 
-export interface FillOptions extends TimeoutOptions, HumanizedOption {
+export interface FillOptions extends SelectorStrictOptions, HumanizedOption {
   force?: boolean;
 }
 

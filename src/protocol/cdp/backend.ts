@@ -973,6 +973,14 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     }) => {
       void this.handleTargetCreated(event.targetInfo);
     });
+    this.state.browserClient.Target.detachedFromTarget?.((event: {
+      sessionId: string;
+      targetId?: string;
+    }) => {
+      if (event.targetId) {
+        void this.handleTargetDetached(event.targetId);
+      }
+    });
 
     await this.state.browserClient.Target.setAutoAttach?.({
       autoAttach: true,
@@ -1106,6 +1114,21 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         this.pendingPages.delete(targetInfo.targetId);
       }
     });
+  }
+
+  private async handleTargetDetached(targetId: string): Promise<void> {
+    const existing = this.pages.get(targetId);
+    if (existing) {
+      (existing as ProtocolPageAdapter & { didClose?: () => void }).didClose?.();
+      return;
+    }
+
+    const pending = this.pendingPages.get(targetId);
+    if (!pending) {
+      return;
+    }
+    const page = await pending.catch(() => null);
+    (page as (ProtocolPageAdapter & { didClose?: () => void }) | null)?.didClose?.();
   }
 
   private matchesTargetInfo(targetInfo: {
@@ -1512,15 +1535,36 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   ) {
     this.options.client.on("disconnect", () => {
-      if (this.closed) {
-        return;
-      }
-
-      this.closed = true;
-      this.rejectWaiters(new Error("Page disconnected."));
-      this.emit("close", undefined);
-      this.options.onClosed(this.options.targetId);
+      this.didClose();
     });
+  }
+
+  didClose(): void {
+    if (this.closed) {
+      return;
+    }
+
+    this.closed = true;
+    if (this.jsCoverageState.enabled) {
+      void this.stopJSCoverage().catch(() => {});
+    }
+    if (this.cssCoverageState.enabled) {
+      void this.stopCSSCoverage().catch(() => {});
+    }
+    if (this.screencastSession) {
+      void this.screencastStop().catch(() => {});
+    }
+    this.resetScreencastActions();
+    for (const overlay of this.screencastOverlays.values()) {
+      if (overlay.removeTimer) {
+        clearTimeout(overlay.removeTimer);
+      }
+    }
+    this.screencastOverlays.clear();
+    this.clearNetworkIdleTimer();
+    this.rejectWaiters(this.createClosedError());
+    this.emit("close", undefined);
+    this.options.onClosed(this.options.targetId);
   }
 
   private async initialize(): Promise<void> {

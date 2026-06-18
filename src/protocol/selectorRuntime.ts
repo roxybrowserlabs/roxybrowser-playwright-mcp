@@ -779,6 +779,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
     case "createHandle":
       {
+        resolveSingleElement();
         const firstNode = resolveReference(payload.reference)[0] ?? null;
         if (!firstNode) {
           throw new Error(payload.missingMessage ?? "No element found.");

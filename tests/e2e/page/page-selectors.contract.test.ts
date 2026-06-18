@@ -114,6 +114,29 @@ describe("page selectors contract e2e", () => {
     });
   });
 
+  it("enforces Playwright strictness for page selector APIs", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<span>span1</span><div><span>target</span></div>`);
+
+      await expect(page.textContent("span")).resolves.toBe("span1");
+      await expect(page.textContent("span", { strict: true })).rejects.toThrow(/strict mode violation/);
+      await expect(page.getAttribute("span", "id", { strict: true })).rejects.toThrow(/strict mode violation/);
+      await expect(page.$("span")).resolves.toBeTruthy();
+      await expect(page.$("span", { strict: true })).rejects.toThrow(/strict mode violation/);
+      await expect(page.waitForSelector("span", { strict: true, timeout: 500 })).rejects.toThrow(/strict mode violation/);
+    });
+  });
+
+  it("enforces Playwright strictness for page actions", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<input></input><div><input></input></div>`);
+      await expect(page.fill("input", "text", { strict: true })).rejects.toThrow(/strict mode violation/);
+
+      await page.setContent(`<span></span><div><span></span></div>`);
+      await expect(page.dispatchEvent("span", "click", {}, { strict: true })).rejects.toThrow(/strict mode violation/);
+    });
+  });
+
   it("supports xpath selectors through page APIs", async () => {
     await withPage(async (page) => {
       await page.setContent(`

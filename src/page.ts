@@ -23,6 +23,7 @@ import {
 } from "./utilityScriptSerializers.js";
 import type { RoxyBrowserContext } from "./browserContext.js";
 import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
+import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   LocatorSelector,
@@ -113,7 +114,8 @@ import type {
   ViewportSize,
   WaitForNavigationOptions,
   WaitForURLOptions,
-  WaitForSelectorOptions
+  WaitForSelectorOptions,
+  SelectorStrictOptions
 } from "./types/options.js";
 
 interface ListenerEntry<K extends PageEventName> {
@@ -1171,7 +1173,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const startTime = Date.now();
 
     while (Date.now() - startTime <= timeout) {
-      const handle = await this.$(selector);
+      const handle = await this.$(selector, options.strict === undefined ? undefined : { strict: options.strict });
       const visible = handle ? await handle.isVisible() : false;
 
       if (state === "attached" && handle) {
@@ -1722,9 +1724,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     });
   }
 
-  async $(selector: string): Promise<ElementHandle | null> {
-    const handle = await this.adapter.query(parseSelectorChain(selector));
-    return handle ? this.createElementHandle(handle) : null;
+  async $(selector: string, options?: { strict?: boolean }): Promise<ElementHandle | null> {
+    return this.elementHandleForSelector(selector, options);
   }
 
   async $$(selector: string): Promise<ElementHandle[]> {
@@ -1742,7 +1743,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.adapter.evalOnSelector(
       parseSelectorChain(selector),
       serializePageFunction(pageFunction),
-      typeof pageFunction === "function",
+      isPageFunctionCallable(pageFunction),
       serializeEvaluationArgument(arg)
     );
   }
@@ -1757,7 +1758,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.adapter.evalOnSelectorAll(
       parseSelectorChain(selector),
       serializePageFunction(pageFunction),
-      typeof pageFunction === "function",
+      isPageFunctionCallable(pageFunction),
       serializeEvaluationArgument(arg)
     );
   }
@@ -2065,52 +2066,54 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return [...this.pageWorkers];
   }
 
-  async textContent(selector: string): Promise<string | null> {
-    return this.locator(selector).textContent();
+  async textContent(selector: string, options?: SelectorStrictOptions): Promise<string | null> {
+    return (await this.requiredElementHandleForSelector(selector, "page.textContent", options)).textContent();
   }
 
-  async innerText(selector: string): Promise<string> {
-    return this.locator(selector).innerText();
+  async innerText(selector: string, options?: SelectorStrictOptions): Promise<string> {
+    return (await this.requiredElementHandleForSelector(selector, "page.innerText", options)).innerText();
   }
 
-  async innerHTML(selector: string): Promise<string> {
-    return this.locator(selector).innerHTML();
+  async innerHTML(selector: string, options?: SelectorStrictOptions): Promise<string> {
+    return (await this.requiredElementHandleForSelector(selector, "page.innerHTML", options)).innerHTML();
   }
 
-  async getAttribute(selector: string, name: string): Promise<string | null> {
-    return this.locator(selector).getAttribute(name);
+  async getAttribute(selector: string, name: string, options?: SelectorStrictOptions): Promise<string | null> {
+    return (await this.requiredElementHandleForSelector(selector, "page.getAttribute", options)).getAttribute(name);
   }
 
-  async inputValue(selector: string): Promise<string> {
-    return this.locator(selector).inputValue();
+  async inputValue(selector: string, options?: SelectorStrictOptions): Promise<string> {
+    return (await this.requiredElementHandleForSelector(selector, "page.inputValue", options)).inputValue();
   }
 
-  async isChecked(selector: string): Promise<boolean> {
-    return this.locator(selector).isChecked();
+  async isChecked(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    return (await this.requiredElementHandleForSelector(selector, "page.isChecked", options)).isChecked();
   }
 
-  async isDisabled(selector: string): Promise<boolean> {
-    return this.locator(selector).isDisabled();
+  async isDisabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    return (await this.requiredElementHandleForSelector(selector, "page.isDisabled", options)).isDisabled();
   }
 
-  async isEditable(selector: string): Promise<boolean> {
-    return this.locator(selector).isEditable();
+  async isEditable(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    return (await this.requiredElementHandleForSelector(selector, "page.isEditable", options)).isEditable();
   }
 
-  async isEnabled(selector: string): Promise<boolean> {
-    return this.locator(selector).isEnabled();
+  async isEnabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    return (await this.requiredElementHandleForSelector(selector, "page.isEnabled", options)).isEnabled();
   }
 
-  async isHidden(selector: string): Promise<boolean> {
-    return this.locator(selector).isHidden();
+  async isHidden(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    const handle = await this.$(selector, options);
+    return handle ? handle.isHidden() : true;
   }
 
-  async isVisible(selector: string): Promise<boolean> {
-    return this.locator(selector).isVisible();
+  async isVisible(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
+    const handle = await this.$(selector, options);
+    return handle ? handle.isVisible() : false;
   }
 
-  async focus(selector: string): Promise<void> {
-    await this.locator(selector).focus();
+  async focus(selector: string, options?: SelectorStrictOptions): Promise<void> {
+    await (await this.requiredElementHandleForSelector(selector, "page.focus", options)).focus();
   }
 
   async check(selector: string, options?: ClickOptions): Promise<void> {
@@ -2237,7 +2240,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     eventInit?: unknown,
     options?: DispatchEventOptions
   ): Promise<void> {
-    await this.adapter.dispatchEvent(parseSelectorChain(selector), type, eventInit, options);
+    await (await this.requiredElementHandleForSelector(selector, "page.dispatchEvent", options)).dispatchEvent(type, eventInit);
   }
 
   async requestGC(): Promise<void> {
@@ -2277,20 +2280,20 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
-    await this.locator(selector).dblclick(options);
+    await (await this.requiredElementHandleForSelector(selector, "page.dblclick", options)).dblclick(options);
   }
 
   async click(selector: string, options?: ClickOptions): Promise<void> {
     await this.waitForFileChooserInterceptionIfPending();
-    await this.locator(selector).click(options);
+    await (await this.requiredElementHandleForSelector(selector, "page.click", options)).click(options);
   }
 
   async hover(selector: string, options?: HoverOptions): Promise<void> {
-    await this.locator(selector).hover(options);
+    await (await this.requiredElementHandleForSelector(selector, "page.hover", options)).hover(options);
   }
 
   async fill(selector: string, value: string, options?: FillOptions): Promise<void> {
-    await this.locator(selector).fill(value, options);
+    await (await this.requiredElementHandleForSelector(selector, "page.fill", options)).fill(value, options);
   }
 
   async type(selector: string, value: string, options?: TypeOptions): Promise<void> {
@@ -3629,6 +3632,38 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       ...(frame.nativeFrameId && this.adapter.locatorInFrame ? { protocolFrameId: frame.nativeFrameId } : {}),
       ...(pick ? { pick } : {})
     };
+  }
+
+  private async elementHandleForSelector(
+    selector: string,
+    options?: { strict?: boolean }
+  ): Promise<ElementHandle | null> {
+    const reference = {
+      chain: parseSelectorChain(selector),
+      ...(options?.strict ? {} : { pick: { kind: "first" } as const })
+    };
+    const handle = await this.adapter.createHandleReference(reference).then(
+      (resolved) => this.adapter.createHandle(resolved),
+      (error) => {
+        if (error instanceof Error && error.message.includes("No element found")) {
+          return null;
+        }
+        throw error;
+      }
+    );
+    return handle ? this.createElementHandle(handle) : null;
+  }
+
+  private async requiredElementHandleForSelector(
+    selector: string,
+    apiName: string,
+    options?: { strict?: boolean }
+  ): Promise<ElementHandle> {
+    const handle = await this.elementHandleForSelector(selector, options);
+    if (!handle) {
+      throw new Error(`${apiName}: Failed to find element matching selector "${selector}"`);
+    }
+    return handle;
   }
 
   private async refreshFrameSnapshots(): Promise<void> {
@@ -5888,6 +5923,11 @@ function resolveRedirectUrl(baseUrl: string, location: string): string {
   } catch {
     return location;
   }
+}
+
+function isPageFunctionCallable(pageFunction: unknown): boolean {
+  return typeof pageFunction === "function" ||
+    (typeof pageFunction === "string" && looksLikeFunctionExpression(pageFunction));
 }
 
 function normalizeWebSocketProtocols(protocols?: string | string[]): string[] {
