@@ -19,6 +19,7 @@ import type {
   PressOptions,
   Rect,
   ScreenshotOptions,
+  SelectTextOptions,
   SelectOptionValue,
   SetInputFilesOptions,
   TapOptions,
@@ -28,6 +29,7 @@ import type {
 } from "./types/options.js";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+const ACTION_RETRY_DELAYS_MS = [0, 20, 100, 100, 500];
 
 export interface ElementHandleFrameResolver {
   contentFrameForElement(handle: RoxyElementHandle): Promise<Frame | null>;
@@ -265,8 +267,10 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     await this.adapter.scrollIntoViewIfNeeded();
   }
 
-  async selectText(options?: TimeoutOptions): Promise<void> {
-    void options;
+  async selectText(options: SelectTextOptions = {}): Promise<void> {
+    if (!options.force) {
+      await this.waitForSelectTextActionability(options);
+    }
     await this.adapter.selectText();
   }
 
@@ -315,6 +319,30 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
       }
       throw error;
     }
+  }
+
+  private async waitForSelectTextActionability(options: SelectTextOptions): Promise<void> {
+    const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const startTime = Date.now();
+    let retry = 0;
+
+    while (timeout === 0 || Date.now() - startTime <= timeout) {
+      const connected = await this.isConnectedForElementState();
+      if (!connected) {
+        throw new Error("Element is not attached to the DOM");
+      }
+      if (await this.isVisible().catch(() => false)) {
+        return;
+      }
+
+      const delay = ACTION_RETRY_DELAYS_MS[Math.min(retry, ACTION_RETRY_DELAYS_MS.length - 1)] ?? 0;
+      retry += 1;
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw new TimeoutError(`Timeout ${timeout}ms exceeded.\nelement is not visible`);
   }
 
   async click(options?: ClickOptions): Promise<void> {

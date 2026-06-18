@@ -107,6 +107,10 @@ export interface TimeoutOptions {
   timeout?: number;
 }
 
+export interface SelectTextOptions extends TimeoutOptions {
+  force?: boolean;
+}
+
 export interface SelectorStrictOptions extends TimeoutOptions {
   strict?: boolean;
 }

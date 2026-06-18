@@ -6551,15 +6551,40 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
 
   async selectText(): Promise<void> {
     await this.evaluate(`(element) => {
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-        element.select();
+      const retarget = (node) => {
+        let target = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        if (!target)
+          throw new Error("Element is not attached to the DOM");
+        if (!target.matches("input, textarea, select") && !target.isContentEditable)
+          target = target.closest("button, [role=button], [role=checkbox], [role=radio]") || target;
+        if (!target.matches("a, input, textarea, button, select, [role=link], [role=button], [role=checkbox], [role=radio]") && !target.isContentEditable) {
+          const enclosingLabel = target.closest("label");
+          if (enclosingLabel?.control)
+            target = enclosingLabel.control;
+        }
+        return target;
+      };
+      const target = retarget(element);
+      if (target instanceof HTMLInputElement) {
+        target.select();
+        target.focus();
         return;
       }
-      const selection = element.ownerDocument.getSelection();
-      const range = element.ownerDocument.createRange();
-      range.selectNodeContents(element);
-      selection.removeAllRanges();
-      selection.addRange(range);
+      if (target instanceof HTMLTextAreaElement) {
+        target.selectionStart = 0;
+        target.selectionEnd = target.value.length;
+        target.focus();
+        return;
+      }
+      if (typeof target.focus === "function")
+        target.focus();
+      const range = target.ownerDocument.createRange();
+      range.selectNodeContents(target);
+      const selection = target.ownerDocument.defaultView?.getSelection();
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
     }`, undefined, true);
   }
 
@@ -6749,15 +6774,40 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
 
   async selectText(): Promise<void> {
     await this.evaluate(`(element) => {
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-        element.select();
+      const retarget = (node) => {
+        let target = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        if (!target)
+          throw new Error("Element is not attached to the DOM");
+        if (!target.matches("input, textarea, select") && !target.isContentEditable)
+          target = target.closest("button, [role=button], [role=checkbox], [role=radio]") || target;
+        if (!target.matches("a, input, textarea, button, select, [role=link], [role=button], [role=checkbox], [role=radio]") && !target.isContentEditable) {
+          const enclosingLabel = target.closest("label");
+          if (enclosingLabel?.control)
+            target = enclosingLabel.control;
+        }
+        return target;
+      };
+      const target = retarget(element);
+      if (target instanceof HTMLInputElement) {
+        target.select();
+        target.focus();
         return;
       }
-      const selection = element.ownerDocument.getSelection();
-      const range = element.ownerDocument.createRange();
-      range.selectNodeContents(element);
-      selection.removeAllRanges();
-      selection.addRange(range);
+      if (target instanceof HTMLTextAreaElement) {
+        target.selectionStart = 0;
+        target.selectionEnd = target.value.length;
+        target.focus();
+        return;
+      }
+      if (typeof target.focus === "function")
+        target.focus();
+      const range = target.ownerDocument.createRange();
+      range.selectNodeContents(target);
+      const selection = target.ownerDocument.defaultView?.getSelection();
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
     }`, undefined);
   }
 

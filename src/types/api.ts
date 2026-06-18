@@ -1010,7 +1010,7 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   dispatchEvent(type: string, eventInit?: unknown): Promise<void>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void>;
-  selectText(options?: TimeoutOptions): Promise<void>;
+  selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
   tap(options?: TapOptions): Promise<void>;
   waitForElementState(state: "visible"|"hidden"|"stable"|"enabled"|"disabled"|"editable", options?: { timeout?: number; }): Promise<void>;
   click(options?: ClickOptions): Promise<void>;
@@ -1159,7 +1159,7 @@ export interface Locator {
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void>;
   selectOption(values: string | SelectOptionValue | Array<string | SelectOptionValue> | null, options?: TimeoutOptions): Promise<string[]>;
-  selectText(options?: TimeoutOptions): Promise<void>;
+  selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
   setChecked(checked: boolean, options?: ClickOptions): Promise<void>;
   setInputFiles(
     files: string | FilePayload | string[] | FilePayload[],

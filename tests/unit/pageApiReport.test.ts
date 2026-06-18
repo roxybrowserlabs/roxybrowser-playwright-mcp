@@ -234,6 +234,7 @@ describe("generatePageApiReport", () => {
       "isHidden",
       "isVisible",
       "ownerFrame",
+      "selectText",
       "textContent",
       "waitForElementState"
     ]);

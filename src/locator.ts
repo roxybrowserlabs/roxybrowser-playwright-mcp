@@ -43,6 +43,7 @@ import type {
   PressOptions,
   Rect,
   ScreenshotOptions,
+  SelectTextOptions,
   SelectOptionValue,
   SetInputFilesOptions,
   TapOptions,
@@ -578,9 +579,12 @@ export class RoxyLocator implements Locator {
     await this.adapter.scrollIntoViewIfNeeded();
   }
 
-  async selectText(options?: TimeoutOptions): Promise<void> {
-    void options;
-    await this.adapter.selectText();
+  async selectText(options: SelectTextOptions = {}): Promise<void> {
+    const handle = await this.elementHandle(options.timeout === undefined ? {} : { timeout: options.timeout });
+    if (!handle) {
+      throw new Error("No element found.");
+    }
+    await handle.selectText(options);
   }
 
   async setChecked(checked: boolean, options?: ClickOptions): Promise<void> {
