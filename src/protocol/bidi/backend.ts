@@ -126,7 +126,7 @@ interface StateWaiter {
   state: NonNullable<PageGotoOptions["waitUntil"]>;
   resolve: () => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 interface NavigationResponseCapture {
@@ -846,20 +846,26 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     }
 
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.stateWaiters.delete(waiter);
-        reject(new TimeoutError(`page.waitForLoadState: Timeout ${timeout}ms exceeded.`));
-      }, timeout);
+      const timer = timeout === 0
+        ? null
+        : setTimeout(() => {
+            this.stateWaiters.delete(waiter);
+            reject(new TimeoutError(`page.waitForLoadState: Timeout ${timeout}ms exceeded.`));
+          }, timeout);
 
       const waiter: StateWaiter = {
         state: targetState,
         resolve: () => {
-          clearTimeout(timer);
+          if (timer) {
+            clearTimeout(timer);
+          }
           this.stateWaiters.delete(waiter);
           resolve();
         },
         reject: (error) => {
-          clearTimeout(timer);
+          if (timer) {
+            clearTimeout(timer);
+          }
           this.stateWaiters.delete(waiter);
           reject(error);
         },

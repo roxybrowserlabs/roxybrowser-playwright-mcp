@@ -194,6 +194,37 @@ describe("page goto contract e2e", () => {
     });
   });
 
+  it("should prioritize default navigation timeout over default timeout", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", () => {});
+      page.setDefaultTimeout(0);
+      page.setDefaultNavigationTimeout(1);
+      const error = await page.goto(fixture.server.PREFIX + "/empty.html").catch((caught) => caught);
+      expect(error.message).toContain("page.goto: Timeout 1ms exceeded.");
+      expect(error.message).toContain(fixture.server.PREFIX + "/empty.html");
+    });
+  });
+
+  it("should disable timeout when its set to 0", async () => {
+    await withPage(async (page) => {
+      let error: Error | null = null;
+      let loaded = false;
+      page.once("load", () => {
+        loaded = true;
+      });
+      await page
+        .goto(fixture.server.PREFIX + "/grid.html", {
+          timeout: 0,
+          waitUntil: "load"
+        })
+        .catch((caught) => {
+          error = caught;
+        });
+      expect(error).toBe(null);
+      expect(loaded).toBe(true);
+    });
+  });
+
   it("should work when navigating to data url", async () => {
     await withPage(async (page) => {
       const response = await page.goto("data:text/html,hello");

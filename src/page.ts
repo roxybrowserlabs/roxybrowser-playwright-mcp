@@ -788,7 +788,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async goto(url: string, options?: PageGotoOptions): Promise<Response | null> {
-    const response = await this.adapter.goto(url, options);
+    const response = await this.adapter.goto(url, {
+      ...options,
+      timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
+    });
     await this.reinstallExposedBindings();
     await this.refreshFrameSnapshots();
     return this.toPublicResponse(response);
@@ -799,15 +802,24 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async goBack(options?: PageGotoOptions): Promise<Response | null> {
-    return this.toPublicResponse(await this.adapter.goBack(options));
+    return this.toPublicResponse(await this.adapter.goBack({
+      ...options,
+      timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
+    }));
   }
 
   async goForward(options?: PageGotoOptions): Promise<Response | null> {
-    return this.toPublicResponse(await this.adapter.goForward(options));
+    return this.toPublicResponse(await this.adapter.goForward({
+      ...options,
+      timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
+    }));
   }
 
   async reload(options?: PageGotoOptions): Promise<Response | null> {
-    const response = await this.adapter.reload(options);
+    const response = await this.adapter.reload({
+      ...options,
+      timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
+    });
     await this.reinstallExposedBindings();
     await this.refreshFrameSnapshots();
     return this.toPublicResponse(response);
