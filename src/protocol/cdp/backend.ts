@@ -1426,6 +1426,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.currentUrl = event.frame.url ?? this.currentUrl;
         void this.syncCurrentUrlFromDocument();
       }
+      this.emit("framenavigated", undefined);
 
       if (event.type === "BackForwardCacheRestore") {
         this.domContentLoaded = true;
@@ -1445,14 +1446,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         parentId: event.parentFrameId ?? null,
         url: this.nativeFrames.get(event.frameId)?.url ?? "about:blank"
       });
+      this.emit("frameattached", undefined);
     });
 
     client.Page.frameDetached?.((event: { frameId: string; reason?: "remove" | "swap" }) => {
       if (event.reason === "swap") {
         return;
       }
+      this.settleRequestsForDetachedFrame(event.frameId);
       this.frameSessionIds.delete(event.frameId);
       this.removeNativeFrame(event.frameId);
+      this.emit("framedetached", undefined);
     });
 
     client.Target?.attachedToTarget?.((event: {
@@ -4907,6 +4911,18 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.allowSameDocumentNavigationToResolveWaiters = false;
     this.activeRequests = 0;
     this.clearNetworkIdleTimer();
+  }
+
+  private settleRequestsForDetachedFrame(frameId: string): void {
+    for (const [requestId, request] of Array.from(this.requestMetadata.entries())) {
+      if (request.frameId !== frameId) {
+        continue;
+      }
+      this.ensureResponseBodyState(requestId).markFailed(new Error("Frame was detached."));
+      this.requestMetadata.delete(requestId);
+      this.activeRequests = Math.max(0, this.activeRequests - 1);
+    }
+    this.maybeArmNetworkIdleTimer();
   }
 
   private async navigateHistory(

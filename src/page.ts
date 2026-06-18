@@ -298,6 +298,9 @@ const DEFAULT_EVENT_TIMEOUT_MS = 30_000;
 const INTERNAL_RECORDED_EVENTS = [
   "console",
   "domcontentloaded",
+  "frameattached",
+  "framedetached",
+  "framenavigated",
   "load",
   "pageerror",
   "request",
@@ -1274,7 +1277,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       const dispose = this.adapter.on(
         event,
         ((payload?: RawPageEventMap[RawPageEventName]) => {
-          this.emit(event, payload as never);
+          void this.handleAdapterBackedEvent(event, payload);
         }) as RawPageEventListener<RawPageEventName>
       );
       this.adapterDisposers.set(event, dispose);
@@ -1342,7 +1345,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       const dispose = this.adapter.on(
         event,
         ((payload?: RawPageEventMap[RawPageEventName]) => {
-          this.emit(event, payload as never);
+          void this.handleAdapterBackedEvent(event, payload);
         }) as RawPageEventListener<RawPageEventName>
       );
       this.adapterDisposers.set(event, dispose);
@@ -1382,7 +1385,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       const dispose = this.adapter.on(
         event,
         ((payload?: RawPageEventMap[RawPageEventName]) => {
-          this.emit(event, payload as never);
+          void this.handleAdapterBackedEvent(event, payload);
         }) as RawPageEventListener<RawPageEventName>
       );
       this.adapterDisposers.set(event, dispose);
@@ -3081,13 +3084,28 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     for (const event of INTERNAL_RECORDED_EVENTS) {
       const dispose = this.adapter.on(
         event,
-        ((payload?: RawPageEventMap[typeof event]) => {
+        (async (payload?: RawPageEventMap[typeof event]) => {
+          if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
+            await this.refreshFrameSnapshots().catch(() => {});
+            return;
+          }
           const normalizedPayload = this.normalizePublicEventPayload(event, payload);
           this.recordEvent(event, normalizedPayload as PageEventMap[typeof event]);
         }) as RawPageEventListener<typeof event>
       );
       this.internalDisposers.set(event, dispose);
     }
+  }
+
+  private async handleAdapterBackedEvent(
+    event: Extract<PageEventName, RawPageEventName>,
+    payload?: RawPageEventMap[RawPageEventName]
+  ): Promise<void> {
+    if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
+      await this.refreshFrameSnapshots().catch(() => {});
+      return;
+    }
+    this.emit(event, payload as never);
   }
 
   private normalizePublicEventPayload<K extends PageEventName>(

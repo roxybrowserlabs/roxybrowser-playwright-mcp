@@ -102,6 +102,9 @@ export interface RawPageEventMap {
   console: PageConsoleMessage;
   dialog: PageDialog;
   domcontentloaded: void;
+  frameattached: void;
+  framedetached: void;
+  framenavigated: void;
   load: void;
   pageerror: PageErrorEntry;
   request: PageRequest;

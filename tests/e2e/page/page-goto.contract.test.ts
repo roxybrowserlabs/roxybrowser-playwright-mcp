@@ -432,4 +432,56 @@ describe("page goto contract e2e", () => {
       expect(await page.title()).toBe("Hello");
     });
   });
+
+  it("should return from goto if new navigation is started", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/slow.js", () => {});
+      let finished = false;
+      const navigation = page.goto(fixture.server.PREFIX + "/load-event/load-event.html").then((response) => {
+        finished = true;
+        return response;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(finished).toBe(false);
+      await page.goto(fixture.server.EMPTY_PAGE);
+      expect((await navigation)!.status()).toBe(200);
+    });
+  });
+
+  it("should wait for load when iframe attaches and detaches", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", (_request, response) => {
+        response.writeHead(200, { "content-type": "text/html" });
+        response.end(`
+          <body>
+            <script>
+              const iframe = document.createElement('iframe');
+              iframe.src = './iframe.html';
+              document.body.appendChild(iframe);
+              setTimeout(() => iframe.remove(), 1000);
+            </script>
+          </body>
+        `);
+      });
+      fixture.server.setRoute("/iframe.html", (_request, response) => {
+        response.writeHead(200, { "content-type": "text/html" });
+        response.end('<link rel="stylesheet" href="./style2.css">');
+      });
+      fixture.server.setRoute("/style2.css", () => {});
+
+      const frameDetached = page.waitForEvent("framedetached");
+      const done = page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+      await frameDetached;
+      await done;
+      expect(await page.$("iframe")).toBe(null);
+    });
+  });
+
+  it("should return url with basic auth info", async () => {
+    await withPage(async (page) => {
+      const url = `http://admin:admin@localhost:${fixture.server.PORT}/empty.html`;
+      await page.goto(url);
+      expect(page.url()).toBe(url);
+    });
+  });
 });
