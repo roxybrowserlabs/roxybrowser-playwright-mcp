@@ -125,6 +125,22 @@ interface ActionPoint {
   y: number;
 }
 
+type BidiMouseAction =
+  | {
+      type: "pointerMove";
+      x: number;
+      y: number;
+      origin: "viewport";
+    }
+  | {
+      type: "pointerDown" | "pointerUp";
+      button: number;
+    }
+  | {
+      type: "pause";
+      duration: number;
+    };
+
 interface StateWaiter {
   state: NonNullable<PageGotoOptions["waitUntil"]>;
   resolve: () => void;
@@ -735,6 +751,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
   private currentViewportSize: ViewportSize | null = null;
   private currentMousePosition: ActionPoint = { x: 0, y: 0 };
+  private lastMouseButton: MouseButton | "none" = "none";
+  private readonly pressedMouseButtons = new Set<MouseButton>();
   private readonly pressedKeyboardModifiers = new Set<string>();
   private pageExtraHTTPHeaders: Record<string, string> | undefined;
   private screencastActionOptions: ScreencastActionOptions | null = null;
@@ -1464,60 +1482,24 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     }
   ): Promise<void> {
     const point = { x, y };
-    const button = buttonNumber(options?.button ?? "left");
+    const button = options?.button ?? "left";
     const clickCount = options?.clickCount ?? 1;
-    const actions: Array<
-      | {
-          type: "pointerMove";
-          x: number;
-          y: number;
-          origin: "viewport";
-        }
-      | {
-          type: "pointerDown" | "pointerUp";
-          button: number;
-        }
-      | {
-          type: "pause";
-          duration: number;
-        }
-    > = [
-      {
-        type: "pointerMove" as const,
-        x: Math.round(point.x),
-        y: Math.round(point.y),
-        origin: "viewport" as const
-      }
+    const actions: BidiMouseAction[] = [
+      this.mousePointerMove(point)
     ];
 
     for (let index = 0; index < clickCount; index += 1) {
-      actions.push({
-        type: "pointerDown" as const,
-        button
-      });
+      actions.push(this.mousePointerDown(button));
       if (options?.delay) {
         actions.push({
-          type: "pause" as const,
+          type: "pause",
           duration: options.delay
         });
       }
-      actions.push({
-        type: "pointerUp" as const,
-        button
-      });
+      actions.push(this.mousePointerUp(button));
     }
 
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "pointer",
-          id: "mouse",
-          parameters: { pointerType: "mouse" },
-          actions
-        }
-      ]
-    });
+    await this.performMousePointerActions(actions);
     this.currentMousePosition = point;
   }
 
@@ -1538,22 +1520,9 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       clickCount?: number;
     }
   ): Promise<void> {
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "pointer",
-          id: "mouse",
-          parameters: { pointerType: "mouse" },
-          actions: [
-            {
-              type: "pointerDown",
-              button: buttonNumber(options?.button ?? "left")
-            }
-          ]
-        }
-      ]
-    });
+    await this.performMousePointerActions([
+      this.mousePointerDown(options?.button ?? "left")
+    ]);
   }
 
   async mouseMove(
@@ -1567,25 +1536,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     const start = this.currentMousePosition;
     const actions = [];
     for (let index = 1; index <= steps; index += 1) {
-      actions.push({
-        type: "pointerMove" as const,
-        x: Math.round(start.x + ((x - start.x) * index) / steps),
-        y: Math.round(start.y + ((y - start.y) * index) / steps),
-        origin: "viewport" as const
-      });
+      actions.push(this.mousePointerMove({
+        x: start.x + ((x - start.x) * index) / steps,
+        y: start.y + ((y - start.y) * index) / steps
+      }));
     }
 
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "pointer",
-          id: "mouse",
-          parameters: { pointerType: "mouse" },
-          actions
-        }
-      ]
-    });
+    await this.performMousePointerActions(actions);
     this.currentMousePosition = { x, y };
   }
 
@@ -1595,22 +1552,9 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       clickCount?: number;
     }
   ): Promise<void> {
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "pointer",
-          id: "mouse",
-          parameters: { pointerType: "mouse" },
-          actions: [
-            {
-              type: "pointerUp",
-              button: buttonNumber(options?.button ?? "left")
-            }
-          ]
-        }
-      ]
-    });
+    await this.performMousePointerActions([
+      this.mousePointerUp(options?.button ?? "left")
+    ]);
   }
 
   async mouseWheel(deltaX: number, deltaY: number): Promise<void> {
@@ -1646,6 +1590,47 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         ...keyboardModifierState(this.pressedKeyboardModifiers)
       }
     );
+  }
+
+  private async performMousePointerActions(actions: BidiMouseAction[]): Promise<void> {
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions
+        }
+      ]
+    });
+  }
+
+  private mousePointerMove(point: ActionPoint): BidiMouseAction {
+    return {
+      type: "pointerMove",
+      x: Math.round(point.x),
+      y: Math.round(point.y),
+      origin: "viewport"
+    };
+  }
+
+  private mousePointerDown(button: MouseButton): BidiMouseAction {
+    this.lastMouseButton = button;
+    this.pressedMouseButtons.add(button);
+    return {
+      type: "pointerDown",
+      button: buttonNumber(button)
+    };
+  }
+
+  private mousePointerUp(button: MouseButton): BidiMouseAction {
+    this.lastMouseButton = "none";
+    this.pressedMouseButtons.delete(button);
+    return {
+      type: "pointerUp",
+      button: buttonNumber(button)
+    };
   }
 
   async touchscreenTap(x: number, y: number): Promise<void> {
@@ -1922,61 +1907,30 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async clickLocator(locator: BidiLocatorState, options?: ClickOptions): Promise<void> {
     const point = await this.resolveActionPoint(locator, options);
-    const button = buttonNumber(options?.button ?? "left");
+    const button = options?.button ?? "left";
     const clickCount = options?.clickCount ?? 1;
+    const actions: BidiMouseAction[] = [
+      this.mousePointerMove(point)
+    ];
 
     for (let index = 0; index < clickCount; index += 1) {
-      await this.client.inputPerformActions({
-        context: this.contextId,
-        actions: [
-          {
-            type: "pointer",
-            id: "mouse",
-            parameters: { pointerType: "mouse" },
-            actions: [
-              {
-                type: "pointerMove",
-                x: Math.round(point.x),
-                y: Math.round(point.y),
-                origin: "viewport"
-              },
-              {
-                type: "pointerDown",
-                button
-              },
-              ...(options?.delay ? [{ type: "pause", duration: options.delay } as const] : []),
-              {
-                type: "pointerUp",
-                button
-              }
-            ]
-          }
-        ]
-      });
+      actions.push(this.mousePointerDown(button));
+      if (options?.delay) {
+        actions.push({ type: "pause", duration: options.delay });
+      }
+      actions.push(this.mousePointerUp(button));
     }
+    await this.performMousePointerActions(actions);
+    this.currentMousePosition = point;
     await this.showScreencastAction("click", point);
   }
 
   async hoverLocator(locator: BidiLocatorState, options?: HoverOptions): Promise<void> {
     const point = await this.resolveActionPoint(locator, options);
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "pointer",
-          id: "mouse",
-          parameters: { pointerType: "mouse" },
-          actions: [
-            {
-              type: "pointerMove",
-              x: Math.round(point.x),
-              y: Math.round(point.y),
-              origin: "viewport"
-            }
-          ]
-        }
-      ]
-    });
+    await this.performMousePointerActions([
+      this.mousePointerMove(point)
+    ]);
+    this.currentMousePosition = point;
   }
 
   async fillLocator(locator: BidiLocatorState, value: string, options?: FillOptions): Promise<void> {
@@ -2374,38 +2328,21 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       ...(options?.force !== undefined ? { force: options.force } : {}),
       ...(options?.position ? { position: options.position } : {})
     });
-    const button = buttonNumber(options?.button ?? "left");
+    const button = options?.button ?? "left";
     const clickCount = options?.clickCount ?? 1;
+    const actions: BidiMouseAction[] = [
+      this.mousePointerMove(point)
+    ];
 
     for (let index = 0; index < clickCount; index += 1) {
-      await this.client.inputPerformActions({
-        context: this.contextId,
-        actions: [
-          {
-            type: "pointer",
-            id: "mouse",
-            parameters: { pointerType: "mouse" },
-            actions: [
-              {
-                type: "pointerMove",
-                x: Math.round(point.x),
-                y: Math.round(point.y),
-                origin: "viewport"
-              },
-              {
-                type: "pointerDown",
-                button
-              },
-              ...(options?.delay ? [{ type: "pause", duration: options.delay } as const] : []),
-              {
-                type: "pointerUp",
-                button
-              }
-            ]
-          }
-        ]
-      });
+      actions.push(this.mousePointerDown(button));
+      if (options?.delay) {
+        actions.push({ type: "pause", duration: options.delay });
+      }
+      actions.push(this.mousePointerUp(button));
     }
+    await this.performMousePointerActions(actions);
+    this.currentMousePosition = point;
     await this.showScreencastAction("click", point);
   }
 
@@ -2416,24 +2353,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       ...(options?.force !== undefined ? { force: options.force } : {}),
       ...(options?.position ? { position: options.position } : {})
     });
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "pointer",
-          id: "mouse",
-          parameters: { pointerType: "mouse" },
-          actions: [
-            {
-              type: "pointerMove",
-              x: Math.round(point.x),
-              y: Math.round(point.y),
-              origin: "viewport"
-            }
-          ]
-        }
-      ]
-    });
+    await this.performMousePointerActions([
+      this.mousePointerMove(point)
+    ]);
+    this.currentMousePosition = point;
   }
 
   async fillReference(

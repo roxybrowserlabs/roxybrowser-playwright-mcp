@@ -246,15 +246,96 @@ describe("BidiBrowserAdapterFactory", () => {
       })
     );
     const expression = String(scriptEvaluate.mock.calls[0]?.[0]?.expression ?? "");
-    expect(expression).toContain('new WheelEvent("wheel"');
+    expect(expression).toContain('new WheelEvent(\\"wheel\\"');
     expect(expression).toContain("target.dispatchEvent(event)");
     expect(expression).toContain("globalThis.scrollBy(deltaX, deltaY)");
-    expect(expression).toContain('"x":50');
-    expect(expression).toContain('"y":60');
-    expect(expression).toContain('"deltaX":0');
-    expect(expression).toContain('"deltaY":100');
-    expect(expression).toContain('"shiftKey":true');
-    expect(expression).toContain('"ctrlKey":false');
+    expect(expression).toContain('\\"x\\":50');
+    expect(expression).toContain('\\"y\\":60');
+    expect(expression).toContain('\\"deltaX\\":0');
+    expect(expression).toContain('\\"deltaY\\":100');
+    expect(expression).toContain('\\"shiftKey\\":true');
+    expect(expression).toContain('\\"ctrlKey\\":false');
+  });
+
+  it("preserves BiDi mouse source state across multiple pressed buttons", async () => {
+    const inputPerformActions = vi.fn(async () => ({}));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      inputPerformActions,
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await page.mouseMove(50, 60);
+    await page.mouseDown({ button: "middle" });
+    await page.mouseDown({ button: "left" });
+    await page.mouseUp({ button: "middle" });
+    await page.mouseUp({ button: "left" });
+
+    expect(inputPerformActions.mock.calls.map((call) => call[0])).toEqual([
+      {
+        context: "ctx-1",
+        actions: [{
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [{ type: "pointerMove", x: 50, y: 60, origin: "viewport" }]
+        }]
+      },
+      {
+        context: "ctx-1",
+        actions: [{
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [{ type: "pointerDown", button: 1 }]
+        }]
+      },
+      {
+        context: "ctx-1",
+        actions: [{
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [{ type: "pointerDown", button: 0 }]
+        }]
+      },
+      {
+        context: "ctx-1",
+        actions: [{
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [{ type: "pointerUp", button: 1 }]
+        }]
+      },
+      {
+        context: "ctx-1",
+        actions: [{
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [{ type: "pointerUp", button: 0 }]
+        }]
+      }
+    ]);
   });
 
   it("treats screencast start and stop as no-op page operations", async () => {
@@ -320,7 +401,7 @@ describe("BidiBrowserAdapterFactory", () => {
 
     expect(scriptEvaluate).toHaveBeenCalledTimes(1);
     const expression = String(scriptEvaluate.mock.calls[0]?.[0]?.expression ?? "");
-    expect(expression).toContain('typeof globalThis.gc === "function"');
+    expect(expression).toContain('typeof globalThis.gc === \\"function\\"');
     expect(expression).toContain("globalThis.gc()");
   });
 
