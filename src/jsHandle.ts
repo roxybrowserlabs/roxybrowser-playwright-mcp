@@ -118,8 +118,8 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
     return this.remoteAdapter?.serializedValue();
   }
 
-  asElement(): ElementHandle | null {
-    return this.asElementHandle;
+  asElement(): T extends Node ? ElementHandle<T> : null {
+    return this.asElementHandle as T extends Node ? ElementHandle<T> : null;
   }
 
   async dispose(): Promise<void> {

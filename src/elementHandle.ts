@@ -179,8 +179,8 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     return this.evaluate((element) => element as T);
   }
 
-  asElement(): ElementHandle | null {
-    return this;
+  asElement(): T extends Node ? ElementHandle<T> : null {
+    return this as unknown as T extends Node ? ElementHandle<T> : null;
   }
 
   async contentFrame(): Promise<Frame | null> {

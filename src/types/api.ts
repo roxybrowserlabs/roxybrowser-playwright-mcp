@@ -1009,7 +1009,7 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   boundingBox(): Promise<null|{ x: number; y: number; width: number; height: number; }>;
   dispatchEvent(type: string, eventInit?: unknown): Promise<void>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
-  scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void>;
+  scrollIntoViewIfNeeded(options?: { timeout?: number; }): Promise<void>;
   selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
   tap(options?: TapOptions): Promise<void>;
   waitForElementState(state: "visible"|"hidden"|"stable"|"enabled"|"disabled"|"editable", options?: { timeout?: number; }): Promise<void>;
@@ -1057,7 +1057,7 @@ export interface JSHandle<T = unknown> extends Disposable {
   evaluateHandle<R, Arg, O extends T = T>(pageFunction: PageFunctionOn<O, Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
   evaluateHandle<R, O extends T = T>(pageFunction: PageFunctionOn<O, void, R>, arg?: any): Promise<SmartHandle<R>>;
   jsonValue(): Promise<T>;
-  asElement(): ElementHandle | null;
+  asElement(): T extends Node ? ElementHandle<T> : null;
   dispose(): Promise<void>;
   getProperties(): Promise<Map<string, JSHandle>>;
   getProperty(propertyName: string): Promise<JSHandle>;
@@ -1154,7 +1154,7 @@ export interface Locator {
   ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
   normalize(): Promise<Locator>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
-  scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void>;
+  scrollIntoViewIfNeeded(options?: { timeout?: number; }): Promise<void>;
   selectOption(
     values:
       | null

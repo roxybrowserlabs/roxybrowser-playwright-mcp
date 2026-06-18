@@ -320,8 +320,32 @@ describe("generatePageApiReport", () => {
       "isVisible",
       "ownerFrame",
       "selectText",
+      "scrollIntoViewIfNeeded",
       "textContent",
       "waitForElementState"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("matches upstream Playwright JSHandle small method signatures", () => {
+    const report = generateApiMethodSignatureReport("JSHandle", [
+      "asElement",
+      "dispose",
+      "getProperties",
+      "getProperty",
+      "jsonValue"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("matches upstream Playwright FrameLocator remaining signatures", () => {
+    const report = generateApiMethodSignatureReport("FrameLocator", [
+      "first",
+      "last",
+      "nth",
+      "owner"
     ]);
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
