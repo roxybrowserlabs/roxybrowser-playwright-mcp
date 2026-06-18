@@ -2410,10 +2410,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await (await this.requiredElementHandleForSelector(selector, "page.focus", options)).focus();
   }
 
+  async check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async check(selector: string, options?: ClickOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.check", options)).check(options);
   }
 
+  async uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async uncheck(selector: string, options?: ClickOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.uncheck", options)).uncheck(options);
   }
@@ -2467,6 +2469,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.applyEmulatedMedia();
   }
 
+  async setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.setChecked", options)).setChecked(checked, options);
   }
@@ -2549,32 +2552,39 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.currentViewportSize;
   }
 
+  async dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.dblclick", options)).dblclick(options);
   }
 
+  async click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async click(selector: string, options?: ClickOptions): Promise<void> {
     await this.waitForFileChooserInterceptionIfPending();
     await (await this.requiredElementHandleForSelector(selector, "page.click", options)).click(options);
   }
 
+  async hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async hover(selector: string, options?: HoverOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.hover", options)).hover(options);
   }
 
+  async fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   async fill(selector: string, value: string, options?: FillOptions): Promise<void> {
     assertFillValue(value);
     await (await this.requiredElementHandleForSelector(selector, "page.fill", options)).fill(value, options);
   }
 
+  async type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   async type(selector: string, value: string, options?: TypeOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.type", options)).type(value, options);
   }
 
+  async press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   async press(selector: string, key: string, options?: PressOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.press", options)).press(key, options);
   }
 
+  async tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async tap(selector: string, options?: TapOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.tap", options)).tap(options);
   }

@@ -10,7 +10,7 @@ import { RoxyPage } from "../../src/page.js";
 import { RoxyVideo } from "../../src/video.js";
 import { RoxyWorker } from "../../src/worker.js";
 import type { Download, Request } from "../../src/types/api.js";
-import { createPageAdapterStub } from "../helpers/fakes.js";
+import { createElementHandleAdapterStub, createPageAdapterStub } from "../helpers/fakes.js";
 
 describe("RoxyPage", () => {
   it("proxies page-level methods to the page adapter", async () => {
@@ -704,8 +704,10 @@ describe("RoxyPage", () => {
     expect(adapter.getByTitle).toHaveBeenCalledWith("Hint", undefined);
   });
 
-  it("uses page.setChecked directly on the adapter", async () => {
+  it("uses Playwright-like handle action path for page.setChecked", async () => {
     const adapter = createPageAdapterStub();
+    const elementAdapter = createElementHandleAdapterStub();
+    adapter.createHandle.mockReturnValue(elementAdapter);
     const page = new RoxyPage(adapter, {
       enabled: true,
       profile: "balanced",
@@ -719,16 +721,12 @@ describe("RoxyPage", () => {
 
     await page.setChecked("input", true, { force: true });
 
-    expect(adapter.setChecked).toHaveBeenCalledWith(
-      [
-        {
-          strategy: "css",
-          value: "input"
-        }
-      ],
-      true,
-      { force: true }
-    );
+    expect(adapter.createHandleReference).toHaveBeenCalledWith({
+      chain: [{ strategy: "css", value: "input" }],
+      pick: { kind: "first" }
+    });
+    expect(elementAdapter.check).toHaveBeenCalledWith({ force: true });
+    expect(adapter.setChecked).not.toHaveBeenCalled();
   });
 
   it("dispatches routes in newest-first order and supports fallback chaining", async () => {

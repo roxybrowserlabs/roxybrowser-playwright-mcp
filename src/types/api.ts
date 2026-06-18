@@ -971,11 +971,11 @@ export interface Page {
   isHidden(selector: string, options?: SelectorStrictOptions): Promise<boolean>;
   isVisible(selector: string, options?: SelectorStrictOptions): Promise<boolean>;
   focus(selector: string, options?: SelectorStrictOptions): Promise<void>;
-  check(selector: string, options?: ClickOptions): Promise<void>;
-  uncheck(selector: string, options?: ClickOptions): Promise<void>;
+  check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   dragAndDrop(source: string, target: string, options?: DragAndDropOptions): Promise<void>;
   emulateMedia(options?: EmulateMediaOptions): Promise<void>;
-  setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void>;
+  setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
   setInputFiles(
     selector: string,
@@ -1005,13 +1005,13 @@ export interface Page {
   setDefaultTimeout(timeout: number): void;
   setViewportSize(viewportSize: ViewportSize): Promise<void>;
   viewportSize(): null|{ width: number; height: number; };
-  tap(selector: string, options?: TapOptions): Promise<void>;
-  dblclick(selector: string, options?: ClickOptions): Promise<void>;
-  click(selector: string, options?: ClickOptions): Promise<void>;
-  hover(selector: string, options?: HoverOptions): Promise<void>;
-  fill(selector: string, value: string, options?: FillOptions): Promise<void>;
-  type(selector: string, value: string, options?: TypeOptions): Promise<void>;
-  press(selector: string, key: string, options?: PressOptions): Promise<void>;
+  tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
+  type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
+  press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   close(options?: PageCloseOptions): Promise<void>;
 }
 

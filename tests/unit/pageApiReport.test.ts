@@ -146,4 +146,21 @@ describe("generatePageApiReport", () => {
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
+
+  it("matches upstream Playwright Page action signatures", () => {
+    const report = generateApiMethodSignatureReport("Page", [
+      "check",
+      "click",
+      "dblclick",
+      "fill",
+      "hover",
+      "press",
+      "setChecked",
+      "tap",
+      "type",
+      "uncheck"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });
