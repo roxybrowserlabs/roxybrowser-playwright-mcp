@@ -551,20 +551,78 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return element.getAttribute("aria-disabled") === "true";
   };
   const isEditable = (element: Element): boolean => {
-    if (element instanceof HTMLInputElement) {
-      const type = element.type.toLowerCase();
-      return (
-        !element.readOnly &&
-        !element.disabled &&
-        !["checkbox", "radio", "button", "submit", "reset", "file", "image", "range", "color"].includes(type)
-      );
+    if (
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLSelectElement
+    ) {
+      return !element.hasAttribute("readonly") && !isDisabled(element);
     }
-    if (element instanceof HTMLTextAreaElement) {
-      return !element.readOnly && !element.disabled;
+    if (element instanceof HTMLElement && element.isContentEditable) {
+      return !isDisabled(element);
     }
-    return element instanceof HTMLElement ? element.isContentEditable : false;
+    const ariaReadonlyRoles = new Set([
+      "checkbox",
+      "combobox",
+      "grid",
+      "gridcell",
+      "listbox",
+      "radiogroup",
+      "slider",
+      "spinbutton",
+      "textbox",
+      "columnheader",
+      "rowheader",
+      "searchbox",
+      "switch",
+      "treegrid"
+    ]);
+    if (ariaReadonlyRoles.has(element.getAttribute("role") ?? "")) {
+      return !isDisabled(element) && element.getAttribute("aria-readonly") !== "true";
+    }
+    throw new Error("Element is not an <input>, <textarea>, <select> or [contenteditable] and does not have a role allowing [aria-readonly]");
   };
   const isEnabled = (element: Element): boolean => !isDisabled(element);
+  const fillActionabilityError = (element: Element): string | null => {
+    if (!payload.force && !isVisible(element)) {
+      return "Element is not visible.";
+    }
+    if (!payload.force && !isEnabled(element)) {
+      return "Element is not enabled.";
+    }
+    if (!payload.force && !isEditable(element)) {
+      return "Element is not editable.";
+    }
+    return null;
+  };
+  const waitForFillActionability = (element: Element): void | Promise<void> => {
+    const assertActionable = () => {
+      const error = fillActionabilityError(element);
+      if (error) {
+        throw new Error(error);
+      }
+    };
+    if (payload.force || !payload.timeoutMs || payload.timeoutMs <= 0) {
+      assertActionable();
+      return;
+    }
+    return new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + payload.timeoutMs!;
+      const tick = () => {
+        try {
+          assertActionable();
+          resolve();
+        } catch (error) {
+          if (Date.now() + 50 > deadline) {
+            reject(error);
+            return;
+          }
+          setTimeout(tick, 50);
+        }
+      };
+      tick();
+    });
+  };
   const isChecked = (element: Element): boolean => {
     if (element instanceof HTMLInputElement) {
       return element.checked;
@@ -994,23 +1052,27 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         if (!firstElement) {
           throw new Error(payload.missingMessage ?? "No element found.");
         }
-        if ("focus" in firstElement && typeof firstElement.focus === "function") {
-          firstElement.focus();
-        }
+        const fillElement = () => {
+          if ("focus" in firstElement && typeof firstElement.focus === "function") {
+            firstElement.focus();
+          }
 
-        if (firstElement instanceof HTMLInputElement) {
-          firstElement.value = fillInputValue(firstElement, payload.value ?? "");
-        } else if (firstElement instanceof HTMLTextAreaElement) {
-          firstElement.value = payload.value ?? "";
-        } else if (firstElement instanceof HTMLElement && firstElement.isContentEditable) {
-          firstElement.textContent = payload.value ?? "";
-        } else {
-          throw new Error("Element is not an <input>, <textarea> or [contenteditable] element");
-        }
+          if (firstElement instanceof HTMLInputElement) {
+            firstElement.value = fillInputValue(firstElement, payload.value ?? "");
+          } else if (firstElement instanceof HTMLTextAreaElement) {
+            firstElement.value = payload.value ?? "";
+          } else if (firstElement instanceof HTMLElement && firstElement.isContentEditable) {
+            firstElement.textContent = payload.value ?? "";
+          } else {
+            throw new Error("Element is not an <input>, <textarea> or [contenteditable] element");
+          }
 
-        firstElement.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-        firstElement.dispatchEvent(new Event("change", { bubbles: true }));
-        return true;
+          firstElement.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+          firstElement.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        };
+        const waitResult = waitForFillActionability(firstElement);
+        return waitResult instanceof Promise ? waitResult.then(fillElement) : fillElement();
       }
     case "actionPoint":
       {

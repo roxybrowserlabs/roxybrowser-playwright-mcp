@@ -119,8 +119,8 @@ describe("page form action contract e2e", () => {
       await expect(page.fill("select", "")).rejects.toThrow(
         "Element is not an <input>, <textarea> or [contenteditable] element"
       );
-      await expect(page.locator("div").fill("text")).rejects.toThrow(
-        "Element is not an <input>, <textarea> or [contenteditable] element"
+      await expect(page.locator("div").fill("text", { timeout: 50 })).rejects.toThrow(
+        "Element is not an <input>, <textarea>, <select> or [contenteditable] and does not have a role allowing [aria-readonly]"
       );
 
       await expect(page.fill("textarea", 123 as unknown as string)).rejects.toThrow(
@@ -129,6 +129,31 @@ describe("page form action contract e2e", () => {
       await expect(page.locator("textarea").fill(123 as unknown as string)).rejects.toThrow(
         "value: expected string, got number"
       );
+    });
+  });
+
+  it("waits for fill actionability and honors force like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<input id="disabled" disabled oninput="window.disabledResult = this.value">');
+      await expect(page.fill("#disabled", "blocked", { timeout: 50 })).rejects.toThrow("Element is not enabled.");
+      expect(await page.evaluate(() => window.disabledResult)).toBeUndefined();
+
+      const disabledFill = page.fill("#disabled", "ready", { timeout: 1_000 });
+      await page.$eval("#disabled", (input) => setTimeout(() => ((input as HTMLInputElement).disabled = false), 100));
+      await disabledFill;
+      expect(await page.evaluate(() => window.disabledResult)).toBe("ready");
+
+      await page.setContent('<textarea id="readonly" readonly oninput="window.readonlyResult = this.value"></textarea>');
+      await expect(page.fill("#readonly", "blocked", { timeout: 50 })).rejects.toThrow("Element is not editable.");
+      expect(await page.evaluate(() => window.readonlyResult)).toBeUndefined();
+
+      await page.fill("#readonly", "forced", { force: true });
+      expect(await page.evaluate(() => window.readonlyResult)).toBe("forced");
+
+      await page.setContent('<input id="hidden" style="display:none" oninput="window.hiddenResult = this.value">');
+      await expect(page.fill("#hidden", "blocked", { timeout: 50 })).rejects.toThrow("Element is not visible.");
+      await page.fill("#hidden", "forced", { force: true });
+      expect(await page.evaluate(() => window.hiddenResult)).toBe("forced");
     });
   });
 

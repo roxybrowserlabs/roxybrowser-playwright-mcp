@@ -499,6 +499,7 @@ interface LocatorPayload {
   value?: string;
   force?: boolean;
   position?: { x: number; y: number };
+  timeoutMs?: number;
 }
 
 function convertPrintParameterToInches(value?: string | number): number | undefined {
@@ -695,6 +696,92 @@ function locatorOperation(payload: LocatorPayload) {
       rect.height > 0
     );
   };
+  const isDisabled = (element: Element): boolean => {
+    if (
+      element instanceof HTMLButtonElement ||
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLSelectElement ||
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLOptGroupElement ||
+      element instanceof HTMLOptionElement ||
+      element instanceof HTMLFieldSetElement
+    ) {
+      return element.disabled;
+    }
+    return element.getAttribute("aria-disabled") === "true";
+  };
+  const isEditable = (element: Element): boolean => {
+    if (
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLSelectElement
+    ) {
+      return !element.hasAttribute("readonly") && !isDisabled(element);
+    }
+    if (element instanceof HTMLElement && element.isContentEditable) {
+      return !isDisabled(element);
+    }
+    const ariaReadonlyRoles = new Set([
+      "checkbox",
+      "combobox",
+      "grid",
+      "gridcell",
+      "listbox",
+      "radiogroup",
+      "slider",
+      "spinbutton",
+      "textbox",
+      "columnheader",
+      "rowheader",
+      "searchbox",
+      "switch",
+      "treegrid"
+    ]);
+    if (ariaReadonlyRoles.has(element.getAttribute("role") ?? "")) {
+      return !isDisabled(element) && element.getAttribute("aria-readonly") !== "true";
+    }
+    throw new Error("Element is not an <input>, <textarea>, <select> or [contenteditable] and does not have a role allowing [aria-readonly]");
+  };
+  const fillActionabilityError = (element: HTMLElement): string | null => {
+    if (!payload.force && !isVisible(element)) {
+      return "Element is not visible.";
+    }
+    if (!payload.force && isDisabled(element)) {
+      return "Element is not enabled.";
+    }
+    if (!payload.force && !isEditable(element)) {
+      return "Element is not editable.";
+    }
+    return null;
+  };
+  const waitForFillActionability = (element: HTMLElement): void | Promise<void> => {
+    const assertActionable = () => {
+      const error = fillActionabilityError(element);
+      if (error) {
+        throw new Error(error);
+      }
+    };
+    if (payload.force || !payload.timeoutMs || payload.timeoutMs <= 0) {
+      assertActionable();
+      return;
+    }
+    return new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + payload.timeoutMs!;
+      const tick = () => {
+        try {
+          assertActionable();
+          resolve();
+        } catch (error) {
+          if (Date.now() + 50 > deadline) {
+            reject(error);
+            return;
+          }
+          setTimeout(tick, 50);
+        }
+      };
+      tick();
+    });
+  };
   const fillInputValue = (input: HTMLInputElement, value: string): string => {
     const type = input.type.toLowerCase();
     const inputTypesToSetValue = new Set(["color", "date", "time", "datetime-local", "month", "range", "week"]);
@@ -738,21 +825,27 @@ function locatorOperation(payload: LocatorPayload) {
       if (!firstElement) {
         throw new Error("No element found for locator.");
       }
-      firstElement.focus();
+      {
+        const fillElement = () => {
+          firstElement.focus();
 
-      if (firstElement instanceof HTMLInputElement) {
-        firstElement.value = fillInputValue(firstElement, payload.value ?? "");
-      } else if (firstElement instanceof HTMLTextAreaElement) {
-        firstElement.value = payload.value ?? "";
-      } else if (firstElement.isContentEditable) {
-        firstElement.textContent = payload.value ?? "";
-      } else {
-        throw new Error("Element is not an <input>, <textarea> or [contenteditable] element");
+          if (firstElement instanceof HTMLInputElement) {
+            firstElement.value = fillInputValue(firstElement, payload.value ?? "");
+          } else if (firstElement instanceof HTMLTextAreaElement) {
+            firstElement.value = payload.value ?? "";
+          } else if (firstElement.isContentEditable) {
+            firstElement.textContent = payload.value ?? "";
+          } else {
+            throw new Error("Element is not an <input>, <textarea> or [contenteditable] element");
+          }
+
+          firstElement.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+          firstElement.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        };
+        const waitResult = waitForFillActionability(firstElement);
+        return waitResult instanceof Promise ? waitResult.then(fillElement) : fillElement();
       }
-
-      firstElement.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-      firstElement.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
     case "actionPoint":
       if (!firstElement) {
         throw new Error("No element found for locator.");
@@ -3895,6 +3988,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.runLocatorOperation<boolean>(locator, {
       operation: "fill",
       ...(options?.force !== undefined ? { force: options.force } : {}),
+      timeoutMs: options?.timeout ?? DEFAULT_TIMEOUT_MS,
       value
     });
   }
@@ -4601,7 +4695,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       operation: "fill",
       reference,
       value,
-      ...(options?.force !== undefined ? { force: options.force } : {})
+      ...(options?.force !== undefined ? { force: options.force } : {}),
+      timeoutMs: options?.timeout ?? DEFAULT_TIMEOUT_MS
     });
   }
 

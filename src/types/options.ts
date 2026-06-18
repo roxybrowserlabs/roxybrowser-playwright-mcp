@@ -159,6 +159,8 @@ export interface ClickOptions extends HoverOptions {
 
 export interface FillOptions extends SelectorStrictOptions, HumanizedOption {
   force?: boolean;
+  noWaitAfter?: boolean;
+  timeout?: number;
 }
 
 export interface SelectOption {
