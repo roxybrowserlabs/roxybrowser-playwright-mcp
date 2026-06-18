@@ -1205,7 +1205,7 @@ export interface FrameLocator {
 
 export interface Frame {
   page(): Page;
-  parentFrame(): Frame | null;
+  parentFrame(): null|Frame;
   childFrames(): Array<Frame>;
   isDetached(): boolean;
   url(): string;

@@ -98,7 +98,7 @@ export class RoxyFrame implements Frame {
     return this.detached;
   }
 
-  parentFrame(): Frame | null {
+  parentFrame(): null | Frame {
     return this.snapshot.parentId ? this.roxyPage.frameById(this.snapshot.parentId) : null;
   }
 

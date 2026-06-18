@@ -239,6 +239,11 @@ describe("generatePageApiReport", () => {
 
   it("matches upstream Playwright Frame remaining forwarded signatures", () => {
     const report = generateApiMethodSignatureReport("Frame", [
+      "childFrames",
+      "isDetached",
+      "name",
+      "page",
+      "parentFrame",
       "setInputFiles",
       "waitForTimeout"
     ]);
@@ -248,17 +253,33 @@ describe("generatePageApiReport", () => {
 
   it("matches upstream Playwright Page locator and small misc signatures", () => {
     const report = generateApiMethodSignatureReport("Page", [
+      "cancelPickLocator",
+      "clearConsoleMessages",
+      "clearPageErrors",
       "close",
+      "content",
+      "context",
       "frame",
+      "frameLocator",
       "getByAltText",
       "getByLabel",
       "getByPlaceholder",
       "getByRole",
+      "getByTestId",
       "getByText",
       "getByTitle",
+      "hideHighlight",
+      "isClosed",
+      "mainFrame",
+      "pickLocator",
       "removeAllListeners",
+      "removeLocatorHandler",
+      "requestGC",
+      "setDefaultNavigationTimeout",
+      "setDefaultTimeout",
       "setExtraHTTPHeaders",
-      "setViewportSize"
+      "setViewportSize",
+      "url"
     ]);
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
@@ -274,6 +295,7 @@ describe("generatePageApiReport", () => {
       "dragAndDrop",
       "emulateMedia",
       "exposeBinding",
+      "exposeFunction",
       "pdf",
       "selectOption",
       "setInputFiles"
