@@ -1730,17 +1730,17 @@ describe("RoxyPage", () => {
     await page.dispatchEvent("button", "click", { bubbles: false });
     await page.requestGC();
 
-    expect(adapter.dispatchEvent).toHaveBeenCalledWith(
-      [
+    expect(adapter.createHandleReference).toHaveBeenCalledWith({
+      chain: [
         {
           strategy: "css",
           value: "button"
         }
       ],
-      "click",
-      { bubbles: false },
-      undefined
-    );
+      pick: { kind: "first" }
+    });
+    const elementAdapter = adapter.createHandle.mock.results[0]!.value;
+    expect(elementAdapter.dispatchEvent).toHaveBeenCalledWith("click", { bubbles: false });
     expect(adapter.requestGC).toHaveBeenCalledTimes(1);
   });
 

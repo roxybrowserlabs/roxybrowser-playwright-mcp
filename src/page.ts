@@ -80,6 +80,7 @@ import type {
   Coverage,
   Dialog,
   Download,
+  EvaluationArgument,
   JSHandle,
   Keyboard,
   Mouse,
@@ -141,6 +142,29 @@ type PageWaitForFunctionOptions = {
   polling?: number | "raf";
   timeout?: number;
 };
+type PlaywrightFilePayload = { name: string; mimeType: string; buffer: Buffer };
+type PlaywrightInputFiles = string | ReadonlyArray<string> | PlaywrightFilePayload | ReadonlyArray<PlaywrightFilePayload>;
+type PlaywrightSelectOptionValue = { value?: string; label?: string; index?: number };
+type PlaywrightSelectOptionValues =
+  | null
+  | string
+  | ElementHandle
+  | ReadonlyArray<string>
+  | PlaywrightSelectOptionValue
+  | ReadonlyArray<ElementHandle>
+  | ReadonlyArray<PlaywrightSelectOptionValue>;
+type InternalSelectOptionValues =
+  | null
+  | string
+  | SelectOptionValue
+  | ElementHandle
+  | Array<string | SelectOptionValue | ElementHandle>;
+
+function normalizeSelectOptionValuesForInternal(values: PlaywrightSelectOptionValues): InternalSelectOptionValues {
+  return Array.isArray(values)
+    ? [...values] as Array<string | SelectOptionValue | ElementHandle>
+    : values as InternalSelectOptionValues;
+}
 
 interface ListenerEntry<K extends PageEventName> {
   original: PageEventListener<K>;
@@ -949,11 +973,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.internalDisposers.set("close", disposeClose);
   }
 
-  async addInitScript<Arg>(
-    script: string | ((arg: Arg) => unknown) | { path?: string; content?: string },
-    arg?: Arg
-  ): Promise<Disposable> {
-    const source = await evaluationScript(script, arg);
+  async addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
+  async addInitScript<Arg>(script: PageFunction<Arg, any> | { path?: string; content?: string }, arg?: Arg): Promise<Disposable> {
+    const source = await evaluationScript(script, arg as any);
     return this.adapter.addInitScript(source);
   }
 
@@ -990,6 +1012,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }, "page.exposeFunction");
   }
 
+  async addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
   async addScriptTag(options: AddScriptTagOptions = {}): Promise<ElementHandle<Node>> {
     if (!options.url && !options.path && !options.content) {
       throw new Error("Provide an object with a `url`, `path` or `content` property");
@@ -1004,6 +1027,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.createElementHandle(await this.adapter.addScriptTag(adapterOptions));
   }
 
+  async addStyleTag(options?: { content?: string; path?: string; url?: string; }): Promise<ElementHandle>;
   async addStyleTag(options: AddStyleTagOptions = {}): Promise<ElementHandle<Node>> {
     if (!options.url && !options.path && !options.content) {
       throw new Error("Provide an object with a `url`, `path` or `content` property");
@@ -1437,6 +1461,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     throw new TimeoutError(`page.waitForSelector: Timeout ${timeout}ms exceeded.`);
   }
 
+  async ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; timeout?: number; }): Promise<string>;
   async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
     return this.adapter.ariaSnapshot(options);
   }
@@ -2193,6 +2218,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
   }
 
+  async pdf(options?: { displayHeaderFooter?: boolean; footerTemplate?: string; format?: string; headerTemplate?: string; height?: string|number; landscape?: boolean; margin?: { top?: string|number; right?: string|number; bottom?: string|number; left?: string|number; }; outline?: boolean; pageRanges?: string; path?: string; preferCSSPageSize?: boolean; printBackground?: boolean; scale?: number; tagged?: boolean; width?: string|number; }): Promise<Buffer>;
   async pdf(options: PdfOptions = {}): Promise<Buffer> {
     const transportOptions: PdfOptions = { ...options };
     if (transportOptions.margin) {
@@ -2434,11 +2460,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await (await this.requiredElementHandleForSelector(selector, "page.uncheck", options)).uncheck(options);
   }
 
-  async dragAndDrop(
-    source: string,
-    target: string,
-    options: DragAndDropOptions = {}
-  ): Promise<void> {
+  async dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  async dragAndDrop(source: string, target: string, options: DragAndDropOptions = {}): Promise<void> {
     const sourceHandle = await this.requiredElementHandleForSelector(source, "page.dragAndDrop", options);
     const targetHandle = await this.requiredElementHandleForSelector(target, "page.dragAndDrop", options);
     if (options.trial) {
@@ -2475,6 +2498,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     );
   }
 
+  async emulateMedia(options?: { colorScheme?: null|"light"|"dark"|"no-preference"; contrast?: null|"no-preference"|"more"; forcedColors?: null|"active"|"none"; media?: null|"screen"|"print"; reducedMotion?: null|"reduce"|"no-preference"; }): Promise<void>;
   async emulateMedia(options: EmulateMediaOptions = {}): Promise<void> {
     this.emulatedMedia = {
       ...this.emulatedMedia,
@@ -2494,8 +2518,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async setInputFiles(
     selector: string,
-    files: InputFiles,
-    options?: SetInputFilesOptions
+    files: PlaywrightInputFiles,
+    options?: { noWaitAfter?: boolean; strict?: boolean; timeout?: number; }
   ): Promise<void>;
   async setInputFiles(
     selector: ElementHandle,
@@ -2504,22 +2528,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   ): Promise<void>;
   async setInputFiles(
     selector: string | ElementHandle,
-    files: InputFiles,
+    files: PlaywrightInputFiles | InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
     const handle =
       typeof selector === "string"
         ? await this.requiredElementHandleForSelector(selector, "page.setInputFiles", options)
         : selector;
-    await setInputFilesOnElement(handle, files);
+    await setInputFilesOnElement(handle, files as InputFiles);
   }
 
-  async dispatchEvent(
-    selector: string,
-    type: string,
-    eventInit?: unknown,
-    options?: DispatchEventOptions
-  ): Promise<void> {
+  async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
+  async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: DispatchEventOptions): Promise<void> {
     await (await this.requiredElementHandleForSelector(selector, "page.dispatchEvent", options)).dispatchEvent(type, eventInit);
   }
 
@@ -2529,16 +2549,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async selectOption(
     selector: string,
-    values:
-      | null
-      | string
-      | SelectOptionValue
-      | ElementHandle
-      | Array<string | SelectOptionValue | ElementHandle>,
-    options?: SelectorStrictOptions
+    values: PlaywrightSelectOptionValues,
+    options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }
+  ): Promise<Array<string>>;
+  async selectOption(
+    selector: string,
+    values: PlaywrightSelectOptionValues,
+    options?: SelectorStrictOptions & { force?: boolean; noWaitAfter?: boolean; }
   ): Promise<string[]> {
     const handle = await this.requiredElementHandleForSelector(selector, "page.selectOption", options);
-    return handle.selectOption(await normalizeSelectOptionValues(handle, values));
+    return handle.selectOption(await normalizeSelectOptionValues(handle, normalizeSelectOptionValuesForInternal(values)));
   }
 
   async bringToFront(): Promise<void> {

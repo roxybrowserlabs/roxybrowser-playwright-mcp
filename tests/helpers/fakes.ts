@@ -121,6 +121,7 @@ export function createElementHandleAdapterStub(): ProtocolElementHandleAdapter {
     evalOnSelectorAll: vi.fn(async <TResult>() => ["selector-value"] as TResult),
     evaluate: vi.fn(async <TResult>() => "handle-value" as TResult),
     boundingBox: vi.fn(async () => ({ x: 1, y: 2, width: 3, height: 4 })),
+    dispatchEvent: vi.fn(async () => {}),
     dblclick: vi.fn(async () => {}),
     check: vi.fn(async () => {}),
     click: vi.fn(async () => {}),

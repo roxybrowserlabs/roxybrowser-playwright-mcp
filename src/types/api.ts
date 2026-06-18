@@ -26,7 +26,6 @@ import type {
   PageGotoOptions,
   PageScreenshotOptions,
   PageSetContentOptions,
-  PdfOptions,
   PressOptions,
   Rect,
   SelectOptionValue,
@@ -54,6 +53,15 @@ import type { LocatorSelector } from "../protocol/adapter.js";
 export interface Disposable {
   dispose(): Promise<void> | void;
 }
+
+/**
+ * Can be converted to JSON
+ */
+export type Serializable = any;
+/**
+ * Can be converted to JSON, but may also contain JSHandles.
+ */
+export type EvaluationArgument = {};
 
 export type NoHandles<Arg> = Arg extends JSHandle ? never : (Arg extends object ? { [Key in keyof Arg]: NoHandles<Arg[Key]> } : Arg);
 export type Unboxed<Arg> =
@@ -723,18 +731,12 @@ export interface Page {
   screencast: Screencast;
   sessionStorage: WebStorage;
   touchscreen: Touchscreen;
-  addInitScript<Arg>(
-    script: string | ((arg: Arg) => unknown) | { path?: string; content?: string },
-    arg?: Arg
-  ): Promise<Disposable>;
+  addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
   addLocatorHandler(locator: Locator, handler: ((locator: Locator) => Promise<any>), options?: { noWaitAfter?: boolean; times?: number; }): Promise<void>;
-  exposeBinding(
-    name: string,
-    playwrightBinding: (source: BindingSource, ...args: any[]) => any
-  ): Promise<Disposable>;
+  exposeBinding(name: string, playwrightBinding: (source: BindingSource, ...args: any[]) => any): Promise<Disposable>;
   exposeFunction(name: string, callback: Function): Promise<Disposable>;
-  addScriptTag(options?: AddScriptTagOptions): Promise<ElementHandle>;
-  addStyleTag(options?: AddStyleTagOptions): Promise<ElementHandle>;
+  addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
+  addStyleTag(options?: { content?: string; path?: string; url?: string; }): Promise<ElementHandle>;
   goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   url(): string;
   goBack(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
@@ -759,7 +761,7 @@ export interface Page {
   waitForSelector(selector: string, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: PageWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;
   waitForSelector(selector: string, options: PageWaitForSelectorOptions): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
-  ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
+  ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; timeout?: number; }): Promise<string>;
   screenshot(options?: PageScreenshotOptions): Promise<Buffer>;
   context(): BrowserContext;
   consoleMessages(options?: { filter?: "all"|"since-navigation"; }): Promise<Array<ConsoleMessage>>;
@@ -935,7 +937,7 @@ export interface Page {
   hideHighlight(): Promise<void>;
   opener(): Promise<null|Page>;
   pause(): Promise<void>;
-  pdf(options?: PdfOptions): Promise<Buffer>;
+  pdf(options?: { displayHeaderFooter?: boolean; footerTemplate?: string; format?: string; headerTemplate?: string; height?: string|number; landscape?: boolean; margin?: { top?: string|number; right?: string|number; bottom?: string|number; left?: string|number; }; outline?: boolean; pageRanges?: string; path?: string; preferCSSPageSize?: boolean; printBackground?: boolean; scale?: number; tagged?: boolean; width?: string|number; }): Promise<Buffer>;
   pickLocator(): Promise<Locator>;
   removeLocatorHandler(locator: Locator): Promise<void>;
   route(url: string|RegExp|URLPattern|((url: URL) => boolean), handler: ((route: Route, request: Request) => Promise<any>|any), options?: { times?: number; }): Promise<Disposable>;
@@ -961,33 +963,15 @@ export interface Page {
   focus(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
   check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  dragAndDrop(source: string, target: string, options?: DragAndDropOptions): Promise<void>;
-  emulateMedia(options?: EmulateMediaOptions): Promise<void>;
+  dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  emulateMedia(options?: { colorScheme?: null|"light"|"dark"|"no-preference"; contrast?: null|"no-preference"|"more"; forcedColors?: null|"active"|"none"; media?: null|"screen"|"print"; reducedMotion?: null|"reduce"|"no-preference"; }): Promise<void>;
   setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   setExtraHTTPHeaders(headers: { [key: string]: string; }): Promise<void>;
-  setInputFiles(
-    selector: string,
-    files: string | FilePayload | string[] | FilePayload[],
-    options?: SetInputFilesOptions
-  ): Promise<void>;
-  selectOption(
-    selector: string,
-    values:
-      | null
-      | string
-      | SelectOptionValue
-      | ElementHandle
-      | Array<string | SelectOptionValue | ElementHandle>,
-    options?: SelectorStrictOptions
-  ): Promise<string[]>;
+  setInputFiles(selector: string, files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
+  selectOption(selector: string, values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<Array<string>>;
   bringToFront(): Promise<void>;
   isClosed(): boolean;
-  dispatchEvent(
-    selector: string,
-    type: string,
-    eventInit?: unknown,
-    options?: DispatchEventOptions
-  ): Promise<void>;
+  dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
   requestGC(): Promise<void>;
   setDefaultNavigationTimeout(timeout: number): void;
   setDefaultTimeout(timeout: number): void;
