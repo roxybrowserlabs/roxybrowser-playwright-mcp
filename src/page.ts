@@ -2415,12 +2415,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async check(selector: string, options?: ClickOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.check", options)).check(options);
+    await this.mainFrame().check(selector, options);
   }
 
   async uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async uncheck(selector: string, options?: ClickOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.uncheck", options)).uncheck(options);
+    await this.mainFrame().uncheck(selector, options);
   }
 
   async dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
@@ -2565,7 +2565,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async hover(selector: string, options?: HoverOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.hover", options)).hover(options);
+    await this.mainFrame().hover(selector, options);
   }
 
   async fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
@@ -2575,12 +2575,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   async type(selector: string, value: string, options?: TypeOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.type", options)).type(value, options);
+    await this.mainFrame().type(selector, value, options);
   }
 
   async press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
   async press(selector: string, key: string, options?: PressOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.press", options)).press(key, options);
+    await this.mainFrame().press(selector, key, options);
   }
 
   async tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;

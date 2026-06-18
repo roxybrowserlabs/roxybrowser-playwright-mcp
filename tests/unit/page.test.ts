@@ -825,10 +825,8 @@ describe("RoxyPage", () => {
     expect(adapter.getByTitle).toHaveBeenCalledWith("Hint", undefined);
   });
 
-  it("uses Playwright-like handle action path for page.setChecked", async () => {
+  it("forwards page.setChecked to the main frame", async () => {
     const adapter = createPageAdapterStub();
-    const elementAdapter = createElementHandleAdapterStub();
-    adapter.createHandle.mockReturnValue(elementAdapter);
     const page = new RoxyPage(adapter, {
       enabled: true,
       profile: "balanced",
@@ -839,14 +837,11 @@ describe("RoxyPage", () => {
       typingVarianceMs: 35,
       hoverBeforeClickMs: 110
     });
+    const setCheckedSpy = vi.spyOn(page.mainFrame(), "setChecked").mockResolvedValue(undefined);
 
     await page.setChecked("input", true, { force: true });
 
-    expect(adapter.createHandleReference).toHaveBeenCalledWith({
-      chain: [{ strategy: "css", value: "input" }],
-      pick: { kind: "first" }
-    });
-    expect(elementAdapter.check).toHaveBeenCalledWith({ force: true });
+    expect(setCheckedSpy).toHaveBeenCalledWith("input", true, { force: true });
     expect(adapter.setChecked).not.toHaveBeenCalled();
   });
 
