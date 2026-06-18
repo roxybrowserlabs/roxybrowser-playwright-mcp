@@ -58,9 +58,9 @@ describe("page.waitForSelector e2e", () => {
     await withPage(async (page) => {
       await page.setContent("<div></div>");
       const waitForSelector = page.waitForSelector("span", { state: "attached" });
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").innerHTML = "<span>target</span>";
-      }`);
+      });
       const handle = await waitForSelector;
       expect(await handle!.textContent()).toBe("target");
     });
@@ -78,9 +78,9 @@ describe("page.waitForSelector e2e", () => {
       await page.setContent("<div class='notZombo'></div>");
       expect(found).toBe(false);
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").className = "zombo";
-      }`);
+      });
 
       await waitForSelector;
       expect(found).toBe(true);
@@ -99,7 +99,7 @@ describe("page.waitForSelector e2e", () => {
   it("should waitForSelector with distributed elements", async () => {
     await withPage(async (page) => {
       const promise = page.waitForSelector("div >> text=Hello");
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         const div = document.createElement("div");
         document.body.appendChild(div);
 
@@ -112,7 +112,7 @@ describe("page.waitForSelector e2e", () => {
         const lightSpan = document.createElement("span");
         lightSpan.textContent = "Hello from light";
         div.appendChild(lightSpan);
-      }`);
+      });
       const handle = await promise;
       expect(await handle!.textContent()).toBe("Hello from light");
     });
@@ -128,17 +128,61 @@ describe("page.waitForSelector e2e", () => {
       await page.setContent("<div style='display: none; visibility: hidden;'>1</div>");
       expect(found).toBe(false);
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").style.removeProperty("display");
-      }`);
+      });
       expect(found).toBe(false);
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").style.removeProperty("visibility");
-      }`);
+      });
 
       await waitForSelector;
       expect(found).toBe(true);
+    });
+  });
+
+  it("should wait for visible recursively", async () => {
+    await withPage(async (page) => {
+      let found = false;
+      const waitForSelector = page.waitForSelector("div#inner").then(() => {
+        found = true;
+      });
+
+      await page.setContent("<div style='display: none; visibility: hidden;'><div id='inner'>hi</div></div>");
+      expect(found).toBe(false);
+
+      await page.evaluate(() => {
+        document.querySelector("div")!.style.removeProperty("display");
+      });
+      expect(found).toBe(false);
+
+      await page.evaluate(() => {
+        document.querySelector("div")!.style.removeProperty("visibility");
+      });
+
+      await waitForSelector;
+      expect(found).toBe(true);
+    });
+  });
+
+  it("hidden should wait for visibility hidden", async () => {
+    await withPage(async (page) => {
+      let hidden = false;
+      await page.setContent("<div style='display: block;'>content</div>");
+      const waitForSelector = page.waitForSelector("div", { state: "hidden" }).then(() => {
+        hidden = true;
+      });
+
+      await page.waitForSelector("div");
+      expect(hidden).toBe(false);
+
+      await page.evaluate(() => {
+        document.querySelector("div")!.style.setProperty("visibility", "hidden");
+      });
+
+      await waitForSelector;
+      expect(hidden).toBe(true);
     });
   });
 
@@ -151,18 +195,18 @@ describe("page.waitForSelector e2e", () => {
       });
       expect(error.message).toContain("Timeout 100ms exceeded.");
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").style.width = "10px";
-      }`);
+      });
 
       error = await page.waitForSelector("div", { timeout: 100 }).catch((caughtError: Error) => {
         return caughtError;
       });
       expect(error.message).toContain("Timeout 100ms exceeded.");
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").style.height = "10px";
-      }`);
+      });
 
       expect(await page.waitForSelector("div", { timeout: 100 })).toBeTruthy();
     });
@@ -179,9 +223,9 @@ describe("page.waitForSelector e2e", () => {
       await page.waitForSelector("div");
       expect(hidden).toBe(false);
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").style.setProperty("display", "none");
-      }`);
+      });
 
       await waitForSelector;
       expect(hidden).toBe(true);
@@ -199,9 +243,9 @@ describe("page.waitForSelector e2e", () => {
       await page.waitForSelector("div");
       expect(hidden).toBe(false);
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").remove();
-      }`);
+      });
 
       await waitForSelector;
       expect(hidden).toBe(true);
@@ -233,9 +277,9 @@ describe("page.waitForSelector e2e", () => {
       await page.waitForSelector("css=section");
       expect(done).toBe(false);
 
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         document.querySelector("div").remove();
-      }`);
+      });
 
       await waitForSelector;
       expect(done).toBe(true);
@@ -263,6 +307,47 @@ describe("page.waitForSelector e2e", () => {
         .catch((caughtError: Error) => caughtError);
 
       expect(error.message).toContain("options.visibility is not supported, did you mean options.state?");
+    });
+  });
+
+  it("should throw for boolean state options", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<section>test</section>");
+
+      const trueState = await page
+        .waitForSelector("section", { state: true } as never)
+        .catch((caughtError: Error) => caughtError);
+      expect(trueState.message).toContain("state: expected one of (attached|detached|visible|hidden)");
+
+      const falseState = await page
+        .waitForSelector("section", { state: false } as never)
+        .catch((caughtError: Error) => caughtError);
+      expect(falseState.message).toContain("state: expected one of (attached|detached|visible|hidden)");
+    });
+  });
+
+  it("should include Playwright-style timeout prefix", async () => {
+    await withPage(async (page) => {
+      const error = await page
+        .waitForSelector("div", { timeout: 100, state: "attached" })
+        .catch((caughtError: Error) => caughtError);
+      expect(error.message).toContain("page.waitForSelector: Timeout 100ms exceeded");
+    });
+  });
+
+  it("should support xpath selectors", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<p>red herring</p><p>hello  world  </p>");
+      const waitForXPath = page.waitForSelector('//p[normalize-space(.)="hello world"]');
+      expect(await page.evaluate((element) => element.textContent, await waitForXPath)).toBe("hello  world  ");
+    });
+  });
+
+  it("should allow selecting an element with single slash xpath", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div>some text</div>");
+      const waitForXPath = page.waitForSelector("//html/body/div");
+      expect(await page.evaluate((element) => element.textContent, await waitForXPath)).toBe("some text");
     });
   });
 

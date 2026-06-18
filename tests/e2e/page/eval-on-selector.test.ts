@@ -1,7 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withPage } from "../../helpers/browser.js";
+import { createHistoryPageFixture } from "../../helpers/server.js";
 
 describe("page eval on selector e2e", () => {
+  let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;
+
+  beforeAll(async () => {
+    fixture = await createHistoryPageFixture();
+  });
+
+  afterAll(async () => {
+    await fixture.close();
+  });
+
   it("should work with css selector", async () => {
     await withPage(async (page) => {
       await page.setContent('<section id="testAttribute">43543</section>');
@@ -141,6 +152,48 @@ describe("page eval on selector e2e", () => {
         return (e as HTMLElement).textContent + suffix;
       }, " world!");
       expect(text).toBe("hello world!");
+    });
+  });
+
+  it("should support spaces with >> syntax", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/deep-shadow.html");
+      const text = await page.$eval(" css = div >>css=div>>css   = span  ", (e) => {
+        return (e as HTMLElement).textContent;
+      });
+      expect(text).toBe("Hello from root2");
+    });
+  });
+
+  it("should not stop at first failure with >> syntax", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div><span>Next</span><button>Previous</button><button>Next</button></div>");
+      const html = await page.$eval('button >> "Next"', (e) => (e as HTMLElement).outerHTML);
+      expect(html).toBe("<button>Next</button>");
+    });
+  });
+
+  it("should support * capture", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<section><div><span>a</span></div></section><section><div><span>b</span></div></section>");
+      expect(await page.$eval('*css=div >> "b"', (e) => (e as HTMLElement).outerHTML)).toBe("<div><span>b</span></div>");
+      expect(await page.$eval('section >> *css=div >> "b"', (e) => (e as HTMLElement).outerHTML)).toBe("<div><span>b</span></div>");
+      expect(await page.$eval('css=div >> *text="b"', (e) => (e as HTMLElement).outerHTML)).toBe("<span>b</span>");
+      expect(await page.$("*")).toBeTruthy();
+    });
+  });
+
+  it("should throw on multiple * captures", async () => {
+    await withPage(async (page) => {
+      const error = await page.$eval("*css=div >> *css=span", (e) => (e as HTMLElement).outerHTML).catch((caught) => caught);
+      expect(error.message).toContain("Only one of the selectors can capture using * modifier");
+    });
+  });
+
+  it("should throw on malformed * capture", async () => {
+    await withPage(async (page) => {
+      const error = await page.$eval("*=div", (e) => (e as HTMLElement).outerHTML).catch((caught) => caught);
+      expect(error.message).toContain('Unknown engine "" while parsing selector *=div');
     });
   });
 

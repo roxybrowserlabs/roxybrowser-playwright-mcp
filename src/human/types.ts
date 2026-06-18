@@ -36,3 +36,9 @@ export interface HumanController {
 
 export type HumanizationOverride = HumanizationOptions | undefined;
 
+export type HumanActionOptions =
+  | ClickOptions
+  | HoverOptions
+  | FillOptions
+  | TypeOptions
+  | PressOptions;

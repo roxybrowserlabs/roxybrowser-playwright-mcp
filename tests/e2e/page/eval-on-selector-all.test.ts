@@ -42,6 +42,32 @@ describe("page eval on selector all e2e", () => {
     });
   });
 
+  it("should support * capture", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<section><div><span>a</span></div></section><section><div><span>b</span></div></section>");
+      expect(await page.$$eval('*css=div >> "b"', (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval('section >> *css=div >> "b"', (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval("section >> *", (elements) => elements.length)).toBe(4);
+
+      await page.setContent("<section><div><span>a</span><span>a</span></div></section>");
+      expect(await page.$$eval('*css=div >> "a"', (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval('section >> *css=div >> "a"', (elements) => elements.length)).toBe(1);
+
+      await page.setContent("<div><span>a</span></div><div><span>a</span></div><section><div><span>a</span></div></section>");
+      expect(await page.$$eval('*css=div >> "a"', (elements) => elements.length)).toBe(3);
+      expect(await page.$$eval('section >> *css=div >> "a"', (elements) => elements.length)).toBe(1);
+    });
+  });
+
+  it("should support * capture when multiple paths match", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div><div><span></span></div></div><div></div>");
+      expect(await page.$$eval("*css=div >> span", (elements) => elements.length)).toBe(2);
+      await page.setContent("<div><div><span></span></div><span></span><span></span></div><div></div>");
+      expect(await page.$$eval("*css=div >> span", (elements) => elements.length)).toBe(2);
+    });
+  });
+
   it("should return complex values", async () => {
     await withPage(async (page) => {
       await page.setContent("<div>hello</div><div>beautiful</div><div>world!</div>");

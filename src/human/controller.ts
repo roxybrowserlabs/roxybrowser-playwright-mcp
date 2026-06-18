@@ -5,8 +5,10 @@ import type {
   PressOptions,
   TypeOptions
 } from "../types/options.js";
+import { resolveHumanizationOptions } from "./profile.js";
 import type {
   HumanActionTarget,
+  HumanActionOptions,
   HumanController,
   ResolvedHumanizationOptions
 } from "./types.js";
@@ -17,14 +19,19 @@ export class DefaultHumanController implements HumanController {
   constructor(private readonly defaults: ResolvedHumanizationOptions) {}
 
   async click(target: HumanActionTarget, options?: ClickOptions): Promise<void> {
+    const defaults = this.resolveDefaults(options);
+    if (!defaults.enabled) {
+      await target.click(options);
+      return;
+    }
     await this.enqueue(async () => {
       await this.hover(target, options);
-      if (this.defaults.hoverBeforeClickMs > 0) {
-        await delay(this.defaults.hoverBeforeClickMs);
+      if (defaults.hoverBeforeClickMs > 0) {
+        await delay(defaults.hoverBeforeClickMs);
       }
       await target.click({
         ...options,
-        delay: options?.delay ?? this.defaults.clickHoldMs
+        delay: options?.delay ?? defaults.clickHoldMs
       });
     });
   }
@@ -46,9 +53,14 @@ export class DefaultHumanController implements HumanController {
     value: string,
     options?: TypeOptions
   ): Promise<void> {
+    const defaults = this.resolveDefaults(options);
+    if (!defaults.enabled) {
+      await target.type(value, options);
+      return;
+    }
     await target.type(value, {
       ...options,
-      delay: options?.delay ?? this.defaults.typingDelayMs
+      delay: options?.delay ?? defaults.typingDelayMs
     });
   }
 
@@ -57,10 +69,19 @@ export class DefaultHumanController implements HumanController {
     key: string,
     options?: PressOptions
   ): Promise<void> {
+    const defaults = this.resolveDefaults(options);
+    if (!defaults.enabled) {
+      await target.press(key, options);
+      return;
+    }
     await target.press(key, {
       ...options,
-      delay: options?.delay ?? this.defaults.typingDelayMs
+      delay: options?.delay ?? defaults.typingDelayMs
     });
+  }
+
+  private resolveDefaults(options?: HumanActionOptions): ResolvedHumanizationOptions {
+    return resolveHumanizationOptions(options?.human, this.defaults);
   }
 
   private async enqueue<TResult>(action: () => Promise<TResult>): Promise<TResult> {

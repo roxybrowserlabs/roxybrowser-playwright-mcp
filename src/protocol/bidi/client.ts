@@ -64,6 +64,9 @@ export interface BidiProtocolClient {
   networkAddDataCollector(params: unknown): Promise<Commands["network.addDataCollector"]["returnType"]>;
   networkGetData(params: unknown): Promise<Commands["network.getData"]["returnType"]>;
   networkRemoveDataCollector(params: unknown): Promise<Commands["network.removeDataCollector"]["returnType"]>;
+  networkSetExtraHeaders(params: unknown): Promise<Commands["network.setExtraHeaders"]["returnType"]>;
+  scriptAddPreloadScript(params: unknown): Promise<Commands["script.addPreloadScript"]["returnType"]>;
+  scriptRemovePreloadScript(params: unknown): Promise<Commands["script.removePreloadScript"]["returnType"]>;
   scriptEvaluate(params: unknown): Promise<Commands["script.evaluate"]["returnType"]>;
   sessionEnd(params: unknown): Promise<Commands["session.end"]["returnType"]>;
   sessionNew(params: unknown): Promise<Commands["session.new"]["returnType"]>;
@@ -279,6 +282,18 @@ export class WebSocketBidiClient implements BidiProtocolClient {
 
   async networkRemoveDataCollector(params: unknown) {
     return (await this.sendCommand("network.removeDataCollector", params as Commands["network.removeDataCollector"]["params"])).result;
+  }
+
+  async networkSetExtraHeaders(params: unknown) {
+    return (await this.sendCommand("network.setExtraHeaders", params as Commands["network.setExtraHeaders"]["params"])).result;
+  }
+
+  async scriptAddPreloadScript(params: unknown) {
+    return (await this.sendCommand("script.addPreloadScript", params as Commands["script.addPreloadScript"]["params"])).result;
+  }
+
+  async scriptRemovePreloadScript(params: unknown) {
+    return (await this.sendCommand("script.removePreloadScript", params as Commands["script.removePreloadScript"]["params"])).result;
   }
 
   async scriptEvaluate(params: unknown) {

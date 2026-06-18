@@ -1,5 +1,7 @@
+import { resolve } from "node:path";
 import { RoxyBrowserContext } from "./browserContext.js";
 import { resolveHumanizationOptions } from "./human/profile.js";
+import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import type {
   ProtocolBrowserAdapter,
   ProtocolBrowserSession
@@ -16,10 +18,27 @@ export class RoxyBrowser implements Browser {
   ) {}
 
   async newContext(options: BrowserContextOptions = {}): Promise<BrowserContext> {
-    const contextAdapter = await this.session.newContext(options);
+    const normalizedOptions: BrowserContextOptions = {
+      ...options,
+      ...(options.extraHTTPHeaders
+        ? {
+            extraHTTPHeaders: normalizeExtraHTTPHeaders(options.extraHTTPHeaders)
+          }
+        : {}),
+      ...(options.recordVideo
+        ? {
+            recordVideo: {
+              ...options.recordVideo,
+              ...(options.recordVideo.dir ? { dir: resolve(options.recordVideo.dir) } : {})
+            }
+          }
+        : {})
+    };
+    const contextAdapter = await this.session.newContext(normalizedOptions);
     return new RoxyBrowserContext(
       contextAdapter,
-      resolveHumanizationOptions(options.human, this.humanDefaults)
+      resolveHumanizationOptions(normalizedOptions.human, this.humanDefaults),
+      normalizedOptions
     );
   }
 

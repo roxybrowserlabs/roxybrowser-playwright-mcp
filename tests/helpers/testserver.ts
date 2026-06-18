@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
 
 type RouteHandler = (
   request: IncomingMessage & { postBody: Promise<Buffer> },
@@ -9,6 +11,7 @@ type RouteHandler = (
 
 const fulfillSymbol = Symbol("fulfill");
 const rejectSymbol = Symbol("reject");
+const gzipAsync = promisify(gzip);
 
 type PendingRequest = Promise<IncomingMessage> & {
   [fulfillSymbol]: (request: IncomingMessage) => void;
@@ -27,7 +30,9 @@ export class TestServer {
 
   private readonly server = createServer(this.onRequest.bind(this));
   private readonly routes = new Map<string, RouteHandler>();
+  private readonly csp = new Map<string, string>();
   private readonly extraHeaders = new Map<string, Record<string, string>>();
+  private readonly gzipRoutes = new Set<string>();
   private readonly requestSubscribers = new Map<string, PendingRequest>();
 
   static async create(assetRoot: string, port = 0): Promise<TestServer> {
@@ -61,9 +66,10 @@ export class TestServer {
     }
 
     const prefix = `http://${this.URL_HOSTNAME}:${address.port}`;
+    const crossProcessPrefix = `http://127.0.0.1:${address.port}`;
     (this as { PORT: number }).PORT = address.port;
     (this as { PREFIX: string }).PREFIX = prefix;
-    (this as { CROSS_PROCESS_PREFIX: string }).CROSS_PROCESS_PREFIX = prefix;
+    (this as { CROSS_PROCESS_PREFIX: string }).CROSS_PROCESS_PREFIX = crossProcessPrefix;
     (this as { EMPTY_PAGE: string }).EMPTY_PAGE = `${prefix}/empty.html`;
     (this as { HOST: string }).HOST = new URL(prefix).host;
     (this as { HOSTNAME: string }).HOSTNAME = new URL(prefix).hostname;
@@ -75,7 +81,9 @@ export class TestServer {
 
   reset(): void {
     this.routes.clear();
+    this.csp.clear();
     this.extraHeaders.clear();
+    this.gzipRoutes.clear();
     for (const subscriber of this.requestSubscribers.values()) {
       subscriber[rejectSymbol]();
     }
@@ -97,6 +105,14 @@ export class TestServer {
 
   setRoute(path: string, handler: RouteHandler): void {
     this.routes.set(path, handler);
+  }
+
+  enableGzip(path: string): void {
+    this.gzipRoutes.add(path);
+  }
+
+  setCSP(path: string, csp: string): void {
+    this.csp.set(path, csp);
   }
 
   setRedirect(from: string, to: string): void {
@@ -171,6 +187,15 @@ export class TestServer {
       response.statusCode = 200;
       response.setHeader("Content-Type", contentTypeFor(filePath));
       response.setHeader("Cache-Control", "no-cache, no-store");
+      const csp = this.csp.get(pathWithSearch);
+      if (csp !== undefined) {
+        response.setHeader("Content-Security-Policy", csp);
+      }
+      if (this.gzipRoutes.has(pathWithSearch)) {
+        response.setHeader("Content-Encoding", "gzip");
+        response.end(await gzipAsync(body));
+        return;
+      }
       response.end(body);
     } catch {
       response.statusCode = 404;

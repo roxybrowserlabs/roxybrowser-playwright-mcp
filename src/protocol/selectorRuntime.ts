@@ -7,17 +7,34 @@ import type {
 export interface SelectorRuntimePayload {
   operation:
     | "actionPoint"
+    | "boundingBox"
+    | "check"
     | "count"
+    | "createHandle"
+    | "dispatchEvent"
     | "evaluate"
     | "evaluateAll"
     | "fill"
     | "focus"
+    | "getAttribute"
+    | "innerHTML"
+    | "innerText"
+    | "inputValue"
+    | "isChecked"
+    | "isDisabled"
+    | "isEditable"
+    | "isEnabled"
     | "isVisible"
+    | "selectOption"
     | "textContent";
   reference: ProtocolElementHandleReference;
   expression?: string;
+  isFunction?: boolean;
   arg?: unknown;
   value?: string;
+  values?: Array<{ value?: string; label?: string; index?: number }>;
+  checked?: boolean;
+  name?: string;
   force?: boolean;
   missingMessage?: string;
   position?: { x: number; y: number };
@@ -25,8 +42,53 @@ export interface SelectorRuntimePayload {
 }
 
 function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
+  const resolveBridgeScope = (): (typeof globalThis & Record<string, unknown>) => {
+    const candidates: Array<typeof globalThis & Record<string, unknown>> = [
+      globalThis as typeof globalThis & Record<string, unknown>
+    ];
+    try {
+      if (globalThis.top) {
+        candidates.unshift(globalThis.top as unknown as typeof globalThis & Record<string, unknown>);
+      }
+    } catch {}
+    for (const candidate of candidates) {
+      try {
+        if (candidate.__roxyHandleStore) {
+          return candidate;
+        }
+      } catch {}
+    }
+    return globalThis as typeof globalThis & Record<string, unknown>;
+  };
+  const globalState = resolveBridgeScope() as typeof globalThis & {
+    __roxyHandleStore?: Record<string, Node | undefined>;
+    __roxyNextHandleId?: number;
+  };
+  globalState.__roxyHandleStore ??= {};
+  globalState.__roxyNextHandleId ??= 0;
+
   const normalize = (value: string | null | undefined): string =>
     (value ?? "").replace(/\s+/g, " ").trim();
+
+  const isDocumentNode = (node: unknown): node is Document =>
+    !!node && typeof node === "object" && "nodeType" in node && (node as Node).nodeType === 9;
+
+  const isElementNode = (node: unknown): node is Element =>
+    !!node && typeof node === "object" && "nodeType" in node && (node as Node).nodeType === 1;
+
+  const isNode = (node: unknown): node is Node =>
+    !!node && typeof node === "object" && "nodeType" in node;
+
+  const isTextNode = (node: unknown): node is Text =>
+    isNode(node) && node.nodeType === 3;
+
+  const tagNameOf = (node: unknown): string =>
+    isElementNode(node) ? node.tagName.toLowerCase() : "";
+
+  const isFrameElement = (node: unknown): node is HTMLIFrameElement | HTMLFrameElement => {
+    const tagName = tagNameOf(node);
+    return tagName === "iframe" || tagName === "frame";
+  };
 
   const pushUnique = <T>(items: T[], candidate: T): void => {
     if (!items.includes(candidate)) {
@@ -45,10 +107,36 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return elements;
   };
 
-  const compilePattern = (selector: LocatorSelector, kind: "value" | "name") => {
-    const value = kind === "value" ? selector.value : selector.name ?? "";
-    const isRegex = kind === "value" ? selector.isRegex : selector.nameIsRegex;
-    const flags = kind === "value" ? selector.regexFlags : selector.nameRegexFlags;
+  const querySelectorAllPierce = (root: ParentNode | Element, selector: string): Element[] => {
+    const matches: Element[] = [];
+    const visitRoot = (currentRoot: ParentNode | Element): void => {
+      for (const element of toElements(currentRoot.querySelectorAll(selector))) {
+        pushUnique(matches, element);
+      }
+      if (isElementNode(currentRoot)) {
+        const shadowRoot = (currentRoot as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+        if (shadowRoot) {
+          visitRoot(shadowRoot);
+        }
+      }
+      for (const element of toElements(currentRoot.querySelectorAll("*"))) {
+        const shadowRoot = (element as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+        if (shadowRoot) {
+          visitRoot(shadowRoot);
+        }
+      }
+    };
+    visitRoot(root);
+    return matches;
+  };
+
+  const compilePattern = (selector: LocatorSelector, kind: "value" | "name" | "label") => {
+    const value =
+      kind === "value" ? selector.value : kind === "name" ? selector.name ?? "" : selector.label ?? "";
+    const isRegex =
+      kind === "value" ? selector.isRegex : kind === "name" ? selector.nameIsRegex : selector.labelIsRegex;
+    const flags =
+      kind === "value" ? selector.regexFlags : kind === "name" ? selector.nameRegexFlags : selector.labelRegexFlags;
     if (isRegex) {
       return new RegExp(value, flags ?? "");
     }
@@ -58,7 +146,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   const matchesPattern = (
     candidate: string,
     selector: LocatorSelector,
-    kind: "value" | "name"
+    kind: "value" | "name" | "label"
   ): boolean => {
     const pattern = compilePattern(selector, kind);
     const normalizedCandidate = normalize(candidate);
@@ -154,23 +242,82 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return normalize((element as HTMLElement).innerText || element.textContent);
   };
 
+  const labelTextForControl = (element: Element): string => {
+    const ariaLabelledBy = element.getAttribute("aria-labelledby");
+    if (ariaLabelledBy) {
+      const text = ariaLabelledBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter((node): node is HTMLElement => Boolean(node))
+        .map((node) => normalize(node.innerText || node.textContent))
+        .join(" ");
+      if (text) {
+        return normalize(text);
+      }
+    }
+
+    const ariaLabel = element.getAttribute("aria-label");
+    if (ariaLabel) {
+      return normalize(ariaLabel);
+    }
+
+    const labels =
+      "labels" in element
+        ? Array.from(
+            ((element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement)
+              .labels ?? []) as Iterable<HTMLLabelElement>
+          )
+        : [];
+    if (labels.length) {
+      return normalize(
+        labels
+          .map((label) => normalize((label as HTMLElement).innerText || label.textContent))
+          .filter(Boolean)
+          .join(" ")
+      );
+    }
+
+    return "";
+  };
+
+  const attributeValueForSelector = (element: Element, selector: LocatorSelector): string | null => {
+    switch (selector.label) {
+      case "alt":
+        return element.getAttribute("alt");
+      case "label":
+        return labelTextForControl(element);
+      case "placeholder":
+        return element.getAttribute("placeholder");
+      case "testId":
+        return (
+          element.getAttribute("data-testid") ??
+          element.getAttribute("data-test-id") ??
+          element.getAttribute("data-test")
+        );
+      case "title":
+        return element.getAttribute("title");
+      default:
+        return null;
+    }
+  };
+
   const descendantsOf = (root: ParentNode | Element, includeRoot: boolean): Element[] => {
     const descendants: Element[] = [];
-    if (includeRoot && root instanceof Element) {
+    if (includeRoot && isElementNode(root)) {
       descendants.push(root);
     }
 
-    if (root instanceof Document) {
+    if (isDocumentNode(root)) {
       if (includeRoot && root.documentElement) {
         pushUnique(descendants, root.documentElement);
       }
-      for (const element of toElements(root.querySelectorAll("*"))) {
+      for (const element of querySelectorAllPierce(root, "*")) {
         pushUnique(descendants, element);
       }
       return descendants;
     }
 
-    for (const element of toElements(root.querySelectorAll("*"))) {
+    for (const element of querySelectorAllPierce(root, "*")) {
       pushUnique(descendants, element);
     }
     return descendants;
@@ -181,7 +328,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     expression: string,
     includeRoot: boolean
   ): Element[] => {
-    const ownerDocument = root instanceof Document ? root : root.ownerDocument ?? document;
+    const ownerDocument = isDocumentNode(root) ? root : root.ownerDocument ?? document;
     const result = ownerDocument.evaluate(
       expression,
       root,
@@ -193,9 +340,11 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     for (let index = 0; index < result.snapshotLength; index += 1) {
       const node = result.snapshotItem(index);
       if (!(node instanceof Element)) {
-        continue;
+        if (!isElementNode(node)) {
+          continue;
+        }
       }
-      if (!includeRoot && root instanceof Element && node === root) {
+      if (!includeRoot && isElementNode(root) && node === root) {
         continue;
       }
       pushUnique(elements, node);
@@ -208,12 +357,22 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     selector: LocatorSelector,
     includeRoot: boolean
   ): Element[] => {
+    if (selector.strategy === "control") {
+      return [];
+    }
+
     if (selector.strategy === "css") {
+      if (selector.label) {
+        return descendantsOf(root, includeRoot).filter((element) => {
+          const value = attributeValueForSelector(element, selector);
+          return value !== null && matchesPattern(value, selector, "value");
+        });
+      }
       const matches: Element[] = [];
-      if (includeRoot && root instanceof Element && root.matches(selector.value)) {
+      if (includeRoot && isElementNode(root) && root.matches(selector.value)) {
         matches.push(root);
       }
-      for (const element of toElements(root.querySelectorAll(selector.value))) {
+      for (const element of querySelectorAllPierce(root, selector.value)) {
         pushUnique(matches, element);
       }
       return matches;
@@ -273,9 +432,20 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return pickedElement ? [pickedElement] : [];
   };
 
-  const resolveReference = (reference: ProtocolElementHandleReference): Element[] => {
+  type SelectorMatch = {
+    node: ParentNode | Element;
+    capture: Element | null;
+  };
+
+  const resolveReference = (reference: ProtocolElementHandleReference): Node[] => {
+    if (reference.handleId) {
+      const node = globalState.__roxyHandleStore?.[reference.handleId] ?? null;
+      return node ? [node] : [];
+    }
+
     const roots: Array<ParentNode | Element> = reference.scope
       ? resolveReference(reference.scope)
+        .filter((node): node is ParentNode | Element => isElementNode(node) || isDocumentNode(node))
       : [document];
 
     if (!reference.chain.length) {
@@ -285,23 +455,54 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       );
     }
 
-    let current = roots;
+    let current: SelectorMatch[] = roots.map((root) => ({
+      node: root,
+      capture: null
+    }));
     for (let index = 0; index < reference.chain.length; index += 1) {
       const selector = reference.chain[index]!;
-      const includeRoot = reference.scope ? index > 0 : true;
-      const next: Element[] = [];
-      for (const root of current) {
-        for (const candidate of candidatesFromRoot(root, selector, includeRoot)) {
-          pushUnique(next, candidate);
+      if (selector.strategy === "control" && selector.value === "enter-frame") {
+        const next: SelectorMatch[] = [];
+        for (const match of current) {
+          if (!isFrameElement(match.node)) {
+            continue;
+          }
+          const contentDocument = match.node.contentDocument;
+          if (contentDocument) {
+            next.push({
+              node: contentDocument,
+              capture: match.capture
+            });
+          }
+        }
+        current = next;
+        continue;
+      }
+
+      const includeRoot = (!reference.scope && index === 0) || selector.strategy === "text";
+      const next: SelectorMatch[] = [];
+      for (const match of current) {
+        for (const candidate of candidatesFromRoot(match.node, selector, includeRoot)) {
+          const capture = selector.capture ? candidate : match.capture;
+          if (!next.some((entry) => entry.node === candidate && entry.capture === capture)) {
+            next.push({
+              node: candidate,
+              capture
+            });
+          }
         }
       }
       current = next;
     }
 
-    return applyPick(
-      current.filter((node): node is Element => node instanceof Element),
-      reference.pick
-    );
+    const resolved: Element[] = [];
+    for (const match of current) {
+      const node = match.capture ?? match.node;
+      if (isElementNode(node)) {
+        pushUnique(resolved, node);
+      }
+    }
+    return applyPick(resolved, reference.pick);
   };
 
   const reviveArgument = (value: unknown): unknown => {
@@ -334,6 +535,64 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       rect.height > 0
     );
   };
+  const isDisabled = (element: Element): boolean => {
+    if (
+      element instanceof HTMLButtonElement ||
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLSelectElement ||
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLOptGroupElement ||
+      element instanceof HTMLOptionElement ||
+      element instanceof HTMLFieldSetElement
+    ) {
+      return element.disabled;
+    }
+    return element.getAttribute("aria-disabled") === "true";
+  };
+  const isEditable = (element: Element): boolean => {
+    if (element instanceof HTMLInputElement) {
+      const type = element.type.toLowerCase();
+      return (
+        !element.readOnly &&
+        !element.disabled &&
+        !["checkbox", "radio", "button", "submit", "reset", "file", "image", "range", "color"].includes(type)
+      );
+    }
+    if (element instanceof HTMLTextAreaElement) {
+      return !element.readOnly && !element.disabled;
+    }
+    return element instanceof HTMLElement ? element.isContentEditable : false;
+  };
+  const isEnabled = (element: Element): boolean => !isDisabled(element);
+  const isChecked = (element: Element): boolean => {
+    if (element instanceof HTMLInputElement) {
+      return element.checked;
+    }
+    const ariaChecked = element.getAttribute("aria-checked");
+    return ariaChecked === "true" || ariaChecked === "mixed";
+  };
+  const inputValue = (element: Element): string => {
+    if (
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLSelectElement
+    ) {
+      return element.value;
+    }
+    throw new Error("Node is not an <input>, <textarea> or <select> element.");
+  };
+  const innerTextValue = (element: Element): string => {
+    if (element instanceof HTMLElement) {
+      return element.innerText;
+    }
+    throw new Error("Node is not an HTMLElement.");
+  };
+  const innerHTMLValue = (element: Element): string => {
+    if (element instanceof HTMLElement || element instanceof SVGElement) {
+      return element.innerHTML;
+    }
+    throw new Error("Node does not expose innerHTML.");
+  };
 
   const formatElementForStrictViolation = (element: Element): string => {
     const tag = element.tagName.toLowerCase();
@@ -351,6 +610,13 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     );
     return `${tag}${id}${className}${text ? ` (${text})` : ""}`;
   };
+  const nodeToActionElement = (node: Node): Element | null => {
+    if (isElementNode(node)) {
+      return node;
+    }
+    return isTextNode(node) && isElementNode(node.parentElement) ? node.parentElement : null;
+  };
+
   const resolveSingleElementFrom = (elements: Element[]): Element | null => {
     if (!payload.reference.pick && elements.length > 1) {
       const preview = elements
@@ -365,15 +631,32 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
     return elements[0] ?? null;
   };
-  const resolveSingleElement = (): Element | null => resolveSingleElementFrom(resolveReference(payload.reference));
+  const resolveSingleElement = (): Element | null =>
+    resolveSingleElementFrom(resolveReference(payload.reference).filter((node): node is Element => isElementNode(node)));
+  const resolveSingleNode = (): Node | null => resolveReference(payload.reference)[0] ?? null;
   const callUserFunction = (subject: unknown) => {
-    const callback = (0, eval)(`(${payload.expression ?? "() => undefined"})`);
-    return callback(subject, reviveArgument(payload.arg));
+    const expression = payload.expression ?? "undefined";
+    let result = payload.isFunction === true
+      ? (0, eval)(`(${expression})`)
+      : (0, eval)(expression);
+    if (payload.isFunction === true) {
+      result = result(subject, reviveArgument(payload.arg));
+    } else if (payload.isFunction === undefined && typeof result === "function") {
+      result = result(subject, reviveArgument(payload.arg));
+    }
+    return result;
   };
   const resolveActionPointOnce = () => {
-    const firstElement = resolveSingleElement();
-    if (!firstElement) {
+    const firstNode = resolveSingleNode();
+    if (!firstNode) {
       throw new Error(payload.missingMessage ?? "No element found.");
+    }
+    if (!firstNode.isConnected) {
+      throw new Error("Element is not attached to the DOM");
+    }
+    const firstElement = nodeToActionElement(firstNode);
+    if (!firstElement) {
+      throw new Error("Element is not attached to the DOM");
     }
 
     firstElement.scrollIntoView({
@@ -382,11 +665,19 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       behavior: "instant"
     });
 
-    if (!payload.force && !isVisible(firstElement)) {
+    if (!isVisible(firstElement)) {
       throw new Error("Element is not visible.");
     }
 
-    const rect = firstElement.getBoundingClientRect();
+    const rect = isTextNode(firstNode)
+      ? (() => {
+          const range = document.createRange();
+          range.selectNodeContents(firstNode);
+          const rangeRect = range.getBoundingClientRect();
+          range.detach();
+          return rangeRect;
+        })()
+      : firstElement.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) {
       throw new Error("Element does not have an actionable bounding box.");
     }
@@ -394,10 +685,32 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     const offsetX = payload.position ? payload.position.x : rect.width / 2;
     const offsetY = payload.position ? payload.position.y : rect.height / 2;
 
+    let frameOffsetX = 0;
+    let frameOffsetY = 0;
+    let currentWindow: Window | null = firstElement.ownerDocument.defaultView;
+    while (currentWindow && isElementNode(currentWindow.frameElement)) {
+      const frameRect = currentWindow.frameElement.getBoundingClientRect();
+      frameOffsetX += frameRect.left;
+      frameOffsetY += frameRect.top;
+      currentWindow = currentWindow.parent === currentWindow ? null : currentWindow.parent;
+    }
+
     return {
-      x: rect.left + offsetX,
-      y: rect.top + offsetY
+      x: frameOffsetX + rect.left + offsetX,
+      y: frameOffsetY + rect.top + offsetY
     };
+  };
+  const frameOffsetForElement = (element: Element): { x: number; y: number } => {
+    let x = 0;
+    let y = 0;
+    let currentWindow: Window | null = element.ownerDocument.defaultView;
+    while (currentWindow && isElementNode(currentWindow.frameElement)) {
+      const frameRect = currentWindow.frameElement.getBoundingClientRect();
+      x += frameRect.left;
+      y += frameRect.top;
+      currentWindow = currentWindow.parent === currentWindow ? null : currentWindow.parent;
+    }
+    return { x, y };
   };
   const shouldRetryActionPointError = (error: unknown): boolean => {
     if (!(error instanceof Error)) {
@@ -415,6 +728,36 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   switch (payload.operation) {
     case "count":
       return resolvedElements.length;
+    case "boundingBox":
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement || !firstElement.isConnected) {
+          return null;
+        }
+        const rect = firstElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          return null;
+        }
+        const offset = frameOffsetForElement(firstElement);
+        return {
+          x: rect.x + offset.x,
+          y: rect.y + offset.y,
+          width: rect.width,
+          height: rect.height
+        };
+      }
+    case "createHandle":
+      {
+        const firstNode = resolveReference(payload.reference)[0] ?? null;
+        if (!firstNode) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        const handleId = `handle:${++globalState.__roxyNextHandleId!}`;
+        globalState.__roxyHandleStore![handleId] = firstNode;
+        return {
+          handleId
+        };
+      }
     case "evaluate":
       {
         const firstElement = resolveSingleElement();
@@ -425,10 +768,74 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
     case "evaluateAll":
       return callUserFunction(resolvedElements);
+    case "dispatchEvent":
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        const eventInit = reviveArgument(payload.arg);
+        const event = new Event(String(payload.name ?? "event"), {
+          bubbles: true,
+          cancelable: true,
+          ...(eventInit && typeof eventInit === "object" ? eventInit as EventInit : {})
+        });
+        firstElement.dispatchEvent(event);
+        return undefined;
+      }
     case "textContent":
       {
         const firstElement = resolveSingleElement();
         return firstElement ? firstElement.textContent : null;
+      }
+    case "innerText":
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        return innerTextValue(firstElement);
+      }
+    case "innerHTML":
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        return innerHTMLValue(firstElement);
+      }
+    case "getAttribute":
+      {
+        const firstElement = resolveSingleElement();
+        return firstElement ? firstElement.getAttribute(payload.name ?? "") : null;
+      }
+    case "inputValue":
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        return inputValue(firstElement);
+      }
+    case "isChecked":
+      {
+        const firstElement = resolveSingleElement();
+        return firstElement ? isChecked(firstElement) : false;
+      }
+    case "isDisabled":
+      {
+        const firstElement = resolveSingleElement();
+        return firstElement ? isDisabled(firstElement) : false;
+      }
+    case "isEditable":
+      {
+        const firstElement = resolveSingleElement();
+        return firstElement ? isEditable(firstElement) : false;
+      }
+    case "isEnabled":
+      {
+        const firstElement = resolveSingleElement();
+        return firstElement ? isEnabled(firstElement) : false;
       }
     case "isVisible":
       {
@@ -445,6 +852,76 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           firstElement.focus();
         }
         return true;
+      }
+    case "check":
+      {
+        const firstElement = resolveSingleElement();
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        const desired = payload.checked ?? true;
+        if (firstElement instanceof HTMLInputElement) {
+          const type = firstElement.type.toLowerCase();
+          if (type !== "checkbox" && type !== "radio") {
+            throw new Error("Not a checkbox or radio button.");
+          }
+          firstElement.checked = desired;
+        } else if (
+          firstElement.getAttribute("role") === "checkbox" ||
+          firstElement.getAttribute("role") === "radio"
+        ) {
+          firstElement.setAttribute("aria-checked", desired ? "true" : "false");
+        } else {
+          throw new Error("Not a checkbox or radio button.");
+        }
+        firstElement.dispatchEvent(new Event("input", { bubbles: true }));
+        firstElement.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+    case "selectOption":
+      {
+        const firstElement = resolveSingleElement();
+        if (!(firstElement instanceof HTMLSelectElement)) {
+          throw new Error("Element is not a <select> element.");
+        }
+        const requested = payload.values ?? [];
+        const options = Array.from(firstElement.options);
+        const selectedValues: string[] = [];
+
+        if (firstElement.multiple) {
+          for (const option of options) {
+            option.selected = false;
+          }
+        }
+
+        for (const candidate of requested) {
+          const match = options.find((option, index) => {
+            if (candidate.index !== undefined) {
+              return index === candidate.index;
+            }
+            if (candidate.value !== undefined) {
+              return option.value === candidate.value;
+            }
+            if (candidate.label !== undefined) {
+              return option.label === candidate.label;
+            }
+            return false;
+          });
+
+          if (!match) {
+            continue;
+          }
+
+          match.selected = true;
+          selectedValues.push(match.value);
+          if (!firstElement.multiple) {
+            break;
+          }
+        }
+
+        firstElement.dispatchEvent(new Event("input", { bubbles: true }));
+        firstElement.dispatchEvent(new Event("change", { bubbles: true }));
+        return selectedValues;
       }
     case "fill":
       {

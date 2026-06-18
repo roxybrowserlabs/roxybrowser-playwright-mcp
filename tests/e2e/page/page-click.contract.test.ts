@@ -23,7 +23,7 @@ describe("page click contract e2e", () => {
 
       await page.click("button");
 
-      expect(await page.evaluate<number>("() => window.__clicked")).toBe(1);
+      expect(await page.evaluate(() => window.__clicked)).toBe(1);
     });
   });
 
@@ -37,7 +37,20 @@ describe("page click contract e2e", () => {
 
       await page.click("circle");
 
-      expect(await page.evaluate<number>("() => window.__clicked")).toBe(42);
+      expect(await page.evaluate(() => window.__clicked)).toBe(42);
+    });
+  });
+
+  it("clicks the button if window.Node is removed", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<button onclick="window.__clicked = true">Click me</button>`);
+      await page.evaluate(() => {
+        delete (window as Window & { Node?: typeof Node }).Node;
+      });
+
+      await page.click("button");
+
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -47,7 +60,7 @@ describe("page click contract e2e", () => {
 
       await page.click("div");
 
-      expect(await page.evaluate<boolean>("() => window.__clicked")).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -61,7 +74,7 @@ describe("page click contract e2e", () => {
 
       await page.click("div");
 
-      expect(await page.evaluate<boolean>("() => window.__clicked")).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -75,7 +88,7 @@ describe("page click contract e2e", () => {
 
       await page.click("div");
 
-      expect(await page.evaluate<boolean>("() => window.__clicked")).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -92,7 +105,7 @@ describe("page click contract e2e", () => {
 
       await page.click("span");
 
-      expect(await page.evaluate<number>("() => window.__clicked")).toBe(42);
+      expect(await page.evaluate(() => window.__clicked)).toBe(42);
     });
   });
 
@@ -110,7 +123,7 @@ describe("page click contract e2e", () => {
 
       await page.click("span");
 
-      expect(await page.evaluate<number>("() => window.__clicked")).toBe(42);
+      expect(await page.evaluate(() => window.__clicked)).toBe(42);
     });
   });
 
@@ -123,10 +136,10 @@ describe("page click contract e2e", () => {
       await page.click("textarea", { clickCount: 3 });
 
       expect(
-        await page.evaluate<string>(`() => {
+        await page.evaluate(() => {
           const textarea = document.querySelector("textarea");
-          return textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
-        }`)
+          return textarea!.value.substring(textarea!.selectionStart, textarea!.selectionEnd);
+        })
       ).toBe(text);
     });
   });
@@ -141,7 +154,7 @@ describe("page click contract e2e", () => {
 
       await page.click("a");
 
-      expect(await page.evaluate<boolean>("() => window.__clicked")).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -151,7 +164,7 @@ describe("page click contract e2e", () => {
 
       await page.click("#agree");
 
-      expect(await page.evaluate<boolean>("() => document.querySelector('#agree').checked")).toBe(true);
+      expect(await page.evaluate(() => (document.querySelector("#agree") as HTMLInputElement).checked)).toBe(true);
     });
   });
 
@@ -170,11 +183,26 @@ describe("page click contract e2e", () => {
 
       await page.goto(fixture.server.PREFIX + "/click-a.html", { waitUntil: "load" });
       await page.click("button");
-      expect(await page.evaluate<string>("() => window.__clicked")).toBe("a");
+      expect(await page.evaluate(() => window.__clicked)).toBe("a");
 
       await page.goto(fixture.server.PREFIX + "/click-b.html", { waitUntil: "load" });
       await page.click("button");
-      expect(await page.evaluate<string>("() => window.__clicked")).toBe("b");
+      expect(await page.evaluate(() => window.__clicked)).toBe("b");
+    });
+  });
+
+  it("clicks a button after a cross-origin navigation", async () => {
+    await withPage(async (page) => {
+      const buttonHtml = `<button onclick="window.__clicked = true">Click me</button>`;
+      fixture.server.setContent("/cross-click.html", buttonHtml, "text/html");
+
+      await page.goto(fixture.server.PREFIX + "/cross-click.html", { waitUntil: "load" });
+      await page.click("button");
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
+
+      await page.goto(fixture.server.CROSS_PROCESS_PREFIX + "/cross-click.html", { waitUntil: "load" });
+      await page.click("button");
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -190,15 +218,15 @@ describe("page click contract e2e", () => {
           () => ({ ok: true as const }),
           (error) => ({ ok: false as const, error })
         );
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         setTimeout(() => {
-          document.querySelector("button").style.display = "block";
+          document.querySelector<HTMLButtonElement>("button")!.style.display = "block";
         }, 100);
-      }`);
+      });
       const result = await clickPromise;
 
       expect(result.ok).toBe(true);
-      expect(await page.evaluate<boolean>("() => window.__clicked")).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -214,15 +242,15 @@ describe("page click contract e2e", () => {
           () => ({ ok: true as const }),
           (error) => ({ ok: false as const, error })
         );
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         setTimeout(() => {
-          document.querySelector("button").style.visibility = "visible";
+          document.querySelector<HTMLButtonElement>("button")!.style.visibility = "visible";
         }, 100);
-      }`);
+      });
       const result = await clickPromise;
 
       expect(result.ok).toBe(true);
-      expect(await page.evaluate<boolean>("() => window.__clicked")).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -238,15 +266,15 @@ describe("page click contract e2e", () => {
           () => ({ ok: true as const }),
           (error) => ({ ok: false as const, error })
         );
-      await page.evaluate(`() => {
+      await page.evaluate(() => {
         setTimeout(() => {
-          document.querySelector("button").disabled = false;
+          document.querySelector<HTMLButtonElement>("button")!.disabled = false;
         }, 100);
-      }`);
+      });
       const result = await clickPromise;
 
       expect(result.ok).toBe(true);
-      expect(await page.evaluate<boolean>("() => window.__clicked")).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
     });
   });
 
@@ -270,8 +298,8 @@ describe("page click contract e2e", () => {
         }
         await Promise.all(clickPromises);
 
-        expect(await page.evaluate<number>("() => window.__count")).toBe(9);
-        expect(await secondPage.evaluate<number>("() => window.__count")).toBe(9);
+        expect(await page.evaluate(() => window.__count)).toBe(9);
+        expect(await secondPage.evaluate(() => window.__count)).toBe(9);
       } finally {
         await secondPage.close();
       }

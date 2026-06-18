@@ -6,14 +6,34 @@ import {
 } from "../../ariaSnapshot.js";
 import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../../vendor/playwright/ariaSnapshotEvaluate.js";
 import { NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
+import { mergeExtraHTTPHeaders } from "../../httpHeaders.js";
 import { createPageResponse } from "../../pageResponse.js";
-import { createNavigationResult } from "../../navigationResult.js";
-import type { ResolvedAriaRef } from "../../types/api.js";
+import {
+  parseSerializedEvaluationResult,
+  wrapWithSerializedEvaluationResult
+} from "../evaluationSerializer.js";
+import type { Disposable, ResolvedAriaRef } from "../../types/api.js";
 import {
   SELECTOR_RUNTIME_SOURCE,
   type SelectorRuntimePayload
 } from "../selectorRuntime.js";
+import {
+  createChapterOverlayHtml,
+  RENDER_SCREencast_OVERLAYS_SOURCE
+} from "../../screencastOverlay.js";
+import { RENDER_SCREENCAST_ACTIONS_SOURCE } from "../../screencastActions.js";
+import {
+  createAltTextLocatorSelector,
+  createLabelLocatorSelector,
+  createPlaceholderLocatorSelector,
+  createRoleLocatorSelector,
+  createTestIdLocatorSelector,
+  createTextLocatorSelector,
+  createTitleLocatorSelector
+} from "../../locatorSelectors.js";
 import type {
+  AddScriptTagOptions,
+  AddStyleTagOptions,
   AriaSnapshotOptions,
   ClickOptions,
   BrowserConnectOptions,
@@ -21,15 +41,21 @@ import type {
   FillOptions,
   HoverOptions,
   MouseButton,
+  PageCloseOptions,
   PageGotoOptions,
+  PdfOptions,
   PressOptions,
+  Rect,
   ScreenshotOptions,
-  TypeOptions
+  TapOptions,
+  TypeOptions,
+  ViewportSize
 } from "../../types/options.js";
 import type {
-  PageEventListener,
-  PageEventMap,
-  PageEventName,
+  PageDialog,
+  RawPageEventListener,
+  RawPageEventMap,
+  RawPageEventName,
   PageResponse
 } from "../../types/events.js";
 import type {
@@ -103,6 +129,31 @@ interface StateWaiter {
 
 interface NavigationResponseCapture {
   lastResponse: PageResponse | null;
+}
+
+interface BidiScreencastOverlayState {
+  kind?: "chapter";
+  html: string;
+  removeTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface ScreencastActionOptions {
+  duration?: number;
+  position?: "top-left" | "top" | "top-right" | "bottom-left" | "bottom" | "bottom-right";
+  fontSize?: number;
+  cursor?: "none" | "pointer";
+}
+
+interface ScreencastActionAnnotationState {
+  title: string;
+  point: ActionPoint;
+  cursorPoint?: ActionPoint;
+  highlightBox?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
 }
 
 interface LocatorPayload {
@@ -447,6 +498,8 @@ class BidiBrowserSession implements ProtocolBrowserSession {
 }
 
 class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
+  private readonly pages = new Set<BidiPageAdapter>();
+
   constructor(
     private readonly client: BidiProtocolClient,
     private readonly userContext: string | undefined,
@@ -465,11 +518,25 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
           }
     );
 
-    const page = await BidiPageAdapter.create(this.client, response.context, this.options);
+    let page!: BidiPageAdapter;
+    page = await BidiPageAdapter.create(this.client, response.context, this.options, () => {
+      this.pages.delete(page);
+    });
+    this.pages.add(page);
     return page;
   }
 
+  async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
+    this.options.extraHTTPHeaders = { ...headers };
+    await Promise.all(
+      Array.from(this.pages.values()).map(async (page) => {
+        await page.updateContextExtraHTTPHeaders();
+      })
+    );
+  }
+
   async close(): Promise<void> {
+    this.pages.clear();
     if (!this.userContext) {
       return;
     }
@@ -482,6 +549,8 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
 class BidiPageAdapter implements ProtocolPageAdapter {
   private closed = false;
+  private closeReason: string | undefined;
+  private currentUrl = "about:blank";
   private domContentLoaded = false;
   private loadFired = false;
   private sameDocumentNavigation = false;
@@ -489,15 +558,26 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   private responseDataCollector: string | undefined;
   private navigationResponseCapture: NavigationResponseCapture | undefined;
   private readonly stateWaiters = new Set<StateWaiter>();
-  private readonly eventListeners = new Map<PageEventName, Set<PageEventListener<PageEventName>>>();
+  private readonly eventListeners = new Map<RawPageEventName, Set<RawPageEventListener<RawPageEventName>>>();
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
+  private currentViewportSize: ViewportSize | null = null;
+  private currentMousePosition: ActionPoint = { x: 0, y: 0 };
+  private readonly pressedKeyboardModifiers = new Set<string>();
+  private pageExtraHTTPHeaders: Record<string, string> | undefined;
+  private screencastActionOptions: ScreencastActionOptions | null = null;
+  private screencastActionAnnotation: ScreencastActionAnnotationState | null = null;
+  private screencastActionAbortController: AbortController | null = null;
+  private screencastOverlaysVisible = true;
+  private screencastOverlayId = 0;
+  private readonly screencastOverlays = new Map<string, BidiScreencastOverlayState>();
 
   static async create(
     client: BidiProtocolClient,
     contextId: string,
-    contextOptions: BrowserContextOptions
+    contextOptions: BrowserContextOptions,
+    onClosed?: () => void
   ): Promise<BidiPageAdapter> {
-    const page = new BidiPageAdapter(client, contextId, contextOptions);
+    const page = new BidiPageAdapter(client, contextId, contextOptions, onClosed);
     await page.initialize();
     return page;
   }
@@ -505,7 +585,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   private constructor(
     private readonly client: BidiProtocolClient,
     private readonly contextId: string,
-    private readonly contextOptions: BrowserContextOptions
+    private readonly contextOptions: BrowserContextOptions,
+    private readonly onClosed?: () => void
   ) {}
 
   private async initialize(): Promise<void> {
@@ -517,6 +598,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         "browsingContext.fragmentNavigated",
         "browsingContext.historyUpdated",
         "browsingContext.load",
+        "browsingContext.userPromptOpened",
         "log.entryAdded",
         "network.beforeRequestSent",
         "network.responseCompleted",
@@ -552,6 +634,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
       await this.navigateViaLocation(url);
     }
+    this.currentUrl = url;
     if (waitUntil !== "commit") {
       await this.waitForLoadState(waitUntil, options.timeout);
     }
@@ -562,15 +645,15 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     return capture.lastResponse;
   }
 
-  async url(): Promise<string> {
-    return this.evaluateExpression<string>("String(globalThis.location?.href || '')");
+  url(): string {
+    return this.currentUrl;
   }
 
-  async goBack(options: PageGotoOptions = {}): Promise<ReturnType<typeof createNavigationResult> | null> {
+  async goBack(options: PageGotoOptions = {}): Promise<PageResponse | null> {
     return this.navigateHistory(-1, options);
   }
 
-  async goForward(options: PageGotoOptions = {}): Promise<ReturnType<typeof createNavigationResult> | null> {
+  async goForward(options: PageGotoOptions = {}): Promise<PageResponse | null> {
     return this.navigateHistory(1, options);
   }
 
@@ -620,6 +703,22 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     );
   }
 
+  async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {
+    const result = await this.client.scriptAddPreloadScript({
+      functionDeclaration: `() => { ${source} }`,
+      contexts: [this.contextId]
+    });
+    const script = (result as { script?: string }).script;
+    return {
+      dispose: async () => {
+        if (!script) {
+          return;
+        }
+        await this.client.scriptRemovePreloadScript({ script }).catch(() => {});
+      }
+    };
+  }
+
   private async navigateViaLocation(url: string): Promise<void> {
     await this.evaluateFunction<void>(
       `(payload) => {
@@ -642,8 +741,71 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     return this.evaluateFunction<TResult>(expressionStr, arg);
   }
 
+  async addScriptTag(options?: AddScriptTagOptions): Promise<ProtocolElementHandleAdapter> {
+    await this.evaluateFunction<void>(
+      `async (payload) => {
+        const script = document.createElement('script');
+        script.type = payload.type || 'text/javascript';
+        if (payload.url) {
+          script.src = payload.url;
+          const promise = new Promise((resolve, reject) => {
+            script.onload = resolve;
+            script.onerror = event => reject(typeof event === 'string' ? new Error(event) : new Error('Failed to load script at ' + script.src));
+          });
+          document.head.appendChild(script);
+          await promise;
+          return;
+        }
+        script.text = payload.content || '';
+        let error = null;
+        script.onerror = event => error = event;
+        document.head.appendChild(script);
+        if (error)
+          throw error;
+      }`,
+      options ?? {}
+    );
+    return new BidiElementHandleAdapter(this, {
+      chain: [{ strategy: "css", value: "script:last-of-type" }],
+      pick: { kind: "first" }
+    });
+  }
+
+  async addStyleTag(options?: AddStyleTagOptions): Promise<ProtocolElementHandleAdapter> {
+    await this.evaluateFunction<void>(
+      `async (payload) => {
+        const element = document.createElement(payload.url ? 'link' : 'style');
+        if (payload.url) {
+          element.rel = 'stylesheet';
+          element.href = payload.url;
+          const promise = new Promise((resolve, reject) => {
+            element.onload = resolve;
+            element.onerror = event => reject(typeof event === 'string' ? new Error(event) : new Error('Failed to load stylesheet at ' + element.href));
+          });
+          document.head.appendChild(element);
+          await promise;
+          return;
+        } else {
+          element.type = 'text/css';
+          element.appendChild(document.createTextNode(payload.content || ''));
+          const promise = new Promise((resolve, reject) => {
+            element.onload = resolve;
+            element.onerror = reject;
+          });
+          document.head.appendChild(element);
+          await promise;
+        }
+      }`,
+      options ?? {}
+    );
+    return new BidiElementHandleAdapter(this, {
+      chain: [{ strategy: "css", value: "style:last-of-type,link[rel=stylesheet]:last-of-type" }],
+      pick: { kind: "first" }
+    });
+  }
+
   async waitForLoadState(
-    state: PageGotoOptions["waitUntil"] = "load",
+    state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
     timeout = 30_000
   ): Promise<void> {
     const targetState = state ?? "load";
@@ -658,7 +820,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.stateWaiters.delete(waiter);
-        reject(new TimeoutError(`Timed out waiting for load state "${targetState}".`));
+        reject(new TimeoutError(`page.waitForLoadState: Timeout ${timeout}ms exceeded.`));
       }, timeout);
 
       const waiter: StateWaiter = {
@@ -715,6 +877,15 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     };
   }
 
+  async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
+    this.pageExtraHTTPHeaders = { ...headers };
+    await this.updateExtraHTTPHeaders();
+  }
+
+  async updateContextExtraHTTPHeaders(): Promise<void> {
+    await this.updateExtraHTTPHeaders();
+  }
+
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
     const response = await this.client.browsingContextCaptureScreenshot({
       context: this.contextId,
@@ -727,15 +898,573 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     return Buffer.from(response.data, "base64");
   }
 
-  on<K extends PageEventName>(event: K, listener: PageEventListener<K>): () => void {
+  async pdf(_options: PdfOptions = {}): Promise<Buffer> {
+    throw new Error("PDF generation is only supported for Headless Chromium");
+  }
+
+  viewportSize(): ViewportSize | null {
+    return this.currentViewportSize;
+  }
+
+  async setViewportSize(viewportSize: ViewportSize): Promise<void> {
+    await this.client.browsingContextSetViewport({
+      context: this.contextId,
+      viewport: {
+        width: viewportSize.width,
+        height: viewportSize.height
+      },
+      devicePixelRatio: 1
+    });
+    this.currentViewportSize = viewportSize;
+  }
+
+  async dispatchEvent(
+    selector: LocatorSelector[],
+    type: string,
+    eventInit?: unknown
+  ): Promise<void> {
+    await this.runSelectorOperation<void>({
+      operation: "dispatchEvent",
+      reference: {
+        chain: selector,
+        pick: { kind: "first" }
+      },
+      name: type,
+      arg: eventInit
+    });
+  }
+
+  async requestGC(): Promise<void> {
+    await this.evaluateFunction<void>(
+      `() => {
+        if (typeof globalThis.gc === "function") {
+          globalThis.gc();
+        }
+      }`
+    );
+  }
+
+  async textContent(selector: LocatorSelector[]): Promise<string | null> {
+    return this.textContentLocator({ chain: selector });
+  }
+
+  async innerText(selector: LocatorSelector[]): Promise<string> {
+    return this.innerTextLocator({ chain: selector });
+  }
+
+  async innerHTML(selector: LocatorSelector[]): Promise<string> {
+    return this.innerHTMLLocator({ chain: selector });
+  }
+
+  async getAttribute(selector: LocatorSelector[], name: string): Promise<string | null> {
+    return this.getAttributeLocator({ chain: selector }, name);
+  }
+
+  async inputValue(selector: LocatorSelector[]): Promise<string> {
+    return this.inputValueLocator({ chain: selector });
+  }
+
+  async isChecked(selector: LocatorSelector[]): Promise<boolean> {
+    return this.isCheckedLocator({ chain: selector });
+  }
+
+  async isDisabled(selector: LocatorSelector[]): Promise<boolean> {
+    return this.isDisabledLocator({ chain: selector });
+  }
+
+  async isEditable(selector: LocatorSelector[]): Promise<boolean> {
+    return this.isEditableLocator({ chain: selector });
+  }
+
+  async isEnabled(selector: LocatorSelector[]): Promise<boolean> {
+    return this.isEnabledLocator({ chain: selector });
+  }
+
+  async focus(selector: LocatorSelector[]): Promise<void> {
+    await this.focusLocator({ chain: selector });
+  }
+
+  async setChecked(
+    selector: LocatorSelector[],
+    checked: boolean,
+    options?: ClickOptions
+  ): Promise<void> {
+    if (checked) {
+      await this.checkLocator({ chain: selector }, options);
+      return;
+    }
+    await this.uncheckLocator({ chain: selector }, options);
+  }
+
+  async selectOption(
+    selector: LocatorSelector[],
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    return this.selectOptionLocator({ chain: selector }, values);
+  }
+
+  async startCSSCoverage(_options?: { resetOnNavigation?: boolean }): Promise<void> {
+    throw new NotImplementedInProtocolError("bidi", "page.coverage.startCSSCoverage");
+  }
+
+  async startJSCoverage(
+    _options?: {
+      reportAnonymousScripts?: boolean;
+      resetOnNavigation?: boolean;
+    }
+  ): Promise<void> {
+    throw new NotImplementedInProtocolError("bidi", "page.coverage.startJSCoverage");
+  }
+
+  async stopCSSCoverage(): Promise<
+    Array<{
+      url: string;
+      text?: string;
+      ranges: Array<{
+        start: number;
+        end: number;
+      }>;
+    }>
+  > {
+    throw new NotImplementedInProtocolError("bidi", "page.coverage.stopCSSCoverage");
+  }
+
+  async stopJSCoverage(): Promise<
+    Array<{
+      url: string;
+      scriptId: string;
+      source?: string;
+      functions: Array<{
+        functionName: string;
+        isBlockCoverage: boolean;
+        ranges: Array<{
+          count: number;
+          startOffset: number;
+          endOffset: number;
+        }>;
+      }>;
+    }>
+  > {
+    throw new NotImplementedInProtocolError("bidi", "page.coverage.stopJSCoverage");
+  }
+
+  async screencastStart(): Promise<void> {
+    // Playwright's BiDi backend currently exposes screencast.start/stop as no-op delegates.
+  }
+
+  async screencastStop(): Promise<void> {
+    // Playwright's BiDi backend currently exposes screencast.start/stop as no-op delegates.
+  }
+
+  async screencastShowActions(options?: ScreencastActionOptions): Promise<void> {
+    this.screencastActionOptions = { ...(options ?? {}) };
+    await this.renderScreencastActions();
+  }
+
+  async screencastHideActions(): Promise<void> {
+    this.resetScreencastActions();
+    await this.renderScreencastActions();
+  }
+
+  async screencastShowOverlay(options: {
+    html: string;
+    duration?: number;
+  }): Promise<{ id: string }> {
+    const id = `overlay-${++this.screencastOverlayId}`;
+    this.setScreencastOverlay(id, { html: options.html }, options.duration);
+    await this.renderScreencastOverlays();
+    return { id };
+  }
+
+  async screencastRemoveOverlay(id: string): Promise<void> {
+    this.clearScreencastOverlay(id);
+    await this.renderScreencastOverlays();
+  }
+
+  async screencastChapter(options: {
+    title: string;
+    description?: string;
+    duration?: number;
+  }): Promise<void> {
+    const id = `chapter-${++this.screencastOverlayId}`;
+    this.setScreencastOverlay(
+      id,
+      {
+        kind: "chapter",
+        html: createChapterOverlayHtml(options.title, options.description)
+      },
+      options.duration ?? 2000
+    );
+    await this.renderScreencastOverlays();
+  }
+
+  async screencastSetOverlayVisible(visible: boolean): Promise<void> {
+    this.screencastOverlaysVisible = visible;
+    await this.renderScreencastOverlays();
+  }
+
+  async keyboardDown(key: string): Promise<void> {
+    const normalizedKey = normalizeShortcutKey(key);
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions: [{ type: "keyDown", value: toBiDiKeyValue(normalizedKey) }]
+        }
+      ]
+    });
+    if (isKeyboardModifier(normalizedKey)) {
+      this.pressedKeyboardModifiers.add(normalizedKey);
+    }
+  }
+
+  async keyboardInsertText(text: string): Promise<void> {
+    await this.evaluateFunction<void>(
+      `({ value }) => {
+        const activeElement = document.activeElement;
+        if (
+          activeElement instanceof HTMLInputElement ||
+          activeElement instanceof HTMLTextAreaElement
+        ) {
+          const start = activeElement.selectionStart ?? activeElement.value.length;
+          const end = activeElement.selectionEnd ?? activeElement.value.length;
+          activeElement.setRangeText(value, start, end, "end");
+          activeElement.dispatchEvent(new InputEvent("input", {
+            bubbles: true,
+            data: value,
+            inputType: "insertText"
+          }));
+          return;
+        }
+
+        if (activeElement instanceof HTMLElement && activeElement.isContentEditable) {
+          document.execCommand("insertText", false, value);
+        }
+      }`,
+      { value: text }
+    );
+  }
+
+  async keyboardPress(
+    key: string,
+    options?: {
+      delay?: number;
+    }
+  ): Promise<void> {
+    const parsed = parseKeyboardShortcut(key);
+    const temporaryModifiers: string[] = [];
+
+    for (const modifier of parsed.modifiers) {
+      if (!this.pressedKeyboardModifiers.has(modifier)) {
+        await this.keyboardDown(modifier);
+        temporaryModifiers.push(modifier);
+      }
+    }
+
+    const actions: Array<{ type: "keyDown" | "keyUp" | "pause"; value?: string; duration?: number }> = [
+      { type: "keyDown", value: toBiDiKeyValue(parsed.key) }
+    ];
+    if (options?.delay) {
+      actions.push({ type: "pause", duration: options.delay });
+    }
+    actions.push({ type: "keyUp", value: toBiDiKeyValue(parsed.key) });
+
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions
+        }
+      ]
+    });
+
+    for (const modifier of temporaryModifiers.reverse()) {
+      await this.keyboardUp(modifier);
+    }
+  }
+
+  async keyboardType(
+    text: string,
+    options?: {
+      delay?: number;
+    }
+  ): Promise<void> {
+    const actions = text.split("").flatMap((character) => [
+      { type: "keyDown" as const, value: character },
+      ...(options?.delay ? [{ type: "pause" as const, duration: options.delay }] : []),
+      { type: "keyUp" as const, value: character }
+    ]);
+
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions
+        }
+      ]
+    });
+  }
+
+  async keyboardUp(key: string): Promise<void> {
+    const normalizedKey = normalizeShortcutKey(key);
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions: [{ type: "keyUp", value: toBiDiKeyValue(normalizedKey) }]
+        }
+      ]
+    });
+    if (isKeyboardModifier(normalizedKey)) {
+      this.pressedKeyboardModifiers.delete(normalizedKey);
+    }
+  }
+
+  async mouseClick(
+    x: number,
+    y: number,
+    options?: {
+      button?: "left" | "right" | "middle";
+      clickCount?: number;
+      delay?: number;
+    }
+  ): Promise<void> {
+    const point = { x, y };
+    const button = buttonNumber(options?.button ?? "left");
+    const clickCount = options?.clickCount ?? 1;
+    const actions: Array<
+      | {
+          type: "pointerMove";
+          x: number;
+          y: number;
+          origin: "viewport";
+        }
+      | {
+          type: "pointerDown" | "pointerUp";
+          button: number;
+        }
+      | {
+          type: "pause";
+          duration: number;
+        }
+    > = [
+      {
+        type: "pointerMove" as const,
+        x: Math.round(point.x),
+        y: Math.round(point.y),
+        origin: "viewport" as const
+      }
+    ];
+
+    for (let index = 0; index < clickCount; index += 1) {
+      actions.push({
+        type: "pointerDown" as const,
+        button
+      });
+      if (options?.delay) {
+        actions.push({
+          type: "pause" as const,
+          duration: options.delay
+        });
+      }
+      actions.push({
+        type: "pointerUp" as const,
+        button
+      });
+    }
+
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions
+        }
+      ]
+    });
+    this.currentMousePosition = point;
+  }
+
+  async mouseDblclick(
+    x: number,
+    y: number,
+    options?: {
+      button?: "left" | "right" | "middle";
+      delay?: number;
+    }
+  ): Promise<void> {
+    await this.mouseClick(x, y, { ...options, clickCount: 2 });
+  }
+
+  async mouseDown(
+    options?: {
+      button?: "left" | "right" | "middle";
+      clickCount?: number;
+    }
+  ): Promise<void> {
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [
+            {
+              type: "pointerDown",
+              button: buttonNumber(options?.button ?? "left")
+            }
+          ]
+        }
+      ]
+    });
+  }
+
+  async mouseMove(
+    x: number,
+    y: number,
+    options?: {
+      steps?: number;
+    }
+  ): Promise<void> {
+    const steps = Math.max(options?.steps ?? 1, 1);
+    const start = this.currentMousePosition;
+    const actions = [];
+    for (let index = 1; index <= steps; index += 1) {
+      actions.push({
+        type: "pointerMove" as const,
+        x: Math.round(start.x + ((x - start.x) * index) / steps),
+        y: Math.round(start.y + ((y - start.y) * index) / steps),
+        origin: "viewport" as const
+      });
+    }
+
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions
+        }
+      ]
+    });
+    this.currentMousePosition = { x, y };
+  }
+
+  async mouseUp(
+    options?: {
+      button?: "left" | "right" | "middle";
+      clickCount?: number;
+    }
+  ): Promise<void> {
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [
+            {
+              type: "pointerUp",
+              button: buttonNumber(options?.button ?? "left")
+            }
+          ]
+        }
+      ]
+    });
+  }
+
+  async mouseWheel(deltaX: number, deltaY: number): Promise<void> {
+    await this.evaluateFunction<void>(
+      `({ x, y, deltaX, deltaY, ctrlKey, shiftKey, altKey, metaKey }) => {
+        const target =
+          document.elementFromPoint(x, y) ??
+          document.scrollingElement ??
+          document.documentElement;
+        const event = new WheelEvent("wheel", {
+          bubbles: true,
+          cancelable: true,
+          clientX: x,
+          clientY: y,
+          deltaMode: 0,
+          deltaX,
+          deltaY,
+          ctrlKey,
+          shiftKey,
+          altKey,
+          metaKey
+        });
+        const shouldContinue = target.dispatchEvent(event);
+        if (shouldContinue && !event.defaultPrevented) {
+          globalThis.scrollBy(deltaX, deltaY);
+        }
+      }`,
+      {
+        x: Math.round(this.currentMousePosition.x),
+        y: Math.round(this.currentMousePosition.y),
+        deltaX,
+        deltaY,
+        ...keyboardModifierState(this.pressedKeyboardModifiers)
+      }
+    );
+  }
+
+  async touchscreenTap(x: number, y: number): Promise<void> {
+    await this.client.inputPerformActions({
+      context: this.contextId,
+      actions: [
+        {
+          type: "pointer",
+          id: "touchscreen",
+          parameters: { pointerType: "touch" },
+          actions: [
+            {
+              type: "pointerMove",
+              x: Math.round(x),
+              y: Math.round(y),
+              origin: "viewport"
+            },
+            {
+              type: "pointerDown",
+              button: 0
+            },
+            {
+              type: "pointerUp",
+              button: 0
+            }
+          ]
+        }
+      ]
+    });
+    this.currentMousePosition = { x, y };
+  }
+
+  async tap(selector: LocatorSelector[], options?: TapOptions): Promise<void> {
+    await this.clickLocator({ chain: selector }, options);
+  }
+
+  on<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): () => void {
     const listeners =
-      this.eventListeners.get(event) ?? new Set<PageEventListener<PageEventName>>();
-    listeners.add(listener as PageEventListener<PageEventName>);
+      this.eventListeners.get(event) ?? new Set<RawPageEventListener<RawPageEventName>>();
+    listeners.add(listener as RawPageEventListener<RawPageEventName>);
     this.eventListeners.set(event, listeners);
 
     return () => {
       const registeredListeners = this.eventListeners.get(event);
-      registeredListeners?.delete(listener as PageEventListener<PageEventName>);
+      registeredListeners?.delete(listener as RawPageEventListener<RawPageEventName>);
       if (registeredListeners?.size === 0) {
         this.eventListeners.delete(event);
       }
@@ -755,6 +1484,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  createHandle(reference: ProtocolElementHandleReference): ProtocolElementHandleAdapter {
+    return new BidiElementHandleAdapter(this, reference);
+  }
+
   async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
     const count = await this.countSelector({
       chain: selector
@@ -770,6 +1503,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   async evalOnSelector<TResult>(
     selector: LocatorSelector[],
     expression: string,
+    isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult> {
     return this.evaluateOnReference<TResult>(
@@ -779,13 +1513,15 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       },
       expression,
       arg,
-      `page.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`
+      `page.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`,
+      isFunction
     );
   }
 
   async evalOnSelectorAll<TResult>(
     selector: LocatorSelector[],
     expression: string,
+    isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult> {
     return this.evaluateOnReferenceAll<TResult>(
@@ -793,7 +1529,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         chain: selector
       },
       expression,
-      arg
+      arg,
+      isFunction
     );
   }
 
@@ -805,67 +1542,95 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   getByText(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
     return new BidiLocatorAdapter(this, {
-      chain: [
-        {
-          strategy: "text",
-          value: text instanceof RegExp ? text.source : text,
-          ...(options?.exact !== undefined ? { exact: options.exact } : {}),
-          ...(text instanceof RegExp
-            ? {
-                isRegex: true,
-                regexFlags: text.flags
-              }
-            : {})
-        }
-      ]
+      chain: [createTextLocatorSelector(text, options)]
+    });
+  }
+
+  getByAltText(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return new BidiLocatorAdapter(this, {
+      chain: [createAltTextLocatorSelector(text, options)]
+    });
+  }
+
+  getByLabel(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return new BidiLocatorAdapter(this, {
+      chain: [createLabelLocatorSelector(text, options)]
+    });
+  }
+
+  getByPlaceholder(
+    text: string | RegExp,
+    options?: { exact?: boolean }
+  ): ProtocolLocatorAdapter {
+    return new BidiLocatorAdapter(this, {
+      chain: [createPlaceholderLocatorSelector(text, options)]
+    });
+  }
+
+  getByTestId(testId: string | RegExp): ProtocolLocatorAdapter {
+    return new BidiLocatorAdapter(this, {
+      chain: [createTestIdLocatorSelector(testId)]
     });
   }
 
   getByRole(role: string, options?: { exact?: boolean; name?: string | RegExp }): ProtocolLocatorAdapter {
     return new BidiLocatorAdapter(this, {
-      chain: [
-        {
-          strategy: "role",
-          value: role,
-          ...(options?.exact !== undefined ? { exact: options.exact } : {}),
-          ...(typeof options?.name === "string" ? { name: options.name } : {}),
-          ...(options?.name instanceof RegExp
-            ? {
-                name: options.name.source,
-                nameIsRegex: true,
-                nameRegexFlags: options.name.flags
-              }
-            : {})
-        }
-      ]
+      chain: [createRoleLocatorSelector(role, options)]
     });
   }
 
-  async close(): Promise<void> {
+  getByTitle(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return new BidiLocatorAdapter(this, {
+      chain: [createTitleLocatorSelector(text, options)]
+    });
+  }
+
+  async close(options: PageCloseOptions = {}): Promise<void> {
+    if (options.runBeforeUnload) {
+      await this.client.browsingContextClose({
+        context: this.contextId,
+        promptUnload: true
+      });
+      return;
+    }
+
     if (this.closed) {
       return;
     }
 
+    this.closeReason = options.reason;
     this.closed = true;
-    this.rejectWaiters(new Error("Page closed."));
+    this.resetScreencastActions();
+    for (const overlay of this.screencastOverlays.values()) {
+      if (overlay.removeTimer) {
+        clearTimeout(overlay.removeTimer);
+      }
+    }
+    this.screencastOverlays.clear();
+    this.rejectWaiters(this.createClosedError());
 
     await this.client.browsingContextClose({
-      context: this.contextId
+      context: this.contextId,
+      promptUnload: false
     });
+    this.onClosed?.();
     this.emit("close", undefined);
     await this.cleanupBiDiListeners();
   }
 
+  async bringToFront(): Promise<void> {
+    await this.client.browsingContextActivate({
+      context: this.contextId
+    });
+  }
+
+  isClosed(): boolean {
+    return this.closed;
+  }
+
   async applyContextOptions(): Promise<void> {
     if (this.contextOptions.viewport) {
-      await this.client.browsingContextSetViewport({
-        context: this.contextId,
-        viewport: {
-          width: this.contextOptions.viewport.width,
-          height: this.contextOptions.viewport.height
-        },
-        devicePixelRatio: 1
-      });
+      await this.setViewportSize(this.contextOptions.viewport);
     }
 
     if (this.contextOptions.locale) {
@@ -888,11 +1653,26 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         contexts: [this.contextId]
       });
     }
+
+    if (this.contextOptions.extraHTTPHeaders) {
+      await this.updateExtraHTTPHeaders();
+    }
+  }
+
+  private async updateExtraHTTPHeaders(): Promise<void> {
+    const headers = mergeExtraHTTPHeaders(
+      this.contextOptions.extraHTTPHeaders,
+      this.pageExtraHTTPHeaders
+    );
+    await this.client.networkSetExtraHeaders({
+      contexts: [this.contextId],
+      headers: toBiDiOutgoingHeaders(headers)
+    });
   }
 
   private async evaluateExpression<TResult>(expression: string): Promise<TResult> {
     const response = await this.client.scriptEvaluate({
-      expression,
+      expression: wrapWithSerializedEvaluationResult(expression),
       target: {
         context: this.contextId
       },
@@ -904,7 +1684,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       throw new Error(response.exceptionDetails.text || "BiDi evaluation failed.");
     }
 
-    return extractBiDiValue<TResult>(response.result);
+    return parseSerializedEvaluationResult<TResult>(extractBiDiValue(response.result));
   }
 
   private async evaluateFunction<TResult>(expression: string, arg?: unknown): Promise<TResult> {
@@ -948,6 +1728,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         ]
       });
     }
+    await this.showScreencastAction("click", point);
   }
 
   async hoverLocator(locator: BidiLocatorState, options?: HoverOptions): Promise<void> {
@@ -978,6 +1759,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       ...(options?.force !== undefined ? { force: options.force } : {}),
       value
     });
+    try {
+      const point = await this.resolveActionPoint(locator);
+      await this.showScreencastAction("fill", point);
+    } catch {}
   }
 
   async typeLocator(locator: BidiLocatorState, value: string, options?: TypeOptions): Promise<void> {
@@ -1025,6 +1810,95 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  async dblclickLocator(locator: BidiLocatorState, options?: ClickOptions): Promise<void> {
+    await this.clickLocator(locator, { ...options, clickCount: 2 });
+  }
+
+  async checkLocator(locator: BidiLocatorState, options?: ClickOptions): Promise<void> {
+    await this.runLocatorOperation<boolean>(locator, {
+      operation: "check",
+      checked: true,
+      ...(options?.force !== undefined ? { force: options.force } : {})
+    });
+  }
+
+  async uncheckLocator(locator: BidiLocatorState, options?: ClickOptions): Promise<void> {
+    await this.runLocatorOperation<boolean>(locator, {
+      operation: "check",
+      checked: false,
+      ...(options?.force !== undefined ? { force: options.force } : {})
+    });
+  }
+
+  async focusLocator(locator: BidiLocatorState): Promise<void> {
+    await this.runLocatorOperation<boolean>(locator, {
+      operation: "focus"
+    });
+  }
+
+  async getAttributeLocator(locator: BidiLocatorState, name: string): Promise<string | null> {
+    return this.runLocatorOperation<string | null>(locator, {
+      operation: "getAttribute",
+      name
+    });
+  }
+
+  async innerHTMLLocator(locator: BidiLocatorState): Promise<string> {
+    return this.runLocatorOperation<string>(locator, {
+      operation: "innerHTML"
+    });
+  }
+
+  async innerTextLocator(locator: BidiLocatorState): Promise<string> {
+    return this.runLocatorOperation<string>(locator, {
+      operation: "innerText"
+    });
+  }
+
+  async inputValueLocator(locator: BidiLocatorState): Promise<string> {
+    return this.runLocatorOperation<string>(locator, {
+      operation: "inputValue"
+    });
+  }
+
+  async isCheckedLocator(locator: BidiLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "isChecked"
+    });
+  }
+
+  async isDisabledLocator(locator: BidiLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "isDisabled"
+    });
+  }
+
+  async isEditableLocator(locator: BidiLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "isEditable"
+    });
+  }
+
+  async isEnabledLocator(locator: BidiLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "isEnabled"
+    });
+  }
+
+  async selectOptionLocator(
+    locator: BidiLocatorState,
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    const normalized = Array.isArray(values) ? values : [values];
+    const payloadValues = normalized.map((entry) =>
+      typeof entry === "string" ? { value: entry } : entry
+    );
+    return this.runLocatorOperation<string[]>(locator, {
+      operation: "selectOption",
+      values: payloadValues
+    });
+  }
+
   async textContentLocator(locator: BidiLocatorState): Promise<string | null> {
     return this.runLocatorOperation<string | null>(locator, {
       operation: "textContent"
@@ -1034,6 +1908,96 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   async isVisibleLocator(locator: BidiLocatorState): Promise<boolean> {
     return this.runLocatorOperation<boolean>(locator, {
       operation: "isVisible"
+    });
+  }
+
+  async getAttributeReference(
+    reference: ProtocolElementHandleReference,
+    name: string
+  ): Promise<string | null> {
+    return this.runSelectorOperation<string | null>({
+      operation: "getAttribute",
+      reference,
+      name
+    });
+  }
+
+  async innerHTMLReference(reference: ProtocolElementHandleReference): Promise<string> {
+    return this.runSelectorOperation<string>({
+      operation: "innerHTML",
+      reference
+    });
+  }
+
+  async innerTextReference(reference: ProtocolElementHandleReference): Promise<string> {
+    return this.runSelectorOperation<string>({
+      operation: "innerText",
+      reference
+    });
+  }
+
+  async inputValueReference(reference: ProtocolElementHandleReference): Promise<string> {
+    return this.runSelectorOperation<string>({
+      operation: "inputValue",
+      reference
+    });
+  }
+
+  async isCheckedReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isChecked",
+      reference
+    });
+  }
+
+  async isDisabledReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isDisabled",
+      reference
+    });
+  }
+
+  async isEditableReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isEditable",
+      reference
+    });
+  }
+
+  async isEnabledReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isEnabled",
+      reference
+    });
+  }
+
+  async focusReference(reference: ProtocolElementHandleReference): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "focus",
+      reference
+    });
+  }
+
+  async checkReference(reference: ProtocolElementHandleReference, checked: boolean): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "check",
+      reference,
+      checked
+    });
+  }
+
+  async selectOptionReference(
+    reference: ProtocolElementHandleReference,
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    const normalized = Array.isArray(values) ? values : [values];
+    const payloadValues = normalized.map((entry) =>
+      typeof entry === "string" ? { value: entry } : entry
+    );
+    return this.runSelectorOperation<string[]>({
+      operation: "selectOption",
+      reference,
+      values: payloadValues
     });
   }
 
@@ -1072,31 +2036,57 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  async boundingBoxReference(reference: ProtocolElementHandleReference): Promise<Rect | null> {
+    return this.runSelectorOperation<Rect | null>({
+      operation: "boundingBox",
+      reference
+    });
+  }
+
   async evaluateOnReference<TResult>(
     reference: ProtocolElementHandleReference,
     expression: string,
     arg?: unknown,
-    missingMessage?: string
+    missingMessage?: string,
+    isFunction?: boolean
   ): Promise<TResult> {
     return this.runSelectorOperation<TResult>({
       operation: "evaluate",
       reference,
       expression,
       arg,
+      ...(isFunction !== undefined ? { isFunction } : {}),
       ...(missingMessage ? { missingMessage } : {})
     });
+  }
+
+  async createHandleReference(
+    reference: ProtocolElementHandleReference,
+    missingMessage?: string
+  ): Promise<ProtocolElementHandleReference> {
+    const result = await this.runSelectorOperation<{ handleId: string }>({
+      operation: "createHandle",
+      reference,
+      ...(missingMessage ? { missingMessage } : {})
+    });
+    return {
+      chain: [],
+      handleId: result.handleId
+    };
   }
 
   async evaluateOnReferenceAll<TResult>(
     reference: ProtocolElementHandleReference,
     expression: string,
-    arg?: unknown
+    arg?: unknown,
+    isFunction?: boolean
   ): Promise<TResult> {
     return this.runSelectorOperation<TResult>({
       operation: "evaluateAll",
       reference,
       expression,
-      arg
+      arg,
+      ...(isFunction !== undefined ? { isFunction } : {})
     });
   }
 
@@ -1153,6 +2143,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         ]
       });
     }
+    await this.showScreencastAction("click", point);
   }
 
   async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
@@ -1193,6 +2184,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       value,
       ...(options?.force !== undefined ? { force: options.force } : {})
     });
+    try {
+      const point = await this.runSelectorOperation<ActionPoint>({
+        operation: "actionPoint",
+        reference
+      });
+      await this.showScreencastAction("fill", point);
+    } catch {}
   }
 
   async typeReference(
@@ -1254,25 +2252,136 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     return this.evaluateFunction<TResult>(SELECTOR_RUNTIME_SOURCE, payload);
   }
 
+  private setScreencastOverlay(
+    id: string,
+    overlay: Omit<BidiScreencastOverlayState, "removeTimer">,
+    duration?: number
+  ): void {
+    this.clearScreencastOverlay(id);
+    const state: BidiScreencastOverlayState = { ...overlay };
+    if (duration !== undefined) {
+      state.removeTimer = setTimeout(() => {
+        this.clearScreencastOverlay(id);
+        void this.renderScreencastOverlays();
+      }, duration);
+    }
+    this.screencastOverlays.set(id, state);
+  }
+
+  private clearScreencastOverlay(id: string): void {
+    const existing = this.screencastOverlays.get(id);
+    if (existing?.removeTimer) {
+      clearTimeout(existing.removeTimer);
+    }
+    this.screencastOverlays.delete(id);
+  }
+
+  private async renderScreencastOverlays(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    await this.evaluateFunction<void>(RENDER_SCREencast_OVERLAYS_SOURCE, {
+      visible: this.screencastOverlaysVisible,
+      overlays: Array.from(this.screencastOverlays.entries()).map(([id, overlay]) => ({
+        id,
+        html: overlay.html,
+        ...(overlay.kind ? { kind: overlay.kind } : {})
+      }))
+    }).catch(() => {});
+  }
+
+  private resetScreencastActions(): void {
+    this.screencastActionAbortController?.abort();
+    this.screencastActionAbortController = null;
+    this.screencastActionAnnotation = null;
+    this.screencastActionOptions = null;
+  }
+
+  private async showScreencastAction(title: string, point: ActionPoint): Promise<void> {
+    if (!this.screencastActionOptions || this.closed) {
+      return;
+    }
+
+    const abortController = new AbortController();
+    this.screencastActionAbortController?.abort();
+    this.screencastActionAbortController = abortController;
+    this.screencastActionAnnotation = {
+      title,
+      point,
+      ...(this.screencastActionOptions.cursor !== "none" ? { cursorPoint: point } : {}),
+      highlightBox: createScreencastHighlightBox(point)
+    };
+
+    await this.renderScreencastActions();
+    const completed = await waitForAbortableTimeout(
+      this.screencastActionOptions.duration ?? 500,
+      abortController.signal
+    );
+    if (!completed || this.screencastActionAbortController !== abortController) {
+      return;
+    }
+
+    this.screencastActionAbortController = null;
+    this.screencastActionAnnotation = null;
+    await this.renderScreencastActions();
+  }
+
+  private async renderScreencastActions(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    await this.evaluateFunction<void>(RENDER_SCREENCAST_ACTIONS_SOURCE, {
+      enabled: Boolean(this.screencastActionOptions),
+      annotation:
+        this.screencastActionOptions && this.screencastActionAnnotation
+          ? {
+              title: this.screencastActionAnnotation.title,
+              point: this.screencastActionAnnotation.point,
+              ...(this.screencastActionAnnotation.cursorPoint
+                ? { cursorPoint: this.screencastActionAnnotation.cursorPoint }
+                : {}),
+              ...(this.screencastActionAnnotation.highlightBox
+                ? { highlightBox: this.screencastActionAnnotation.highlightBox }
+                : {}),
+              ...(this.screencastActionOptions.position
+                ? { position: this.screencastActionOptions.position }
+                : {}),
+              ...(this.screencastActionOptions.fontSize !== undefined
+                ? { fontSize: this.screencastActionOptions.fontSize }
+                : {}),
+              ...(this.screencastActionOptions.cursor
+                ? { cursor: this.screencastActionOptions.cursor }
+                : {})
+            }
+          : null
+    }).catch(() => {});
+  }
+
   private attachBiDiListeners(): void {
     this.attachBiDiListener("browsingContext.domContentLoaded", (payload) => {
       if (!hasContext(payload, this.contextId)) {
         return;
       }
+      this.currentUrl = extractBiDiContextUrl(payload) ?? this.currentUrl;
 
       this.domContentLoaded = true;
       this.flushWaiters();
       this.emit("domcontentloaded", undefined);
+      void this.renderScreencastActions();
+      void this.renderScreencastOverlays();
     });
 
     this.attachBiDiListener("browsingContext.fragmentNavigated", (payload) => {
       if (!hasContext(payload, this.contextId)) {
         return;
       }
+      this.currentUrl = extractBiDiContextUrl(payload) ?? this.currentUrl;
 
       this.sameDocumentNavigation = true;
       this.domContentLoaded = true;
       this.loadFired = true;
+      void this.renderScreencastActions();
+      void this.renderScreencastOverlays();
       if (this.allowSameDocumentNavigationToResolveWaiters) {
         this.flushWaiters();
       }
@@ -1282,10 +2391,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       if (!hasContext(payload, this.contextId)) {
         return;
       }
+      this.currentUrl = extractBiDiContextUrl(payload) ?? this.currentUrl;
 
       this.sameDocumentNavigation = true;
       this.domContentLoaded = true;
       this.loadFired = true;
+      void this.renderScreencastActions();
+      void this.renderScreencastOverlays();
       if (this.allowSameDocumentNavigationToResolveWaiters) {
         this.flushWaiters();
       }
@@ -1295,10 +2407,32 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       if (!hasContext(payload, this.contextId)) {
         return;
       }
+      this.currentUrl = extractBiDiContextUrl(payload) ?? this.currentUrl;
 
       this.loadFired = true;
       this.flushWaiters();
       this.emit("load", undefined);
+      void this.renderScreencastActions();
+      void this.renderScreencastOverlays();
+    });
+
+    this.attachBiDiListener("browsingContext.userPromptOpened", (payload) => {
+      if (!hasContext(payload, this.contextId)) {
+        return;
+      }
+      const prompt = payload as {
+        defaultValue?: string;
+        message?: string;
+        type?: "alert" | "beforeunload" | "confirm" | "prompt";
+      };
+      this.emit(
+        "dialog",
+        this.createDialogPayload({
+          defaultValue: prompt.defaultValue ?? "",
+          message: prompt.message ?? "",
+          type: prompt.type ?? "alert"
+        })
+      );
     });
 
     this.attachBiDiListener("log.entryAdded", (payload) => {
@@ -1312,8 +2446,19 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         type?: string;
       };
       this.emit("console", {
+        args: () => [],
+        location: () => ({
+          column: 0,
+          columnNumber: 0,
+          line: 0,
+          lineNumber: 0,
+          url: ""
+        }),
+        page: () => null,
         text: () => logPayload.text ?? "",
-        type: () => logPayload.method ?? logPayload.type ?? "log"
+        timestamp: () => Date.now(),
+        type: () => normalizeConsoleMessageType(logPayload.method ?? logPayload.type ?? "log"),
+        worker: () => null
       });
     });
 
@@ -1323,15 +2468,27 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }
 
       const requestPayload = payload as {
+        context: string | null;
+        navigation?: string | null;
         request: {
+          destination?: string;
           headers: Array<{ name: string; value: { value: string } | string }>;
           method: string;
+          request?: string;
           url: string;
         };
       };
       this.emit("request", {
+        ...(requestPayload.context ? { frameId: requestPayload.context } : {}),
         headers: mapBiDiHeaders(requestPayload.request.headers),
+        ...(requestPayload.request.destination
+          ? { isNavigationRequest: requestPayload.request.destination === "document" && requestPayload.navigation !== null }
+          : {}),
         method: requestPayload.request.method,
+        ...(requestPayload.request.request ? { requestId: requestPayload.request.request } : {}),
+        ...(requestPayload.request.destination
+          ? { resourceType: requestPayload.request.destination.toLowerCase() }
+          : {}),
         url: requestPayload.request.url
       });
     });
@@ -1356,8 +2513,14 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       };
       const response = createPageResponse({
         fromCache: responsePayload.response.fromCache,
+        ...(responsePayload.context ? { frameId: responsePayload.context } : {}),
         headers: mapBiDiHeaders(responsePayload.response.headers),
+        isNavigationRequest:
+          responsePayload.request.destination === "document" &&
+          responsePayload.navigation !== null,
         mimeType: responsePayload.response.mimeType,
+        requestId: responsePayload.request.request,
+        resourceType: responsePayload.request.destination.toLowerCase(),
         status: responsePayload.response.status,
         statusText: responsePayload.response.statusText,
         text: () => this.getResponseText(responsePayload.request.request),
@@ -1379,8 +2542,22 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       if (!hasContext(payload, this.contextId)) {
         return;
       }
-
-      void payload;
+      const completedPayload = payload as {
+        context: string | null;
+        navigation: string | null;
+        request: { destination: string; method?: string; request: string; url: string };
+      };
+      this.emit("requestfinished", {
+        ...(completedPayload.context ? { frameId: completedPayload.context } : {}),
+        headers: [],
+        isNavigationRequest:
+          completedPayload.request.destination === "document" &&
+          completedPayload.navigation !== null,
+        method: completedPayload.request.method ?? "GET",
+        requestId: completedPayload.request.request,
+        resourceType: completedPayload.request.destination.toLowerCase(),
+        url: completedPayload.request.url
+      });
     });
 
     this.attachBiDiListener("network.fetchError", (payload) => {
@@ -1391,13 +2568,22 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       const failedPayload = payload as {
         errorText: string;
         request: {
+          destination?: string;
           method: string;
+          request?: string;
           url: string;
         };
       };
       this.emit("requestfailed", {
         errorText: failedPayload.errorText,
+        ...(failedPayload.request.destination
+          ? { isNavigationRequest: failedPayload.request.destination === "document" }
+          : {}),
         method: failedPayload.request.method,
+        ...(failedPayload.request.request ? { requestId: failedPayload.request.request } : {}),
+        ...(failedPayload.request.destination
+          ? { resourceType: failedPayload.request.destination.toLowerCase() }
+          : {}),
         url: failedPayload.request.url
       });
     });
@@ -1408,7 +2594,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }
 
       this.closed = true;
-      this.rejectWaiters(new Error("Page closed."));
+      this.rejectWaiters(this.createClosedError());
+      this.onClosed?.();
       this.emit("close", undefined);
       void this.cleanupBiDiListeners();
     });
@@ -1456,7 +2643,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     }
   }
 
-  private emit<K extends PageEventName>(event: K, payload: PageEventMap[K]): void {
+  private emit<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void {
     const listeners = this.eventListeners.get(event);
     if (!listeners) {
       return;
@@ -1468,15 +2655,51 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         continue;
       }
 
-      (listener as (eventPayload: PageEventMap[K]) => void)(payload);
+      (listener as (eventPayload: RawPageEventMap[K]) => void)(payload);
     }
+  }
+
+  private createClosedError(): Error {
+    return new Error(this.closeReason ?? "Target page, context or browser has been closed");
+  }
+
+  private createDialogPayload(input: {
+    defaultValue: string;
+    message: string;
+    type: "alert" | "beforeunload" | "confirm" | "prompt";
+  }): PageDialog {
+    let handled = false;
+    const respond = async (accept: boolean, promptText?: string): Promise<void> => {
+      if (handled) {
+        return;
+      }
+      handled = true;
+      await this.client.browsingContextHandleUserPrompt({
+        context: this.contextId,
+        accept,
+        ...(promptText !== undefined ? { userText: promptText } : {})
+      });
+    };
+
+    const dialog = {
+      accept: (promptText?: string) => respond(true, promptText),
+      defaultValue: () => input.defaultValue,
+      dismiss: () => respond(false),
+      message: () => input.message,
+      type: () => input.type
+    };
+    if ((this.eventListeners.get("dialog")?.size ?? 0) === 0) {
+      void dialog.dismiss().catch(() => {});
+    }
+    return dialog;
   }
 
   private async navigateHistory(
     delta: -1 | 1,
     options: PageGotoOptions
-  ): Promise<ReturnType<typeof createNavigationResult> | null> {
-    const previousUrl = await this.url();
+  ): Promise<PageResponse | null> {
+    const previousUrl = this.url();
+    const capture = this.beginNavigationResponseCapture();
     this.resetNavigationState();
     this.allowSameDocumentNavigationToResolveWaiters = true;
     try {
@@ -1497,12 +2720,26 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       await this.waitForLoadState(waitUntil, options.timeout);
     }
 
-    const currentUrl = await this.url();
+    const currentUrl = this.url();
+    if (this.navigationResponseCapture === capture) {
+      this.navigationResponseCapture = undefined;
+    }
     if (currentUrl === previousUrl) {
       return null;
     }
-
-    return createNavigationResult({
+    if (capture.lastResponse) {
+      return capture.lastResponse;
+    }
+    if (this.sameDocumentNavigation) {
+      return null;
+    }
+    return createPageResponse({
+      fromCache: false,
+      headers: [],
+      mimeType: "text/html",
+      status: 200,
+      statusText: "OK",
+      text: async () => "",
       url: currentUrl
     });
   }
@@ -1621,6 +2858,37 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
     });
   }
 
+  getByText(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return this.locator(createTextLocatorSelector(text, options));
+  }
+
+  getByAltText(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return this.locator(createAltTextLocatorSelector(text, options));
+  }
+
+  getByLabel(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return this.locator(createLabelLocatorSelector(text, options));
+  }
+
+  getByPlaceholder(
+    text: string | RegExp,
+    options?: { exact?: boolean }
+  ): ProtocolLocatorAdapter {
+    return this.locator(createPlaceholderLocatorSelector(text, options));
+  }
+
+  getByTestId(testId: string | RegExp): ProtocolLocatorAdapter {
+    return this.locator(createTestIdLocatorSelector(testId));
+  }
+
+  getByRole(role: string, options?: { exact?: boolean; name?: string | RegExp }): ProtocolLocatorAdapter {
+    return this.locator(createRoleLocatorSelector(role, options));
+  }
+
+  getByTitle(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return this.locator(createTitleLocatorSelector(text, options));
+  }
+
   first(): ProtocolLocatorAdapter {
     return new BidiLocatorAdapter(this.page, {
       ...this.state,
@@ -1640,6 +2908,14 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
       ...this.state,
       pick: { kind: "nth", index }
     });
+  }
+
+  async dblclick(options?: ClickOptions): Promise<void> {
+    await this.page.dblclickLocator(this.state, options);
+  }
+
+  async check(options?: ClickOptions): Promise<void> {
+    await this.page.checkLocator(this.state, options);
   }
 
   async click(options?: ClickOptions): Promise<void> {
@@ -1662,12 +2938,90 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
     await this.page.pressLocator(this.state, key, options);
   }
 
+  async focus(): Promise<void> {
+    await this.page.focusLocator(this.state);
+  }
+
+  async getAttribute(name: string): Promise<string | null> {
+    return this.page.getAttributeLocator(this.state, name);
+  }
+
+  async innerHTML(): Promise<string> {
+    return this.page.innerHTMLLocator(this.state);
+  }
+
+  async innerText(): Promise<string> {
+    return this.page.innerTextLocator(this.state);
+  }
+
+  async inputValue(): Promise<string> {
+    return this.page.inputValueLocator(this.state);
+  }
+
+  async isChecked(): Promise<boolean> {
+    return this.page.isCheckedLocator(this.state);
+  }
+
+  async isDisabled(): Promise<boolean> {
+    return this.page.isDisabledLocator(this.state);
+  }
+
+  async isEditable(): Promise<boolean> {
+    return this.page.isEditableLocator(this.state);
+  }
+
+  async isEnabled(): Promise<boolean> {
+    return this.page.isEnabledLocator(this.state);
+  }
+
+  async isHidden(): Promise<boolean> {
+    return !(await this.page.isVisibleLocator(this.state));
+  }
+
   async textContent(): Promise<string | null> {
     return this.page.textContentLocator(this.state);
   }
 
+  async uncheck(options?: ClickOptions): Promise<void> {
+    await this.page.uncheckLocator(this.state, options);
+  }
+
+  async selectOption(
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    return this.page.selectOptionLocator(this.state, values);
+  }
+
   async isVisible(): Promise<boolean> {
     return this.page.isVisibleLocator(this.state);
+  }
+
+  async elementHandle(): Promise<ProtocolElementHandleAdapter> {
+    const reference: ProtocolElementHandleReference = {
+      chain: this.state.chain,
+      ...(this.state.pick ? { pick: this.state.pick } : {})
+    };
+    const handleReference = await this.page.createHandleReference(
+      reference,
+      `Could not resolve ${formatSelectorChain(this.state.chain)} to DOM Element`
+    );
+    return this.page.createHandle(handleReference);
+  }
+
+  async elementHandles(): Promise<ProtocolElementHandleAdapter[]> {
+    const count = await this.page.countSelector({
+      chain: this.state.chain,
+      ...(this.state.pick ? { pick: this.state.pick } : {})
+    });
+    const handles: ProtocolElementHandleAdapter[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const reference: ProtocolElementHandleReference = {
+        chain: this.state.chain,
+        pick: { kind: "nth", index }
+      };
+      handles.push(this.page.createHandle(await this.page.createHandleReference(reference)));
+    }
+    return handles;
   }
 }
 
@@ -1680,6 +3034,7 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
   reference(): ProtocolElementHandleReference {
     return {
       chain: [...this.referenceState.chain],
+      ...(this.referenceState.handleId ? { handleId: this.referenceState.handleId } : {}),
       ...(this.referenceState.pick ? { pick: this.referenceState.pick } : {}),
       ...(this.referenceState.scope ? { scope: this.referenceState.scope } : {})
     };
@@ -1717,6 +3072,7 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
   async evalOnSelector<TResult>(
     selector: LocatorSelector[],
     expression: string,
+    isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult> {
     return this.page.evaluateOnReference(
@@ -1727,13 +3083,15 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
       },
       expression,
       arg,
-      `elementHandle.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`
+      `elementHandle.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`,
+      isFunction
     );
   }
 
   async evalOnSelectorAll<TResult>(
     selector: LocatorSelector[],
     expression: string,
+    isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult> {
     return this.page.evaluateOnReferenceAll(
@@ -1742,7 +3100,8 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
         chain: selector
       },
       expression,
-      arg
+      arg,
+      isFunction
     );
   }
 
@@ -1750,8 +3109,21 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
     return this.page.evaluateOnReference(this.reference(), expression, arg, "No element found.");
   }
 
+  async boundingBox(): Promise<Rect | null> {
+    return this.page.boundingBoxReference(this.reference());
+  }
+
   async click(options?: ClickOptions): Promise<void> {
     await this.page.clickReference(this.reference(), options);
+  }
+
+  async dblclick(options?: ClickOptions): Promise<void> {
+    await this.page.clickReference(this.reference(), { ...options, clickCount: 2 });
+  }
+
+  async check(options?: ClickOptions): Promise<void> {
+    void options;
+    await this.page.checkReference(this.reference(), true);
   }
 
   async hover(options?: HoverOptions): Promise<void> {
@@ -1774,8 +3146,59 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
     return this.page.elementTextContent(this.reference());
   }
 
+  async innerText(): Promise<string> {
+    return this.page.innerTextReference(this.reference());
+  }
+
+  async innerHTML(): Promise<string> {
+    return this.page.innerHTMLReference(this.reference());
+  }
+
+  async getAttribute(name: string): Promise<string | null> {
+    return this.page.getAttributeReference(this.reference(), name);
+  }
+
+  async inputValue(): Promise<string> {
+    return this.page.inputValueReference(this.reference());
+  }
+
+  async isChecked(): Promise<boolean> {
+    return this.page.isCheckedReference(this.reference());
+  }
+
+  async isDisabled(): Promise<boolean> {
+    return this.page.isDisabledReference(this.reference());
+  }
+
+  async isEditable(): Promise<boolean> {
+    return this.page.isEditableReference(this.reference());
+  }
+
+  async isEnabled(): Promise<boolean> {
+    return this.page.isEnabledReference(this.reference());
+  }
+
+  async isHidden(): Promise<boolean> {
+    return !(await this.page.elementIsVisible(this.reference()));
+  }
+
   async isVisible(): Promise<boolean> {
     return this.page.elementIsVisible(this.reference());
+  }
+
+  async focus(): Promise<void> {
+    await this.page.focusReference(this.reference());
+  }
+
+  async uncheck(options?: ClickOptions): Promise<void> {
+    void options;
+    await this.page.checkReference(this.reference(), false);
+  }
+
+  async selectOption(
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    return this.page.selectOptionReference(this.reference(), values);
   }
 }
 
@@ -1830,6 +3253,15 @@ function hasLogContext(payload: unknown, contextId: string): boolean {
   );
 }
 
+function extractBiDiContextUrl(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || !("url" in payload)) {
+    return null;
+  }
+
+  const url = (payload as { url?: unknown }).url;
+  return typeof url === "string" ? url : null;
+}
+
 function mapBiDiHeaders(
   headers: Array<{ name: string; value: { value: string } | string }>
 ): Array<{ name: string; value: string }> {
@@ -1842,10 +3274,32 @@ function mapBiDiHeaders(
   }));
 }
 
+function toBiDiOutgoingHeaders(headers: Record<string, string>): Array<{
+  name: string;
+  value: { type: "string"; value: string };
+}> {
+  return Object.entries(headers).map(([name, value]) => ({
+    name,
+    value: {
+      type: "string",
+      value
+    }
+  }));
+}
+
 function toBiDiKeyValue(key: string): string {
   switch (key) {
+    case "Alt":
+      return "\uE00A";
+    case "Control":
+      return "\uE009";
     case "Enter":
       return "\uE007";
+    case "Meta":
+      return "\uE03D";
+    case "Shift":
+    case "ShiftLeft":
+      return "\uE008";
     case "Tab":
       return "\uE004";
     case "Backspace":
@@ -1855,6 +3309,88 @@ function toBiDiKeyValue(key: string): string {
     default:
       return key;
   }
+}
+
+function createScreencastHighlightBox(point: ActionPoint): {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+} {
+  const size = 48;
+  return {
+    left: point.x - size / 2,
+    top: point.y - size / 2,
+    width: size,
+    height: size
+  };
+}
+
+async function waitForAbortableTimeout(duration: number, signal: AbortSignal): Promise<boolean> {
+  if (duration <= 0) {
+    return !signal.aborted;
+  }
+
+  return await new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, duration);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function parseKeyboardShortcut(shortcut: string): {
+  modifiers: string[];
+  key: string;
+} {
+  if (!shortcut.includes("+")) {
+    return {
+      modifiers: [],
+      key: normalizeShortcutKey(shortcut)
+    };
+  }
+
+  const segments = shortcut.split("+");
+  let key = segments.pop() ?? "";
+  if (key === "") {
+    key = "+";
+  }
+
+  return {
+    modifiers: segments.filter(Boolean).map(normalizeShortcutKey).filter(isKeyboardModifier),
+    key: normalizeShortcutKey(key)
+  };
+}
+
+function normalizeShortcutKey(key: string): string {
+  if (key === "ControlOrMeta") {
+    return process.platform === "darwin" ? "Meta" : "Control";
+  }
+  return key;
+}
+
+function isKeyboardModifier(key: string): key is "Alt" | "Control" | "Meta" | "Shift" {
+  return key === "Alt" || key === "Control" || key === "Meta" || key === "Shift";
+}
+
+function keyboardModifierState(modifiers: ReadonlySet<string>): {
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+} {
+  return {
+    altKey: modifiers.has("Alt"),
+    ctrlKey: modifiers.has("Control"),
+    metaKey: modifiers.has("Meta"),
+    shiftKey: modifiers.has("Shift")
+  };
 }
 
 async function connectBidiFromWsEndpoint(
@@ -2148,5 +3684,57 @@ function defaultFirefoxExecutable(): string {
       return "C:\\Program Files\\Mozilla Firefox\\firefox.exe";
     default:
       return "firefox";
+  }
+}
+
+function normalizeConsoleMessageType(
+  value: string
+):
+  | "log"
+  | "debug"
+  | "info"
+  | "error"
+  | "warning"
+  | "dir"
+  | "dirxml"
+  | "table"
+  | "trace"
+  | "clear"
+  | "startGroup"
+  | "startGroupCollapsed"
+  | "endGroup"
+  | "assert"
+  | "profile"
+  | "profileEnd"
+  | "count"
+  | "time"
+  | "timeEnd" {
+  if (value === "warn") {
+    return "warning";
+  }
+
+  switch (value) {
+    case "log":
+    case "debug":
+    case "info":
+    case "error":
+    case "warning":
+    case "dir":
+    case "dirxml":
+    case "table":
+    case "trace":
+    case "clear":
+    case "startGroup":
+    case "startGroupCollapsed":
+    case "endGroup":
+    case "assert":
+    case "profile":
+    case "profileEnd":
+    case "count":
+    case "time":
+    case "timeEnd":
+      return value;
+    default:
+      return "log";
   }
 }

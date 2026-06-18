@@ -164,6 +164,277 @@ describe("BidiBrowserAdapterFactory", () => {
     await adapter.close();
     expect(close).toHaveBeenCalledTimes(1);
   });
+
+  it("dispatches wheel events through script evaluation with pointer position and modifiers", async () => {
+    const inputPerformActions = vi.fn(async () => ({}));
+    const scriptEvaluate = vi.fn(async () => ({
+      type: "success",
+      result: {
+        type: "undefined"
+      }
+    }));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      inputPerformActions,
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      scriptEvaluate,
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await page.mouseMove(50, 60);
+    await page.keyboardDown("Shift");
+    await page.mouseWheel(0, 100);
+
+    expect(inputPerformActions).toHaveBeenNthCalledWith(1, {
+      context: "ctx-1",
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [
+            {
+              type: "pointerMove",
+              x: 50,
+              y: 60,
+              origin: "viewport"
+            }
+          ]
+        }
+      ]
+    });
+    expect(inputPerformActions).toHaveBeenNthCalledWith(2, {
+      context: "ctx-1",
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions: [
+            {
+              type: "keyDown",
+              value: "\uE008"
+            }
+          ]
+        }
+      ]
+    });
+    expect(scriptEvaluate).toHaveBeenCalledTimes(1);
+    expect(scriptEvaluate.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        awaitPromise: true,
+        resultOwnership: "none",
+        target: {
+          context: "ctx-1"
+        }
+      })
+    );
+    const expression = String(scriptEvaluate.mock.calls[0]?.[0]?.expression ?? "");
+    expect(expression).toContain('new WheelEvent("wheel"');
+    expect(expression).toContain("target.dispatchEvent(event)");
+    expect(expression).toContain("globalThis.scrollBy(deltaX, deltaY)");
+    expect(expression).toContain('"x":50');
+    expect(expression).toContain('"y":60');
+    expect(expression).toContain('"deltaX":0');
+    expect(expression).toContain('"deltaY":100');
+    expect(expression).toContain('"shiftKey":true');
+    expect(expression).toContain('"ctrlKey":false');
+  });
+
+  it("treats screencast start and stop as no-op page operations", async () => {
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await expect(page.screencastStart()).resolves.toBeUndefined();
+    await expect(page.screencastStop()).resolves.toBeUndefined();
+  });
+
+  it("dispatches requestGC through script evaluation", async () => {
+    const scriptEvaluate = vi.fn(async () => ({
+      type: "success",
+      result: {
+        type: "undefined"
+      }
+    }));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      scriptEvaluate,
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await page.requestGC();
+
+    expect(scriptEvaluate).toHaveBeenCalledTimes(1);
+    const expression = String(scriptEvaluate.mock.calls[0]?.[0]?.expression ?? "");
+    expect(expression).toContain('typeof globalThis.gc === "function"');
+    expect(expression).toContain("globalThis.gc()");
+  });
+
+  it("sends page extra http headers through network.setExtraHeaders", async () => {
+    const networkSetExtraHeaders = vi.fn(async () => ({}));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      networkSetExtraHeaders,
+      scriptEvaluate: vi.fn(async () => ({
+        type: "success",
+        result: {
+          type: "undefined"
+        }
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await page.setExtraHTTPHeaders({
+      Foo: "Bar"
+    });
+
+    expect(networkSetExtraHeaders).toHaveBeenCalledWith({
+      contexts: ["ctx-1"],
+      headers: [
+        {
+          name: "Foo",
+          value: {
+            type: "string",
+            value: "Bar"
+          }
+        }
+      ]
+    });
+  });
+
+  it("updates existing BiDi pages when context extra http headers change", async () => {
+    const networkSetExtraHeaders = vi.fn(async () => ({}));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      networkSetExtraHeaders,
+      scriptEvaluate: vi.fn(async () => ({
+        type: "success",
+        result: {
+          type: "undefined"
+        }
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+    await page.setExtraHTTPHeaders({
+      Foo: "Page"
+    });
+    networkSetExtraHeaders.mockClear();
+
+    await context.setExtraHTTPHeaders({
+      Foo: "Context",
+      Bar: "Keep"
+    });
+
+    expect(networkSetExtraHeaders).toHaveBeenCalledWith({
+      contexts: ["ctx-1"],
+      headers: [
+        {
+          name: "Foo",
+          value: {
+            type: "string",
+            value: "Page"
+          }
+        },
+        {
+          name: "Bar",
+          value: {
+            type: "string",
+            value: "Keep"
+          }
+        }
+      ]
+    });
+  });
 });
 
 type FakeWebSocketListener = (event?: unknown) => void;

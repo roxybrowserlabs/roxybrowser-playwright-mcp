@@ -1,8 +1,12 @@
 import { chromium } from "../../src/index.js";
-import type { Browser, BrowserContext, Page } from "../../src/types/api.js";
+import type { Browser, BrowserContext, Page, ResolvedAriaRef } from "../../src/types/api.js";
+
+export type SnapshotPage = Page & {
+  resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
+};
 
 export async function withPage<T>(
-  run: (page: Page, context: BrowserContext, browser: Browser) => Promise<T>
+  run: (page: SnapshotPage, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
   const browser = await chromium.launch({
     headless: true,
@@ -15,7 +19,7 @@ export async function withPage<T>(
     const context = await browser.newContext();
 
     try {
-      const page = await context.newPage();
+      const page = (await context.newPage()) as SnapshotPage;
 
       try {
         return await run(page, context, browser);

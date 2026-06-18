@@ -86,6 +86,29 @@ describe("DefaultHumanController", () => {
     expect(target.press).toHaveBeenCalledWith("Enter", { delay: 77 });
   });
 
+  it("treats human disabled as pure pass-through behavior", async () => {
+    const controller = new DefaultHumanController({
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 1,
+      clickHoldMs: 50,
+      scrollStepPx: 2,
+      typingDelayMs: 77,
+      typingVarianceMs: 4,
+      hoverBeforeClickMs: 25
+    });
+    const target = createTarget();
+
+    await controller.click(target, { human: { enabled: false }, delay: 9 });
+    await controller.type(target, "hello", { human: { enabled: false } });
+    await controller.press(target, "Enter", { human: { enabled: false } });
+
+    expect(target.hover).not.toHaveBeenCalled();
+    expect(target.click).toHaveBeenCalledWith({ human: { enabled: false }, delay: 9 });
+    expect(target.type).toHaveBeenCalledWith("hello", { human: { enabled: false } });
+    expect(target.press).toHaveBeenCalledWith("Enter", { human: { enabled: false } });
+  });
+
   it("serializes concurrent clicks within the same controller", async () => {
     const controller = new DefaultHumanController({
       enabled: true,

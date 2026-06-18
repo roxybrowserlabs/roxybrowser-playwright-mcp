@@ -12,36 +12,68 @@ import {
   withOptionalTimeout
 } from "../../ariaSnapshot.js";
 import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../../vendor/playwright/ariaSnapshotEvaluate.js";
-import { LocatorError, TimeoutError } from "../../errors.js";
+import { LocatorError, NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
+import { mergeExtraHTTPHeaders } from "../../httpHeaders.js";
+import { RoxyElementHandle } from "../../elementHandle.js";
+import { RoxyJSHandle, createJSHandle } from "../../jsHandle.js";
 import { createPageResponse } from "../../pageResponse.js";
-import type { ResolvedAriaRef } from "../../types/api.js";
-import { createNavigationResult } from "../../navigationResult.js";
+import {
+  PARSE_EVALUATION_RESULT_SOURCE,
+  SERIALIZE_EVALUATION_RESULT_SOURCE,
+  parseSerializedEvaluationResult,
+  wrapWithSerializedEvaluationResult
+} from "../evaluationSerializer.js";
+import type { Disposable, ResolvedAriaRef } from "../../types/api.js";
+import {
+  createAltTextLocatorSelector,
+  createLabelLocatorSelector,
+  createPlaceholderLocatorSelector,
+  createRoleLocatorSelector,
+  createTestIdLocatorSelector,
+  createTextLocatorSelector,
+  createTitleLocatorSelector
+} from "../../locatorSelectors.js";
 import {
   SELECTOR_RUNTIME_SOURCE,
   type SelectorRuntimePayload
 } from "../selectorRuntime.js";
+import {
+  createChapterOverlayHtml,
+  RENDER_SCREencast_OVERLAYS_SOURCE
+} from "../../screencastOverlay.js";
+import { RENDER_SCREENCAST_ACTIONS_SOURCE } from "../../screencastActions.js";
 import type {
+  AddScriptTagOptions,
+  AddStyleTagOptions,
   AriaSnapshotOptions,
   BrowserConnectOptions,
   BrowserContextOptions,
   ClickOptions,
   FillOptions,
+  GetByTextOptions,
   GetByRoleOptions,
   HoverOptions,
   LaunchOptions,
   MouseButton,
+  PageCloseOptions,
   PageGotoOptions,
+  PdfOptions,
   PressOptions,
+  Rect,
   ScreenshotOptions,
+  TapOptions,
   TypeOptions,
+  ViewportSize,
   WaitUntilState
 } from "../../types/options.js";
 import type {
-  PageEventListener,
-  PageEventMap,
-  PageEventName,
+  PageDialog,
+  RawPageEventListener,
+  RawPageEventMap,
+  RawPageEventName,
   PageResponse
 } from "../../types/events.js";
+import type { RoutedRequestCall, RoutedRequestDecision } from "../routing.js";
 import type {
   LocatorSelector,
   ProtocolBrowserAdapter,
@@ -50,11 +82,13 @@ import type {
   ProtocolBrowserSession,
   ProtocolElementHandleAdapter,
   ProtocolElementHandleReference,
+  ProtocolJSHandleAdapter,
   ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
 import { looksLikeFunctionExpression } from "../evaluate.js";
+import { parseEvaluationResultValue, serializeAsCallArgument, type SerializedValue } from "../../utilityScriptSerializers.js";
 import type CDP from "chrome-remote-interface";
 
 const chromeRemoteInterface = ("default" in cdpModule
@@ -78,9 +112,208 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
 let pointerActionQueue = Promise.resolve();
 
+function toPlaywrightResourceType(type?: string): string {
+  switch (type) {
+    case "Document":
+      return "document";
+    case "Stylesheet":
+      return "stylesheet";
+    case "Image":
+      return "image";
+    case "Media":
+      return "media";
+    case "Font":
+      return "font";
+    case "Script":
+      return "script";
+    case "TextTrack":
+      return "texttrack";
+    case "XHR":
+      return "xhr";
+    case "Fetch":
+      return "fetch";
+    case "EventSource":
+      return "eventsource";
+    case "WebSocket":
+      return "websocket";
+    case "Manifest":
+      return "manifest";
+    case "Ping":
+      return "ping";
+    case "CSPViolationReport":
+      return "cspreport";
+    case "Prefetch":
+      return "prefetch";
+    default:
+      return "other";
+  }
+}
+
+function isFaviconRequestUrl(url: string): boolean {
+  return url.endsWith("/favicon.ico");
+}
+
+const PAGE_PAPER_FORMATS: Record<string, { width: number; height: number }> = {
+  letter: { width: 8.5, height: 11 },
+  legal: { width: 8.5, height: 14 },
+  tabloid: { width: 11, height: 17 },
+  ledger: { width: 17, height: 11 },
+  a0: { width: 33.1, height: 46.8 },
+  a1: { width: 23.4, height: 33.1 },
+  a2: { width: 16.54, height: 23.4 },
+  a3: { width: 11.7, height: 16.54 },
+  a4: { width: 8.27, height: 11.7 },
+  a5: { width: 5.83, height: 8.27 },
+  a6: { width: 4.13, height: 5.83 }
+};
+
+const UNIT_TO_PIXELS: Record<string, number> = {
+  px: 1,
+  in: 96,
+  cm: 37.8,
+  mm: 3.78
+};
+
 type CdpClient = CDP.Client;
 type CdpVersionResult = CDP.VersionResult;
 type CdpTarget = CDP.Target;
+
+interface CdpRemoteObject {
+  className?: string;
+  description?: string;
+  objectId?: string;
+  preview?: {
+    properties?: Array<{
+      name: string;
+      type?: string;
+      value?: string;
+      valuePreview?: { description?: string };
+    }>;
+    subtype?: string;
+  };
+  subtype?: string;
+  type?: string;
+  unserializableValue?: string;
+  value?: unknown;
+}
+
+interface CdpRuntimeClient {
+  send(
+    method: "Runtime.evaluate",
+    params: {
+      expression: string;
+      awaitPromise?: boolean;
+      returnByValue?: boolean;
+      userGesture?: boolean;
+    }
+  ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
+  send(
+    method: "Runtime.callFunctionOn",
+    params: {
+      arguments?: Array<{ objectId?: string; unserializableValue?: string; value?: unknown }>;
+      awaitPromise?: boolean;
+      executionContextId?: number;
+      functionDeclaration: string;
+      objectId?: string;
+      returnByValue?: boolean;
+      userGesture?: boolean;
+    }
+  ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
+  send(
+    method: "Runtime.getProperties",
+    params: {
+      objectId: string;
+      ownProperties?: boolean;
+    }
+  ): Promise<{
+    result: Array<{
+      enumerable?: boolean;
+      name: string;
+      value?: CdpRemoteObject;
+    }>;
+  }>;
+  send(method: "Runtime.releaseObject", params: { objectId: string }): Promise<unknown>;
+}
+
+interface CdpDomClient {
+  send(
+    method: "DOM.getBoxModel",
+    params: { objectId: string }
+  ): Promise<{
+    model: {
+      border: [number, number, number, number, number, number, number, number];
+    };
+  }>;
+  send(
+    method: "DOM.describeNode",
+    params: { objectId: string },
+    sessionId?: string
+  ): Promise<{
+    node: {
+      backendNodeId?: number;
+      frameId?: string;
+      nodeName?: string;
+    };
+  }>;
+  send(
+    method: "DOM.getFrameOwner",
+    params: { frameId: string }
+  ): Promise<{
+    backendNodeId: number;
+  }>;
+  send(
+    method: "DOM.resolveNode",
+    params: { backendNodeId: number; executionContextId?: number }
+  ): Promise<{
+    object: CdpRemoteObject;
+  }>;
+}
+
+interface CdpPageFramePayload {
+  id: string;
+  name?: string;
+  parentId?: string;
+  url?: string;
+}
+
+interface CdpFrameTreePayload {
+  childFrames?: CdpFrameTreePayload[];
+  frame: CdpPageFramePayload;
+}
+
+interface CdpNativeFrameState {
+  id: string;
+  name: string;
+  parentId: string | null;
+  url: string;
+}
+
+interface CdpPageFrameClient {
+  send(
+    method: "Page.getFrameTree"
+  ): Promise<{
+    frameTree: CdpFrameTreePayload;
+  }>;
+}
+
+interface CdpExceptionDetails {
+  exception?: {
+    description?: string;
+    preview?: {
+      properties?: Array<{ name: string; value?: string }>;
+    };
+    value?: unknown;
+  };
+  stackTrace?: {
+    callFrames: Array<{
+      columnNumber: number;
+      functionName?: string;
+      lineNumber: number;
+      url: string;
+    }>;
+  };
+  text: string;
+}
 
 interface CdpConnectionDetails {
   browserWsEndpoint: string;
@@ -134,11 +367,101 @@ interface ResponseBodyState {
   ready: Promise<void>;
   markFailed: (error: Error) => void;
   resolveReady: () => void;
-  text?: Promise<string>;
+  body?: Promise<Buffer>;
+  expectedLength?: number;
+  frameId?: string;
+  fulfilledBody?: Buffer;
+  url?: string;
 }
+
+type FetchErrorReason =
+  | "Failed"
+  | "Aborted"
+  | "TimedOut"
+  | "AccessDenied"
+  | "ConnectionClosed"
+  | "ConnectionReset"
+  | "ConnectionRefused"
+  | "ConnectionAborted"
+  | "ConnectionFailed"
+  | "NameNotResolved"
+  | "InternetDisconnected"
+  | "AddressUnreachable"
+  | "BlockedByClient"
+  | "BlockedByResponse";
 
 interface NavigationResponseCapture {
   lastResponse: PageResponse | null;
+  predicate?: (response: PageResponse) => boolean;
+  resolve?: (response: PageResponse) => void;
+}
+
+interface NavigationFailureCapture {
+  reject: (error: Error) => void;
+}
+
+interface CdpCoverageRange {
+  count: number;
+  endOffset: number;
+  startOffset: number;
+}
+
+interface CdpJsCoverageState {
+  enabled: boolean;
+  eventListeners: Array<{
+    event: string;
+    listener: (...args: any[]) => void;
+  }>;
+  reportAnonymousScripts: boolean;
+  resetOnNavigation: boolean;
+  scriptIds: Set<string>;
+  scriptSources: Map<string, string>;
+}
+
+interface CdpCssCoverageState {
+  enabled: boolean;
+  eventListeners: Array<{
+    event: string;
+    listener: (...args: any[]) => void;
+  }>;
+  resetOnNavigation: boolean;
+  stylesheetSources: Map<string, string>;
+  stylesheetUrls: Map<string, string>;
+}
+
+interface CdpScreencastOverlayState {
+  kind?: "chapter";
+  html: string;
+  removeTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface CdpScreencastSessionState {
+  quality: number;
+  record: boolean;
+  sendFrames: boolean;
+  size: {
+    width: number;
+    height: number;
+  };
+}
+
+interface ScreencastActionOptions {
+  duration?: number;
+  position?: "top-left" | "top" | "top-right" | "bottom-left" | "bottom" | "bottom-right";
+  fontSize?: number;
+  cursor?: "none" | "pointer";
+}
+
+interface ScreencastActionAnnotationState {
+  title: string;
+  point: ActionPoint;
+  cursorPoint?: ActionPoint;
+  highlightBox?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
 }
 
 interface LocatorPayload {
@@ -153,6 +476,39 @@ interface LocatorPayload {
   value?: string;
   force?: boolean;
   position?: { x: number; y: number };
+}
+
+function convertPrintParameterToInches(value?: string | number): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === "number") {
+    return value / 96;
+  }
+
+  const text = value.trim();
+  let unit = text.slice(-2).toLowerCase();
+  let valueText = "";
+
+  if (Object.prototype.hasOwnProperty.call(UNIT_TO_PIXELS, unit)) {
+    valueText = text.slice(0, -2);
+  } else {
+    unit = "px";
+    valueText = text;
+  }
+
+  const parsedValue = Number(valueText);
+  if (Number.isNaN(parsedValue)) {
+    throw new Error(`Failed to parse parameter value: ${value}`);
+  }
+
+  const pixelsPerUnit = UNIT_TO_PIXELS[unit];
+  if (pixelsPerUnit === undefined) {
+    throw new Error(`Unknown unit: ${unit}`);
+  }
+
+  return (parsedValue * pixelsPerUnit) / 96;
 }
 
 function locatorOperation(payload: LocatorPayload) {
@@ -459,34 +815,61 @@ class CdpBrowserSession implements ProtocolBrowserSession {
 }
 
 class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
-  private readonly pages = new Map<string, CdpPageAdapter>();
+  private readonly pages = new Map<string, ProtocolPageAdapter>();
+  private readonly pendingPages = new Map<string, Promise<ProtocolPageAdapter>>();
+  private readonly manuallyCreatedTargetIds = new Set<string>();
+  private readonly pageListeners = new Set<
+    (
+      page: ProtocolPageAdapter,
+      opener?: ProtocolPageAdapter | null,
+      hasWindowOpener?: boolean
+    ) => void | Promise<void>
+  >();
+  private readonly targetDiscoveryReady: Promise<void>;
+  private targetPollTimer: ReturnType<typeof setInterval> | null = null;
   private closing = false;
 
   constructor(
     private readonly state: CdpBrowserState,
     private readonly browserContextId: string | undefined,
     private readonly options: BrowserContextOptions
-  ) {}
+  ) {
+    this.targetDiscoveryReady = this.initializeTargetDiscovery();
+  }
 
   async newPage(): Promise<ProtocolPageAdapter> {
+    await this.targetDiscoveryReady;
     const response = await this.state.browserClient.Target.createTarget({
       url: "about:blank",
       ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
     });
+    this.manuallyCreatedTargetIds.add(response.targetId);
 
-    const client = await connectToTarget(this.state.connection, response.targetId);
-    const page = await CdpPageAdapter.create({
-      browserClient: this.state.browserClient,
-      client,
-      targetId: response.targetId,
-      contextOptions: this.options,
-      onClosed: (targetId) => {
-        this.pages.delete(targetId);
-      }
-    });
+    return this.getOrCreatePage(response.targetId);
+  }
 
-    this.pages.set(response.targetId, page);
-    return page;
+  onPage(
+    listener: (
+      page: ProtocolPageAdapter,
+      opener?: ProtocolPageAdapter | null,
+      hasWindowOpener?: boolean
+    ) => void | Promise<void>
+  ): () => void {
+    this.pageListeners.add(listener);
+    return () => {
+      this.pageListeners.delete(listener);
+    };
+  }
+
+  async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
+    this.options.extraHTTPHeaders = { ...headers };
+    await Promise.all(
+      Array.from(this.pages.values()).map(async (page) => {
+        if ("updateContextExtraHTTPHeaders" in page && typeof page.updateContextExtraHTTPHeaders === "function") {
+          await page.updateContextExtraHTTPHeaders();
+        }
+      })
+    );
   }
 
   async close(): Promise<void> {
@@ -495,6 +878,11 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     }
 
     this.closing = true;
+    if (this.targetPollTimer) {
+      clearInterval(this.targetPollTimer);
+      this.targetPollTimer = null;
+    }
+    await this.targetDiscoveryReady.catch(() => {});
 
     await Promise.all(
       Array.from(this.pages.values()).map(async (page) => {
@@ -509,10 +897,338 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       });
     }
   }
+
+  private async initializeTargetDiscovery(): Promise<void> {
+    this.state.browserClient.Target.targetCreated?.((event: {
+      targetInfo: {
+        targetId: string;
+        type: string;
+        browserContextId?: string;
+        openerId?: string;
+        canAccessOpener?: boolean;
+      };
+    }) => {
+      void this.handleTargetCreated(event.targetInfo);
+    });
+
+    await this.state.browserClient.Target.setDiscoverTargets?.({
+      discover: true
+    });
+    this.targetPollTimer = setInterval(() => {
+      void this.discoverTargets().catch(() => {});
+    }, 100);
+    await this.discoverTargets();
+  }
+
+  private async discoverTargets(): Promise<void> {
+    if (this.closing) {
+      return;
+    }
+
+    const result = await (
+      this.state.browserClient.Target as typeof this.state.browserClient.Target & {
+        getTargets(): Promise<{
+          targetInfos: Array<{
+            targetId: string;
+            type: string;
+            browserContextId?: string;
+            openerId?: string;
+            canAccessOpener?: boolean;
+            url?: string;
+          }>;
+        }>;
+      }
+    ).getTargets();
+
+    for (const targetInfo of result.targetInfos) {
+      await this.handleTargetCreated(targetInfo);
+    }
+  }
+
+  private async handleTargetCreated(targetInfo: {
+    targetId: string;
+    type: string;
+    browserContextId?: string;
+    openerId?: string;
+    canAccessOpener?: boolean;
+    url?: string;
+  }): Promise<void> {
+    if (this.closing || !this.matchesTargetInfo(targetInfo)) {
+      return;
+    }
+    if (this.manuallyCreatedTargetIds.has(targetInfo.targetId)) {
+      return;
+    }
+    if (this.pages.has(targetInfo.targetId) || this.pendingPages.has(targetInfo.targetId)) {
+      return;
+    }
+
+    const pagePromise = this.getOrCreatePage(targetInfo.targetId, {
+      fallbackUrl: targetInfo.url ?? "about:blank",
+      hasWindowOpener: targetInfo.canAccessOpener ?? true,
+      openerTargetId: targetInfo.openerId ?? null,
+      emitPage: true
+    });
+    this.pendingPages.set(targetInfo.targetId, pagePromise);
+    void pagePromise.catch(() => {});
+    void pagePromise.finally(() => {
+      if (this.pendingPages.get(targetInfo.targetId) === pagePromise) {
+        this.pendingPages.delete(targetInfo.targetId);
+      }
+    });
+  }
+
+  private matchesTargetInfo(targetInfo: {
+    targetId: string;
+    type: string;
+    browserContextId?: string;
+    openerId?: string;
+    canAccessOpener?: boolean;
+  }): boolean {
+    if (targetInfo.type !== "page") {
+      return false;
+    }
+    if (targetInfo.browserContextId === this.browserContextId) {
+      return true;
+    }
+    if (targetInfo.openerId && this.pages.has(targetInfo.openerId)) {
+      return true;
+    }
+    if (targetInfo.openerId && this.pendingPages.has(targetInfo.openerId)) {
+      return true;
+    }
+    return !this.browserContextId && !targetInfo.browserContextId;
+  }
+
+  private async getOrCreatePage(
+    targetId: string,
+    options: {
+      fallbackUrl?: string;
+      openerTargetId?: string | null;
+      hasWindowOpener?: boolean;
+      emitPage?: boolean;
+    } = {}
+  ): Promise<ProtocolPageAdapter> {
+    const existing = this.pages.get(targetId);
+    if (existing) {
+      return existing;
+    }
+
+    const pending = this.pendingPages.get(targetId);
+    if (pending) {
+      return pending;
+    }
+
+    const pagePromise = (async () => {
+      let page: ProtocolPageAdapter;
+      try {
+        const client = await connectToTarget(this.state.connection, targetId);
+        page = await CdpPageAdapter.create({
+          browserClient: this.state.browserClient,
+          client,
+          targetId,
+          contextOptions: this.options,
+          onClosed: (closedTargetId) => {
+            this.pages.delete(closedTargetId);
+            this.pendingPages.delete(closedTargetId);
+            this.manuallyCreatedTargetIds.delete(closedTargetId);
+          }
+        });
+      } catch (error) {
+        if (!options.emitPage) {
+          throw error;
+        }
+        page = createTransientClosedPageAdapter(options.fallbackUrl ?? "about:blank");
+      }
+      this.pages.set(targetId, page);
+
+      if (options.emitPage) {
+        const opener = options.openerTargetId
+          ? await this.resolveKnownPage(options.openerTargetId)
+          : null;
+        await this.emitPage(page, opener, options.hasWindowOpener ?? true);
+      }
+
+      return page;
+    })();
+
+    this.pendingPages.set(targetId, pagePromise);
+    try {
+      return await pagePromise;
+    } finally {
+      if (this.pendingPages.get(targetId) === pagePromise) {
+        this.pendingPages.delete(targetId);
+      }
+    }
+  }
+
+  private async resolveKnownPage(targetId: string): Promise<ProtocolPageAdapter | null> {
+    const existing = this.pages.get(targetId);
+    if (existing) {
+      return existing;
+    }
+
+    const pending = this.pendingPages.get(targetId);
+    if (!pending) {
+      return null;
+    }
+
+    try {
+      return await pending;
+    } catch {
+      return null;
+    }
+  }
+
+  private async emitPage(
+    page: ProtocolPageAdapter,
+    opener: ProtocolPageAdapter | null,
+    hasWindowOpener: boolean
+  ): Promise<void> {
+    for (const listener of Array.from(this.pageListeners)) {
+      await listener(page, opener, hasWindowOpener);
+    }
+  }
+}
+
+function createTransientClosedPageAdapter(url: string): ProtocolPageAdapter {
+  const closedError = () => new Error("Target page, context or browser has been closed");
+  const asyncClosed = async <T>(): Promise<T> => {
+    throw closedError();
+  };
+  const syncClosed = () => {
+    throw closedError();
+  };
+  const createClosedHandle = (
+    reference: ProtocolElementHandleReference
+  ): ProtocolElementHandleAdapter => ({
+    reference: () => reference,
+    query: asyncClosed,
+    queryAll: asyncClosed,
+    evalOnSelector: asyncClosed,
+    evalOnSelectorAll: asyncClosed,
+    evaluate: asyncClosed,
+    evaluateHandle: asyncClosed,
+    boundingBox: asyncClosed,
+    click: asyncClosed,
+    dblclick: asyncClosed,
+    check: asyncClosed,
+    hover: asyncClosed,
+    fill: asyncClosed,
+    type: asyncClosed,
+    press: asyncClosed,
+    textContent: asyncClosed,
+    innerText: asyncClosed,
+    innerHTML: asyncClosed,
+    getAttribute: asyncClosed,
+    inputValue: asyncClosed,
+    isChecked: asyncClosed,
+    isDisabled: asyncClosed,
+    isEditable: asyncClosed,
+    isEnabled: asyncClosed,
+    isHidden: asyncClosed,
+    isVisible: asyncClosed,
+    focus: asyncClosed,
+    uncheck: asyncClosed,
+    selectOption: asyncClosed
+  });
+
+  return {
+    goto: asyncClosed,
+    url: () => url,
+    goBack: asyncClosed,
+    goForward: asyncClosed,
+    reload: asyncClosed,
+    title: async () => "",
+    content: async () => "",
+    setContent: asyncClosed,
+    addInitScript: asyncClosed,
+    evaluate: asyncClosed,
+    addScriptTag: asyncClosed,
+    addStyleTag: asyncClosed,
+    waitForLoadState: async () => {},
+    ariaSnapshot: asyncClosed,
+    resolveAriaRef: asyncClosed,
+    setExtraHTTPHeaders: async () => {},
+    screenshot: asyncClosed,
+    pdf: asyncClosed,
+    viewportSize: () => null,
+    setViewportSize: asyncClosed,
+    dispatchEvent: asyncClosed,
+    requestGC: asyncClosed,
+    textContent: asyncClosed,
+    innerText: asyncClosed,
+    innerHTML: asyncClosed,
+    getAttribute: asyncClosed,
+    inputValue: asyncClosed,
+    isChecked: asyncClosed,
+    isDisabled: asyncClosed,
+    isEditable: asyncClosed,
+    isEnabled: asyncClosed,
+    focus: asyncClosed,
+    setChecked: asyncClosed,
+    selectOption: asyncClosed,
+    bringToFront: asyncClosed,
+    isClosed: () => true,
+    on: () => () => {},
+    createHandle: createClosedHandle,
+    createHandleReference: async (reference) => reference,
+    query: async () => null,
+    queryAll: async () => [],
+    evalOnSelector: asyncClosed,
+    evalOnSelectorAll: asyncClosed,
+    locator: syncClosed,
+    getByText: syncClosed,
+    getByAltText: syncClosed,
+    getByLabel: syncClosed,
+    getByPlaceholder: syncClosed,
+    getByTestId: syncClosed,
+    getByRole: syncClosed,
+    getByTitle: syncClosed,
+    startCSSCoverage: asyncClosed,
+    startJSCoverage: asyncClosed,
+    stopCSSCoverage: asyncClosed,
+    stopJSCoverage: asyncClosed,
+    screencastStart: asyncClosed,
+    screencastStop: asyncClosed,
+    screencastShowActions: asyncClosed,
+    screencastHideActions: asyncClosed,
+    screencastShowOverlay: asyncClosed,
+    screencastRemoveOverlay: asyncClosed,
+    screencastChapter: asyncClosed,
+    screencastSetOverlayVisible: asyncClosed,
+    keyboardDown: asyncClosed,
+    keyboardInsertText: asyncClosed,
+    keyboardPress: asyncClosed,
+    keyboardType: asyncClosed,
+    keyboardUp: asyncClosed,
+    mouseClick: asyncClosed,
+    mouseDblclick: asyncClosed,
+    mouseDown: asyncClosed,
+    mouseMove: asyncClosed,
+    mouseUp: asyncClosed,
+    mouseWheel: asyncClosed,
+    touchscreenTap: asyncClosed,
+    tap: asyncClosed,
+    close: async (_options?: PageCloseOptions) => {}
+  };
 }
 
 class CdpPageAdapter implements ProtocolPageAdapter {
   private mainFrameId: string | undefined;
+  private readonly defaultExecutionContextByFrameId = new Map<string, number>();
+  private readonly defaultExecutionContextSessionByFrameId = new Map<string, string | undefined>();
+  private readonly pendingDefaultExecutionContextWaiters = new Map<
+    string,
+    Set<{
+      reject: (error: Error) => void;
+      resolve: (contextId: number) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }>
+  >();
+  private readonly frameSessionIds = new Map<string, string>();
+  private readonly nativeFrames = new Map<string, CdpNativeFrameState>();
+  private currentUrl = "about:blank";
   private domContentLoaded = false;
   private loadFired = false;
   private networkIdleReached = false;
@@ -520,15 +1236,84 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private allowSameDocumentNavigationToResolveWaiters = false;
   private activeRequests = 0;
   private closed = false;
+  private closeReason: string | undefined;
   private networkIdleTimer: ReturnType<typeof setTimeout> | undefined;
+  private currentViewportSize: ViewportSize | null = null;
+  private currentMousePosition: ActionPoint = { x: 0, y: 0 };
+  private readonly pressedKeyboardModifiers = new Set<string>();
+  private readonly jsCoverageState: CdpJsCoverageState = {
+    enabled: false,
+    eventListeners: [],
+    reportAnonymousScripts: false,
+    resetOnNavigation: true,
+    scriptIds: new Set(),
+    scriptSources: new Map()
+  };
+  private readonly cssCoverageState: CdpCssCoverageState = {
+    enabled: false,
+    eventListeners: [],
+    resetOnNavigation: true,
+    stylesheetSources: new Map(),
+    stylesheetUrls: new Map()
+  };
+  private screencastActionOptions: ScreencastActionOptions | null = null;
+  private screencastActionAnnotation: ScreencastActionAnnotationState | null = null;
+  private screencastActionAbortController: AbortController | null = null;
+  private screencastSession: CdpScreencastSessionState | null = null;
+  private screencastOverlaysVisible = true;
+  private screencastOverlayId = 0;
+  private readonly screencastOverlays = new Map<string, CdpScreencastOverlayState>();
   private readonly stateWaiters = new Set<StateWaiter>();
-  private readonly eventListeners = new Map<PageEventName, Set<PageEventListener<PageEventName>>>();
+  private readonly eventListeners = new Map<RawPageEventName, Set<RawPageEventListener<RawPageEventName>>>();
   private readonly requestMetadata = new Map<
     string,
-    { frameId?: string; method: string; type?: string; url: string }
+    {
+      frameId?: string;
+      isFavicon?: boolean;
+      isNavigationRequest?: boolean;
+      isPreflight?: boolean;
+      method: string;
+      responseStatus?: number;
+      type?: string;
+      url: string;
+    }
   >();
+  private readonly pendingResponseEvents = new Map<
+    string,
+    Array<{
+      event: {
+        frameId?: string;
+        requestId: string;
+        response: {
+          fromDiskCache?: boolean;
+          fromServiceWorker?: boolean;
+          fromPrefetchCache?: boolean;
+          headers: Record<string, string | number | boolean>;
+          mimeType: string;
+          status: number;
+          statusText: string;
+          url: string;
+        };
+        type?: string;
+      };
+    }>
+  >();
+  private readonly responseExtraInfoHeaders = new Map<
+    string,
+    Array<Array<{ name: string; value: string }>>
+  >();
+  private readonly fulfilledDocumentResponseHeaders = new Map<
+    string,
+    Array<{ name: string; value: string }>
+  >();
+  private readonly fulfilledRequestIds = new Set<string>();
+  private readonly continuedRequestHeaders = new Map<string, Array<{ name: string; value: string }>>();
   private readonly responseBodies = new Map<string, ResponseBodyState>();
-  private navigationResponseCapture: NavigationResponseCapture | undefined;
+  private readonly navigationResponseCaptures = new Set<NavigationResponseCapture>();
+  private readonly navigationFailureCaptures = new Set<NavigationFailureCapture>();
+  private pageExtraHTTPHeaders: Record<string, string> | undefined;
+  private requestInterceptor: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null = null;
+  private requestInterceptionEnabled = false;
 
   static async create(options: {
     browserClient: CdpClient;
@@ -568,33 +1353,57 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await Promise.all([
       client.Page.enable(),
       client.Page.setLifecycleEventsEnabled({ enabled: true }).catch(() => {}),
-    client.Runtime.enable(),
+      client.Runtime.enable(),
       client.DOM.enable({}),
-      client.Network.enable({})
+      client.Network.enable({}),
+      client.Target?.setAutoAttach?.({
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true
+      }).catch(() => {})
     ]);
 
     client.Page.domContentEventFired(() => {
       this.domContentLoaded = true;
       this.flushWaiters();
       this.emit("domcontentloaded", undefined);
+      void this.syncCurrentUrlFromDocument();
+      void this.renderScreencastActions();
+      void this.renderScreencastOverlays();
     });
 
-    client.Page.navigatedWithinDocument(() => {
+    client.Page.navigatedWithinDocument((event) => {
+      this.currentUrl = event.url ?? this.currentUrl;
+      void this.syncCurrentUrlFromDocument();
       this.sameDocumentNavigation = true;
       this.domContentLoaded = true;
       this.loadFired = true;
       this.networkIdleReached = true;
+      void this.renderScreencastActions();
+      void this.renderScreencastOverlays();
       if (this.allowSameDocumentNavigationToResolveWaiters) {
         this.flushWaiters();
       }
     });
 
-    client.Page.frameNavigated((event) => {
-      if (event.frame.parentId) {
-        return;
-      }
+    client.Page.javascriptDialogOpening((event) => {
+      this.emit(
+        "dialog",
+        this.createDialogPayload({
+          defaultValue: event.defaultPrompt ?? "",
+          message: event.message,
+          type: event.type
+        })
+      );
+    });
 
-      this.mainFrameId = event.frame.id;
+    client.Page.frameNavigated((event) => {
+      this.upsertNativeFrame(event.frame);
+      if (!event.frame.parentId) {
+        this.mainFrameId = event.frame.id;
+        this.currentUrl = event.frame.url ?? this.currentUrl;
+        void this.syncCurrentUrlFromDocument();
+      }
 
       if (event.type === "BackForwardCacheRestore") {
         this.domContentLoaded = true;
@@ -602,6 +1411,120 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.networkIdleReached = true;
         this.flushWaiters();
       }
+    });
+
+    client.Page.frameAttached?.((event: {
+      frameId: string;
+      parentFrameId?: string;
+    }) => {
+      this.nativeFrames.set(event.frameId, {
+        id: event.frameId,
+        name: this.nativeFrames.get(event.frameId)?.name ?? "",
+        parentId: event.parentFrameId ?? null,
+        url: this.nativeFrames.get(event.frameId)?.url ?? "about:blank"
+      });
+    });
+
+    client.Page.frameDetached?.((event: { frameId: string; reason?: "remove" | "swap" }) => {
+      if (event.reason === "swap") {
+        return;
+      }
+      this.frameSessionIds.delete(event.frameId);
+      this.removeNativeFrame(event.frameId);
+    });
+
+    client.Target?.attachedToTarget?.((event: {
+      sessionId: string;
+      targetInfo: {
+        parentFrameId?: string;
+        targetId: string;
+        type: string;
+        url?: string;
+      };
+    }) => {
+      if (event.targetInfo.type !== "iframe") {
+        return;
+      }
+      this.nativeFrames.set(event.targetInfo.targetId, {
+        id: event.targetInfo.targetId,
+        name: this.nativeFrames.get(event.targetInfo.targetId)?.name ?? "",
+        parentId: event.targetInfo.parentFrameId ?? this.mainFrameId ?? null,
+        url: event.targetInfo.url ?? this.nativeFrames.get(event.targetInfo.targetId)?.url ?? "about:blank"
+      });
+      this.frameSessionIds.set(event.targetInfo.targetId, event.sessionId);
+      const sessionClient = this.options.client as typeof this.options.client & {
+        send(
+          method: "Runtime.enable" | "Page.enable" | "Runtime.runIfWaitingForDebugger",
+          params?: Record<string, never>,
+          sessionId?: string
+        ): Promise<unknown>;
+        send(
+          method: "Target.setAutoAttach",
+          params: { autoAttach: boolean; waitForDebuggerOnStart: boolean; flatten: boolean },
+          sessionId?: string
+        ): Promise<unknown>;
+      };
+      void sessionClient.send("Runtime.enable", {}, event.sessionId).catch(() => {});
+      void sessionClient.send("Page.enable", {}, event.sessionId).catch(() => {});
+      void sessionClient.send("Target.setAutoAttach", {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true
+      }, event.sessionId).catch(() => {});
+      void sessionClient.send("Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
+    });
+
+    const onExecutionContextCreated = (event: {
+      context: {
+        auxData?: {
+          frameId?: string;
+          isDefault?: boolean;
+          type?: string;
+        };
+        id: number;
+      };
+    }, sessionId?: string) => {
+      const frameId = event.context.auxData?.frameId;
+      const isDefault = event.context.auxData?.isDefault !== false &&
+        event.context.auxData?.type !== "isolated";
+      if (frameId && isDefault) {
+        this.defaultExecutionContextByFrameId.set(frameId, event.context.id);
+        this.defaultExecutionContextSessionByFrameId.set(frameId, sessionId);
+        const waiters = this.pendingDefaultExecutionContextWaiters.get(frameId);
+        if (waiters) {
+          this.pendingDefaultExecutionContextWaiters.delete(frameId);
+          for (const waiter of waiters) {
+            clearTimeout(waiter.timer);
+            waiter.resolve(event.context.id);
+          }
+        }
+      }
+    };
+
+    client.Runtime.executionContextCreated?.((event: {
+      context: {
+        auxData?: {
+          frameId?: string;
+          isDefault?: boolean;
+          type?: string;
+        };
+        id: number;
+      };
+    }) => onExecutionContextCreated(event));
+    client.on?.("Runtime.executionContextCreated", (event: {
+      context: {
+        auxData?: {
+          frameId?: string;
+          isDefault?: boolean;
+          type?: string;
+        };
+        id: number;
+      };
+    }, sessionId?: string) => onExecutionContextCreated(event, sessionId));
+
+    client.Runtime.executionContextsCleared?.(() => {
+      this.defaultExecutionContextByFrameId.clear();
+      this.defaultExecutionContextSessionByFrameId.clear();
     });
 
     client.Page.frameStoppedLoading((event) => {
@@ -619,31 +1542,99 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.loadFired = true;
       this.flushWaiters();
       this.emit("load", undefined);
+      void this.renderScreencastActions();
+      void this.renderScreencastOverlays();
+    });
+
+    client.Page.screencastFrame?.((payload) => {
+      this.emit("screencastFrame", {
+        data: Buffer.from(payload.data, "base64"),
+        timestamp: payload.metadata.timestamp ? payload.metadata.timestamp * 1000 : Date.now(),
+        viewportWidth: payload.metadata.deviceWidth ?? this.currentViewportSize?.width ?? 0,
+        viewportHeight: payload.metadata.deviceHeight ?? this.currentViewportSize?.height ?? 0
+      });
+      const ack = this.options.client.Page.screencastFrameAck?.({
+        sessionId: payload.sessionId
+      });
+      void ack?.catch(() => {});
     });
 
     client.Runtime.consoleAPICalled((event) => {
+      const args = event.args.map((arg) => createCdpConsoleHandle(arg));
       this.emit("console", {
-        text: () => formatConsoleText(event.args),
-        type: () => event.type
+        args: () => args,
+        location: () => ({
+          column: 0,
+          columnNumber: 0,
+          line: 0,
+          lineNumber: 0,
+          url: ""
+        }),
+        page: () => null,
+        text: () => args.map((arg) => String(arg)).join(" "),
+        timestamp: () => Date.now(),
+        type: () => event.type,
+        worker: () => null
       });
     });
 
+    client.Runtime.exceptionThrown?.((event) => {
+      this.emit("pageerror", exceptionToError(event.exceptionDetails));
+    });
+
     client.Network.requestWillBeSent((event) => {
-      const requestEvent = event as typeof event & { frameId?: string; type?: string };
+      const requestEvent = event as typeof event & {
+        frameId?: string;
+        initiator?: { type?: string };
+        loaderId?: string;
+        type?: string;
+      };
+      const isFavicon = isFaviconRequestUrl(event.request.url);
+      const isNavigationRequest =
+        event.requestId === requestEvent.loaderId && requestEvent.type === "Document";
+      if (event.redirectResponse) {
+        this.emitRedirectResponse(requestEvent, event.redirectResponse);
+      }
+      const isPreflightRequest =
+        event.request.method === "OPTIONS" && requestEvent.initiator?.type === "preflight";
+      const continuedHeaders = event.redirectResponse
+        ? this.continuedRequestHeaders.get(event.requestId)
+        : undefined;
+      const requestHeaders = continuedHeaders
+        ? applyCdpHeaderOverrides(event.request.headers, continuedHeaders)
+        : mapCdpHeaders(event.request.headers);
       this.activeRequests += 1;
       this.networkIdleReached = false;
       this.clearNetworkIdleTimer();
       this.requestMetadata.set(event.requestId, {
+        ...(isFavicon ? { isFavicon: true } : {}),
+        isNavigationRequest,
         method: event.request.method,
         url: event.request.url,
+        ...(isPreflightRequest ? { isPreflight: true } : {}),
         ...(requestEvent.frameId ? { frameId: requestEvent.frameId } : {}),
         ...(requestEvent.type ? { type: requestEvent.type } : {})
       });
+      if (isPreflightRequest) {
+        return;
+      }
+      if (isFavicon) {
+        return;
+      }
       this.emit("request", {
-        headers: mapCdpHeaders(event.request.headers),
+        headers: requestHeaders,
+        ...(requestEvent.frameId ? { frameId: requestEvent.frameId } : {}),
+        isNavigationRequest,
         method: event.request.method,
+        ...(event.request.postData !== undefined ? { postData: event.request.postData } : {}),
+        requestId: event.requestId,
+        resourceType: toPlaywrightResourceType(requestEvent.type),
         url: event.request.url
       });
+    });
+
+    client.Fetch?.requestPaused?.((event) => {
+      void this.handleFetchRequestPaused(event);
     });
 
     const onRequestSettled = (requestId?: string) => {
@@ -655,48 +1646,155 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     };
 
     client.Network.responseReceived((event) => {
-      const responseEvent = event as typeof event & { frameId?: string; type?: string };
-      const response = createPageResponse({
-        fromCache: Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache),
-        headers: mapCdpHeaders(event.response.headers),
-        mimeType: event.response.mimeType,
-        status: event.response.status,
-        statusText: event.response.statusText,
-        text: () => this.getResponseText(event.requestId),
-        url: event.response.url
-      });
-
-      this.emit("response", response);
-
-      if (
-        this.navigationResponseCapture &&
-        responseEvent.type === "Document" &&
-        responseEvent.frameId &&
-        this.isMainFrameId(responseEvent.frameId) &&
-        shouldCaptureNavigationResponseUrl(response.url)
-      ) {
-        this.navigationResponseCapture.lastResponse = response;
+      const responseEvent = event as typeof event & {
+        frameId?: string;
+        hasExtraInfo?: boolean;
+        type?: string;
+      };
+      const request = this.requestMetadata.get(event.requestId);
+      if (request) {
+        request.responseStatus = event.response.status;
       }
+      if (request?.isPreflight || request?.isFavicon) {
+        this.ensureResponseBodyState(event.requestId).resolveReady();
+        return;
+      }
+      const fromCache = Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache);
+      if (responseEvent.hasExtraInfo && !fromCache) {
+        const extraInfoHeaders = this.shiftResponseExtraInfoHeaders(event.requestId);
+        if (extraInfoHeaders) {
+          this.emitResponseReceived(responseEvent, extraInfoHeaders);
+          return;
+        }
+        const pending = this.pendingResponseEvents.get(event.requestId) ?? [];
+        pending.push({
+          event: {
+            requestId: event.requestId,
+            ...(responseEvent.frameId ? { frameId: responseEvent.frameId } : {}),
+            response: {
+              ...(event.response.fromDiskCache !== undefined
+                ? { fromDiskCache: event.response.fromDiskCache }
+                : {}),
+              ...(event.response.fromServiceWorker !== undefined
+                ? { fromServiceWorker: event.response.fromServiceWorker }
+                : {}),
+              ...(event.response.fromPrefetchCache !== undefined
+                ? { fromPrefetchCache: event.response.fromPrefetchCache }
+                : {}),
+              headers: event.response.headers,
+              mimeType: event.response.mimeType,
+              status: event.response.status,
+              statusText: event.response.statusText,
+              url: event.response.url
+            },
+            ...(responseEvent.type ? { type: responseEvent.type } : {})
+          }
+        });
+        this.pendingResponseEvents.set(event.requestId, pending);
+        return;
+      }
+      this.emitResponseReceived(responseEvent);
+    });
+
+    client.Network.responseReceivedExtraInfo?.((event) => {
+      const request = this.requestMetadata.get(event.requestId);
+      if (request?.isPreflight || request?.isFavicon) {
+        return;
+      }
+      const headers = parseCdpHeadersText((event as typeof event & { headersText?: string }).headersText) ??
+        mapCdpHeaders(event.headers, "\n");
+      const pending = this.pendingResponseEvents.get(event.requestId);
+      if (pending?.length) {
+        const next = pending.shift()!;
+        if (pending.length === 0) {
+          this.pendingResponseEvents.delete(event.requestId);
+        }
+        this.emitResponseReceived(next.event, headers);
+        return;
+      }
+      const queued = this.responseExtraInfoHeaders.get(event.requestId) ?? [];
+      queued.push(headers);
+      this.responseExtraInfoHeaders.set(event.requestId, queued);
     });
 
     client.Network.loadingFinished((event) => {
+      this.flushPendingResponseEvent(event.requestId);
       this.ensureResponseBodyState(event.requestId).resolveReady();
+      const request = this.requestMetadata.get(event.requestId);
+      if (request?.isPreflight || request?.isFavicon) {
+        onRequestSettled(event.requestId);
+        return;
+      }
+      this.emit("requestfinished", {
+        headers: [],
+        ...(request?.frameId ? { frameId: request.frameId } : {}),
+        isNavigationRequest: request?.isNavigationRequest ?? false,
+        method: request?.method ?? "UNKNOWN",
+        requestId: event.requestId,
+        resourceType: toPlaywrightResourceType(request?.type),
+        url: request?.url ?? "unknown://request"
+      });
       onRequestSettled(event.requestId);
     });
     client.Network.loadingFailed((event) => {
+      this.flushPendingResponseEvent(event.requestId);
       const request = this.requestMetadata.get(event.requestId);
+      if (request?.isPreflight || request?.isFavicon) {
+        this.ensureResponseBodyState(event.requestId).resolveReady();
+        onRequestSettled(event.requestId);
+        return;
+      }
+      if (this.fulfilledRequestIds.has(event.requestId)) {
+        this.ensureResponseBodyState(event.requestId).resolveReady();
+        this.fulfilledRequestIds.delete(event.requestId);
+        this.emit("requestfinished", {
+          headers: [],
+          ...(request?.frameId ? { frameId: request.frameId } : {}),
+          isNavigationRequest: request?.isNavigationRequest ?? false,
+          method: request?.method ?? "UNKNOWN",
+          requestId: event.requestId,
+          resourceType: toPlaywrightResourceType(request?.type),
+          url: request?.url ?? "unknown://request"
+        });
+        onRequestSettled(event.requestId);
+        return;
+      }
+      if (request?.responseStatus === 204) {
+        this.ensureResponseBodyState(event.requestId).resolveReady();
+        this.emit("requestfinished", {
+          headers: [],
+          ...(request.frameId ? { frameId: request.frameId } : {}),
+          isNavigationRequest: request.isNavigationRequest ?? false,
+          method: request.method,
+          requestId: event.requestId,
+          resourceType: toPlaywrightResourceType(request.type),
+          url: request.url
+        });
+        onRequestSettled(event.requestId);
+        return;
+      }
       this.ensureResponseBodyState(event.requestId).markFailed(
         new Error(event.errorText || "Network loading failed.")
       );
+      if (request?.type === "Document" && request.frameId && this.isMainFrameId(request.frameId)) {
+        this.rejectNavigationFailureCaptures(
+          new Error(event.errorText || "Navigation failed.")
+        );
+      }
       onRequestSettled(event.requestId);
       this.emit("requestfailed", {
         errorText: event.errorText,
+        ...(request?.frameId ? { frameId: request.frameId } : {}),
+        isNavigationRequest: request?.isNavigationRequest ?? false,
         method: request?.method ?? "UNKNOWN",
+        requestId: event.requestId,
+        resourceType: toPlaywrightResourceType(request?.type),
         url: request?.url ?? "unknown://request"
       });
     });
 
     await this.applyContextOptions();
+    await this.syncLifecycleStateFromDocument();
     this.maybeArmNetworkIdleTimer();
   }
 
@@ -704,57 +1802,117 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const waitUntil = options.waitUntil ?? "load";
     const targetUrl = resolveUrl(url, this.options.contextOptions.baseURL);
     const capture = this.beginNavigationResponseCapture();
+    const failureCapture = this.beginNavigationFailureCapture();
     this.resetNavigationState();
 
-    await withTimeout(
-      this.options.client.Page.navigate({ url: targetUrl }),
-      options.timeout,
-      `Timed out while navigating to "${targetUrl}".`
-    );
+    try {
+      await this.raceNavigationFailure(
+        withTimeout(
+          this.options.client.Page.navigate({ url: targetUrl }),
+          options.timeout,
+          `Timeout ${options.timeout}ms exceeded.`
+        ),
+        failureCapture
+      );
+      this.currentUrl = targetUrl;
 
-    if (waitUntil !== "commit") {
-      await this.waitForLoadState(waitUntil, options.timeout);
-    }
+      if (waitUntil !== "commit") {
+        await this.raceNavigationFailure(
+          this.waitForLoadState(waitUntil, options.timeout),
+          failureCapture
+        );
+      }
+      await this.syncCurrentUrlFromDocument();
 
-    if (this.navigationResponseCapture === capture) {
-      this.navigationResponseCapture = undefined;
+      return capture.lastResponse;
+    } finally {
+      this.endNavigationResponseCapture(capture);
+      this.endNavigationFailureCapture(failureCapture);
     }
-    return capture.lastResponse;
   }
 
-  async url(): Promise<string> {
-    return this.evaluateExpression<string>("String(globalThis.location?.href || '')");
+  url(): string {
+    return this.currentUrl;
   }
 
-  async goBack(options: PageGotoOptions = {}): Promise<ReturnType<typeof createNavigationResult> | null> {
+  async goBack(options: PageGotoOptions = {}): Promise<PageResponse | null> {
     return this.navigateHistory(-1, options);
   }
 
-  async goForward(options: PageGotoOptions = {}): Promise<ReturnType<typeof createNavigationResult> | null> {
+  async goForward(options: PageGotoOptions = {}): Promise<PageResponse | null> {
     return this.navigateHistory(1, options);
   }
 
   async reload(options: PageGotoOptions = {}): Promise<PageResponse | null> {
     const waitUntil = options.waitUntil ?? "load";
     const capture = this.beginNavigationResponseCapture();
+    const failureCapture = this.beginNavigationFailureCapture();
     this.resetNavigationState();
 
-    await withTimeout(
-      (this.options.client.Page as typeof this.options.client.Page & {
-        reload(): Promise<void>;
-      }).reload(),
-      options.timeout,
-      "Timed out while reloading page."
-    );
+    try {
+      await this.raceNavigationFailure(
+        withTimeout(
+          (this.options.client.Page as typeof this.options.client.Page & {
+            reload(): Promise<void>;
+          }).reload(),
+          options.timeout,
+          "Timed out while reloading page."
+        ),
+        failureCapture
+      );
 
-    if (waitUntil !== "commit") {
-      await this.waitForLoadState(waitUntil, options.timeout);
-    }
+      if (waitUntil !== "commit") {
+        await this.raceNavigationFailure(
+          this.waitForLoadState(waitUntil, options.timeout),
+          failureCapture
+        );
+      }
+      await this.syncCurrentUrlFromDocument();
 
-    if (this.navigationResponseCapture === capture) {
-      this.navigationResponseCapture = undefined;
+      return capture.lastResponse;
+    } finally {
+      this.endNavigationResponseCapture(capture);
+      this.endNavigationFailureCapture(failureCapture);
     }
-    return capture.lastResponse;
+  }
+
+  async waitForNavigationResponse(options: {
+    initialUrl?: string;
+    signal?: AbortSignal;
+    timeout?: number;
+    url?: string | RegExp | ((url: URL) => boolean);
+  } = {}): Promise<PageResponse | null> {
+    const capture = this.beginNavigationResponseCapture({
+      predicate: (response) => {
+        if (options.initialUrl && response.url === options.initialUrl) {
+          return false;
+        }
+        if (!options.url) {
+          return true;
+        }
+        return matchesNavigationResponseUrl(response.url, options.url);
+      }
+    });
+
+    try {
+      if (options.signal?.aborted) {
+        return null;
+      }
+      return await withTimeout(
+        new Promise<PageResponse | null>((resolve) => {
+          const onAbort = () => {
+            options.signal?.removeEventListener("abort", onAbort);
+            resolve(null);
+          };
+          options.signal?.addEventListener("abort", onAbort, { once: true });
+          capture.resolve = resolve;
+        }),
+        options.timeout,
+        `Timed out while waiting for navigation response.`
+      );
+    } finally {
+      this.endNavigationResponseCapture(capture);
+    }
   }
 
   async title(): Promise<string> {
@@ -787,16 +1945,362 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.waitForLoadState("load");
   }
 
-  async evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult> {
-    if (arg === undefined && !looksLikeFunctionExpression(expression)) {
+  async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {
+    const result = await this.options.client.Page.addScriptToEvaluateOnNewDocument({
+      source
+    });
+    const identifier = (result as { identifier?: string }).identifier;
+    return {
+      dispose: async () => {
+        if (!identifier) {
+          return;
+        }
+        await this.options.client.Page.removeScriptToEvaluateOnNewDocument?.({
+          identifier
+        }).catch(() => {});
+      }
+    };
+  }
+
+  async evaluate<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction = looksLikeFunctionExpression(expression)
+  ): Promise<TResult> {
+    if (arg === undefined && !isFunction) {
       return this.evaluateExpression<TResult>(expression);
     }
 
-    return this.evaluateFunction<TResult>(expression, arg);
+    return this.evaluateWithArguments<TResult>(
+      expression,
+      true,
+      arg === undefined ? [] : [arg],
+      isFunction
+    );
+  }
+
+  async evaluateHandle<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction = looksLikeFunctionExpression(expression)
+  ): Promise<ProtocolJSHandleAdapter<TResult>> {
+    return this.evaluateWithArguments<TResult>(
+      expression,
+      false,
+      arg === undefined ? [] : [arg],
+      isFunction
+    );
+  }
+
+  async evaluateInFrame<TResult>(
+    frameId: string,
+    expression: string,
+    arg?: unknown,
+    isFunction = looksLikeFunctionExpression(expression)
+  ): Promise<TResult> {
+    return this.evaluateWithArgumentsInFrame<TResult>(
+      frameId,
+      expression,
+      true,
+      arg === undefined ? [] : [arg],
+      isFunction
+    );
+  }
+
+  async evaluateHandleInFrame<TResult>(
+    frameId: string,
+    expression: string,
+    arg?: unknown,
+    isFunction = looksLikeFunctionExpression(expression)
+  ): Promise<ProtocolJSHandleAdapter<TResult>> {
+    return this.evaluateWithArgumentsInFrame<TResult>(
+      frameId,
+      expression,
+      false,
+      arg === undefined ? [] : [arg],
+      isFunction
+    );
+  }
+
+  async frameSnapshots(): Promise<Array<{
+    id: string;
+    name: string;
+    nativeFrameId?: string;
+    ownerElementChain: LocatorSelector[];
+    parentId: string | null;
+    referenceChain: LocatorSelector[];
+    url: string;
+  }>> {
+    const domSnapshots = await this.collectDomFrameSnapshots().catch(() => []);
+    const domById = new Map(domSnapshots.map((snapshot) => [snapshot.id, snapshot]));
+    const frameTree = await (this.options.client as CdpPageFrameClient).send("Page.getFrameTree");
+    this.syncNativeFrameTree(frameTree.frameTree);
+
+    const snapshots: Array<{
+      id: string;
+      name: string;
+      nativeFrameId?: string;
+      ownerElementChain: LocatorSelector[];
+      parentId: string | null;
+      referenceChain: LocatorSelector[];
+      url: string;
+    }> = [];
+    const childrenByParent = new Map<string | null, CdpNativeFrameState[]>();
+    for (const frame of this.nativeFrames.values()) {
+      const parentFrames = childrenByParent.get(frame.parentId) ?? [];
+      parentFrames.push(frame);
+      childrenByParent.set(frame.parentId, parentFrames);
+    }
+
+    const visit = (frame: CdpNativeFrameState, parentId: string | null, syntheticId: string) => {
+      const domSnapshot = domById.get(syntheticId);
+      snapshots.push({
+        id: syntheticId,
+        name: frame.name || domSnapshot?.name || "",
+        nativeFrameId: frame.id,
+        ownerElementChain: domSnapshot?.ownerElementChain ?? [],
+        parentId,
+        referenceChain: domSnapshot?.referenceChain ?? [],
+        url: frame.url || domSnapshot?.url || "about:blank"
+      });
+      childrenByParent.get(frame.id)?.forEach((child, index) => {
+        visit(child, syntheticId, `${syntheticId}.${index + 1}`);
+      });
+    };
+    const rootFrame = this.mainFrameId ? this.nativeFrames.get(this.mainFrameId) : undefined;
+    if (rootFrame) {
+      visit(rootFrame, null, "main");
+    } else {
+      visit({
+        id: frameTree.frameTree.frame.id,
+        name: frameTree.frameTree.frame.name ?? "",
+        parentId: null,
+        url: frameTree.frameTree.frame.url ?? "about:blank"
+      }, null, "main");
+    }
+    const seenSnapshotIds = new Set(snapshots.map((snapshot) => snapshot.id));
+    for (const domSnapshot of domSnapshots) {
+      if (seenSnapshotIds.has(domSnapshot.id)) {
+        continue;
+      }
+      snapshots.push(domSnapshot);
+    }
+    return snapshots;
+  }
+
+  private syncNativeFrameTree(root: CdpFrameTreePayload): void {
+    const visit = (node: CdpFrameTreePayload) => {
+      this.upsertNativeFrame(node.frame);
+      node.childFrames?.forEach(visit);
+    };
+    visit(root);
+  }
+
+  private upsertNativeFrame(frame: CdpPageFramePayload): void {
+    this.nativeFrames.set(frame.id, {
+      id: frame.id,
+      name: frame.name ?? this.nativeFrames.get(frame.id)?.name ?? "",
+      parentId: frame.parentId ?? null,
+      url: frame.url ?? this.nativeFrames.get(frame.id)?.url ?? "about:blank"
+    });
+  }
+
+  private removeNativeFrame(frameId: string): void {
+    this.nativeFrames.delete(frameId);
+    for (const frame of Array.from(this.nativeFrames.values())) {
+      if (frame.parentId === frameId) {
+        this.removeNativeFrame(frame.id);
+      }
+    }
+  }
+
+  private async collectDomFrameSnapshots(): Promise<Array<{
+    id: string;
+    name: string;
+    ownerElementChain: LocatorSelector[];
+    parentId: string | null;
+    referenceChain: LocatorSelector[];
+    url: string;
+  }>> {
+    return this.evaluate<Array<{
+      id: string;
+      name: string;
+      ownerElementChain: LocatorSelector[];
+      parentId: string | null;
+      referenceChain: LocatorSelector[];
+      url: string;
+    }>>(`function() {
+      const snapshots = [
+        {
+          id: "main",
+          name: "",
+          ownerElementChain: [],
+          parentId: null,
+          referenceChain: [],
+          url: String(globalThis.location?.href || "")
+        }
+      ];
+
+      const escapeCss = (value) => {
+        if ("CSS" in globalThis && typeof CSS.escape === "function") {
+          return CSS.escape(value);
+        }
+        return value.replace(/["\\]/g, "\\$&");
+      };
+
+      const cssPath = (element) => {
+        if (element.id) {
+          return "#" + escapeCss(element.id);
+        }
+
+        const segments = [];
+        let current = element;
+        while (current && current.parentElement) {
+          const tag = current.tagName.toLowerCase();
+          const siblings = Array.from(current.parentElement.children).filter(
+            (child) => child.tagName === current.tagName
+          );
+          const index = siblings.indexOf(current) + 1;
+          segments.unshift(tag + ":nth-of-type(" + index + ")");
+          current = current.parentElement;
+        }
+
+        return segments.join(" > ");
+      };
+
+      const visit = (
+        documentRoot,
+        parentId,
+        chain
+      ) => {
+        const frames = Array.from(documentRoot.querySelectorAll("iframe,frame"));
+        frames.forEach((frameElement, index) => {
+          const iframe = frameElement;
+          let contentDocument = null;
+          try {
+            contentDocument = iframe.contentDocument;
+          } catch {
+            contentDocument = null;
+          }
+          const selector = cssPath(iframe);
+          const frameId = parentId + "." + (index + 1);
+          const ownerElementChain = [
+            ...chain,
+            { strategy: "css", value: selector }
+          ];
+          const referenceChain = [
+            ...ownerElementChain,
+            { strategy: "control", value: "enter-frame" }
+          ];
+          snapshots.push({
+            id: frameId,
+            name: iframe.getAttribute("name") ?? iframe.id ?? "",
+            ownerElementChain,
+            parentId,
+            referenceChain,
+            url: (() => {
+              try {
+                return String(iframe.contentWindow?.location?.href || iframe.src || "about:blank");
+              } catch {
+                return String(iframe.src || "about:blank");
+              }
+            })()
+          });
+          if (contentDocument) {
+            visit(contentDocument, frameId, referenceChain);
+          }
+        });
+      };
+
+      visit(document, "main", []);
+      return snapshots;
+    }`, undefined, true);
+  }
+
+  async addScriptTag(options?: AddScriptTagOptions): Promise<ProtocolElementHandleAdapter> {
+    if (!options?.url && !options?.content) {
+      throw new Error("Provide an object with a `url`, `path` or `content` property");
+    }
+
+    const handle = options.url
+      ? await this.evaluateHandle<HTMLElement>(
+        `async (payload) => {
+          const script = document.createElement('script');
+          script.src = payload.url;
+          if (payload.type)
+            script.type = payload.type;
+          const promise = new Promise((resolve, reject) => {
+            script.onload = resolve;
+            script.onerror = event => reject(typeof event === 'string' ? new Error(event) : new Error('Failed to load script at ' + script.src));
+          });
+          document.head.appendChild(script);
+          await promise;
+          return script;
+        }`,
+        { url: options.url, type: options.type ?? "" },
+        true
+      )
+      : await this.evaluateHandle<HTMLElement>(
+        `(payload) => {
+        const script = document.createElement('script');
+        script.type = payload.type || 'text/javascript';
+        script.text = payload.content;
+        let error = null;
+        script.onerror = event => error = event;
+        document.head.appendChild(script);
+        if (error)
+          throw error;
+        return script;
+      }`,
+        { content: options.content!, type: options.type ?? "" },
+        true
+      );
+    return new CdpElementHandleAdapter(this, await this.storeRemoteElementHandle(handle));
+  }
+
+  async addStyleTag(options?: AddStyleTagOptions): Promise<ProtocolElementHandleAdapter> {
+    if (!options?.url && !options?.content) {
+      throw new Error("Provide an object with a `url`, `path` or `content` property");
+    }
+
+    const handle = options.url
+      ? await this.evaluateHandle<HTMLElement>(
+        `async (url) => {
+          const link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = url;
+          const promise = new Promise((resolve, reject) => {
+            link.onload = resolve;
+            link.onerror = reject;
+          });
+          document.head.appendChild(link);
+          await promise;
+          return link;
+        }`,
+        options.url,
+        true
+      )
+      : await this.evaluateHandle<HTMLElement>(
+        `async (content) => {
+          const style = document.createElement('style');
+          style.type = 'text/css';
+          style.appendChild(document.createTextNode(content));
+          const promise = new Promise((resolve, reject) => {
+            style.onload = resolve;
+            style.onerror = reject;
+          });
+          document.head.appendChild(style);
+          await promise;
+          return style;
+        }`,
+        options.content!,
+        true
+      );
+    return new CdpElementHandleAdapter(this, await this.storeRemoteElementHandle(handle));
   }
 
   async waitForLoadState(
-    state: PageGotoOptions["waitUntil"] = "load",
+    state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
     timeout = DEFAULT_TIMEOUT_MS
   ): Promise<void> {
     const targetState = state ?? "load";
@@ -807,7 +2311,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.stateWaiters.delete(waiter);
-        reject(new TimeoutError(`Timed out waiting for load state "${targetState}".`));
+        reject(new TimeoutError(`page.waitForLoadState: Timeout ${timeout}ms exceeded.`));
       }, timeout);
 
       const waiter: StateWaiter = {
@@ -863,6 +2367,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     };
   }
 
+  async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
+    this.pageExtraHTTPHeaders = { ...headers };
+    await this.updateExtraHTTPHeaders();
+  }
+
+  async updateContextExtraHTTPHeaders(): Promise<void> {
+    await this.updateExtraHTTPHeaders();
+  }
+
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
     const format = options.type ?? "png";
     const response = await this.options.client.Page.captureScreenshot({
@@ -877,19 +2390,221 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     return Buffer.from(response.data, "base64");
   }
 
-  on<K extends PageEventName>(event: K, listener: PageEventListener<K>): () => void {
+  async pdf(options: PdfOptions = {}): Promise<Buffer> {
+    const {
+      scale = 1,
+      displayHeaderFooter = false,
+      headerTemplate = "",
+      footerTemplate = "",
+      printBackground = false,
+      landscape = false,
+      pageRanges = "",
+      preferCSSPageSize = false,
+      margin = {},
+      tagged = false,
+      outline = false
+    } = options;
+
+    let paperWidth = 8.5;
+    let paperHeight = 11;
+    if (options.format) {
+      const format = PAGE_PAPER_FORMATS[options.format.toLowerCase()];
+      if (!format) {
+        throw new Error(`Unknown paper format: ${options.format}`);
+      }
+      paperWidth = format.width;
+      paperHeight = format.height;
+    } else {
+      paperWidth = convertPrintParameterToInches(options.width) ?? paperWidth;
+      paperHeight = convertPrintParameterToInches(options.height) ?? paperHeight;
+    }
+
+    const result = await (
+      this.options.client as typeof this.options.client & {
+        send(
+          method: "Page.printToPDF",
+          params: {
+            displayHeaderFooter: boolean;
+            footerTemplate: string;
+            generateDocumentOutline: boolean;
+            generateTaggedPDF: boolean;
+            headerTemplate: string;
+            landscape: boolean;
+            marginBottom: number;
+            marginLeft: number;
+            marginRight: number;
+            marginTop: number;
+            pageRanges: string;
+            paperHeight: number;
+            paperWidth: number;
+            preferCSSPageSize: boolean;
+            printBackground: boolean;
+            scale: number;
+          }
+        ): Promise<{ data: string }>;
+      }
+    ).send("Page.printToPDF", {
+      landscape,
+      displayHeaderFooter,
+      headerTemplate,
+      footerTemplate,
+      printBackground,
+      scale,
+      paperWidth,
+      paperHeight,
+      marginTop: convertPrintParameterToInches(margin.top) ?? 0,
+      marginBottom: convertPrintParameterToInches(margin.bottom) ?? 0,
+      marginLeft: convertPrintParameterToInches(margin.left) ?? 0,
+      marginRight: convertPrintParameterToInches(margin.right) ?? 0,
+      pageRanges,
+      preferCSSPageSize,
+      generateTaggedPDF: tagged,
+      generateDocumentOutline: outline
+    });
+
+    return Buffer.from(result.data, "base64");
+  }
+
+  viewportSize(): ViewportSize | null {
+    return this.currentViewportSize;
+  }
+
+  async setViewportSize(viewportSize: ViewportSize): Promise<void> {
+    await this.options.client.Emulation.setDeviceMetricsOverride({
+      width: viewportSize.width,
+      height: viewportSize.height,
+      mobile: false,
+      deviceScaleFactor: 1
+    });
+    this.currentViewportSize = viewportSize;
+  }
+
+  async dispatchEvent(
+    selector: LocatorSelector[],
+    type: string,
+    eventInit?: unknown
+  ): Promise<void> {
+    await this.runSelectorOperation<void>({
+      operation: "dispatchEvent",
+      reference: {
+        chain: selector,
+        pick: { kind: "first" }
+      },
+      name: type,
+      arg: eventInit
+    });
+  }
+
+  async requestGC(): Promise<void> {
+    await this.evaluateFunction<void>(
+      `() => {
+        if (typeof globalThis.gc === "function") {
+          globalThis.gc();
+        }
+      }`
+    );
+  }
+
+  async textContent(selector: LocatorSelector[]): Promise<string | null> {
+    return this.textContentLocator({ chain: selector });
+  }
+
+  async innerText(selector: LocatorSelector[]): Promise<string> {
+    return this.innerTextLocator({ chain: selector });
+  }
+
+  async innerHTML(selector: LocatorSelector[]): Promise<string> {
+    return this.innerHTMLLocator({ chain: selector });
+  }
+
+  async getAttribute(selector: LocatorSelector[], name: string): Promise<string | null> {
+    return this.getAttributeLocator({ chain: selector }, name);
+  }
+
+  async inputValue(selector: LocatorSelector[]): Promise<string> {
+    return this.inputValueLocator({ chain: selector });
+  }
+
+  async isChecked(selector: LocatorSelector[]): Promise<boolean> {
+    return this.isCheckedLocator({ chain: selector });
+  }
+
+  async isDisabled(selector: LocatorSelector[]): Promise<boolean> {
+    return this.isDisabledLocator({ chain: selector });
+  }
+
+  async isEditable(selector: LocatorSelector[]): Promise<boolean> {
+    return this.isEditableLocator({ chain: selector });
+  }
+
+  async isEnabled(selector: LocatorSelector[]): Promise<boolean> {
+    return this.isEnabledLocator({ chain: selector });
+  }
+
+  async focus(selector: LocatorSelector[]): Promise<void> {
+    await this.focusLocator({ chain: selector });
+  }
+
+  async setChecked(
+    selector: LocatorSelector[],
+    checked: boolean,
+    options?: ClickOptions
+  ): Promise<void> {
+    if (checked) {
+      await this.checkLocator({ chain: selector }, options);
+      return;
+    }
+    await this.uncheckLocator({ chain: selector }, options);
+  }
+
+  async selectOption(
+    selector: LocatorSelector[],
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    return this.selectOptionLocator({ chain: selector }, values);
+  }
+
+  async tap(selector: LocatorSelector[], options?: TapOptions): Promise<void> {
+    await this.clickLocator({ chain: selector }, options);
+  }
+
+  on<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): () => void {
     const listeners =
-      this.eventListeners.get(event) ?? new Set<PageEventListener<PageEventName>>();
-    listeners.add(listener as PageEventListener<PageEventName>);
+      this.eventListeners.get(event) ?? new Set<RawPageEventListener<RawPageEventName>>();
+    listeners.add(listener as RawPageEventListener<RawPageEventName>);
     this.eventListeners.set(event, listeners);
 
     return () => {
       const registeredListeners = this.eventListeners.get(event);
-      registeredListeners?.delete(listener as PageEventListener<PageEventName>);
+      registeredListeners?.delete(listener as RawPageEventListener<RawPageEventName>);
       if (registeredListeners?.size === 0) {
         this.eventListeners.delete(event);
       }
     };
+  }
+
+  async setRequestInterceptor(
+    handler: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null
+  ): Promise<void> {
+    this.requestInterceptor = handler;
+    const shouldEnable = Boolean(handler);
+    if (shouldEnable === this.requestInterceptionEnabled) {
+      return;
+    }
+    this.requestInterceptionEnabled = shouldEnable;
+    await this.options.client.Network.setCacheDisabled({ cacheDisabled: shouldEnable }).catch(() => {});
+    if (shouldEnable) {
+      await this.options.client.Fetch.enable({
+        patterns: [
+          {
+            urlPattern: "*",
+            requestStage: "Request"
+          }
+        ]
+      });
+      return;
+    }
+    await this.options.client.Fetch.disable().catch(() => {});
   }
 
   async query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null> {
@@ -899,27 +2614,36 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     if (count === 0) {
       return null;
     }
-    return new CdpElementHandleAdapter(this, {
+    const reference = await this.createHandleReference({
       chain: selector,
       pick: { kind: "first" }
     });
+    return new CdpElementHandleAdapter(this, reference);
+  }
+
+  createHandle(reference: ProtocolElementHandleReference): ProtocolElementHandleAdapter {
+    return new CdpElementHandleAdapter(this, reference);
   }
 
   async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
     const count = await this.countSelector({
       chain: selector
     });
-    return Array.from({ length: count }, (_value, index) => {
-      return new CdpElementHandleAdapter(this, {
+    const handles: ProtocolElementHandleAdapter[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const reference = await this.createHandleReference({
         chain: selector,
         pick: { kind: "nth", index }
       });
-    });
+      handles.push(new CdpElementHandleAdapter(this, reference));
+    }
+    return handles;
   }
 
   async evalOnSelector<TResult>(
     selector: LocatorSelector[],
     expression: string,
+    isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult> {
     return this.evaluateOnReference<TResult>(
@@ -929,13 +2653,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       },
       expression,
       arg,
-      `page.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`
+      `page.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`,
+      isFunction
     );
   }
 
   async evalOnSelectorAll<TResult>(
     selector: LocatorSelector[],
     expression: string,
+    isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult> {
     return this.evaluateOnReferenceAll<TResult>(
@@ -943,7 +2669,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         chain: selector
       },
       expression,
-      arg
+      arg,
+      isFunction
     );
   }
 
@@ -955,50 +2682,631 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   getByText(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
     return new CdpLocatorAdapter(this, {
-      chain: [
-        {
-          strategy: "text",
-          value: text instanceof RegExp ? text.source : text,
-          ...(options?.exact !== undefined ? { exact: options.exact } : {}),
-          ...(text instanceof RegExp
-            ? {
-                isRegex: true,
-                regexFlags: text.flags
-              }
-            : {})
-        }
-      ]
+      chain: [createTextLocatorSelector(text, options)]
+    });
+  }
+
+  getByAltText(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return new CdpLocatorAdapter(this, {
+      chain: [createAltTextLocatorSelector(text, options)]
+    });
+  }
+
+  getByLabel(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return new CdpLocatorAdapter(this, {
+      chain: [createLabelLocatorSelector(text, options)]
+    });
+  }
+
+  getByPlaceholder(
+    text: string | RegExp,
+    options?: { exact?: boolean }
+  ): ProtocolLocatorAdapter {
+    return new CdpLocatorAdapter(this, {
+      chain: [createPlaceholderLocatorSelector(text, options)]
+    });
+  }
+
+  getByTestId(testId: string | RegExp): ProtocolLocatorAdapter {
+    return new CdpLocatorAdapter(this, {
+      chain: [createTestIdLocatorSelector(testId)]
     });
   }
 
   getByRole(role: string, options?: GetByRoleOptions): ProtocolLocatorAdapter {
     return new CdpLocatorAdapter(this, {
-      chain: [
-        {
-          strategy: "role",
-          value: role,
-          ...(options?.exact !== undefined ? { exact: options.exact } : {}),
-      ...(typeof options?.name === "string" ? { name: options.name } : {}),
-      ...(options?.name instanceof RegExp
-        ? {
-            name: options.name.source,
-            nameIsRegex: true,
-            nameRegexFlags: options.name.flags
-          }
-        : {})
-        }
-      ]
+      chain: [createRoleLocatorSelector(role, options)]
     });
   }
 
-  async close(): Promise<void> {
+  getByTitle(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return new CdpLocatorAdapter(this, {
+      chain: [createTitleLocatorSelector(text, options)]
+    });
+  }
+
+  async startCSSCoverage(
+    options: {
+      resetOnNavigation?: boolean;
+    } = {}
+  ): Promise<void> {
+    if (this.cssCoverageState.enabled) {
+      throw new Error("CSSCoverage is already enabled");
+    }
+
+    this.cssCoverageState.enabled = true;
+    this.cssCoverageState.resetOnNavigation = options.resetOnNavigation ?? true;
+    this.cssCoverageState.stylesheetUrls.clear();
+    this.cssCoverageState.stylesheetSources.clear();
+
+    const onStyleSheetAdded = async (event: {
+      header: {
+        sourceURL?: string;
+        styleSheetId: string;
+      };
+    }) => {
+      const header = event.header;
+      if (!header.sourceURL) {
+        return;
+      }
+      try {
+        const response = await (
+          this.options.client as typeof this.options.client & {
+            send(method: "CSS.getStyleSheetText", params: { styleSheetId: string }): Promise<{ text: string }>;
+          }
+        ).send("CSS.getStyleSheetText", { styleSheetId: header.styleSheetId });
+        this.cssCoverageState.stylesheetUrls.set(header.styleSheetId, header.sourceURL);
+        this.cssCoverageState.stylesheetSources.set(header.styleSheetId, response.text);
+      } catch {}
+    };
+    const onExecutionContextsCleared = () => {
+      if (!this.cssCoverageState.resetOnNavigation) {
+        return;
+      }
+      this.cssCoverageState.stylesheetUrls.clear();
+      this.cssCoverageState.stylesheetSources.clear();
+    };
+
+    this.attachCoverageListener(this.cssCoverageState, "CSS.styleSheetAdded", onStyleSheetAdded);
+    this.attachCoverageListener(
+      this.cssCoverageState,
+      "Runtime.executionContextsCleared",
+      onExecutionContextsCleared
+    );
+
+    try {
+      await Promise.all([
+        (this.options.client as typeof this.options.client & { send(method: "DOM.enable"): Promise<unknown> }).send("DOM.enable"),
+        (this.options.client as typeof this.options.client & { send(method: "CSS.enable"): Promise<unknown> }).send("CSS.enable"),
+        (this.options.client as typeof this.options.client & {
+          send(method: "CSS.startRuleUsageTracking"): Promise<unknown>;
+        }).send("CSS.startRuleUsageTracking")
+      ]);
+    } catch (error) {
+      this.detachCoverageListeners(this.cssCoverageState);
+      this.cssCoverageState.enabled = false;
+      throw error;
+    }
+  }
+
+  async startJSCoverage(
+    options: {
+      reportAnonymousScripts?: boolean;
+      resetOnNavigation?: boolean;
+    } = {}
+  ): Promise<void> {
+    if (this.jsCoverageState.enabled) {
+      throw new Error("JSCoverage is already enabled");
+    }
+
+    this.jsCoverageState.enabled = true;
+    this.jsCoverageState.resetOnNavigation = options.resetOnNavigation ?? true;
+    this.jsCoverageState.reportAnonymousScripts = options.reportAnonymousScripts ?? false;
+    this.jsCoverageState.scriptIds.clear();
+    this.jsCoverageState.scriptSources.clear();
+
+    const onScriptParsed = async (event: {
+      scriptId: string;
+      url: string;
+    }) => {
+      this.jsCoverageState.scriptIds.add(event.scriptId);
+      if (!event.url && !this.jsCoverageState.reportAnonymousScripts) {
+        return;
+      }
+      try {
+        const response = await (
+          this.options.client as typeof this.options.client & {
+            send(method: "Debugger.getScriptSource", params: { scriptId: string }): Promise<{ scriptSource: string }>;
+          }
+        ).send("Debugger.getScriptSource", { scriptId: event.scriptId });
+        this.jsCoverageState.scriptSources.set(event.scriptId, response.scriptSource);
+      } catch {}
+    };
+    const onExecutionContextsCleared = () => {
+      if (!this.jsCoverageState.resetOnNavigation) {
+        return;
+      }
+      this.jsCoverageState.scriptIds.clear();
+      this.jsCoverageState.scriptSources.clear();
+    };
+    const onDebuggerPaused = () => {
+      void (this.options.client as typeof this.options.client & {
+        send(method: "Debugger.resume"): Promise<unknown>;
+      }).send("Debugger.resume").catch(() => {});
+    };
+
+    this.attachCoverageListener(this.jsCoverageState, "Debugger.scriptParsed", onScriptParsed);
+    this.attachCoverageListener(
+      this.jsCoverageState,
+      "Runtime.executionContextsCleared",
+      onExecutionContextsCleared
+    );
+    this.attachCoverageListener(this.jsCoverageState, "Debugger.paused", onDebuggerPaused);
+
+    try {
+      await Promise.all([
+        (this.options.client as typeof this.options.client & { send(method: "Profiler.enable"): Promise<unknown> }).send("Profiler.enable"),
+        (this.options.client as typeof this.options.client & {
+          send(
+            method: "Profiler.startPreciseCoverage",
+            params: { callCount: boolean; detailed: boolean }
+          ): Promise<unknown>;
+        }).send("Profiler.startPreciseCoverage", { callCount: true, detailed: true }),
+        (this.options.client as typeof this.options.client & { send(method: "Debugger.enable"): Promise<unknown> }).send("Debugger.enable"),
+        (this.options.client as typeof this.options.client & {
+          send(method: "Debugger.setSkipAllPauses", params: { skip: boolean }): Promise<unknown>;
+        }).send("Debugger.setSkipAllPauses", { skip: true })
+      ]);
+    } catch (error) {
+      this.detachCoverageListeners(this.jsCoverageState);
+      this.jsCoverageState.enabled = false;
+      throw error;
+    }
+  }
+
+  async stopCSSCoverage(): Promise<
+    Array<{
+      url: string;
+      text?: string;
+      ranges: Array<{
+        start: number;
+        end: number;
+      }>;
+    }>
+  > {
+    if (!this.cssCoverageState.enabled) {
+      return [];
+    }
+
+    const ruleTrackingResponse = await (
+      this.options.client as typeof this.options.client & {
+        send(method: "CSS.stopRuleUsageTracking"): Promise<{
+          ruleUsage: Array<{
+            endOffset: number;
+            startOffset: number;
+            styleSheetId: string;
+            used: boolean;
+          }>;
+        }>;
+      }
+    ).send("CSS.stopRuleUsageTracking");
+    await Promise.all([
+      (this.options.client as typeof this.options.client & { send(method: "CSS.disable"): Promise<unknown> }).send("CSS.disable"),
+      (this.options.client as typeof this.options.client & { send(method: "DOM.disable"): Promise<unknown> }).send("DOM.disable")
+    ]);
+    this.detachCoverageListeners(this.cssCoverageState);
+    this.cssCoverageState.enabled = false;
+
+    const styleSheetIdToCoverage = new Map<string, CdpCoverageRange[]>();
+    for (const entry of ruleTrackingResponse.ruleUsage) {
+      const ranges = styleSheetIdToCoverage.get(entry.styleSheetId) ?? [];
+      ranges.push({
+        startOffset: entry.startOffset,
+        endOffset: entry.endOffset,
+        count: entry.used ? 1 : 0
+      });
+      styleSheetIdToCoverage.set(entry.styleSheetId, ranges);
+    }
+
+    const coverage = [];
+    for (const styleSheetId of this.cssCoverageState.stylesheetUrls.keys()) {
+      const url = this.cssCoverageState.stylesheetUrls.get(styleSheetId)!;
+      const text = this.cssCoverageState.stylesheetSources.get(styleSheetId)!;
+      coverage.push({
+        url,
+        text,
+        ranges: convertToDisjointCoverageRanges(styleSheetIdToCoverage.get(styleSheetId) ?? [])
+      });
+    }
+    return coverage;
+  }
+
+  async stopJSCoverage(): Promise<
+    Array<{
+      url: string;
+      scriptId: string;
+      source?: string;
+      functions: Array<{
+        functionName: string;
+        isBlockCoverage: boolean;
+        ranges: Array<{
+          count: number;
+          startOffset: number;
+          endOffset: number;
+        }>;
+      }>;
+    }>
+  > {
+    if (!this.jsCoverageState.enabled) {
+      return [];
+    }
+
+    const profileResponse = await (
+      this.options.client as typeof this.options.client & {
+        send(method: "Profiler.takePreciseCoverage"): Promise<{
+          result: Array<{
+            url: string;
+            scriptId: string;
+            functions: Array<{
+              functionName: string;
+              isBlockCoverage: boolean;
+              ranges: Array<{
+                count: number;
+                endOffset: number;
+                startOffset: number;
+              }>;
+            }>;
+          }>;
+        }>;
+      }
+    ).send("Profiler.takePreciseCoverage");
+    await Promise.all([
+      (this.options.client as typeof this.options.client & {
+        send(method: "Profiler.stopPreciseCoverage"): Promise<unknown>;
+      }).send("Profiler.stopPreciseCoverage"),
+      (this.options.client as typeof this.options.client & { send(method: "Profiler.disable"): Promise<unknown> }).send("Profiler.disable"),
+      (this.options.client as typeof this.options.client & { send(method: "Debugger.disable"): Promise<unknown> }).send("Debugger.disable")
+    ]);
+    this.detachCoverageListeners(this.jsCoverageState);
+    this.jsCoverageState.enabled = false;
+
+    const coverage = [];
+    for (const entry of profileResponse.result) {
+      if (!this.jsCoverageState.scriptIds.has(entry.scriptId)) {
+        continue;
+      }
+      if (!entry.url && !this.jsCoverageState.reportAnonymousScripts) {
+        continue;
+      }
+      const source = this.jsCoverageState.scriptSources.get(entry.scriptId);
+      coverage.push(source ? { ...entry, source } : entry);
+    }
+    return coverage;
+  }
+
+  async screencastStart(options?: {
+    size?: {
+      width: number;
+      height: number;
+    };
+    quality?: number;
+    sendFrames?: boolean;
+    record?: boolean;
+    annotate?: {
+      duration?: number;
+      position?: "top-left" | "top" | "top-right" | "bottom-left" | "bottom" | "bottom-right";
+      fontSize?: number;
+    };
+  }): Promise<void> {
+    if (this.screencastSession) {
+      await this.screencastStop();
+    }
+    const size = options?.size ?? this.deriveDefaultScreencastSize();
+    const quality = options?.quality ?? 90;
+    this.screencastSession = {
+      quality,
+      record: Boolean(options?.record),
+      sendFrames: Boolean(options?.sendFrames),
+      size
+    };
+    await this.options.client.Page.startScreencast({
+      format: "jpeg",
+      quality,
+      maxWidth: size.width,
+      maxHeight: size.height
+    });
+  }
+
+  async screencastStop(): Promise<void> {
+    if (!this.screencastSession) {
+      return;
+    }
+    this.screencastSession = null;
+    await this.options.client.Page.stopScreencast().catch(() => {});
+  }
+
+  async screencastShowActions(options?: ScreencastActionOptions): Promise<void> {
+    this.screencastActionOptions = { ...(options ?? {}) };
+    await this.renderScreencastActions();
+  }
+
+  async screencastHideActions(): Promise<void> {
+    this.resetScreencastActions();
+    await this.renderScreencastActions();
+  }
+
+  async screencastShowOverlay(options: {
+    html: string;
+    duration?: number;
+  }): Promise<{ id: string }> {
+    const id = `overlay-${++this.screencastOverlayId}`;
+    this.setScreencastOverlay(id, { html: options.html }, options.duration);
+    await this.renderScreencastOverlays();
+    return { id };
+  }
+
+  async screencastRemoveOverlay(id: string): Promise<void> {
+    this.clearScreencastOverlay(id);
+    await this.renderScreencastOverlays();
+  }
+
+  async screencastChapter(options: {
+    title: string;
+    description?: string;
+    duration?: number;
+  }): Promise<void> {
+    const id = `chapter-${++this.screencastOverlayId}`;
+    this.setScreencastOverlay(
+      id,
+      {
+        kind: "chapter",
+        html: createChapterOverlayHtml(options.title, options.description)
+      },
+      options.duration ?? 2000
+    );
+    await this.renderScreencastOverlays();
+  }
+
+  async screencastSetOverlayVisible(visible: boolean): Promise<void> {
+    this.screencastOverlaysVisible = visible;
+    await this.renderScreencastOverlays();
+  }
+
+  async keyboardDown(key: string): Promise<void> {
+    await this.bringToFront();
+    const normalizedKey = normalizeShortcutKey(key);
+    const keyDefinition = resolveKeyDefinition(normalizedKey);
+    const nextModifiers = new Set(this.pressedKeyboardModifiers);
+    if (isKeyboardModifier(normalizedKey)) {
+      nextModifiers.add(normalizedKey);
+    }
+    await this.options.client.Input.dispatchKeyEvent({
+      type: "keyDown",
+      key: keyDefinition.key,
+      code: keyDefinition.code,
+      ...(keyDefinition.text !== undefined
+        ? {
+            text: keyDefinition.text,
+            unmodifiedText: keyDefinition.text
+          }
+        : {}),
+      windowsVirtualKeyCode: keyDefinition.keyCode,
+      nativeVirtualKeyCode: keyDefinition.keyCode,
+      modifiers: keyboardModifierMask(nextModifiers)
+    });
+    this.pressedKeyboardModifiers.clear();
+    for (const modifier of nextModifiers) {
+      this.pressedKeyboardModifiers.add(modifier);
+    }
+  }
+
+  async keyboardInsertText(text: string): Promise<void> {
+    await this.bringToFront();
+    await this.options.client.Input.insertText({
+      text
+    });
+  }
+
+  async keyboardPress(
+    key: string,
+    options?: {
+      delay?: number;
+    }
+  ): Promise<void> {
+    const parsed = parseKeyboardShortcut(key);
+    const temporaryModifiers: string[] = [];
+
+    for (const modifier of parsed.modifiers) {
+      if (!this.pressedKeyboardModifiers.has(modifier)) {
+        await this.keyboardDown(modifier);
+        temporaryModifiers.push(modifier);
+      }
+    }
+
+    await this.keyboardDown(parsed.key);
+    if (options?.delay) {
+      await delay(options.delay);
+    }
+    await this.keyboardUp(parsed.key);
+
+    for (const modifier of temporaryModifiers.reverse()) {
+      await this.keyboardUp(modifier);
+    }
+  }
+
+  async keyboardType(
+    text: string,
+    options?: {
+      delay?: number;
+    }
+  ): Promise<void> {
+    await this.bringToFront();
+    for (const character of text) {
+      await this.options.client.Input.dispatchKeyEvent({
+        type: "char",
+        text: character
+      });
+      await delay(options?.delay ?? 0);
+    }
+  }
+
+  async keyboardUp(key: string): Promise<void> {
+    await this.bringToFront();
+    const normalizedKey = normalizeShortcutKey(key);
+    const keyDefinition = resolveKeyDefinition(normalizedKey);
+    await this.options.client.Input.dispatchKeyEvent({
+      type: "keyUp",
+      key: keyDefinition.key,
+      code: keyDefinition.code,
+      windowsVirtualKeyCode: keyDefinition.keyCode,
+      nativeVirtualKeyCode: keyDefinition.keyCode,
+      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+    });
+    if (isKeyboardModifier(normalizedKey)) {
+      this.pressedKeyboardModifiers.delete(normalizedKey);
+    }
+  }
+
+  async mouseClick(
+    x: number,
+    y: number,
+    options?: {
+      button?: "left" | "right" | "middle";
+      clickCount?: number;
+      delay?: number;
+    }
+  ): Promise<void> {
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      const point = { x, y };
+      const button = options?.button ?? "left";
+      const clickCount = options?.clickCount ?? 1;
+
+      await this.moveMouseInternal(point);
+      for (let index = 0; index < clickCount; index += 1) {
+        await this.dispatchMouseEvent("mousePressed", point, button, index + 1);
+        await delay(options?.delay ?? 0);
+        await this.dispatchMouseEvent("mouseReleased", point, button, index + 1);
+      }
+    });
+  }
+
+  async mouseDblclick(
+    x: number,
+    y: number,
+    options?: {
+      button?: "left" | "right" | "middle";
+      delay?: number;
+    }
+  ): Promise<void> {
+    await this.mouseClick(x, y, { ...options, clickCount: 2 });
+  }
+
+  async mouseDown(
+    options?: {
+      button?: "left" | "right" | "middle";
+      clickCount?: number;
+    }
+  ): Promise<void> {
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      await this.dispatchMouseEvent(
+        "mousePressed",
+        this.currentMousePosition,
+        options?.button ?? "left",
+        options?.clickCount ?? 1
+      );
+    });
+  }
+
+  async mouseMove(
+    x: number,
+    y: number,
+    options?: {
+      steps?: number;
+    }
+  ): Promise<void> {
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      const steps = Math.max(options?.steps ?? 1, 1);
+      const start = this.currentMousePosition;
+      for (let index = 1; index <= steps; index += 1) {
+        await this.moveMouseInternal({
+          x: start.x + ((x - start.x) * index) / steps,
+          y: start.y + ((y - start.y) * index) / steps
+        });
+      }
+    });
+  }
+
+  async mouseUp(
+    options?: {
+      button?: "left" | "right" | "middle";
+      clickCount?: number;
+    }
+  ): Promise<void> {
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      await this.dispatchMouseEvent(
+        "mouseReleased",
+        this.currentMousePosition,
+        options?.button ?? "left",
+        options?.clickCount ?? 1
+      );
+    });
+  }
+
+  async mouseWheel(deltaX: number, deltaY: number): Promise<void> {
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      await this.options.client.Input.dispatchMouseEvent({
+        type: "mouseWheel",
+        x: this.currentMousePosition.x,
+        y: this.currentMousePosition.y,
+        button: "none",
+        deltaX,
+        deltaY,
+        modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+      });
+    });
+  }
+
+  async touchscreenTap(x: number, y: number): Promise<void> {
+    await this.mouseClick(x, y);
+  }
+
+  async close(options: PageCloseOptions = {}): Promise<void> {
+    if (options.runBeforeUnload) {
+      await (this.options.client.Page as typeof this.options.client.Page & {
+        close(): Promise<void>;
+      }).close();
+      return;
+    }
+
     if (this.closed) {
       return;
     }
 
+    this.closeReason = options.reason;
     this.closed = true;
+    if (this.jsCoverageState.enabled) {
+      void this.stopJSCoverage().catch(() => {});
+    }
+    if (this.cssCoverageState.enabled) {
+      void this.stopCSSCoverage().catch(() => {});
+    }
+    if (this.screencastSession) {
+      void this.screencastStop().catch(() => {});
+    }
+    this.resetScreencastActions();
+    for (const overlay of this.screencastOverlays.values()) {
+      if (overlay.removeTimer) {
+        clearTimeout(overlay.removeTimer);
+      }
+    }
+    this.screencastOverlays.clear();
     this.clearNetworkIdleTimer();
-    this.rejectWaiters(new Error("Page closed."));
+    this.rejectWaiters(this.createClosedError());
     this.emit("close", undefined);
 
     try {
@@ -1011,6 +3319,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   }
 
+  async bringToFront(): Promise<void> {
+    await this.options.client.Page.bringToFront();
+  }
+
+  isClosed(): boolean {
+    return this.closed;
+  }
+
   async clickLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
     await this.enqueuePointerAction(async () => {
       await this.bringToFront();
@@ -1019,6 +3335,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const clickCount = options?.clickCount ?? 1;
 
       await this.dispatchMouseMove(actionPoint);
+      await this.showScreencastAction("click", actionPoint);
       for (let index = 0; index < clickCount; index += 1) {
         await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
         await delay(options?.delay ?? 0);
@@ -1040,6 +3357,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     value: string,
     options?: FillOptions
   ): Promise<void> {
+    try {
+      const actionPoint = await this.resolveActionPoint(locator);
+      await this.showScreencastAction("fill", actionPoint);
+    } catch {}
     await this.runLocatorOperation<boolean>(locator, {
       operation: "fill",
       ...(options?.force !== undefined ? { force: options.force } : {}),
@@ -1102,6 +3423,95 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  async dblclickLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
+    await this.clickLocator(locator, { ...options, clickCount: 2 });
+  }
+
+  async checkLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
+    await this.runLocatorOperation<boolean>(locator, {
+      operation: "check",
+      checked: true,
+      ...(options?.force !== undefined ? { force: options.force } : {})
+    });
+  }
+
+  async uncheckLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
+    await this.runLocatorOperation<boolean>(locator, {
+      operation: "check",
+      checked: false,
+      ...(options?.force !== undefined ? { force: options.force } : {})
+    });
+  }
+
+  async focusLocator(locator: CdpLocatorState): Promise<void> {
+    await this.runLocatorOperation<boolean>(locator, {
+      operation: "focus"
+    });
+  }
+
+  async getAttributeLocator(locator: CdpLocatorState, name: string): Promise<string | null> {
+    return this.runLocatorOperation<string | null>(locator, {
+      operation: "getAttribute",
+      name
+    });
+  }
+
+  async innerHTMLLocator(locator: CdpLocatorState): Promise<string> {
+    return this.runLocatorOperation<string>(locator, {
+      operation: "innerHTML"
+    });
+  }
+
+  async innerTextLocator(locator: CdpLocatorState): Promise<string> {
+    return this.runLocatorOperation<string>(locator, {
+      operation: "innerText"
+    });
+  }
+
+  async inputValueLocator(locator: CdpLocatorState): Promise<string> {
+    return this.runLocatorOperation<string>(locator, {
+      operation: "inputValue"
+    });
+  }
+
+  async isCheckedLocator(locator: CdpLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "isChecked"
+    });
+  }
+
+  async isDisabledLocator(locator: CdpLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "isDisabled"
+    });
+  }
+
+  async isEditableLocator(locator: CdpLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "isEditable"
+    });
+  }
+
+  async isEnabledLocator(locator: CdpLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "isEnabled"
+    });
+  }
+
+  async selectOptionLocator(
+    locator: CdpLocatorState,
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    const normalized = Array.isArray(values) ? values : [values];
+    const payloadValues = normalized.map((entry) =>
+      typeof entry === "string" ? { value: entry } : entry
+    );
+    return this.runLocatorOperation<string[]>(locator, {
+      operation: "selectOption",
+      values: payloadValues
+    });
+  }
+
   async textContentLocator(locator: CdpLocatorState): Promise<string | null> {
     return this.runLocatorOperation<string | null>(locator, {
       operation: "textContent"
@@ -1114,16 +3524,101 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  async getAttributeReference(
+    reference: ProtocolElementHandleReference,
+    name: string
+  ): Promise<string | null> {
+    return this.runSelectorOperation<string | null>({
+      operation: "getAttribute",
+      reference,
+      name
+    });
+  }
+
+  async innerHTMLReference(reference: ProtocolElementHandleReference): Promise<string> {
+    return this.runSelectorOperation<string>({
+      operation: "innerHTML",
+      reference
+    });
+  }
+
+  async innerTextReference(reference: ProtocolElementHandleReference): Promise<string> {
+    return this.runSelectorOperation<string>({
+      operation: "innerText",
+      reference
+    });
+  }
+
+  async inputValueReference(reference: ProtocolElementHandleReference): Promise<string> {
+    return this.runSelectorOperation<string>({
+      operation: "inputValue",
+      reference
+    });
+  }
+
+  async isCheckedReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isChecked",
+      reference
+    });
+  }
+
+  async isDisabledReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isDisabled",
+      reference
+    });
+  }
+
+  async isEditableReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isEditable",
+      reference
+    });
+  }
+
+  async isEnabledReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "isEnabled",
+      reference
+    });
+  }
+
+  async focusReference(reference: ProtocolElementHandleReference): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "focus",
+      reference
+    });
+  }
+
+  async checkReference(reference: ProtocolElementHandleReference, checked: boolean): Promise<void> {
+    await this.runSelectorOperation<boolean>({
+      operation: "check",
+      reference,
+      checked
+    });
+  }
+
+  async selectOptionReference(
+    reference: ProtocolElementHandleReference,
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    const normalized = Array.isArray(values) ? values : [values];
+    const payloadValues = normalized.map((entry) =>
+      typeof entry === "string" ? { value: entry } : entry
+    );
+    return this.runSelectorOperation<string[]>({
+      operation: "selectOption",
+      reference,
+      values: payloadValues
+    });
+  }
+
   private async applyContextOptions(): Promise<void> {
     const { contextOptions, client } = this.options;
 
     if (contextOptions.viewport) {
-      await client.Emulation.setDeviceMetricsOverride({
-        width: contextOptions.viewport.width,
-        height: contextOptions.viewport.height,
-        mobile: false,
-        deviceScaleFactor: 1
-      });
+      await this.setViewportSize(contextOptions.viewport);
     }
 
     if (contextOptions.userAgent || contextOptions.locale) {
@@ -1148,6 +3643,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         });
       } catch {}
     }
+
+    if (contextOptions.extraHTTPHeaders) {
+      await this.updateExtraHTTPHeaders();
+    }
+  }
+
+  private async updateExtraHTTPHeaders(): Promise<void> {
+    const headers = mergeExtraHTTPHeaders(
+      this.options.contextOptions.extraHTTPHeaders,
+      this.pageExtraHTTPHeaders
+    );
+    await (
+      this.options.client.Network as typeof this.options.client.Network & {
+        setExtraHTTPHeaders(params: { headers: Record<string, string> }): Promise<unknown>;
+      }
+    ).setExtraHTTPHeaders({ headers });
   }
 
   private async dispatchMouseMove(point: ActionPoint): Promise<void> {
@@ -1155,8 +3666,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       type: "mouseMoved",
       x: point.x,
       y: point.y,
-      button: "none"
+      button: "none",
+      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
     });
+  }
+
+  private async moveMouseInternal(point: ActionPoint): Promise<void> {
+    await this.dispatchMouseMove(point);
+    this.currentMousePosition = point;
   }
 
   private async dispatchMouseEvent(
@@ -1170,12 +3687,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       x: point.x,
       y: point.y,
       button,
-      clickCount
+      clickCount,
+      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
     });
-  }
-
-  private async bringToFront(): Promise<void> {
-    await this.options.client.Page.bringToFront();
   }
 
   private async enqueuePointerAction<TResult>(action: () => Promise<TResult>): Promise<TResult> {
@@ -1185,6 +3699,27 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       () => undefined
     );
     return run;
+  }
+
+  private attachCoverageListener(
+    state: { eventListeners: Array<{ event: string; listener: (...args: any[]) => void }> },
+    event: string,
+    listener: (...args: any[]) => void
+  ): void {
+    this.options.client.on(event, listener);
+    state.eventListeners.push({ event, listener });
+  }
+
+  private detachCoverageListeners(
+    state: { eventListeners: Array<{ event: string; listener: (...args: any[]) => void }> }
+  ): void {
+    const clientWithRemoveListener = this.options.client as typeof this.options.client & {
+      removeListener(event: string, listener: (...args: any[]) => void): void;
+    };
+    for (const entry of state.eventListeners) {
+      clientWithRemoveListener.removeListener(entry.event, entry.listener);
+    }
+    state.eventListeners = [];
   }
 
   private async resolveActionPoint(
@@ -1231,31 +3766,210 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  async boundingBoxReference(reference: ProtocolElementHandleReference): Promise<Rect | null> {
+    const boxModel = await this.boundingBoxReferenceViaDom(reference);
+    if (boxModel) {
+      return boxModel;
+    }
+    return this.runSelectorOperation<Rect | null>({
+      operation: "boundingBox",
+      reference
+    });
+  }
+
+  async contentFrameIdForReference(reference: ProtocolElementHandleReference): Promise<string | null> {
+    if (reference.protocolObjectId) {
+      try {
+        const nodeInfo = await (this.options.client as CdpDomClient).send("DOM.describeNode", {
+          objectId: reference.protocolObjectId
+        }, reference.protocolSessionId);
+        if (nodeInfo.node.nodeName !== "IFRAME" && nodeInfo.node.nodeName !== "FRAME") {
+          return null;
+        }
+        return typeof nodeInfo.node.frameId === "string" ? nodeInfo.node.frameId : null;
+      } catch {
+        return null;
+      }
+    }
+
+    let handle: CdpJSHandleAdapter<unknown> | null = null;
+    try {
+      handle = await this.resolveElementReferenceAsHandle(reference);
+      const nodeName = await handle.evaluate<string | null>(
+        "(node) => node && (node.nodeName === 'IFRAME' || node.nodeName === 'FRAME') ? node.nodeName : null",
+        undefined,
+        true
+      );
+      if (!nodeName) {
+        return null;
+      }
+      const objectId = handle.remoteObjectId();
+      if (!objectId) {
+        return null;
+      }
+      const nodeInfo = await (this.options.client as CdpDomClient).send("DOM.describeNode", {
+        objectId
+      }, handle.sessionId());
+      return typeof nodeInfo.node.frameId === "string" ? nodeInfo.node.frameId : null;
+    } catch {
+      return null;
+    } finally {
+      await handle?.dispose().catch(() => {});
+    }
+  }
+
+  async ownerFrameIdForReference(reference: ProtocolElementHandleReference): Promise<string | null> {
+    if (reference.protocolObjectId) {
+      let documentElementObjectId: string | undefined;
+      try {
+        const response = await this.sendRuntimeCallFunctionOn({
+          functionDeclaration: `function() {
+            const doc = this;
+            if (doc && doc.documentElement && doc.documentElement.ownerDocument === doc)
+              return doc.documentElement;
+            return this && this.ownerDocument ? this.ownerDocument.documentElement : null;
+          }`,
+          objectId: reference.protocolObjectId,
+          returnByValue: false,
+          awaitPromise: true,
+          userGesture: true
+        }, reference.protocolSessionId);
+        if (response.exceptionDetails) {
+          return null;
+        }
+        documentElementObjectId = response.result.objectId;
+        if (!documentElementObjectId) {
+          return null;
+        }
+        const nodeInfo = await (this.options.client as CdpDomClient).send("DOM.describeNode", {
+          objectId: documentElementObjectId
+        }, reference.protocolSessionId);
+        return typeof nodeInfo.node.frameId === "string" ? nodeInfo.node.frameId : null;
+      } catch {
+        return null;
+      } finally {
+        if (documentElementObjectId) {
+          await this.sendRuntimeReleaseObject(
+            { objectId: documentElementObjectId },
+            reference.protocolSessionId
+          ).catch(() => {});
+        }
+      }
+    }
+
+    let handle: CdpJSHandleAdapter<unknown> | null = null;
+    let documentElement: ProtocolJSHandleAdapter<unknown> | null = null;
+    try {
+      handle = await this.resolveElementReferenceAsHandle(reference);
+      documentElement = await handle.evaluateHandle<unknown>(`(node) => {
+        const doc = node;
+        if (doc && doc.documentElement && doc.documentElement.ownerDocument === doc)
+          return doc.documentElement;
+        return node && node.ownerDocument ? node.ownerDocument.documentElement : null;
+      }`, undefined, true);
+      const objectId = documentElement.remoteObjectId();
+      if (!objectId) {
+        return null;
+      }
+      const sessionId = documentElement instanceof CdpJSHandleAdapter
+        ? documentElement.sessionId()
+        : handle.sessionId();
+      const nodeInfo = await (this.options.client as CdpDomClient).send("DOM.describeNode", {
+        objectId
+      }, sessionId);
+      return typeof nodeInfo.node.frameId === "string" ? nodeInfo.node.frameId : null;
+    } catch {
+      return null;
+    } finally {
+      await Promise.resolve(documentElement?.dispose()).catch(() => {});
+      await handle?.dispose().catch(() => {});
+    }
+  }
+
+  private async boundingBoxReferenceViaDom(
+    reference: ProtocolElementHandleReference
+  ): Promise<Rect | null> {
+    let handle: CdpJSHandleAdapter<unknown> | null = null;
+    try {
+      handle = await this.resolveElementReferenceAsHandle(reference);
+      const objectId = handle.remoteObjectId();
+      if (!objectId) {
+        return null;
+      }
+      const result = await (this.options.client as CdpDomClient).send("DOM.getBoxModel", {
+        objectId
+      });
+      const quad = result.model.border;
+      const x = Math.min(quad[0], quad[2], quad[4], quad[6]);
+      const y = Math.min(quad[1], quad[3], quad[5], quad[7]);
+      const width = Math.max(quad[0], quad[2], quad[4], quad[6]) - x;
+      const height = Math.max(quad[1], quad[3], quad[5], quad[7]) - y;
+      if (width <= 0 || height <= 0) {
+        return null;
+      }
+      return {
+        x,
+        y,
+        width,
+        height
+      };
+    } catch {
+      return null;
+    } finally {
+      await handle?.dispose().catch(() => {});
+    }
+  }
+
   async evaluateOnReference<TResult>(
     reference: ProtocolElementHandleReference,
     expression: string,
     arg?: unknown,
-    missingMessage?: string
+    missingMessage?: string,
+    isFunction?: boolean
   ): Promise<TResult> {
     return this.runSelectorOperation<TResult>({
       operation: "evaluate",
       reference,
       expression,
       arg,
+      ...(isFunction !== undefined ? { isFunction } : {}),
       ...(missingMessage ? { missingMessage } : {})
     });
+  }
+
+  async createHandleReference(
+    reference: ProtocolElementHandleReference,
+    missingMessage?: string
+  ): Promise<ProtocolElementHandleReference> {
+    if (reference.handleId) {
+      return reference;
+    }
+    const result = await this.runSelectorOperation<{ handleId: string }>({
+      operation: "createHandle",
+      reference,
+      ...(missingMessage ? { missingMessage } : {})
+    });
+    return {
+      chain: [],
+      handleId: result.handleId,
+      ...(reference.protocolFrameId ? { protocolFrameId: reference.protocolFrameId } : {}),
+      ...(reference.protocolObjectId ? { protocolObjectId: reference.protocolObjectId } : {}),
+      ...(reference.protocolSessionId ? { protocolSessionId: reference.protocolSessionId } : {})
+    };
   }
 
   async evaluateOnReferenceAll<TResult>(
     reference: ProtocolElementHandleReference,
     expression: string,
-    arg?: unknown
+    arg?: unknown,
+    isFunction?: boolean
   ): Promise<TResult> {
     return this.runSelectorOperation<TResult>({
       operation: "evaluateAll",
       reference,
       expression,
-      arg
+      arg,
+      ...(isFunction !== undefined ? { isFunction } : {})
     });
   }
 
@@ -1284,6 +3998,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const clickCount = options?.clickCount ?? 1;
 
     await this.dispatchMouseMove(actionPoint);
+    await this.showScreencastAction("click", actionPoint);
     for (let index = 0; index < clickCount; index += 1) {
       await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
       await delay(options?.delay ?? 0);
@@ -1306,6 +4021,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     value: string,
     options?: FillOptions
   ): Promise<void> {
+    try {
+      const actionPoint = await this.runSelectorOperation<ActionPoint>({
+        operation: "actionPoint",
+        reference
+      });
+      await this.showScreencastAction("fill", actionPoint);
+    } catch {}
     await this.runSelectorOperation<boolean>({
       operation: "fill",
       reference,
@@ -1375,9 +4097,129 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     return this.evaluateFunction<TResult>(SELECTOR_RUNTIME_SOURCE, payload);
   }
 
+  private setScreencastOverlay(
+    id: string,
+    overlay: Omit<CdpScreencastOverlayState, "removeTimer">,
+    duration?: number
+  ): void {
+    this.clearScreencastOverlay(id);
+    const state: CdpScreencastOverlayState = { ...overlay };
+    if (duration !== undefined) {
+      state.removeTimer = setTimeout(() => {
+        this.clearScreencastOverlay(id);
+        void this.renderScreencastOverlays();
+      }, duration);
+    }
+    this.screencastOverlays.set(id, state);
+  }
+
+  private clearScreencastOverlay(id: string): void {
+    const existing = this.screencastOverlays.get(id);
+    if (existing?.removeTimer) {
+      clearTimeout(existing.removeTimer);
+    }
+    this.screencastOverlays.delete(id);
+  }
+
+  private async renderScreencastOverlays(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    await this.evaluateFunction<void>(RENDER_SCREencast_OVERLAYS_SOURCE, {
+      visible: this.screencastOverlaysVisible,
+      overlays: Array.from(this.screencastOverlays.entries()).map(([id, overlay]) => ({
+        id,
+        html: overlay.html,
+        ...(overlay.kind ? { kind: overlay.kind } : {})
+      }))
+    }).catch(() => {});
+  }
+
+  private resetScreencastActions(): void {
+    this.screencastActionAbortController?.abort();
+    this.screencastActionAbortController = null;
+    this.screencastActionAnnotation = null;
+    this.screencastActionOptions = null;
+  }
+
+  private async showScreencastAction(title: string, point: ActionPoint): Promise<void> {
+    if (!this.screencastActionOptions || this.closed) {
+      return;
+    }
+
+    const abortController = new AbortController();
+    this.screencastActionAbortController?.abort();
+    this.screencastActionAbortController = abortController;
+    this.screencastActionAnnotation = {
+      title,
+      point,
+      ...(this.screencastActionOptions.cursor !== "none" ? { cursorPoint: point } : {}),
+      highlightBox: createScreencastHighlightBox(point)
+    };
+
+    await this.renderScreencastActions();
+    const completed = await waitForAbortableTimeout(
+      this.screencastActionOptions.duration ?? 500,
+      abortController.signal
+    );
+    if (!completed || this.screencastActionAbortController !== abortController) {
+      return;
+    }
+
+    this.screencastActionAbortController = null;
+    this.screencastActionAnnotation = null;
+    await this.renderScreencastActions();
+  }
+
+  private async renderScreencastActions(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    await this.evaluateFunction<void>(RENDER_SCREENCAST_ACTIONS_SOURCE, {
+      enabled: Boolean(this.screencastActionOptions),
+      annotation:
+        this.screencastActionOptions && this.screencastActionAnnotation
+          ? {
+              title: this.screencastActionAnnotation.title,
+              point: this.screencastActionAnnotation.point,
+              ...(this.screencastActionAnnotation.cursorPoint
+                ? { cursorPoint: this.screencastActionAnnotation.cursorPoint }
+                : {}),
+              ...(this.screencastActionAnnotation.highlightBox
+                ? { highlightBox: this.screencastActionAnnotation.highlightBox }
+                : {}),
+              ...(this.screencastActionOptions.position
+                ? { position: this.screencastActionOptions.position }
+                : {}),
+              ...(this.screencastActionOptions.fontSize !== undefined
+                ? { fontSize: this.screencastActionOptions.fontSize }
+                : {}),
+              ...(this.screencastActionOptions.cursor
+                ? { cursor: this.screencastActionOptions.cursor }
+                : {})
+            }
+          : null
+    }).catch(() => {});
+  }
+
+  private deriveDefaultScreencastSize(): {
+    width: number;
+    height: number;
+  } {
+    const viewport = this.currentViewportSize ?? this.options.contextOptions.viewport ?? {
+      width: 800,
+      height: 600
+    };
+    const scale = Math.min(1, 800 / Math.max(viewport.width, viewport.height));
+    return {
+      width: Math.max(2, Math.floor(viewport.width * scale)) & ~1,
+      height: Math.max(2, Math.floor(viewport.height * scale)) & ~1
+    };
+  }
+
   private async evaluateExpression<TResult>(expression: string): Promise<TResult> {
-    const response = await this.options.client.Runtime.evaluate({
-      expression,
+    const response = await (this.options.client as CdpRuntimeClient).send("Runtime.evaluate", {
+      expression: wrapWithSerializedEvaluationResult(expression),
       returnByValue: true,
       awaitPromise: true
     });
@@ -1386,17 +4228,513 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       throw new Error(formatCdpEvaluationError(response));
     }
 
-    return extractRemoteValue<TResult>(response.result);
+    return parseSerializedEvaluationResult<TResult>(response.result.value as never);
   }
 
   private async evaluateFunction<TResult>(
     expression: string,
     arg?: unknown
   ): Promise<TResult> {
-    const serializedArg = arg === undefined ? "" : serializeForEvaluation(arg);
-    const wrappedExpression =
-      arg === undefined ? `(${expression})()` : `(${expression})(${serializedArg})`;
-    return this.evaluateExpression<TResult>(wrappedExpression);
+    return this.evaluateWithArguments<TResult>(
+      expression,
+      true,
+      arg === undefined ? [] : [arg],
+      true
+    );
+  }
+
+  async evaluateWithArguments<TResult>(
+    expression: string,
+    returnByValue: true,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<TResult>;
+  async evaluateWithArguments<TResult>(
+    expression: string,
+    returnByValue: false,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<ProtocolJSHandleAdapter<TResult>>;
+  async evaluateWithArguments<TResult>(
+    expression: string,
+    returnByValue: boolean,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
+    return this.evaluateWithArgumentsInContext<TResult>(
+      undefined,
+      undefined,
+      expression,
+      returnByValue,
+      args,
+      isFunction
+    );
+  }
+
+  async evaluateWithArgumentsInSession<TResult>(
+    sessionId: string | undefined,
+    frameId: string | undefined,
+    expression: string,
+    returnByValue: true,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<TResult>;
+  async evaluateWithArgumentsInSession<TResult>(
+    sessionId: string | undefined,
+    frameId: string | undefined,
+    expression: string,
+    returnByValue: false,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<ProtocolJSHandleAdapter<TResult>>;
+  async evaluateWithArgumentsInSession<TResult>(
+    sessionId: string | undefined,
+    frameId: string | undefined,
+    expression: string,
+    returnByValue: boolean,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
+    return this.evaluateWithArgumentsInContext<TResult>(
+      undefined,
+      sessionId,
+      expression,
+      returnByValue,
+      args,
+      isFunction,
+      frameId
+    );
+  }
+
+  private async evaluateWithArgumentsInFrame<TResult>(
+    frameId: string,
+    expression: string,
+    returnByValue: true,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<TResult>;
+  private async evaluateWithArgumentsInFrame<TResult>(
+    frameId: string,
+    expression: string,
+    returnByValue: false,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<ProtocolJSHandleAdapter<TResult>>;
+  private async evaluateWithArgumentsInFrame<TResult>(
+    frameId: string,
+    expression: string,
+    returnByValue: boolean,
+    args: unknown[],
+    isFunction: boolean
+  ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
+    const executionContextId = await this.defaultExecutionContextIdForFrame(frameId);
+    const sessionId = this.defaultExecutionContextSessionByFrameId.get(frameId) ?? this.frameSessionIds.get(frameId);
+    return this.evaluateWithArgumentsInContext<TResult>(
+      executionContextId,
+      sessionId,
+      expression,
+      returnByValue,
+      args,
+      isFunction,
+      frameId
+    );
+  }
+
+  private async evaluateWithArgumentsInContext<TResult>(
+    executionContextId: number | undefined,
+    sessionId: string | undefined,
+    expression: string,
+    returnByValue: boolean,
+    args: unknown[],
+    isFunction: boolean,
+    frameId?: string
+  ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
+    const temporaryHandles: ProtocolJSHandleAdapter[] = [];
+    const { values, handles } = await serializeCdpEvaluationArguments(args, this, temporaryHandles);
+    const globalHandle = executionContextId === undefined
+      ? await this.rawEvaluateHandle("globalThis", sessionId)
+      : null;
+    const wrappedExpression = `(...argsAndHandles) => {
+      ${PARSE_EVALUATION_RESULT_SOURCE}
+      ${returnByValue ? SERIALIZE_EVALUATION_RESULT_SOURCE : ""}
+      const argCount = argsAndHandles[0];
+      const serializedArgs = argsAndHandles.slice(1, argCount + 1);
+      const handles = argsAndHandles.slice(argCount + 1);
+      const parameters = serializedArgs.map(value => __roxyParseEvaluationResultValue(value, handles));
+      let result = (0, eval)(${serializeForEvaluation(normalizeEvaluationExpression(expression, isFunction))});
+      if (${isFunction ? "true" : "false"})
+        result = result(...parameters);
+      return ${returnByValue ? "Promise.resolve(result).then(__roxySerializeEvaluationResult)" : "result"};
+    }`;
+    try {
+      const callParameters: {
+        arguments?: Array<{ objectId?: string; unserializableValue?: string; value?: unknown }>;
+        awaitPromise?: boolean;
+        executionContextId?: number;
+        functionDeclaration: string;
+        objectId?: string;
+        returnByValue?: boolean;
+        userGesture?: boolean;
+      } = {
+        functionDeclaration: wrappedExpression,
+        arguments: [
+          { value: values.length },
+          ...values.map((value) => ({ value })),
+          ...handles.map((handle) => ({ objectId: handle._remoteObjectId()! }))
+        ],
+        returnByValue,
+        awaitPromise: true,
+        userGesture: true
+      };
+      if (globalHandle) {
+        callParameters.objectId = globalHandle.remoteObjectId()!;
+      } else if (executionContextId !== undefined) {
+        callParameters.executionContextId = executionContextId;
+      }
+      const response = await this.sendRuntimeCallFunctionOn(callParameters, sessionId);
+      if (response.exceptionDetails) {
+        throw new Error(formatCdpEvaluationError(response));
+      }
+      return returnByValue
+        ? parseEvaluationResultValue(response.result.value as SerializedValue)
+        : new CdpJSHandleAdapter<TResult>(this, response.result, sessionId, frameId);
+    } finally {
+      await globalHandle?.dispose();
+      await Promise.all(
+        temporaryHandles.map((handle) => Promise.resolve(handle.dispose()).catch(() => {}))
+      );
+    }
+  }
+
+  private async defaultExecutionContextIdForFrame(frameId: string): Promise<number> {
+    const existing = this.defaultExecutionContextByFrameId.get(frameId);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    await this.options.client.Page.getFrameTree?.().catch(() => null);
+    const current = this.defaultExecutionContextByFrameId.get(frameId);
+    if (current !== undefined) {
+      return current;
+    }
+
+    const awaited = await this.waitForDefaultExecutionContext(frameId, 2_000).catch(() => undefined);
+    if (awaited !== undefined) {
+      return awaited;
+    }
+
+    throw new Error(`Frame execution context is not available for frame "${frameId}".`);
+  }
+
+  private async waitForDefaultExecutionContext(frameId: string, timeout: number): Promise<number> {
+    const existing = this.defaultExecutionContextByFrameId.get(frameId);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    return await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const waiters = this.pendingDefaultExecutionContextWaiters.get(frameId);
+        if (waiters) {
+          waiters.delete(waiter);
+          if (!waiters.size) {
+            this.pendingDefaultExecutionContextWaiters.delete(frameId);
+          }
+        }
+        reject(new Error(`Frame execution context is not available for frame "${frameId}".`));
+      }, timeout);
+      const waiter = { resolve, reject, timer };
+      const waiters = this.pendingDefaultExecutionContextWaiters.get(frameId) ?? new Set<typeof waiter>();
+      waiters.add(waiter);
+      this.pendingDefaultExecutionContextWaiters.set(frameId, waiters);
+    });
+  }
+
+  async sendRuntimeCallFunctionOn(
+    params: {
+      arguments?: Array<{ objectId?: string; unserializableValue?: string; value?: unknown }>;
+      awaitPromise?: boolean;
+      executionContextId?: number;
+      functionDeclaration: string;
+      objectId?: string;
+      returnByValue?: boolean;
+      userGesture?: boolean;
+    },
+    sessionId?: string
+  ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }> {
+    return (this.options.client as CdpRuntimeClient & {
+      send(
+        method: "Runtime.callFunctionOn",
+        params: {
+          arguments?: Array<{ objectId?: string; unserializableValue?: string; value?: unknown }>;
+          awaitPromise?: boolean;
+          executionContextId?: number;
+          functionDeclaration: string;
+          objectId?: string;
+          returnByValue?: boolean;
+          userGesture?: boolean;
+        },
+        sessionId?: string
+      ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
+    }).send("Runtime.callFunctionOn", params, sessionId);
+  }
+
+  async sendRuntimeGetProperties(
+    params: {
+      objectId: string;
+      ownProperties?: boolean;
+    },
+    sessionId?: string
+  ): Promise<{
+    result: Array<{
+      enumerable?: boolean;
+      name: string;
+      value?: CdpRemoteObject;
+    }>;
+  }> {
+    return (this.options.client as CdpRuntimeClient & {
+      send(
+        method: "Runtime.getProperties",
+        params: {
+          objectId: string;
+          ownProperties?: boolean;
+        },
+        sessionId?: string
+      ): Promise<{
+        result: Array<{
+          enumerable?: boolean;
+          name: string;
+          value?: CdpRemoteObject;
+        }>;
+      }>;
+    }).send("Runtime.getProperties", params, sessionId);
+  }
+
+  async sendRuntimeReleaseObject(
+    params: { objectId: string },
+    sessionId?: string
+  ): Promise<unknown> {
+    return (this.options.client as CdpRuntimeClient & {
+      send(
+        method: "Runtime.releaseObject",
+        params: { objectId: string },
+        sessionId?: string
+      ): Promise<unknown>;
+    }).send("Runtime.releaseObject", params, sessionId);
+  }
+
+  async rawEvaluateHandle<T = unknown>(expression: string, sessionId?: string): Promise<CdpJSHandleAdapter<T>> {
+    const response = await (this.options.client as CdpRuntimeClient & {
+      send(
+        method: "Runtime.evaluate",
+        params: {
+          expression: string;
+          awaitPromise?: boolean;
+          returnByValue?: boolean;
+          userGesture?: boolean;
+        },
+        sessionId?: string
+      ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
+    }).send("Runtime.evaluate", {
+      expression,
+      awaitPromise: true,
+      returnByValue: false
+    }, sessionId);
+    if (response.exceptionDetails) {
+      throw new Error(formatCdpEvaluationError(response));
+    }
+    return new CdpJSHandleAdapter<T>(this, response.result, sessionId);
+  }
+
+  async resolveElementReferenceAsHandle<T = unknown>(
+    reference: ProtocolElementHandleReference
+  ): Promise<CdpJSHandleAdapter<T>> {
+    const handleReference = await this.createHandleReference(reference, "No element found.");
+    if (!handleReference.handleId) {
+      throw new Error("No element found.");
+    }
+    const handleId = JSON.stringify(handleReference.handleId);
+    if (handleReference.protocolFrameId) {
+      const sessionId = this.defaultExecutionContextSessionByFrameId.get(handleReference.protocolFrameId) ??
+        this.frameSessionIds.get(handleReference.protocolFrameId) ??
+        handleReference.protocolSessionId;
+      const executionContextId = await this.defaultExecutionContextIdForFrame(handleReference.protocolFrameId);
+      return await this.evaluateWithArgumentsInContext<T>(
+        executionContextId,
+        sessionId,
+        `() => {
+          const resolveScope = () => {
+            const candidates = [globalThis];
+            try {
+              if (globalThis.top)
+                candidates.unshift(globalThis.top);
+            } catch {}
+            for (const candidate of candidates) {
+              try {
+                if (candidate.__roxyHandleStore)
+                  return candidate;
+              } catch {}
+            }
+            return globalThis;
+          };
+          const scope = resolveScope();
+          return scope.__roxyHandleStore && scope.__roxyHandleStore[${handleId}];
+        }`,
+        false,
+        [],
+        true,
+        handleReference.protocolFrameId
+      ) as CdpJSHandleAdapter<T>;
+    }
+    return this.rawEvaluateHandle<T>(`(() => {
+      const resolveScope = () => {
+        const candidates = [globalThis];
+        try {
+          if (globalThis.top)
+            candidates.unshift(globalThis.top);
+        } catch {}
+        for (const candidate of candidates) {
+          try {
+            if (candidate.__roxyHandleStore)
+              return candidate;
+          } catch {}
+        }
+        return globalThis;
+      };
+      const scope = resolveScope();
+      return scope.__roxyHandleStore && scope.__roxyHandleStore[${handleId}];
+    })()`, handleReference.protocolSessionId);
+  }
+
+  maybeCreateRemoteHandleFromReference<T = unknown>(
+    reference: ProtocolElementHandleReference
+  ): CdpJSHandleAdapter<T> | null {
+    if (!reference.protocolObjectId) {
+      return null;
+    }
+    return new CdpJSHandleAdapter<T>(
+      this,
+      { objectId: reference.protocolObjectId, subtype: "node", type: "object" },
+      reference.protocolSessionId,
+      reference.protocolFrameId
+    );
+  }
+
+  async storeRemoteElementHandle(
+    handle: ProtocolJSHandleAdapter<unknown>,
+    options: { disposeHandle?: boolean } = {}
+  ): Promise<ProtocolElementHandleReference> {
+    const disposeHandle = options.disposeHandle ?? true;
+    const objectId = handle.remoteObjectId();
+    if (!objectId) {
+      if (disposeHandle) {
+        await handle.dispose();
+      }
+      throw new Error("JSHandle is not an ElementHandle");
+    }
+    const sessionId = handle instanceof CdpJSHandleAdapter ? handle.sessionId() : undefined;
+    const frameId = handle instanceof CdpJSHandleAdapter
+      ? await this.ownerFrameIdForRemoteHandle(handle).catch(() => handle.frameId())
+      : undefined;
+    const response = await this.sendRuntimeCallFunctionOn({
+      functionDeclaration: `function() {
+        const node = this;
+        if (!node || typeof node.nodeType !== 'number')
+          throw new Error('JSHandle is not an ElementHandle');
+        const resolveScope = () => {
+          const candidates = [globalThis];
+          try {
+            if (globalThis.top)
+              candidates.unshift(globalThis.top);
+          } catch {}
+          for (const candidate of candidates) {
+            try {
+              candidate.__roxyHandleStore ||= {};
+              candidate.__roxyNextHandleId ||= 0;
+              return candidate;
+            } catch {}
+          }
+          globalThis.__roxyHandleStore ||= {};
+          globalThis.__roxyNextHandleId ||= 0;
+          return globalThis;
+        };
+        const scope = resolveScope();
+        scope.__roxyHandleStore ||= {};
+        scope.__roxyNextHandleId ||= 0;
+        const handleId = 'handle:' + (++scope.__roxyNextHandleId);
+        scope.__roxyHandleStore[handleId] = node;
+        return handleId;
+      }`,
+      objectId,
+      returnByValue: true,
+      awaitPromise: true,
+      userGesture: true
+    }, sessionId);
+    if (disposeHandle) {
+      await handle.dispose();
+    }
+    if (response.exceptionDetails) {
+      throw new Error(formatCdpEvaluationError(response));
+    }
+    return {
+      chain: [],
+      handleId: response.result.value as string,
+      ...(frameId ? { protocolFrameId: frameId } : {}),
+      protocolObjectId: objectId,
+      ...(sessionId ? { protocolSessionId: sessionId } : {})
+    };
+  }
+
+  private async ownerFrameIdForRemoteHandle(handle: CdpJSHandleAdapter<unknown>): Promise<string | undefined> {
+    let documentElement: ProtocolJSHandleAdapter<unknown> | null = null;
+    try {
+      documentElement = await handle.evaluateHandle<unknown>(`(node) => {
+        const doc = node;
+        if (doc && doc.documentElement && doc.documentElement.ownerDocument === doc)
+          return doc.documentElement;
+        return node && node.ownerDocument ? node.ownerDocument.documentElement : null;
+      }`, undefined, true);
+      const objectId = documentElement.remoteObjectId();
+      if (!objectId) {
+        return undefined;
+      }
+      const sessionId = documentElement instanceof CdpJSHandleAdapter
+        ? documentElement.sessionId()
+        : handle.sessionId();
+      const nodeInfo = await (this.options.client as CdpDomClient).send("DOM.describeNode", {
+        objectId
+      }, sessionId);
+      return typeof nodeInfo.node.frameId === "string" ? nodeInfo.node.frameId : undefined;
+    } finally {
+      await Promise.resolve(documentElement?.dispose()).catch(() => {});
+    }
+  }
+
+  cdpRuntimeClient(): CdpRuntimeClient {
+    return this.options.client as CdpRuntimeClient;
+  }
+
+  private async syncCurrentUrlFromDocument(): Promise<void> {
+    try {
+      this.currentUrl = await this.evaluateExpression<string>("document.URL");
+    } catch {
+      // Ignore navigation races; url() should keep the last known value.
+    }
+  }
+
+  private async syncLifecycleStateFromDocument(): Promise<void> {
+    try {
+      const readyState = await this.evaluateExpression<string>("document.readyState");
+      if (readyState === "interactive" || readyState === "complete") {
+        this.domContentLoaded = true;
+      }
+      if (readyState === "complete") {
+        this.loadFired = true;
+      }
+      this.flushWaiters();
+    } catch {
+      // Lifecycle events will update the state once a document is available.
+    }
   }
 
   private isStateSatisfied(state: WaitUntilState): boolean {
@@ -1429,7 +4767,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private async navigateHistory(
     delta: -1 | 1,
     options: PageGotoOptions
-  ): Promise<ReturnType<typeof createNavigationResult> | null> {
+  ): Promise<PageResponse | null> {
     const pageDomain = this.options.client.Page as typeof this.options.client.Page & {
       getNavigationHistory(): Promise<{
         currentIndex: number;
@@ -1446,21 +4784,48 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
 
     const waitUntil = options.waitUntil ?? "load";
+    const capture = this.beginNavigationResponseCapture();
+    const failureCapture = this.beginNavigationFailureCapture();
     this.resetNavigationState();
     this.allowSameDocumentNavigationToResolveWaiters = true;
-    await withTimeout(
-      retryOnNotAttachedToActivePage(() => {
-        return pageDomain.navigateToHistoryEntry({ entryId: nextEntry.id });
-      }),
-      options.timeout,
-      `Timed out while navigating ${delta < 0 ? "back" : "forward"}.`
-    );
+    try {
+      await this.raceNavigationFailure(
+        withTimeout(
+          retryOnNotAttachedToActivePage(() => {
+            return pageDomain.navigateToHistoryEntry({ entryId: nextEntry.id });
+          }),
+          options.timeout,
+          `Timed out while navigating ${delta < 0 ? "back" : "forward"}.`
+        ),
+        failureCapture
+      );
 
-    if (waitUntil !== "commit") {
-      await this.waitForLoadState(waitUntil, options.timeout);
+      if (waitUntil !== "commit") {
+        await this.raceNavigationFailure(
+          this.waitForLoadState(waitUntil, options.timeout),
+          failureCapture
+        );
+      }
+      await this.syncCurrentUrlFromDocument();
+
+      if (capture.lastResponse) {
+        return capture.lastResponse;
+      }
+      if (this.sameDocumentNavigation) {
+        return null;
+      }
+    } finally {
+      this.endNavigationResponseCapture(capture);
+      this.endNavigationFailureCapture(failureCapture);
     }
 
-    return createNavigationResult({
+    return createPageResponse({
+      fromCache: false,
+      headers: [],
+      mimeType: "text/html",
+      status: 200,
+      statusText: "OK",
+      text: async () => "",
       url: nextEntry.url
     });
   }
@@ -1475,6 +4840,303 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.networkIdleTimer = undefined;
       this.flushWaiters();
     }, NETWORK_IDLE_MS);
+  }
+
+  private emitResponseReceived(
+    event: {
+      frameId?: string;
+      requestId: string;
+      response: {
+        fromDiskCache?: boolean;
+        fromServiceWorker?: boolean;
+        fromPrefetchCache?: boolean;
+        headers: Record<string, string | number | boolean>;
+        mimeType: string;
+        status: number;
+        statusText: string;
+        url: string;
+      };
+      type?: string;
+    },
+    headerEntries: Array<{ name: string; value: string }> = mapCdpHeaders(event.response.headers)
+  ): void {
+    const fulfilledHeaders = this.fulfilledDocumentResponseHeaders.get(event.requestId);
+    if (fulfilledHeaders) {
+      headerEntries = fulfilledHeaders;
+      this.fulfilledDocumentResponseHeaders.delete(event.requestId);
+    }
+    const responseBodyState = this.ensureResponseBodyState(event.requestId);
+    if (event.frameId !== undefined) {
+      responseBodyState.frameId = event.frameId;
+    }
+    if (event.response.url !== undefined) {
+      responseBodyState.url = event.response.url;
+    }
+    const contentLengthHeader = headerEntries.find(
+      (header) => header.name.toLowerCase() === "content-length"
+    );
+    const expectedLength =
+      contentLengthHeader && Number.isFinite(Number(contentLengthHeader.value))
+        ? Number(contentLengthHeader.value)
+        : undefined;
+    if (expectedLength !== undefined) {
+      responseBodyState.expectedLength = expectedLength;
+    }
+    const request = this.requestMetadata.get(event.requestId);
+    const isNavigationRequest = request?.isNavigationRequest ?? false;
+
+    const response = createPageResponse({
+      fromCache: Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache),
+      ...(event.response.fromServiceWorker !== undefined
+        ? { fromServiceWorker: event.response.fromServiceWorker }
+        : {}),
+      ...(event.frameId ? { frameId: event.frameId } : {}),
+      headers: headerEntries,
+      isNavigationRequest,
+      mimeType: event.response.mimeType,
+      requestId: event.requestId,
+      resourceType: toPlaywrightResourceType(event.type),
+      status: event.response.status,
+      statusText: event.response.statusText,
+      body: () => this.getResponseBodyBuffer(event.requestId),
+      text: () => this.getResponseText(event.requestId),
+      url: event.response.url
+    });
+
+    this.emit("response", response);
+
+    if (isNavigationRequest && event.frameId && this.isMainFrameId(event.frameId)) {
+      this.captureNavigationResponse(response);
+    }
+  }
+
+  private emitRedirectResponse(
+    event: {
+      frameId?: string;
+      requestId: string;
+      request: {
+        method: string;
+      };
+      timestamp?: number;
+      type?: string;
+    },
+    redirectResponse: {
+      fromDiskCache?: boolean;
+      fromPrefetchCache?: boolean;
+      headers: Record<string, string | number | boolean | Array<string | number | boolean>>;
+      mimeType: string;
+      status: number;
+      statusText: string;
+      url: string;
+    }
+  ): void {
+    const previousRequest = this.requestMetadata.get(event.requestId);
+    const frameId = event.frameId ?? previousRequest?.frameId;
+    const type = event.type ?? previousRequest?.type;
+    const url = previousRequest?.url ?? redirectResponse.url;
+    const method = previousRequest?.method ?? event.request.method;
+    const isNavigationRequest = previousRequest?.isNavigationRequest ?? false;
+
+    this.emit("response", createPageResponse({
+      fromCache: Boolean(redirectResponse.fromDiskCache || redirectResponse.fromPrefetchCache),
+      ...(frameId ? { frameId } : {}),
+      headers: mapCdpHeaders(redirectResponse.headers, "\n"),
+      isNavigationRequest,
+      mimeType: redirectResponse.mimeType,
+      requestId: event.requestId,
+      resourceType: toPlaywrightResourceType(type),
+      status: redirectResponse.status,
+      statusText: redirectResponse.statusText,
+      body: async () => Buffer.alloc(0),
+      text: async () => "",
+      url
+    }));
+
+    this.emit("requestfinished", {
+      headers: [],
+      ...(frameId ? { frameId } : {}),
+      isNavigationRequest,
+      method,
+      requestId: event.requestId,
+      resourceType: toPlaywrightResourceType(type),
+      url
+    });
+  }
+
+  private async handleFetchRequestPaused(event: {
+    networkId?: string;
+    requestId: string;
+    request: {
+      headers: Record<string, string>;
+      method: string;
+      postData?: string;
+      url: string;
+    };
+    resourceType: string;
+    responseErrorReason?: string;
+    redirectedRequestId?: string;
+    responseStatusCode?: number;
+  }): Promise<void> {
+    if (isFaviconRequestUrl(event.request.url)) {
+      await this.options.client.Fetch.failRequest({
+        requestId: event.requestId,
+        errorReason: "Aborted"
+      }).catch(() => {});
+      return;
+    }
+    if (isCdpPreflightRequest(event)) {
+      await this.options.client.Fetch.fulfillRequest({
+        requestId: event.requestId,
+        responseCode: 204,
+        responseHeaders: cdpPreflightResponseHeaders(event.request.headers),
+        responsePhrase: "No Content",
+        body: ""
+      }).catch(() => {});
+      return;
+    }
+    if (!this.requestInterceptor) {
+      await this.options.client.Fetch.continueRequest({
+        requestId: event.requestId
+      }).catch(() => {});
+      return;
+    }
+    if (event.redirectedRequestId) {
+      const networkRequestId = event.networkId ?? event.redirectedRequestId;
+      const headers = this.continuedRequestHeaders.get(networkRequestId);
+      await this.options.client.Fetch.continueRequest({
+        requestId: event.requestId,
+        ...(headers ? { headers: applyCdpHeaderOverrides(event.request.headers, headers) } : {})
+      }).catch(() => {});
+      return;
+    }
+    if (event.responseErrorReason || event.responseStatusCode) {
+      await this.options.client.Fetch.continueRequest({
+        requestId: event.requestId
+      }).catch(() => {});
+      return;
+    }
+
+    const bodyBuffer = event.request.postData
+      ? Buffer.from(event.request.postData, "utf8")
+      : null;
+    const decision = await this.requestInterceptor({
+      id: event.requestId,
+      ...(event.networkId ? { requestId: event.networkId } : {}),
+      headers: normalizeHeaderRecord(event.request.headers),
+      isNavigationRequest: event.resourceType === "Document",
+      method: event.request.method,
+      ...(event.request.postData !== undefined ? { postData: event.request.postData } : { postData: null }),
+      ...(bodyBuffer ? { postDataBufferBase64: bodyBuffer.toString("base64") } : {}),
+      resourceType: toPlaywrightResourceType(event.resourceType),
+      url: event.request.url
+    });
+
+    if (decision.action === "continue") {
+      const headers = cdpContinueRequestHeaders(decision.headers);
+      if (event.networkId) {
+        this.continuedRequestHeaders.set(event.networkId, headers);
+      }
+      await this.sendFetchCommandMayFail(() =>
+        this.options.client.Fetch.continueRequest({
+          requestId: event.requestId,
+          ...(decision.url !== event.request.url ? { url: decision.url } : {}),
+          ...(decision.method !== event.request.method ? { method: decision.method } : {}),
+          ...(decision.postData !== null
+            ? {
+                postData: Buffer.from(
+                  decision.postDataBufferBase64 ?? Buffer.from(decision.postData, "utf8").toString("base64"),
+                  "base64"
+                ).toString("base64")
+              }
+            : {}),
+          headers
+        })
+      );
+      return;
+    }
+
+    if (decision.action === "fulfill") {
+      const routedRequestId = event.networkId ?? event.requestId;
+      const fulfilledBody = Buffer.from(
+        decision.bodyBufferBase64 ?? Buffer.from(decision.body, "utf8").toString("base64"),
+        "base64"
+      );
+      const responseBodyState = this.ensureResponseBodyState(routedRequestId);
+      responseBodyState.fulfilledBody = fulfilledBody;
+      responseBodyState.expectedLength = fulfilledBody.byteLength;
+      responseBodyState.url = decision.url;
+      this.fulfilledRequestIds.add(routedRequestId);
+      this.fulfilledDocumentResponseHeaders.set(
+        routedRequestId,
+        mapCdpHeaders(decision.headers, "\n")
+      );
+      await this.sendFetchCommandMayFail(() =>
+        this.options.client.Fetch.fulfillRequest({
+          requestId: event.requestId,
+          body: fulfilledBody.toString("base64"),
+          responseCode: decision.status,
+          responseHeaders: splitSetCookieHeader(
+            Object.entries(decision.headers).map(([name, value]) => ({ name, value }))
+          ),
+          responsePhrase: decision.statusText
+        })
+      );
+      return;
+    }
+
+    await this.sendFetchCommandMayFail(() =>
+      this.options.client.Fetch.failRequest({
+        requestId: event.requestId,
+        errorReason: cdpErrorReasonForRoute(decision.errorCode)
+      })
+    );
+  }
+
+  private async sendFetchCommandMayFail(command: () => Promise<void>): Promise<void> {
+    try {
+      await command();
+    } catch (error) {
+      if (error instanceof Error) {
+        if (
+          error.message.includes("Invalid http status code or phrase") ||
+          error.message.includes("Unsafe header")
+        ) {
+          throw error;
+        }
+        return;
+      }
+      return;
+    }
+  }
+
+  private flushPendingResponseEvent(requestId: string): void {
+    const pending = this.pendingResponseEvents.get(requestId);
+    if (!pending?.length) {
+      this.responseExtraInfoHeaders.delete(requestId);
+      return;
+    }
+    this.pendingResponseEvents.delete(requestId);
+    for (const entry of pending) {
+      const extraInfoHeaders = this.shiftResponseExtraInfoHeaders(requestId);
+      this.emitResponseReceived(entry.event, extraInfoHeaders ?? mapCdpHeaders(entry.event.response.headers));
+    }
+    if (!(this.responseExtraInfoHeaders.get(requestId)?.length)) {
+      this.responseExtraInfoHeaders.delete(requestId);
+    }
+  }
+
+  private shiftResponseExtraInfoHeaders(
+    requestId: string
+  ): Array<{ name: string; value: string }> | null {
+    const queued = this.responseExtraInfoHeaders.get(requestId);
+    if (!queued?.length) {
+      return null;
+    }
+    const headers = queued.shift() ?? null;
+    if (queued.length === 0) {
+      this.responseExtraInfoHeaders.delete(requestId);
+    }
+    return headers;
   }
 
   private clearNetworkIdleTimer(): void {
@@ -1498,12 +5160,66 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     return this.mainFrameId === undefined || this.mainFrameId === frameId;
   }
 
-  private beginNavigationResponseCapture(): NavigationResponseCapture {
+  private beginNavigationResponseCapture(options: {
+    predicate?: (response: PageResponse) => boolean;
+  } = {}): NavigationResponseCapture {
     const capture: NavigationResponseCapture = {
       lastResponse: null
     };
-    this.navigationResponseCapture = capture;
+    if (options.predicate) {
+      capture.predicate = options.predicate;
+    }
+    this.navigationResponseCaptures.add(capture);
     return capture;
+  }
+
+  private endNavigationResponseCapture(capture: NavigationResponseCapture): void {
+    this.navigationResponseCaptures.delete(capture);
+  }
+
+  private captureNavigationResponse(response: PageResponse): void {
+    if (!shouldCaptureNavigationResponseUrl(response.url)) {
+      return;
+    }
+    for (const capture of Array.from(this.navigationResponseCaptures)) {
+      if (capture.predicate && !capture.predicate(response)) {
+        continue;
+      }
+      capture.lastResponse = response;
+      capture.resolve?.(response);
+    }
+  }
+
+  private beginNavigationFailureCapture(): NavigationFailureCapture {
+    let reject!: (error: Error) => void;
+    const failure = new Promise<never>((_resolve, rejectCallback) => {
+      reject = rejectCallback;
+    });
+    const capture: NavigationFailureCapture = { reject };
+    this.navigationFailureCaptures.add(capture);
+    // The promise is consumed through raceNavigationFailure; keep a catch here so
+    // cleanup after a successful navigation cannot leave a dangling rejection.
+    void failure.catch(() => {});
+    (capture as NavigationFailureCapture & { promise: Promise<never> }).promise = failure;
+    return capture;
+  }
+
+  private endNavigationFailureCapture(capture: NavigationFailureCapture): void {
+    this.navigationFailureCaptures.delete(capture);
+  }
+
+  private rejectNavigationFailureCaptures(error: Error): void {
+    for (const capture of Array.from(this.navigationFailureCaptures)) {
+      capture.reject(error);
+    }
+  }
+
+  private async raceNavigationFailure<T>(
+    promise: Promise<T>,
+    capture: NavigationFailureCapture
+  ): Promise<T> {
+    const failure = (capture as NavigationFailureCapture & { promise: Promise<never> }).promise;
+    return Promise.race([promise, failure]);
   }
 
   private ensureResponseBodyState(requestId: string): ResponseBodyState {
@@ -1528,13 +5244,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     return created;
   }
 
-  private async getResponseText(requestId: string): Promise<string> {
+  private async getResponseBodyBuffer(requestId: string): Promise<Buffer> {
     const state = this.ensureResponseBodyState(requestId);
-    if (!state.text) {
-      state.text = (async () => {
+    if (!state.body) {
+      state.body = (async () => {
         await state.ready;
         if (state.failure) {
           throw state.failure;
+        }
+        if (state.fulfilledBody) {
+          return Buffer.from(state.fulfilledBody);
         }
         const response = await (
           this.options.client.Network as typeof this.options.client.Network & {
@@ -1545,13 +5264,58 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         ).getResponseBody({
           requestId
         });
-        const buffer = response.base64Encoded
+        const body = response.base64Encoded
           ? Buffer.from(response.body, "base64")
           : Buffer.from(response.body, "utf8");
-        return buffer.toString("utf8");
+        if (body.byteLength || !state.expectedLength || !state.url) {
+          return body;
+        }
+        const resource = await (
+          this.options.client.Network as typeof this.options.client.Network & {
+            loadNetworkResource(options: {
+              frameId?: string;
+              options: { disableCache: boolean; includeCredentials: boolean };
+              url: string;
+            }): Promise<{ resource: { stream?: string } }>;
+          }
+        ).loadNetworkResource({
+          url: state.url,
+          ...(state.frameId ? { frameId: state.frameId } : {}),
+          options: {
+            disableCache: false,
+            includeCredentials: true
+          }
+        });
+        if (!resource.resource.stream) {
+          return body;
+        }
+        const chunks: Buffer[] = [];
+        while (resource.resource.stream) {
+          const chunk = await (
+            this.options.client.IO as typeof this.options.client.IO & {
+              read(options: {
+                handle: string;
+              }): Promise<{ base64Encoded?: boolean; data: string; eof?: boolean }>;
+            }
+          ).read({
+            handle: resource.resource.stream
+          });
+          chunks.push(Buffer.from(chunk.data, chunk.base64Encoded ? "base64" : "utf8"));
+          if (chunk.eof) {
+            await this.options.client.IO.close({
+              handle: resource.resource.stream
+            });
+            break;
+          }
+        }
+        return Buffer.concat(chunks);
       })();
     }
-    return state.text;
+    return state.body;
+  }
+
+  private async getResponseText(requestId: string): Promise<string> {
+    return (await this.getResponseBodyBuffer(requestId)).toString("utf8");
   }
 
   private rejectWaiters(error: Error): void {
@@ -1561,7 +5325,45 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.stateWaiters.clear();
   }
 
-  private emit<K extends PageEventName>(event: K, payload: PageEventMap[K]): void {
+  private createDialogPayload(input: {
+    defaultValue: string;
+    message: string;
+    type: "alert" | "beforeunload" | "confirm" | "prompt";
+  }): PageDialog {
+    let handled = false;
+    const respond = async (accept: boolean, promptText?: string): Promise<void> => {
+      if (handled) {
+        return;
+      }
+      handled = true;
+      await (
+        this.options.client.Page as typeof this.options.client.Page & {
+          handleJavaScriptDialog(options: { accept: boolean; promptText?: string }): Promise<void>;
+        }
+      ).handleJavaScriptDialog({
+        accept,
+        ...(promptText !== undefined ? { promptText } : {})
+      });
+    };
+
+    const dialog = {
+      accept: (promptText?: string) => respond(true, promptText),
+      defaultValue: () => input.defaultValue,
+      dismiss: () => respond(false),
+      message: () => input.message,
+      type: () => input.type
+    };
+    if ((this.eventListeners.get("dialog")?.size ?? 0) === 0) {
+      void dialog.dismiss().catch(() => {});
+    }
+    return dialog;
+  }
+
+  private createClosedError(): Error {
+    return new Error(this.closeReason ?? "Target page, context or browser has been closed");
+  }
+
+  private emit<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void {
     const listeners = this.eventListeners.get(event);
     if (!listeners) {
       return;
@@ -1573,7 +5375,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         continue;
       }
 
-      (listener as (eventPayload: PageEventMap[K]) => void)(payload);
+      (listener as (eventPayload: RawPageEventMap[K]) => void)(payload);
     }
   }
 }
@@ -1588,6 +5390,37 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
     return new CdpLocatorAdapter(this.page, {
       chain: [...this.state.chain, selector]
     });
+  }
+
+  getByText(text: string | RegExp, options?: GetByTextOptions): ProtocolLocatorAdapter {
+    return this.locator(createTextLocatorSelector(text, options));
+  }
+
+  getByAltText(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return this.locator(createAltTextLocatorSelector(text, options));
+  }
+
+  getByLabel(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return this.locator(createLabelLocatorSelector(text, options));
+  }
+
+  getByPlaceholder(
+    text: string | RegExp,
+    options?: { exact?: boolean }
+  ): ProtocolLocatorAdapter {
+    return this.locator(createPlaceholderLocatorSelector(text, options));
+  }
+
+  getByTestId(testId: string | RegExp): ProtocolLocatorAdapter {
+    return this.locator(createTestIdLocatorSelector(testId));
+  }
+
+  getByRole(role: string, options?: GetByRoleOptions): ProtocolLocatorAdapter {
+    return this.locator(createRoleLocatorSelector(role, options));
+  }
+
+  getByTitle(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
+    return this.locator(createTitleLocatorSelector(text, options));
   }
 
   first(): ProtocolLocatorAdapter {
@@ -1611,6 +5444,14 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
     });
   }
 
+  async dblclick(options?: ClickOptions): Promise<void> {
+    await this.page.dblclickLocator(this.state, options);
+  }
+
+  async check(options?: ClickOptions): Promise<void> {
+    await this.page.checkLocator(this.state, options);
+  }
+
   async click(options?: ClickOptions): Promise<void> {
     await this.page.clickLocator(this.state, options);
   }
@@ -1631,12 +5472,90 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
     await this.page.pressLocator(this.state, key, options);
   }
 
+  async focus(): Promise<void> {
+    await this.page.focusLocator(this.state);
+  }
+
+  async getAttribute(name: string): Promise<string | null> {
+    return this.page.getAttributeLocator(this.state, name);
+  }
+
+  async innerHTML(): Promise<string> {
+    return this.page.innerHTMLLocator(this.state);
+  }
+
+  async innerText(): Promise<string> {
+    return this.page.innerTextLocator(this.state);
+  }
+
+  async inputValue(): Promise<string> {
+    return this.page.inputValueLocator(this.state);
+  }
+
+  async isChecked(): Promise<boolean> {
+    return this.page.isCheckedLocator(this.state);
+  }
+
+  async isDisabled(): Promise<boolean> {
+    return this.page.isDisabledLocator(this.state);
+  }
+
+  async isEditable(): Promise<boolean> {
+    return this.page.isEditableLocator(this.state);
+  }
+
+  async isEnabled(): Promise<boolean> {
+    return this.page.isEnabledLocator(this.state);
+  }
+
+  async isHidden(): Promise<boolean> {
+    return !(await this.page.isVisibleLocator(this.state));
+  }
+
   async textContent(): Promise<string | null> {
     return this.page.textContentLocator(this.state);
   }
 
+  async uncheck(options?: ClickOptions): Promise<void> {
+    await this.page.uncheckLocator(this.state, options);
+  }
+
+  async selectOption(
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    return this.page.selectOptionLocator(this.state, values);
+  }
+
   async isVisible(): Promise<boolean> {
     return this.page.isVisibleLocator(this.state);
+  }
+
+  async elementHandle(): Promise<ProtocolElementHandleAdapter> {
+    const reference: ProtocolElementHandleReference = {
+      chain: this.state.chain,
+      ...(this.state.pick ? { pick: this.state.pick } : {})
+    };
+    const handleReference = await this.page.createHandleReference(
+      reference,
+      `Could not resolve ${formatSelectorChain(this.state.chain)} to DOM Element`
+    );
+    return this.page.createHandle(handleReference);
+  }
+
+  async elementHandles(): Promise<ProtocolElementHandleAdapter[]> {
+    const count = await this.page.countSelector({
+      chain: this.state.chain,
+      ...(this.state.pick ? { pick: this.state.pick } : {})
+    });
+    const handles: ProtocolElementHandleAdapter[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const reference: ProtocolElementHandleReference = {
+        chain: this.state.chain,
+        pick: { kind: "nth", index }
+      };
+      handles.push(this.page.createHandle(await this.page.createHandleReference(reference)));
+    }
+    return handles;
   }
 }
 
@@ -1649,7 +5568,11 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
   reference(): ProtocolElementHandleReference {
     return {
       chain: [...this.referenceState.chain],
+      ...(this.referenceState.handleId ? { handleId: this.referenceState.handleId } : {}),
       ...(this.referenceState.pick ? { pick: this.referenceState.pick } : {}),
+      ...(this.referenceState.protocolFrameId ? { protocolFrameId: this.referenceState.protocolFrameId } : {}),
+      ...(this.referenceState.protocolObjectId ? { protocolObjectId: this.referenceState.protocolObjectId } : {}),
+      ...(this.referenceState.protocolSessionId ? { protocolSessionId: this.referenceState.protocolSessionId } : {}),
       ...(this.referenceState.scope ? { scope: this.referenceState.scope } : {})
     };
   }
@@ -1663,10 +5586,10 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
     if (count === 0) {
       return null;
     }
-    return new CdpElementHandleAdapter(this.page, {
+    return new CdpElementHandleAdapter(this.page, await this.page.createHandleReference({
       ...reference,
       pick: { kind: "first" }
-    });
+    }));
   }
 
   async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
@@ -1675,17 +5598,20 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
       chain: selector
     };
     const count = await this.page.countSelector(reference);
-    return Array.from({ length: count }, (_value, index) => {
-      return new CdpElementHandleAdapter(this.page, {
+    const handles: ProtocolElementHandleAdapter[] = [];
+    for (let index = 0; index < count; index += 1) {
+      handles.push(new CdpElementHandleAdapter(this.page, await this.page.createHandleReference({
         ...reference,
         pick: { kind: "nth", index }
-      });
-    });
+      })));
+    }
+    return handles;
   }
 
   async evalOnSelector<TResult>(
     selector: LocatorSelector[],
     expression: string,
+    isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult> {
     return this.page.evaluateOnReference(
@@ -1696,13 +5622,15 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
       },
       expression,
       arg,
-      `elementHandle.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`
+      `elementHandle.$eval: Failed to find element matching selector "${formatSelectorChain(selector)}"`,
+      isFunction
     );
   }
 
   async evalOnSelectorAll<TResult>(
     selector: LocatorSelector[],
     expression: string,
+    isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult> {
     return this.page.evaluateOnReferenceAll(
@@ -1711,7 +5639,8 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
         chain: selector
       },
       expression,
-      arg
+      arg,
+      isFunction
     );
   }
 
@@ -1719,8 +5648,38 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
     return this.page.evaluateOnReference(this.reference(), expression, arg, "No element found.");
   }
 
+  async evaluateHandle<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction = looksLikeFunctionExpression(expression)
+  ): Promise<ProtocolJSHandleAdapter<TResult>> {
+    const handle = await this.page.resolveElementReferenceAsHandle(this.reference());
+    return handle.evaluateHandle<TResult>(expression, arg, isFunction);
+  }
+
+  async contentFrameId(): Promise<string | null> {
+    return this.page.contentFrameIdForReference(this.reference());
+  }
+
+  async ownerFrameId(): Promise<string | null> {
+    return this.page.ownerFrameIdForReference(this.reference());
+  }
+
+  async boundingBox(): Promise<Rect | null> {
+    return this.page.boundingBoxReference(this.reference());
+  }
+
   async click(options?: ClickOptions): Promise<void> {
     await this.page.clickReference(this.reference(), options);
+  }
+
+  async dblclick(options?: ClickOptions): Promise<void> {
+    await this.page.clickReference(this.reference(), { ...options, clickCount: 2 });
+  }
+
+  async check(options?: ClickOptions): Promise<void> {
+    void options;
+    await this.page.checkReference(this.reference(), true);
   }
 
   async hover(options?: HoverOptions): Promise<void> {
@@ -1743,8 +5702,186 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
     return this.page.elementTextContent(this.reference());
   }
 
+  async innerText(): Promise<string> {
+    return this.page.innerTextReference(this.reference());
+  }
+
+  async innerHTML(): Promise<string> {
+    return this.page.innerHTMLReference(this.reference());
+  }
+
+  async getAttribute(name: string): Promise<string | null> {
+    return this.page.getAttributeReference(this.reference(), name);
+  }
+
+  async inputValue(): Promise<string> {
+    return this.page.inputValueReference(this.reference());
+  }
+
+  async isChecked(): Promise<boolean> {
+    return this.page.isCheckedReference(this.reference());
+  }
+
+  async isDisabled(): Promise<boolean> {
+    return this.page.isDisabledReference(this.reference());
+  }
+
+  async isEditable(): Promise<boolean> {
+    return this.page.isEditableReference(this.reference());
+  }
+
+  async isEnabled(): Promise<boolean> {
+    return this.page.isEnabledReference(this.reference());
+  }
+
+  async isHidden(): Promise<boolean> {
+    return !(await this.page.elementIsVisible(this.reference()));
+  }
+
   async isVisible(): Promise<boolean> {
     return this.page.elementIsVisible(this.reference());
+  }
+
+  async focus(): Promise<void> {
+    await this.page.focusReference(this.reference());
+  }
+
+  async uncheck(options?: ClickOptions): Promise<void> {
+    void options;
+    await this.page.checkReference(this.reference(), false);
+  }
+
+  async selectOption(
+    values: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>
+  ): Promise<string[]> {
+    return this.page.selectOptionReference(this.reference(), values);
+  }
+}
+
+class CdpJSHandleAdapter<T = unknown> implements ProtocolJSHandleAdapter<T> {
+  private disposed = false;
+
+  constructor(
+    private readonly page: CdpPageAdapter,
+    private readonly remoteObject: CdpRemoteObject,
+    private readonly runtimeSessionId?: string,
+    private readonly runtimeFrameId?: string
+  ) {}
+
+  sessionId(): string | undefined {
+    return this.runtimeSessionId;
+  }
+
+  frameId(): string | undefined {
+    return this.runtimeFrameId;
+  }
+
+  async evaluate<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction = looksLikeFunctionExpression(expression)
+  ): Promise<TResult> {
+    return this.page.evaluateWithArgumentsInSession<TResult>(
+      this.runtimeSessionId,
+      this.runtimeFrameId,
+      expression,
+      true,
+      arg === undefined
+        ? [new RoxyJSHandle(undefined, null, undefined, this)]
+        : [new RoxyJSHandle(undefined, null, undefined, this), arg],
+      isFunction
+    );
+  }
+
+  async evaluateHandle<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction = looksLikeFunctionExpression(expression)
+  ): Promise<ProtocolJSHandleAdapter<TResult>> {
+    return this.page.evaluateWithArgumentsInSession<TResult>(
+      this.runtimeSessionId,
+      this.runtimeFrameId,
+      expression,
+      false,
+      arg === undefined
+        ? [new RoxyJSHandle(undefined, null, undefined, this)]
+        : [new RoxyJSHandle(undefined, null, undefined, this), arg],
+      isFunction
+    );
+  }
+
+  async jsonValue(): Promise<T> {
+    if (!this.remoteObject.objectId) {
+      return cdpRemoteObjectValue(this.remoteObject) as T;
+    }
+    return this.page.evaluateWithArgumentsInSession<T>(
+      this.runtimeSessionId,
+      this.runtimeFrameId,
+      "(value) => value",
+      true,
+      [new RoxyJSHandle(undefined, null, undefined, this)],
+      true
+    );
+  }
+
+  async getProperties(): Promise<Map<string, ProtocolJSHandleAdapter>> {
+    if (!this.remoteObject.objectId) {
+      return new Map();
+    }
+    const response = await this.page.sendRuntimeGetProperties({
+      objectId: this.remoteObject.objectId,
+      ownProperties: true
+    }, this.runtimeSessionId);
+    const properties = new Map<string, ProtocolJSHandleAdapter>();
+    for (const property of response.result) {
+      if (!property.enumerable || !property.value) {
+        continue;
+      }
+      properties.set(property.name, new CdpJSHandleAdapter(this.page, property.value, this.runtimeSessionId, this.runtimeFrameId));
+    }
+    return properties;
+  }
+
+  async getProperty(propertyName: string): Promise<ProtocolJSHandleAdapter> {
+    return (await this.getProperties()).get(propertyName) ?? new CdpJSHandleAdapter(this.page, {
+      type: "undefined",
+      value: undefined
+    }, this.runtimeSessionId, this.runtimeFrameId);
+  }
+
+  preview(): string {
+    return cdpRemoteObjectPreview(this.remoteObject);
+  }
+
+  rawValue(): T | undefined {
+    return cdpRemoteObjectValue(this.remoteObject) as T | undefined;
+  }
+
+  serializedValue(): SerializedValue | undefined {
+    return cdpSerializedRemoteObjectValue(this.remoteObject);
+  }
+
+  remoteObjectId(): string | undefined {
+    return this.remoteObject.objectId;
+  }
+
+  async asElementReference(): Promise<ProtocolElementHandleReference | null> {
+    if (this.remoteObject.subtype !== "node") {
+      return null;
+    }
+    return this.page.storeRemoteElementHandle(this, { disposeHandle: false });
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    if (this.remoteObject.objectId) {
+      await this.page.sendRuntimeReleaseObject({
+        objectId: this.remoteObject.objectId
+      }, this.runtimeSessionId).catch(() => {});
+    }
   }
 }
 
@@ -1955,6 +6092,7 @@ export function buildChromiumLaunchArgs(
     "--disable-background-networking",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
+    "--disable-popup-blocking",
     "--disable-renderer-backgrounding",
     "--no-first-run",
     "--no-default-browser-check",
@@ -2048,14 +6186,266 @@ const CHANNEL_EXECUTABLE_CANDIDATES: Record<
   }
 };
 
-function mapCdpHeaders(headers: Record<string, string | number | boolean>): Array<{
+function mapCdpHeaders(
+  headers: Record<string, string | number | boolean | Array<string | number | boolean>>,
+  separator = ", "
+): Array<{
   name: string;
   value: string;
 }> {
-  return Object.entries(headers).map(([name, value]) => ({
-    name,
-    value: String(value)
-  }));
+  const entries: Array<{ name: string; value: string }> = [];
+  for (const [name, rawValue] of Object.entries(headers)) {
+    if (Array.isArray(rawValue)) {
+      for (const value of rawValue) {
+        entries.push({
+          name,
+          value: String(value)
+        });
+      }
+      continue;
+    }
+    const text = String(rawValue);
+    if (separator === "\n" && text.includes("\n")) {
+      for (const value of text.split("\n")) {
+        entries.push({
+          name,
+          value
+        });
+      }
+      continue;
+    }
+    if (separator === "\n" && text.includes("\r\n")) {
+      for (const value of text.split("\r\n")) {
+        if (!value) {
+          continue;
+        }
+        entries.push({
+          name,
+          value
+        });
+      }
+      continue;
+    }
+    if (separator === "\n" && name.toLowerCase() === "set-cookie" && text.includes(", ")) {
+      entries.push({
+        name,
+        value: text
+      });
+      continue;
+    }
+    if (text.includes(separator) && separator === "\n") {
+      for (const value of text.split(separator)) {
+        if (!value) {
+          continue;
+        }
+        entries.push({
+          name,
+          value
+        });
+      }
+      continue;
+    }
+    entries.push({
+      name,
+      value: text
+    });
+  }
+  return entries;
+}
+
+function parseCdpHeadersText(headersText: string | undefined): Array<{ name: string; value: string }> | null {
+  if (!headersText) {
+    return null;
+  }
+  const entries: Array<{ name: string; value: string }> = [];
+  for (const line of headersText.split(/\r?\n/)) {
+    if (!line || line.startsWith("HTTP/")) {
+      continue;
+    }
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex === -1) {
+      continue;
+    }
+    entries.push({
+      name: line.slice(0, separatorIndex),
+      value: line.slice(separatorIndex + 1).trimStart()
+    });
+  }
+  return entries.length ? entries : null;
+}
+
+function splitSetCookieHeader(
+  headers: Array<{ name: string; value: string }>
+): Array<{ name: string; value: string }> {
+  const index = headers.findIndex(({ name }) => name.toLowerCase() === "set-cookie");
+  if (index === -1) {
+    return headers;
+  }
+
+  const header = headers[index];
+  if (!header) {
+    return headers;
+  }
+
+  const values = header.value.split("\n");
+  if (values.length === 1) {
+    return headers;
+  }
+
+  const result = headers.slice();
+  result.splice(index, 1, ...values.map((value) => ({ name: header.name, value })));
+  return result;
+}
+
+function applyCdpHeaderOverrides(
+  originalHeaders: Record<string, string>,
+  overrides: Array<{ name: string; value: string }>
+): Array<{ name: string; value: string }> {
+  const result = new Map<string, { name: string; value: string }>();
+  for (const override of overrides) {
+    if (!isForbiddenRequestHeader(override.name, override.value)) {
+      result.set(override.name.toLowerCase(), { ...override });
+    }
+  }
+  for (const [name, value] of Object.entries(originalHeaders)) {
+    if (isForbiddenRequestHeader(name, value)) {
+      result.set(name.toLowerCase(), { name, value });
+    }
+  }
+  return [...result.values()];
+}
+
+const FORBIDDEN_REQUEST_HEADER_NAMES = new Set([
+  "accept-charset",
+  "accept-encoding",
+  "access-control-request-headers",
+  "access-control-request-method",
+  "connection",
+  "content-length",
+  "cookie",
+  "date",
+  "dnt",
+  "expect",
+  "host",
+  "keep-alive",
+  "origin",
+  "referer",
+  "set-cookie",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "via"
+]);
+
+const FORBIDDEN_REQUEST_METHODS = new Set(["CONNECT", "TRACE", "TRACK"]);
+
+function isForbiddenRequestHeader(name: string, value?: string): boolean {
+  const lowerName = name.toLowerCase();
+  if (FORBIDDEN_REQUEST_HEADER_NAMES.has(lowerName)) {
+    return true;
+  }
+  if (lowerName.startsWith("proxy-") || lowerName.startsWith("sec-")) {
+    return true;
+  }
+  if (
+    lowerName === "x-http-method" ||
+    lowerName === "x-http-method-override" ||
+    lowerName === "x-method-override"
+  ) {
+    return value !== undefined && FORBIDDEN_REQUEST_METHODS.has(value.toUpperCase());
+  }
+  return false;
+}
+
+function isCdpPreflightRequest(event: {
+  request: {
+    headers: Record<string, string>;
+    method: string;
+  };
+}): boolean {
+  return (
+    event.request.method === "OPTIONS" &&
+    Boolean(cdpHeaderValue(event.request.headers, "access-control-request-method"))
+  );
+}
+
+function cdpPreflightResponseHeaders(
+  requestHeaders: Record<string, string>
+): Array<{ name: string; value: string }> {
+  const headers: Array<{ name: string; value: string }> = [
+    {
+      name: "Access-Control-Allow-Origin",
+      value: cdpHeaderValue(requestHeaders, "origin") ?? "*"
+    },
+    {
+      name: "Access-Control-Allow-Methods",
+      value: cdpHeaderValue(requestHeaders, "access-control-request-method") ?? "GET, POST, OPTIONS, DELETE"
+    },
+    {
+      name: "Access-Control-Allow-Credentials",
+      value: "true"
+    }
+  ];
+  const requestedHeaders = cdpHeaderValue(requestHeaders, "access-control-request-headers");
+  if (requestedHeaders) {
+    headers.push({
+      name: "Access-Control-Allow-Headers",
+      value: requestedHeaders
+    });
+  }
+  return headers;
+}
+
+function cdpHeaderValue(headers: Record<string, string>, name: string): string | undefined {
+  const normalizedName = name.toLowerCase();
+  for (const [headerName, value] of Object.entries(headers)) {
+    if (headerName.toLowerCase() === normalizedName) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function normalizeHeaderRecord(
+  headers: Record<string, string | number | boolean>
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), String(value)])
+  );
+}
+
+function cdpErrorReasonForRoute(errorCode?: string): FetchErrorReason {
+  switch ((errorCode ?? "failed").toLowerCase()) {
+    case "aborted":
+      return "Aborted";
+    case "timedout":
+      return "TimedOut";
+    case "accessdenied":
+      return "AccessDenied";
+    case "connectionclosed":
+      return "ConnectionClosed";
+    case "connectionreset":
+      return "ConnectionReset";
+    case "connectionrefused":
+      return "ConnectionRefused";
+    case "connectionaborted":
+      return "ConnectionAborted";
+    case "connectionfailed":
+      return "ConnectionFailed";
+    case "namenotresolved":
+      return "NameNotResolved";
+    case "internetdisconnected":
+      return "InternetDisconnected";
+    case "addressunreachable":
+      return "AddressUnreachable";
+    case "blockedbyclient":
+      return "BlockedByClient";
+    case "blockedbyresponse":
+      return "BlockedByResponse";
+    default:
+      return "Failed";
+  }
 }
 
 async function safelyCloseClient(client: CdpClient): Promise<void> {
@@ -2104,6 +6494,97 @@ function formatCdpEvaluationError(response: {
   return response.exceptionDetails?.text || "Runtime evaluation failed.";
 }
 
+function exceptionToError(exceptionDetails: {
+  exception?: {
+    description?: string;
+    preview?: {
+      properties?: Array<{ name: string; value?: string }>;
+    };
+    value?: unknown;
+  };
+  stackTrace?: {
+    callFrames: Array<{
+      columnNumber: number;
+      functionName?: string;
+      lineNumber: number;
+      url: string;
+    }>;
+  };
+  text: string;
+}): Error {
+  const messageWithStack = getCdpExceptionMessage(exceptionDetails);
+  const lines = messageWithStack.split("\n");
+  const firstStackTraceLine = lines.findIndex((line) => line.startsWith("    at"));
+  const messageWithName =
+    firstStackTraceLine === -1 ? messageWithStack : lines.slice(0, firstStackTraceLine).join("\n");
+  const stack = firstStackTraceLine === -1 ? "" : messageWithStack;
+  let normalizedMessageWithName = messageWithName.replace(/^Uncaught\s+/, "");
+  const objectMessage = normalizedMessageWithName.match(/^\[object (.*)\]$/);
+  if (objectMessage) {
+    normalizedMessageWithName = objectMessage[1]!;
+  }
+  const { name, message } = splitErrorMessage(normalizedMessageWithName);
+  const error = new Error(message);
+  error.stack = stack;
+  const nameOverride = exceptionDetails.exception?.preview?.properties?.find((property) => property.name === "name");
+  error.name = nameOverride ? nameOverride.value ?? "Error" : name;
+  return error;
+}
+
+function getCdpExceptionMessage(exceptionDetails: {
+  exception?: {
+    className?: string;
+    description?: string;
+    subtype?: string;
+    type?: string;
+    value?: unknown;
+  };
+  stackTrace?: {
+    callFrames: Array<{
+      columnNumber: number;
+      functionName?: string;
+      lineNumber: number;
+      url: string;
+    }>;
+  };
+  text: string;
+}): string {
+  if (exceptionDetails.exception) {
+    if (
+      exceptionDetails.exception.type === "object" &&
+      exceptionDetails.exception.className &&
+      exceptionDetails.exception.description === `[object ${exceptionDetails.exception.className}]`
+    ) {
+      return exceptionDetails.exception.className;
+    }
+    const objectDescription = exceptionDetails.exception.description?.match(/^\[object (.*)\]$/);
+    if (exceptionDetails.exception.type === "object" && objectDescription) {
+      return objectDescription[1]!;
+    }
+    return exceptionDetails.exception.description || String(exceptionDetails.exception.value);
+  }
+  let message = exceptionDetails.text;
+  if (exceptionDetails.stackTrace) {
+    for (const callFrame of exceptionDetails.stackTrace.callFrames) {
+      const location = `${callFrame.url}:${callFrame.lineNumber}:${callFrame.columnNumber}`;
+      const functionName = callFrame.functionName || "<anonymous>";
+      message += `\n    at ${functionName} (${location})`;
+    }
+  }
+  return message;
+}
+
+function splitErrorMessage(message: string): { name: string; message: string } {
+  const separationIndex = message.indexOf(":");
+  return {
+    name: separationIndex !== -1 ? message.slice(0, separationIndex) : "",
+    message:
+      separationIndex !== -1 && separationIndex + 2 <= message.length
+        ? message.substring(separationIndex + 2)
+        : message
+  };
+}
+
 function formatConsoleText(
   args: Array<{
     description?: string;
@@ -2131,6 +6612,349 @@ function formatConsoleText(
     .join(" ");
 }
 
+function createCdpConsoleHandle(arg: {
+  className?: string;
+  description?: string;
+  subtype?: string;
+  type?: string;
+  unserializableValue?: string;
+  value?: unknown;
+}) {
+  const preview = cdpRemoteObjectPreview(arg);
+  return createJSHandle(cdpRemoteObjectValue(arg), preview);
+}
+
+async function serializeCdpEvaluationArguments(
+  args: unknown[],
+  page: CdpPageAdapter,
+  temporaryHandles: ProtocolJSHandleAdapter[]
+): Promise<{
+  handles: RoxyJSHandle[];
+  values: SerializedValue[];
+}> {
+  const handles: RoxyJSHandle[] = [];
+  const pushHandle = (handle: RoxyJSHandle): number => {
+    handles.push(handle);
+    return handles.length - 1;
+  };
+  const values: SerializedValue[] = [];
+  for (const arg of args) {
+    const elementHandles: Array<{
+      handle: RoxyElementHandle;
+      marker: { __roxyElementEvaluationHandle: number };
+    }> = [];
+    const serialized = serializeAsCallArgument(arg, (value) => {
+      if (value instanceof RoxyElementHandle) {
+        const marker = { __roxyElementEvaluationHandle: elementHandles.length };
+        elementHandles.push({ handle: value, marker });
+        return { fallThrough: marker };
+      }
+      return serializeCdpEvaluationValue(value, pushHandle);
+    });
+    for (const { handle, marker } of elementHandles) {
+      const remoteHandle =
+        page.maybeCreateRemoteHandleFromReference(handle.reference()) ??
+        await page.resolveElementReferenceAsHandle(handle.reference());
+      if (!handle.reference().protocolObjectId) {
+        temporaryHandles.push(remoteHandle);
+      }
+      const roxyHandle = new RoxyJSHandle(undefined, null, undefined, remoteHandle);
+      replaceElementHandleMarker(serialized, marker, { h: pushHandle(roxyHandle) });
+    }
+    values.push(serialized);
+  }
+  return { handles, values };
+}
+
+function serializeCdpEvaluationValue(
+  value: unknown,
+  pushHandle: (handle: RoxyJSHandle) => number
+) {
+    if (value instanceof RoxyJSHandle) {
+      const objectId = value._remoteObjectId();
+      if (objectId) {
+        return { h: pushHandle(value) };
+      }
+      const serializedValue = value._serializedValue();
+      if (serializedValue !== undefined) {
+        return { fallThrough: parseEvaluationResultValue(serializedValue) };
+      }
+      return { fallThrough: value.rawValue() };
+    }
+    return { fallThrough: value };
+}
+
+function replaceElementHandleMarker(
+  value: SerializedValue,
+  marker: { __roxyElementEvaluationHandle: number },
+  replacement: { h: number },
+  visited = new Set<object>()
+): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (visited.has(value)) {
+    return false;
+  }
+  visited.add(value);
+  if ("o" in value) {
+    if (
+      value.o.length === 1 &&
+      value.o[0]?.k === "__roxyElementEvaluationHandle" &&
+      value.o[0].v === marker.__roxyElementEvaluationHandle
+    ) {
+      Object.assign(value, replacement);
+      delete (value as { o?: unknown }).o;
+      delete (value as { id?: unknown }).id;
+      return true;
+    }
+    for (const entry of value.o) {
+      if (replaceElementHandleMarker(entry.v, marker, replacement, visited)) {
+        return true;
+      }
+    }
+  }
+  if ("a" in value) {
+    for (const entry of value.a) {
+      if (replaceElementHandleMarker(entry, marker, replacement, visited)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function normalizeEvaluationExpression(expression: string, isFunction: boolean | undefined): string {
+  let normalized = expression.trim();
+
+  if (isFunction) {
+    try {
+      new Function(`(${normalized})`);
+    } catch {
+      if (normalized.startsWith("async ")) {
+        normalized = `async function ${normalized.substring("async ".length)}`;
+      } else {
+        normalized = `function ${normalized}`;
+      }
+      try {
+        new Function(`(${normalized})`);
+      } catch {
+        throw new Error("Passed function is not well-serializable!");
+      }
+    }
+  }
+
+  if (/^(async\s+)?function(\s|\()/.test(normalized)) {
+    normalized = `(${normalized})`;
+  }
+  return normalized;
+}
+
+function cdpSerializedRemoteObjectValue(arg: CdpRemoteObject): SerializedValue | undefined {
+  if (arg.unserializableValue) {
+    switch (arg.unserializableValue) {
+      case "NaN":
+        return { v: "NaN" };
+      case "Infinity":
+        return { v: "Infinity" };
+      case "-Infinity":
+        return { v: "-Infinity" };
+      case "-0":
+        return { v: "-0" };
+      default:
+        return undefined;
+    }
+  }
+  if ("value" in arg) {
+    if (arg.value === undefined) {
+      return { v: "undefined" };
+    }
+    if (arg.value === null) {
+      return { v: "null" };
+    }
+    if (
+      typeof arg.value === "boolean" ||
+      typeof arg.value === "number" ||
+      typeof arg.value === "string"
+    ) {
+      return arg.value;
+    }
+  }
+  if (arg.subtype === "null") {
+    return { v: "null" };
+  }
+  return undefined;
+}
+
+function cdpRemoteObjectValue(arg: {
+  className?: string;
+  description?: string;
+  preview?: {
+    properties?: Array<{
+      name: string;
+      type?: string;
+      value?: string;
+      valuePreview?: { description?: string };
+    }>;
+    subtype?: string;
+  };
+  subtype?: string;
+  type?: string;
+  unserializableValue?: string;
+  value?: unknown;
+}): unknown {
+  if (arg.unserializableValue) {
+    switch (arg.unserializableValue) {
+      case "NaN":
+        return NaN;
+      case "Infinity":
+        return Infinity;
+      case "-Infinity":
+        return -Infinity;
+      case "-0":
+        return -0;
+      default:
+        return arg.unserializableValue;
+    }
+  }
+  if ("value" in arg) {
+    return arg.value;
+  }
+  if (arg.subtype === "null") {
+    return null;
+  }
+  if (arg.className === "Window") {
+    return "ref: <Window>";
+  }
+  if (arg.className === "Document") {
+    return "ref: <Document>";
+  }
+  if (arg.subtype === "node") {
+    return "ref: <Node>";
+  }
+  if (arg.subtype === "array" && arg.description) {
+    return parseCdpArrayPreview(arg.description);
+  }
+  if (arg.preview?.properties?.length) {
+    return Object.fromEntries(
+      arg.preview.properties.map((property) => [
+        property.name,
+        parseCdpPreviewPrimitive(property.value ?? property.valuePreview?.description ?? property.type ?? "")
+      ])
+    );
+  }
+  if (arg.type === "object" && arg.description) {
+    return parseCdpObjectPreview(arg.description);
+  }
+  return undefined;
+}
+
+function cdpRemoteObjectPreview(arg: {
+  className?: string;
+  description?: string;
+  preview?: {
+    properties?: Array<{
+      name: string;
+      type?: string;
+      value?: string;
+      valuePreview?: { description?: string };
+    }>;
+    subtype?: string;
+  };
+  subtype?: string;
+  type?: string;
+  unserializableValue?: string;
+  value?: unknown;
+}): string {
+  if (typeof arg.value === "string") {
+    return arg.value;
+  }
+  if (arg.value !== undefined) {
+    return String(arg.value);
+  }
+  if (arg.unserializableValue) {
+    return arg.unserializableValue;
+  }
+  if (arg.className === "Window") {
+    return "Window";
+  }
+  if (arg.className === "Document") {
+    return "Document";
+  }
+  if (arg.subtype === "node") {
+    return "Node";
+  }
+  if (arg.subtype === "array" && arg.description) {
+    return arg.description.replace(/^\((\d+)\)\s*/, "");
+  }
+  if (arg.preview?.properties?.length) {
+    const entries = arg.preview.properties.map((property) => {
+      const value = property.value ?? property.valuePreview?.description ?? property.type ?? "";
+      return `${property.name}: ${value}`;
+    });
+    return `{${entries.join(", ")}}`;
+  }
+  if (arg.description) {
+    return arg.description;
+  }
+  return arg.type ?? "";
+}
+
+function parseCdpArrayPreview(description: string): unknown[] | undefined {
+  const normalized = description.replace(/^\((\d+)\)\s*/, "");
+  if (!normalized.startsWith("[") || !normalized.endsWith("]")) {
+    return undefined;
+  }
+  const content = normalized.slice(1, -1).trim();
+  if (!content) {
+    return [];
+  }
+  return content.split(",").map((part) => parseCdpPreviewPrimitive(part.trim()));
+}
+
+function parseCdpObjectPreview(description: string): Record<string, unknown> | undefined {
+  if (!description.startsWith("Object")) {
+    return undefined;
+  }
+  const body = description.slice("Object".length).trim();
+  if (!body.startsWith("{") || !body.endsWith("}")) {
+    return undefined;
+  }
+  const content = body.slice(1, -1).trim();
+  if (!content) {
+    return {};
+  }
+  const result: Record<string, unknown> = {};
+  for (const entry of content.split(",")) {
+    const separator = entry.indexOf(":");
+    if (separator === -1) {
+      return undefined;
+    }
+    const key = entry.slice(0, separator).trim();
+    result[key] = parseCdpPreviewPrimitive(entry.slice(separator + 1).trim());
+  }
+  return result;
+}
+
+function parseCdpPreviewPrimitive(value: string): unknown {
+  if (value === "undefined") {
+    return undefined;
+  }
+  if (value === "null") {
+    return null;
+  }
+  if (value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(value)) {
+    return Number(value);
+  }
+  return value.replace(/^["']|["']$/g, "");
+}
+
 function resolveKeyDefinition(key: string): {
   code: string;
   key: string;
@@ -2139,6 +6963,11 @@ function resolveKeyDefinition(key: string): {
 } {
   const definitions: Record<string, { code: string; key: string; keyCode: number; text?: string }> =
     {
+      Alt: { code: "AltLeft", key: "Alt", keyCode: 18 },
+      Control: { code: "ControlLeft", key: "Control", keyCode: 17 },
+      Meta: { code: "MetaLeft", key: "Meta", keyCode: 91 },
+      Shift: { code: "ShiftLeft", key: "Shift", keyCode: 16 },
+      ShiftLeft: { code: "ShiftLeft", key: "Shift", keyCode: 16 },
       Enter: { code: "Enter", key: "Enter", keyCode: 13, text: "\r" },
       Tab: { code: "Tab", key: "Tab", keyCode: 9 },
       Escape: { code: "Escape", key: "Escape", keyCode: 27 },
@@ -2172,6 +7001,115 @@ function resolveKeyDefinition(key: string): {
   };
 }
 
+function parseKeyboardShortcut(shortcut: string): {
+  modifiers: string[];
+  key: string;
+} {
+  if (!shortcut.includes("+")) {
+    return {
+      modifiers: [],
+      key: normalizeShortcutKey(shortcut)
+    };
+  }
+
+  const segments = shortcut.split("+");
+  let key = segments.pop() ?? "";
+  if (key === "") {
+    key = "+";
+  }
+
+  return {
+    modifiers: segments.filter(Boolean).map(normalizeShortcutKey).filter(isKeyboardModifier),
+    key: normalizeShortcutKey(key)
+  };
+}
+
+function normalizeShortcutKey(key: string): string {
+  if (key === "ControlOrMeta") {
+    return process.platform === "darwin" ? "Meta" : "Control";
+  }
+  return key;
+}
+
+function isKeyboardModifier(key: string): key is "Alt" | "Control" | "Meta" | "Shift" {
+  return key === "Alt" || key === "Control" || key === "Meta" || key === "Shift";
+}
+
+function keyboardModifierMask(modifiers: Iterable<string>): number {
+  let mask = 0;
+  for (const modifier of modifiers) {
+    switch (modifier) {
+      case "Alt":
+        mask |= 1;
+        break;
+      case "Control":
+        mask |= 2;
+        break;
+      case "Meta":
+        mask |= 4;
+        break;
+      case "Shift":
+        mask |= 8;
+        break;
+    }
+  }
+  return mask;
+}
+
+function convertToDisjointCoverageRanges(
+  nestedRanges: CdpCoverageRange[]
+): Array<{ start: number; end: number }> {
+  const points: Array<{
+    offset: number;
+    range: CdpCoverageRange;
+    type: 0 | 1;
+  }> = [];
+  for (const range of nestedRanges) {
+    points.push({ offset: range.startOffset, type: 0, range });
+    points.push({ offset: range.endOffset, type: 1, range });
+  }
+
+  points.sort((a, b) => {
+    if (a.offset !== b.offset) {
+      return a.offset - b.offset;
+    }
+    if (a.type !== b.type) {
+      return b.type - a.type;
+    }
+    const aLength = a.range.endOffset - a.range.startOffset;
+    const bLength = b.range.endOffset - b.range.startOffset;
+    if (a.type === 0) {
+      return bLength - aLength;
+    }
+    return aLength - bLength;
+  });
+
+  const hitCountStack: number[] = [];
+  const results: Array<{ start: number; end: number }> = [];
+  let lastOffset = 0;
+  for (const point of points) {
+    if (
+      hitCountStack.length &&
+      lastOffset < point.offset &&
+      hitCountStack[hitCountStack.length - 1]! > 0
+    ) {
+      const lastResult = results.length ? results[results.length - 1] : null;
+      if (lastResult && lastResult.end === lastOffset) {
+        lastResult.end = point.offset;
+      } else {
+        results.push({ start: lastOffset, end: point.offset });
+      }
+    }
+    lastOffset = point.offset;
+    if (point.type === 0) {
+      hitCountStack.push(point.range.count);
+    } else {
+      hitCountStack.pop();
+    }
+  }
+  return results;
+}
+
 async function retryOnNotAttachedToActivePage<TResult>(
   run: () => Promise<TResult>,
   attempts = 5
@@ -2203,10 +7141,33 @@ function isNotAttachedToActivePageError(error: unknown): boolean {
 function shouldCaptureNavigationResponseUrl(url: string): boolean {
   try {
     const protocol = new URL(url).protocol;
-    return protocol === "http:" || protocol === "https:";
+    return protocol === "http:" || protocol === "https:" || protocol === "file:";
   } catch {
     return false;
   }
+}
+
+function matchesNavigationResponseUrl(
+  url: string,
+  matcher: string | RegExp | ((url: URL) => boolean)
+): boolean {
+  if (typeof matcher === "string") {
+    return url === matcher;
+  }
+  if (matcher instanceof RegExp) {
+    return matcher.test(url);
+  }
+  try {
+    return matcher(new URL(url));
+  } catch {
+    return false;
+  }
+}
+
+function cdpContinueRequestHeaders(headers: Record<string, string>): Array<{ name: string; value: string }> {
+  return Object.entries(headers)
+    .filter(([name]) => name.toLowerCase() !== "content-length")
+    .map(([name, value]) => ({ name, value }));
 }
 
 function formatSelectorChain(chain: LocatorSelector[]): string {
@@ -2232,6 +7193,9 @@ async function withTimeout<TResult>(
   message: string
 ): Promise<TResult> {
   const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (effectiveTimeout === 0) {
+    return promise;
+  }
 
   return new Promise<TResult>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -2258,6 +7222,40 @@ function delay(timeoutMs: number): Promise<void> {
 
   return new Promise((resolve) => {
     setTimeout(resolve, timeoutMs);
+  });
+}
+
+function createScreencastHighlightBox(point: ActionPoint): {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+} {
+  const size = 48;
+  return {
+    left: point.x - size / 2,
+    top: point.y - size / 2,
+    width: size,
+    height: size
+  };
+}
+
+async function waitForAbortableTimeout(duration: number, signal: AbortSignal): Promise<boolean> {
+  if (duration <= 0) {
+    return !signal.aborted;
+  }
+
+  return await new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, duration);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 

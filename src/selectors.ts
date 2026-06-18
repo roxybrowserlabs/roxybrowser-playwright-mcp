@@ -10,58 +10,97 @@ export function parseSelectorChain(selector: string): LocatorSelector[] {
     throw new Error("Selector must not be empty.");
   }
 
-  return parts.map(parseSelectorPart);
+  let captured = false;
+  return parts.map((part) => {
+    const parsed = parseSelectorPart(part, selector);
+    if (parsed.capture) {
+      if (captured) {
+        throw new Error("Only one of the selectors can capture using * modifier");
+      }
+      captured = true;
+    }
+    return parsed;
+  });
 }
 
-function parseSelectorPart(part: string): LocatorSelector {
-  const engineMatch = /^([a-zA-Z0-9-]+)\s*=(.*)$/s.exec(part);
+function parseSelectorPart(part: string, selectorText: string): LocatorSelector {
+  let capture = false;
+  let bodyPart = part;
+  if (bodyPart === "*" && selectorText.trim() !== "*") {
+    capture = true;
+    bodyPart = "css=*";
+  } else if (/^\*[a-zA-Z0-9-]*\s*=/.test(bodyPart)) {
+    capture = true;
+    bodyPart = bodyPart.slice(1);
+  }
+
+  const withCapture = (selector: LocatorSelector): LocatorSelector => ({
+    ...selector,
+    ...(capture ? { capture: true } : {})
+  });
+
+  const malformedCaptureMatch = /^([^=]*)=(.*)$/s.exec(bodyPart);
+  if (capture && malformedCaptureMatch && !malformedCaptureMatch[1]!.trim()) {
+    throw new Error(`Unknown engine "" while parsing selector ${selectorText}`);
+  }
+
+  const engineMatch = /^([a-zA-Z0-9-]+)\s*=(.*)$/s.exec(bodyPart);
   if (engineMatch) {
     const engine = engineMatch[1]!;
     const body = engineMatch[2]!;
     switch (engine) {
+      case "internal:control":
+        return withCapture({
+          strategy: "control",
+          value: body.trim()
+        });
       case "css":
-        return {
+        return withCapture({
           strategy: "css",
           value: body.trim()
-        };
+        });
       case "text":
-        return parseTextSelector(body);
+        return withCapture(parseTextSelector(body));
       case "xpath":
-        return {
+        return withCapture({
           strategy: "xpath",
           value: body.trim()
-        };
+        });
       case "id":
-        return {
+        return withCapture({
           strategy: "css",
           value: `[id=${quoteAttributeValue(body.trim())}]`
-        };
+        });
       case "data-test":
       case "data-testid":
       case "data-test-id":
-        return {
+        return withCapture({
           strategy: "css",
           value: `[${engine}=${quoteAttributeValue(body.trim())}]`
-        };
+        });
       default:
-        return {
-          strategy: "css",
-          value: part
-        };
+        throw new Error(`Unknown engine "${engine}" while parsing selector ${selectorText}`);
     }
   }
 
   if (
-    (part.startsWith('"') && part.endsWith('"')) ||
-    (part.startsWith("'") && part.endsWith("'"))
+    (bodyPart.startsWith('"') && bodyPart.endsWith('"')) ||
+    (bodyPart.startsWith("'") && bodyPart.endsWith("'"))
   ) {
-    return parseTextSelector(part);
+    return withCapture(parseTextSelector(bodyPart));
   }
 
-  return {
+  if (bodyPart.startsWith("//") || bodyPart.startsWith("..")) {
+    return withCapture({
+      strategy: "xpath",
+      value: bodyPart
+    });
+  }
+
+  return withCapture({
     strategy: "css",
-    value: part
-  };
+    value: bodyPart
+  });
 }
 
 function parseTextSelector(body: string): LocatorSelector {
