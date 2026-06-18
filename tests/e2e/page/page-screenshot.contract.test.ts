@@ -12,6 +12,11 @@ function pngSize(buffer: Buffer): { height: number; width: number } {
   };
 }
 
+function pngColorType(buffer: Buffer): number {
+  expect(buffer.subarray(1, 4).toString("ascii")).toBe("PNG");
+  return buffer[25]!;
+}
+
 describe("page screenshot contract e2e", () => {
   it("path option should create subdirectories", async () => {
     const directory = await mkdtemp(join(tmpdir(), "roxy-page-screenshot-"));
@@ -289,6 +294,28 @@ describe("page screenshot contract e2e", () => {
       });
 
       expect(screenshot).toBeInstanceOf(Buffer);
+    });
+  });
+
+  it("omitBackground should allow transparency for png screenshots", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 200, height: 200 });
+      await page.setContent("<style>body { margin: 0; background: transparent; }</style>");
+
+      const screenshot = await page.screenshot({ omitBackground: true });
+
+      expect(pngColorType(screenshot)).toBe(6);
+    });
+  });
+
+  it("omitBackground should not make jpeg screenshots transparent", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 200, height: 200 });
+      await page.setContent("<style>body { margin: 0; background: transparent; }</style>");
+
+      const screenshot = await page.screenshot({ omitBackground: true, type: "jpeg" });
+
+      expect([screenshot[0], screenshot[1], screenshot[2]]).toEqual([0xff, 0xd8, 0xff]);
     });
   });
 });

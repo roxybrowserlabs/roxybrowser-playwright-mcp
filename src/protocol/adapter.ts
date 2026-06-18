@@ -151,6 +151,7 @@ export interface ProtocolPageAdapter {
   ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
+  setScreenshotBackgroundColor?(color?: { a: number; b: number; g: number; r: number }): Promise<void>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   pdf(options?: PdfOptions): Promise<Buffer>;
   viewportSize(): ViewportSize | null;

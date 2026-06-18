@@ -167,6 +167,49 @@ describe("RoxyPage", () => {
     expect(adapter.screenshot).not.toHaveBeenCalled();
   });
 
+  it("sets and restores transparent screenshot background for png omitBackground", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await page.screenshot({ omitBackground: true });
+
+    expect(adapter.setScreenshotBackgroundColor).toHaveBeenNthCalledWith(1, {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 0
+    });
+    expect(adapter.screenshot).toHaveBeenCalled();
+    expect(adapter.setScreenshotBackgroundColor).toHaveBeenNthCalledWith(2);
+  });
+
+  it("does not set transparent screenshot background for jpeg omitBackground", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await page.screenshot({ omitBackground: true, type: "jpeg" });
+
+    expect(adapter.setScreenshotBackgroundColor).not.toHaveBeenCalled();
+  });
+
   it("delegates pdf generation to the adapter and writes the buffer to disk", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {

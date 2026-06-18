@@ -3103,6 +3103,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.updateExtraHTTPHeaders();
   }
 
+  async setScreenshotBackgroundColor(color?: { a: number; b: number; g: number; r: number }): Promise<void> {
+    await this.options.client.Emulation.setDefaultBackgroundColorOverride(
+      color ? { color } : {}
+    );
+  }
+
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
     const format = options.type ?? "png";
     const response = await this.options.client.Page.captureScreenshot({

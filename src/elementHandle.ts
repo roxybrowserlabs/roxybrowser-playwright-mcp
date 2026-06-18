@@ -295,6 +295,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
       throw new Error("Node has 0 height.");
     }
     const cleanup = await this.prepareForScreenshot(screenshotOptions);
+    const restoreBackground = await this.prepareScreenshotBackground(screenshotOptions);
     try {
       if ((options as any)?.__testHookBeforeScreenshot) {
         await (options as any).__testHookBeforeScreenshot();
@@ -313,7 +314,10 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
       }
       return screenshot;
     } finally {
-      await cleanup();
+      await Promise.all([
+        cleanup(),
+        restoreBackground()
+      ]);
     }
   }
 
@@ -559,6 +563,16 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   private screenshotPageTarget(): ScreenshotPageTarget | null {
     const candidate = this.frameResolver as (ElementHandleFrameResolver & Partial<ScreenshotPageTarget>) | undefined;
     return typeof candidate?.frames === "function" ? candidate as ScreenshotPageTarget : null;
+  }
+
+  private async prepareScreenshotBackground(options: ScreenshotOptions): Promise<() => Promise<void>> {
+    const candidate = this.frameResolver as (
+      ElementHandleFrameResolver & { prepareScreenshotBackground?: (options: ScreenshotOptions) => Promise<() => Promise<void>> }
+    ) | undefined;
+    if (candidate?.prepareScreenshotBackground) {
+      return candidate.prepareScreenshotBackground(options);
+    }
+    return async () => {};
   }
 }
 

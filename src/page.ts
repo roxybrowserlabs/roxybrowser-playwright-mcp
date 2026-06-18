@@ -1483,6 +1483,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     validateScreenshotOptions(screenshotOptions);
     const normalizedScreenshotOptions = await normalizePageScreenshotOptions(screenshotOptions, this);
     const cleanup = await preparePageForScreenshot(this, normalizedScreenshotOptions);
+    const restoreBackground = await this.prepareScreenshotBackground(normalizedScreenshotOptions);
     try {
       if ((options as any).__testHookBeforeScreenshot) {
         await (options as any).__testHookBeforeScreenshot();
@@ -1499,7 +1500,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
       return data;
     } finally {
-      await cleanup();
+      await Promise.all([
+        cleanup(),
+        restoreBackground()
+      ]);
     }
   }
 
@@ -5799,6 +5803,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       document.body.appendChild(overlay);
       target.setAttribute("data-roxy-highlight-target", "true");
     });
+  }
+
+  private async prepareScreenshotBackground(options: ScreenshotOptions): Promise<() => Promise<void>> {
+    if (!options.omitBackground || (options.type ?? "png") !== "png" || !this.adapter.setScreenshotBackgroundColor) {
+      return async () => {};
+    }
+    await this.adapter.setScreenshotBackgroundColor({ r: 0, g: 0, b: 0, a: 0 });
+    return async () => {
+      await this.adapter.setScreenshotBackgroundColor?.().catch(() => {});
+    };
   }
 }
 

@@ -224,6 +224,7 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
       inShadowTree: false
     })),
     setExtraHTTPHeaders: vi.fn(async () => {}),
+    setScreenshotBackgroundColor: vi.fn(async () => {}),
     screenshot: vi.fn(async () => Buffer.from("fake-screenshot")),
     pdf: vi.fn(async () => Buffer.from("%PDF-fake")),
     viewportSize: vi.fn(() => ({ width: 1280, height: 720 })),
