@@ -1004,28 +1004,25 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   waitForSelector(selector: string, options?: ElementHandleWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: ElementHandleWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;
   waitForSelector(selector: string, options: ElementHandleWaitForSelectorOptions): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
-  contentFrame(): Promise<Frame | null>;
-  ownerFrame(): Promise<Frame | null>;
-  boundingBox(): Promise<Rect | null>;
+  contentFrame(): Promise<null|Frame>;
+  ownerFrame(): Promise<null|Frame>;
+  boundingBox(): Promise<null|{ x: number; y: number; width: number; height: number; }>;
   dispatchEvent(type: string, eventInit?: unknown): Promise<void>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void>;
   selectText(options?: TimeoutOptions): Promise<void>;
   tap(options?: TapOptions): Promise<void>;
-  waitForElementState(
-    state: "disabled" | "enabled" | "hidden" | "stable" | "visible",
-    options?: TimeoutOptions
-  ): Promise<void>;
+  waitForElementState(state: "visible"|"hidden"|"stable"|"enabled"|"disabled"|"editable", options?: { timeout?: number; }): Promise<void>;
   click(options?: ClickOptions): Promise<void>;
   hover(options?: HoverOptions): Promise<void>;
   fill(value: string, options?: FillOptions): Promise<void>;
   type(value: string, options?: TypeOptions): Promise<void>;
   press(key: string, options?: PressOptions): Promise<void>;
-  textContent(): Promise<string | null>;
+  textContent(): Promise<null|string>;
   innerText(): Promise<string>;
   innerHTML(): Promise<string>;
-  getAttribute(name: string): Promise<string | null>;
-  inputValue(): Promise<string>;
+  getAttribute(name: string): Promise<null|string>;
+  inputValue(options?: { timeout?: number; }): Promise<string>;
   isChecked(): Promise<boolean>;
   isDisabled(): Promise<boolean>;
   isEditable(): Promise<boolean>;

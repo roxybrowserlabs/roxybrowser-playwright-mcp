@@ -275,20 +275,46 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async waitForElementState(
-    state: "disabled" | "enabled" | "hidden" | "stable" | "visible",
+    state: "disabled" | "editable" | "enabled" | "hidden" | "stable" | "visible",
     options: TimeoutOptions = {}
   ): Promise<void> {
     const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
     const startTime = Date.now();
     while (timeout === 0 || Date.now() - startTime <= timeout) {
-      if (state === "visible" && await this.isVisible().catch(() => false)) return;
-      if (state === "hidden" && await this.isHidden().catch(() => true)) return;
-      if (state === "enabled" && await this.isEnabled().catch(() => false)) return;
-      if (state === "disabled" && await this.isDisabled().catch(() => false)) return;
+      const connected = await this.isConnectedForElementState();
+      if (!connected) {
+        if (state === "hidden") {
+          return;
+        }
+        throw new Error("Element is not attached to the DOM");
+      }
+      if (state === "visible" && await this.waitForElementStateCheck(() => this.isVisible(), false)) return;
+      if (state === "hidden" && await this.waitForElementStateCheck(() => this.isHidden(), true)) return;
+      if (state === "enabled" && await this.waitForElementStateCheck(() => this.isEnabled(), false)) return;
+      if (state === "disabled" && await this.waitForElementStateCheck(() => this.isDisabled(), false)) return;
+      if (state === "editable" && await this.waitForElementStateCheck(() => this.isEditable(), false)) return;
       if (state === "stable") return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
+  }
+
+  private async isConnectedForElementState(): Promise<boolean> {
+    return this.evaluate((node) => (node as Node).isConnected);
+  }
+
+  private async waitForElementStateCheck(check: () => Promise<boolean>, detachedResult: boolean): Promise<boolean> {
+    try {
+      return await check();
+    } catch (error) {
+      if (error instanceof Error && /not attached|not connected|No element found/i.test(error.message)) {
+        if (detachedResult) {
+          return true;
+        }
+        throw new Error("Element is not attached to the DOM");
+      }
+      throw error;
+    }
   }
 
   async click(options?: ClickOptions): Promise<void> {
@@ -344,7 +370,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     return this.adapter.getAttribute(name);
   }
 
-  async inputValue(): Promise<string> {
+  async inputValue(_options?: TimeoutOptions): Promise<string> {
     return this.adapter.inputValue();
   }
 

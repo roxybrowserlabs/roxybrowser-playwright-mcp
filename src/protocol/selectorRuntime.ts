@@ -552,7 +552,18 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     ) {
       return element.disabled;
     }
-    return element.getAttribute("aria-disabled") === "true";
+    let current: Element | undefined = element;
+    while (current) {
+      const ariaDisabled = current.getAttribute("aria-disabled")?.toLowerCase();
+      if (ariaDisabled === "true") {
+        return true;
+      }
+      if (ariaDisabled === "false") {
+        return false;
+      }
+      current = parentElementOrShadowHost(current);
+    }
+    return false;
   };
   const isEditable = (element: Element): boolean => {
     if (

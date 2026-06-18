@@ -218,4 +218,26 @@ describe("generatePageApiReport", () => {
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
+
+  it("matches upstream Playwright ElementHandle state and convenience signatures", () => {
+    const report = generateApiMethodSignatureReport("ElementHandle", [
+      "boundingBox",
+      "contentFrame",
+      "getAttribute",
+      "innerHTML",
+      "innerText",
+      "inputValue",
+      "isChecked",
+      "isDisabled",
+      "isEditable",
+      "isEnabled",
+      "isHidden",
+      "isVisible",
+      "ownerFrame",
+      "textContent",
+      "waitForElementState"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });
