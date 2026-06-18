@@ -915,6 +915,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private readonly activeRouteDispatches = new Set<Promise<void>>();
   private readonly routeMatcherIds = new WeakMap<object, string>();
   private nextRouteMatcherId = 0;
+  private screenshotTaskChain: Promise<unknown> = Promise.resolve();
   private readonly detachedContextFallback: BrowserContext = {
     clock: new RoxyClock(createUnsupportedClockDelegate("page.clock")),
     request: new RoxyAPIRequestContext(),
@@ -1473,6 +1474,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
+    return this.runScreenshotTask(() => this.screenshotWithoutQueue(options));
+  }
+
+  async runScreenshotTask<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.screenshotTaskChain.then(task);
+    this.screenshotTaskChain = result.catch(() => {});
+    return result;
+  }
+
+  private async screenshotWithoutQueue(options: ScreenshotOptions = {}): Promise<Buffer> {
     const screenshotOptions: ScreenshotOptions = { ...options };
     if (!screenshotOptions.type) {
       const inferredType = determineScreenshotType(options);

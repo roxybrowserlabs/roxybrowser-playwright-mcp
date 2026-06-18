@@ -318,4 +318,76 @@ describe("page screenshot contract e2e", () => {
       expect([screenshot[0], screenshot[1], screenshot[2]]).toEqual([0xff, 0xd8, 0xff]);
     });
   });
+
+  it("should run page screenshots sequentially", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 200, height: 200 });
+      await page.setContent("<main style=\"width: 20px; height: 20px; background: green\"></main>");
+      const events: string[] = [];
+      let releaseFirst!: () => void;
+      const firstCanFinish = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+
+      const first = page.screenshot({
+        __testHookBeforeScreenshot: async () => {
+          events.push("first-before");
+          await firstCanFinish;
+        },
+        __testHookAfterScreenshot: async () => {
+          events.push("first-after");
+        }
+      } as never);
+      await until(() => events.includes("first-before"));
+
+      const second = page.screenshot({
+        __testHookBeforeScreenshot: async () => {
+          events.push("second-before");
+        },
+        __testHookAfterScreenshot: async () => {
+          events.push("second-after");
+        }
+      } as never);
+      await page.waitForTimeout(100);
+      expect(events).toEqual(["first-before"]);
+
+      releaseFirst();
+      await Promise.all([first, second]);
+      expect(events).toEqual(["first-before", "first-after", "second-before", "second-after"]);
+    });
+  });
+
+  it("should continue screenshot queue after failure", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 200, height: 200 });
+      await page.setContent("<main style=\"width: 20px; height: 20px; background: green\"></main>");
+      const events: string[] = [];
+
+      const error = await page.screenshot({
+        __testHookBeforeScreenshot: async () => {
+          events.push("failing-before");
+          throw new Error("boom");
+        }
+      } as never).catch((caught: Error) => caught);
+      const screenshot = await page.screenshot({
+        __testHookBeforeScreenshot: async () => {
+          events.push("second-before");
+        }
+      } as never);
+
+      expect(error.message).toContain("boom");
+      expect(screenshot).toBeInstanceOf(Buffer);
+      expect(events).toEqual(["failing-before", "second-before"]);
+    });
+  });
 });
+
+async function until(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for condition.");
+}

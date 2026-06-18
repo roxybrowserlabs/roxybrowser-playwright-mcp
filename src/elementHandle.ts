@@ -43,6 +43,7 @@ export interface ElementHandleFrameResolver {
   contentFrameForElement(handle: RoxyElementHandle): Promise<Frame | null>;
   createElementHandleFromReference(reference: ProtocolElementHandleReference): ElementHandle;
   ownerFrameForElement(handle: RoxyElementHandle): Promise<Frame | null>;
+  runScreenshotTask?<T>(task: () => Promise<T>): Promise<T>;
 }
 
 export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T> {
@@ -267,6 +268,12 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
+    const screenshotTask = () => this.screenshotWithoutQueue(options);
+    const queue = this.screenshotTaskQueue();
+    return queue ? queue(screenshotTask) : screenshotTask();
+  }
+
+  private async screenshotWithoutQueue(options?: ScreenshotOptions): Promise<Buffer> {
     const screenshotOptions: ScreenshotOptions = { ...options };
     if (!screenshotOptions.type) {
       const inferredType = determineScreenshotType(options ?? {});
@@ -563,6 +570,10 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   private screenshotPageTarget(): ScreenshotPageTarget | null {
     const candidate = this.frameResolver as (ElementHandleFrameResolver & Partial<ScreenshotPageTarget>) | undefined;
     return typeof candidate?.frames === "function" ? candidate as ScreenshotPageTarget : null;
+  }
+
+  private screenshotTaskQueue(): (<T>(task: () => Promise<T>) => Promise<T>) | null {
+    return this.frameResolver?.runScreenshotTask?.bind(this.frameResolver) ?? null;
   }
 
   private async prepareScreenshotBackground(options: ScreenshotOptions): Promise<() => Promise<void>> {

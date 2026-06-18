@@ -158,4 +158,54 @@ describe("elementHandle screenshot contract e2e", () => {
       expect(maskCountAfterScreenshot).toBe(0);
     });
   });
+
+  it("should share the page screenshot queue", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 200, height: 200 });
+      await page.setContent(`
+        <main style="width: 100px; height: 100px; background: white">
+          <div id="target" style="width: 20px; height: 20px; background: green"></div>
+        </main>
+      `);
+      const handle = await page.$("#target");
+      const events: string[] = [];
+      let releaseElement!: () => void;
+      const elementCanFinish = new Promise<void>((resolve) => {
+        releaseElement = resolve;
+      });
+
+      const elementScreenshot = handle!.screenshot({
+        __testHookBeforeScreenshot: async () => {
+          events.push("element-before");
+          await elementCanFinish;
+        },
+        __testHookAfterScreenshot: async () => {
+          events.push("element-after");
+        }
+      } as never);
+      await until(() => events.includes("element-before"));
+
+      const pageScreenshot = page.screenshot({
+        __testHookBeforeScreenshot: async () => {
+          events.push("page-before");
+        }
+      } as never);
+      await page.waitForTimeout(100);
+      expect(events).toEqual(["element-before"]);
+
+      releaseElement();
+      await Promise.all([elementScreenshot, pageScreenshot]);
+      expect(events).toEqual(["element-before", "element-after", "page-before"]);
+    });
+  });
 });
+
+async function until(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for condition.");
+}
