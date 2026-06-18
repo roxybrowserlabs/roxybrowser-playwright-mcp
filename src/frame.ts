@@ -254,7 +254,10 @@ export class RoxyFrame implements Frame {
     const startTime = Date.now();
 
     while (Date.now() - startTime <= timeout) {
-      const handle = await this.$(selector);
+      const handle = await this.$(
+        selector,
+        options.strict === undefined ? undefined : { strict: options.strict }
+      );
       const visible = handle ? await handle.isVisible() : false;
 
       if (state === "attached" && handle) {
@@ -278,8 +281,8 @@ export class RoxyFrame implements Frame {
 
   async $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
   async $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
-  async $(selector: string): Promise<ElementHandle | null> {
-    return this.roxyPage.queryInFrame(this.snapshot, selector);
+  async $(selector: string, options?: { strict: boolean }): Promise<ElementHandle | null> {
+    return this.roxyPage.queryInFrame(this.snapshot, selector, options);
   }
 
   async $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;

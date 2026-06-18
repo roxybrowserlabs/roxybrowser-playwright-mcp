@@ -2056,7 +2056,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   frameLocator(selector: string): FrameLocator {
-    return this.locator(selector).contentFrame();
+    return this.mainFrame().frameLocator(selector);
   }
 
   frame(frameSelector: string|{ name?: string; url?: string|RegExp|URLPattern|((url: URL) => boolean); }): null|Frame;
@@ -2103,42 +2103,41 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   locator(selector: string, options?: LocatorOptions): Locator {
-    const locator = this.createLocatorFromChain(parseSelectorChain(selector));
-    return options ? locator.filter(options) : locator;
+    return this.mainFrame().locator(selector, options);
   }
 
   getByText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {
-    return new RoxyLocator(this.adapter.getByText(text, options), this.humanController, null, undefined, this.humanDefaults, this);
+    return this.mainFrame().getByText(text, options);
   }
 
   getByAltText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator {
-    return new RoxyLocator(this.adapter.getByAltText(text, options), this.humanController, null, undefined, this.humanDefaults, this);
+    return this.mainFrame().getByAltText(text, options);
   }
 
   getByLabel(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator {
-    return new RoxyLocator(this.adapter.getByLabel(text, options), this.humanController, null, undefined, this.humanDefaults, this);
+    return this.mainFrame().getByLabel(text, options);
   }
 
   getByPlaceholder(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): Locator {
-    return new RoxyLocator(this.adapter.getByPlaceholder(text, options), this.humanController, null, undefined, this.humanDefaults, this);
+    return this.mainFrame().getByPlaceholder(text, options);
   }
 
   getByTestId(testId: string | RegExp): Locator {
-    return new RoxyLocator(this.adapter.getByTestId(testId), this.humanController, null, undefined, this.humanDefaults, this);
+    return this.mainFrame().getByTestId(testId);
   }
 
   getByRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: { checked?: boolean; description?: string|RegExp; disabled?: boolean; exact?: boolean; expanded?: boolean; includeHidden?: boolean; level?: number; name?: string|RegExp; pressed?: boolean; selected?: boolean; }): Locator;
   getByRole(role: string, options?: GetByRoleOptions): Locator {
-    return new RoxyLocator(this.adapter.getByRole(role, options), this.humanController, null, undefined, this.humanDefaults, this);
+    return this.mainFrame().getByRole(role, options);
   }
 
   getByTitle(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator {
-    return new RoxyLocator(this.adapter.getByTitle(text, options), this.humanController, null, undefined, this.humanDefaults, this);
+    return this.mainFrame().getByTitle(text, options);
   }
 
   async cancelPickLocator(): Promise<void> {
@@ -3098,12 +3097,27 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.createElementHandle(owner).evaluateHandle<R>(expression, payload);
   }
 
-  async queryInFrame(frame: RoxyFrameSnapshot, selector: string): Promise<ElementHandle | null> {
+  async queryInFrame(
+    frame: RoxyFrameSnapshot,
+    selector: string,
+    options?: { strict?: boolean }
+  ): Promise<ElementHandle | null> {
+    const missingMessage = `Failed to find element matching selector "${selector}"`;
     const handle = await this.adapter.createHandleReference(
-      this.referenceForFrame(frame, parseSelectorChain(selector), { kind: "first" })
+      this.referenceForFrame(
+        frame,
+        parseSelectorChain(selector),
+        options?.strict ? undefined : { kind: "first" }
+      ),
+      missingMessage
     ).then(
       (reference) => this.adapter.createHandle(reference),
-      () => null
+      (error) => {
+        if (error instanceof Error && error.message.includes(missingMessage)) {
+          return null;
+        }
+        throw error;
+      }
     );
     return handle ? this.createElementHandle(handle) : null;
   }
@@ -3205,7 +3219,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       serializePageFunction(pageFunction),
       serializeEvaluationArgument(arg),
       `Failed to find element matching selector "${selector}"`,
-      typeof pageFunction === "function"
+      typeof pageFunction === "function" ? true : undefined
     );
   }
 
@@ -3219,7 +3233,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.referenceForFrame(frame, parseSelectorChain(selector)),
       serializePageFunction(pageFunction),
       serializeEvaluationArgument(arg),
-      typeof pageFunction === "function"
+      typeof pageFunction === "function" ? true : undefined
     );
   }
 
