@@ -1857,6 +1857,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async goto(url: string, options: PageGotoOptions = {}): Promise<PageResponse | null> {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const targetUrl = resolveUrl(url, this.options.contextOptions.baseURL);
+    const referer = this.resolveNavigationReferer(options, targetUrl);
     const capture = this.beginNavigationResponseCapture();
     const failureCapture = this.beginNavigationFailureCapture();
     this.resetNavigationState();
@@ -1864,7 +1865,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     try {
       await this.raceNavigationFailure(
         withTimeout(
-          this.options.client.Page.navigate({ url: targetUrl }),
+          this.options.client.Page.navigate({
+            url: targetUrl,
+            ...(referer !== undefined
+              ? {
+                  referrer: referer,
+                  referrerPolicy: "unsafeUrl"
+                }
+              : {})
+          }),
           options.timeout,
           `page.goto: Timeout ${options.timeout}ms exceeded.\n${targetUrl}`
         ),
@@ -2470,6 +2479,20 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
     this.pageExtraHTTPHeaders = { ...headers };
     await this.updateExtraHTTPHeaders();
+  }
+
+  private resolveNavigationReferer(options: PageGotoOptions, targetUrl: string): string | undefined {
+    const headers = mergeExtraHTTPHeaders(
+      this.options.contextOptions.extraHTTPHeaders,
+      this.pageExtraHTTPHeaders
+    );
+    const headerEntry = Object.entries(headers)
+      .find(([name]) => name.toLowerCase() === "referer");
+    const headerReferer = headerEntry?.[1];
+    if (options.referer !== undefined && headerReferer !== undefined && headerReferer !== options.referer) {
+      throw new Error(`"referer" is already specified as extra HTTP header\n${targetUrl}`);
+    }
+    return options.referer ?? headerReferer;
   }
 
   async updateContextExtraHTTPHeaders(): Promise<void> {

@@ -273,4 +273,59 @@ describe("page goto contract e2e", () => {
       expect(response!.url()).toBe(fixture.server.EMPTY_PAGE);
     });
   });
+
+  it("should work with self requesting page", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/self-request.html", (_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/html" });
+        response.end("<script>fetch(location.href)</script>");
+      });
+      const response = await page.goto(fixture.server.PREFIX + "/self-request.html");
+      expect(response!.status()).toBe(200);
+      expect(response!.url()).toContain("self-request.html");
+    });
+  });
+
+  it("should send referer", async () => {
+    await withPage(async (page) => {
+      const [request1, request2] = await Promise.all([
+        fixture.server.waitForRequest("/grid.html"),
+        fixture.server.waitForRequest("/digits/1.png"),
+        page.goto(fixture.server.PREFIX + "/grid.html", {
+          referer: "http://google.com/"
+        })
+      ]);
+      expect(request1.headers.referer).toBe("http://google.com/");
+      expect(request2.headers.referer).toBe(fixture.server.PREFIX + "/grid.html");
+      expect(page.url()).toBe(fixture.server.PREFIX + "/grid.html");
+    });
+  });
+
+  it("should send referer of cross-origin URL", async () => {
+    await withPage(async (page) => {
+      const [request1, request2] = await Promise.all([
+        fixture.server.waitForRequest("/grid.html"),
+        fixture.server.waitForRequest("/digits/1.png"),
+        page.goto(fixture.server.PREFIX + "/grid.html", {
+          referer: "https://microsoft.com/xbox/"
+        })
+      ]);
+      expect(request1.headers.referer).toBe("https://microsoft.com/xbox/");
+      expect(request2.headers.referer).toBe(fixture.server.PREFIX + "/grid.html");
+      expect(page.url()).toBe(fixture.server.PREFIX + "/grid.html");
+    });
+  });
+
+  it("should reject referer option when setExtraHTTPHeaders provides referer", async () => {
+    await withPage(async (page) => {
+      await page.setExtraHTTPHeaders({ referer: "http://microsoft.com/" });
+      const error = await page
+        .goto(fixture.server.PREFIX + "/grid.html", {
+          referer: "http://google.com/"
+        })
+        .catch((caught) => caught);
+      expect(error.message).toContain('"referer" is already specified as extra HTTP header');
+      expect(error.message).toContain(fixture.server.PREFIX + "/grid.html");
+    });
+  });
 });

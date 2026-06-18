@@ -106,6 +106,7 @@ export interface TimeoutOptions {
 }
 
 export interface PageGotoOptions extends TimeoutOptions {
+  referer?: string;
   waitUntil?: WaitUntilState;
 }
 
