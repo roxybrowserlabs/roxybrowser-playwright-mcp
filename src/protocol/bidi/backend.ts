@@ -630,12 +630,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async goto(url: string, options: PageGotoOptions = {}): Promise<PageResponse | null> {
     const waitUntil = options.waitUntil ?? "load";
+    const targetUrl = completeUserURL(url);
     const capture = this.beginNavigationResponseCapture();
     this.resetNavigationState();
     try {
       await this.client.browsingContextNavigate({
         context: this.contextId,
-        url,
+        url: targetUrl,
         wait: waitUntil === "domcontentloaded" ? "interactive" : "complete"
       });
     } catch (error) {
@@ -644,9 +645,9 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         throw error;
       }
 
-      await this.navigateViaLocation(url);
+      await this.navigateViaLocation(targetUrl);
     }
-    this.currentUrl = url;
+    this.currentUrl = targetUrl;
     if (waitUntil !== "commit") {
       await this.waitForLoadState(waitUntil, options.timeout);
     }
@@ -3676,6 +3677,13 @@ async function assertFirefoxExecutable(executable: string): Promise<void> {
       `Firefox executable was not found at "${executable}". Pass executablePath or set ROXY_EXECUTABLE_PATH/ROXY_BIDI_EXECUTABLE_PATH to a Firefox binary with WebDriver BiDi support.`
     );
   }
+}
+
+function completeUserURL(urlString: string): string {
+  if (urlString.startsWith("localhost") || urlString.startsWith("127.0.0.1")) {
+    return `http://${urlString}`;
+  }
+  return urlString;
 }
 
 function isExplicitExecutablePath(executable: string): boolean {

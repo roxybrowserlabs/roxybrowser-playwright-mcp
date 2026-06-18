@@ -6698,7 +6698,11 @@ async function safelyCloseClient(client: CdpClient): Promise<void> {
 }
 
 function resolveUrl(url: string, baseURL?: string): string {
-  return baseURL ? new URL(url, baseURL).toString() : url;
+  const resolved = baseURL ? new URL(url, baseURL).toString() : url;
+  if (resolved.startsWith("localhost") || resolved.startsWith("127.0.0.1")) {
+    return `http://${resolved}`;
+  }
+  return resolved;
 }
 
 function serializeForEvaluation(value: unknown): string {
