@@ -74,6 +74,44 @@ describe("page form action contract e2e", () => {
     });
   });
 
+  it("throws Playwright-like errors for malformed special input values", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<input type="range" min="0" max="100" value="50">');
+      await expect(page.fill("input", "foo")).rejects.toThrow("Malformed value");
+      await expect(page.fill("input", "200")).rejects.toThrow("Malformed value");
+      await expect(page.fill("input", "15.43")).rejects.toThrow("Malformed value");
+
+      for (const [type, value] of [
+        ["color", "badvalue"],
+        ["date", "2020-13-05"],
+        ["time", "25:05"],
+        ["datetime-local", "abc"],
+        ["month", "2020-13"],
+        ["week", "2020-123"]
+      ] as const) {
+        await page.setContent(`<input type="${type}">`);
+        await expect(page.fill("input", value)).rejects.toThrow("Malformed value");
+      }
+    });
+  });
+
+  it("matches Playwright input[type=number] fill semantics", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<input id="input" type="number">');
+
+      await page.fill("input", "42");
+      expect(await page.$eval("input", (input) => input.value)).toBe("42");
+
+      await page.fill("input", "-10e5");
+      expect(await page.$eval("input", (input) => input.value)).toBe("-10e5");
+
+      await page.fill("input", "");
+      expect(await page.$eval("input", (input) => input.value)).toBe("");
+
+      await expect(page.fill("input", "abc")).rejects.toThrow("Cannot type text into input[type=number]");
+    });
+  });
+
   it("fill input event.composed crosses shadow dom boundary like Playwright", async () => {
     await withPage(async (page) => {
       await page.setContent(`

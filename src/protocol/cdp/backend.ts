@@ -695,12 +695,30 @@ function locatorOperation(payload: LocatorPayload) {
       rect.height > 0
     );
   };
-  const assertCanFillInput = (input: HTMLInputElement): void => {
+  const fillInputValue = (input: HTMLInputElement, value: string): string => {
     const type = input.type.toLowerCase();
-    const unsupported = ["button", "checkbox", "file", "image", "radio", "reset", "submit"];
-    if (unsupported.includes(type)) {
+    const inputTypesToSetValue = new Set(["color", "date", "time", "datetime-local", "month", "range", "week"]);
+    const inputTypesToTypeInto = new Set(["", "email", "number", "password", "search", "tel", "text", "url"]);
+    if (!inputTypesToTypeInto.has(type) && !inputTypesToSetValue.has(type)) {
       throw new Error(`Input of type "${type}" cannot be filled`);
     }
+    if (type === "number") {
+      value = value.trim();
+      if (isNaN(Number(value))) {
+        throw new Error("Cannot type text into input[type=number]");
+      }
+    }
+    if (type === "color") {
+      value = value.toLowerCase();
+    }
+    if (inputTypesToSetValue.has(type)) {
+      value = value.trim();
+      input.value = value;
+      if (input.value !== value) {
+        throw new Error("Malformed value");
+      }
+    }
+    return value;
   };
 
   const firstElement = resolveElements()[0] ?? null;
@@ -723,8 +741,7 @@ function locatorOperation(payload: LocatorPayload) {
       firstElement.focus();
 
       if (firstElement instanceof HTMLInputElement) {
-        assertCanFillInput(firstElement);
-        firstElement.value = payload.value ?? "";
+        firstElement.value = fillInputValue(firstElement, payload.value ?? "");
       } else if (firstElement instanceof HTMLTextAreaElement) {
         firstElement.value = payload.value ?? "";
       } else if (firstElement.isContentEditable) {
