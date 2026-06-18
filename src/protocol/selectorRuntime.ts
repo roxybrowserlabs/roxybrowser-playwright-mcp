@@ -40,6 +40,7 @@ export interface SelectorRuntimePayload {
   missingMessage?: string;
   position?: { x: number; y: number };
   timeoutMs?: number;
+  waitForEnabled?: boolean;
 }
 
 function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
@@ -798,6 +799,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     if (!isVisible(firstElement)) {
       throw new Error("Element is not visible.");
     }
+    if (payload.waitForEnabled && !isEnabled(firstElement)) {
+      throw new Error("Element is not enabled.");
+    }
 
     const rect = isTextNode(firstNode)
       ? (() => {
@@ -850,6 +854,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return (
       error.message === "No element found." ||
       error.message === "Element is not visible." ||
+      error.message === "Element is not enabled." ||
       error.message === "Element does not have an actionable bounding box."
     );
   };

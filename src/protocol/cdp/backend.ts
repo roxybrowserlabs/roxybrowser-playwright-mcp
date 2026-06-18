@@ -121,7 +121,6 @@ const CDP_CAPABILITIES: ProtocolCapabilities = {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
 const REQUEST_EXTRA_INFO_FALLBACK_MS = 250;
-let pointerActionQueue = Promise.resolve();
 
 function toPlaywrightResourceType(type?: string): string {
   switch (type) {
@@ -1534,6 +1533,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private networkIdleTimer: ReturnType<typeof setTimeout> | undefined;
   private currentViewportSize: ViewportSize | null = null;
   private currentMousePosition: ActionPoint = { x: 0, y: 0 };
+  private pointerActionQueue = Promise.resolve();
   private readonly pressedKeyboardModifiers = new Set<string>();
   private pointerActionModifiers: Set<string> | null = null;
   private readonly jsCoverageState: CdpJsCoverageState = {
@@ -3956,13 +3956,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async clickLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
     await this.enqueuePointerAction(async () => {
       await this.bringToFront();
-      const actionPoint = await this.resolveActionPoint(locator, options);
+      const actionPoint = await this.resolveActionPoint(locator, options, true);
       const button = options?.button ?? "left";
       const clickCount = options?.clickCount ?? 1;
 
       await this.withPointerActionModifiers(options?.modifiers, async () => {
         await this.dispatchMouseMove(actionPoint);
-        await this.showScreencastAction("click", actionPoint);
+        void this.showScreencastAction("click", actionPoint).catch(() => {});
         for (let index = 0; index < clickCount; index += 1) {
           await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
           await delay(options?.delay ?? 0);
@@ -3989,7 +3989,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     try {
       const actionPoint = await this.resolveActionPoint(locator);
-      await this.showScreencastAction("fill", actionPoint);
+      void this.showScreencastAction("fill", actionPoint).catch(() => {});
     } catch {}
     await this.runLocatorOperation<boolean>(locator, {
       operation: "fill",
@@ -4355,8 +4355,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   private async enqueuePointerAction<TResult>(action: () => Promise<TResult>): Promise<TResult> {
-    const run = pointerActionQueue.then(action, action);
-    pointerActionQueue = run.then(
+    const run = this.pointerActionQueue.then(action, action);
+    this.pointerActionQueue = run.then(
       () => undefined,
       () => undefined
     );
@@ -4386,23 +4386,51 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private async resolveActionPoint(
     locator: CdpLocatorState,
-    options?: HoverOptions
+    options?: HoverOptions,
+    waitForEnabled = false
   ): Promise<ActionPoint> {
+    const reference = {
+      chain: locator.chain,
+      ...(locator.protocolFrameId ? { protocolFrameId: locator.protocolFrameId } : {}),
+      ...(locator.pick ? { pick: locator.pick } : {})
+    };
     try {
-      return await this.runSelectorOperation<ActionPoint>({
-        operation: "actionPoint",
-        reference: {
-          chain: locator.chain,
-          ...(locator.protocolFrameId ? { protocolFrameId: locator.protocolFrameId } : {}),
-          ...(locator.pick ? { pick: locator.pick } : {})
-        },
-        ...(options?.force !== undefined ? { force: options.force } : {}),
-        ...(options?.position ? { position: options.position } : {}),
-        timeoutMs: options?.timeout ?? DEFAULT_TIMEOUT_MS
-      });
+      return await this.resolveActionPointReference(reference, options, waitForEnabled);
     } catch (error) {
       throw wrapLocatorError(locator, error);
     }
+  }
+
+  private async resolveActionPointReference(
+    reference: ProtocolElementHandleReference,
+    options?: HoverOptions,
+    waitForEnabled = false
+  ): Promise<ActionPoint> {
+    const payload: SelectorRuntimePayload = {
+      operation: "actionPoint",
+      reference,
+      ...(options?.force !== undefined ? { force: options.force } : {}),
+      ...(options?.position ? { position: options.position } : {}),
+      ...(waitForEnabled ? { waitForEnabled } : {})
+    };
+    const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
+    if (options?.force || timeout <= 0) {
+      return this.runSelectorOperation<ActionPoint>(payload);
+    }
+    const deadline = Date.now() + timeout;
+    let lastError: unknown;
+    while (Date.now() <= deadline) {
+      try {
+        return await this.runSelectorOperation<ActionPoint>(payload);
+      } catch (error) {
+        lastError = error;
+        if (!shouldRetryActionPointError(error)) {
+          throw error;
+        }
+        await delay(50);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
 
   async runLocatorOperation<TResult>(
@@ -4652,23 +4680,21 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
-    const actionPoint = await this.runSelectorOperation<ActionPoint>({
-      operation: "actionPoint",
-      reference,
-      ...(options?.force !== undefined ? { force: options.force } : {}),
-      ...(options?.position ? { position: options.position } : {})
-    });
-    const button = options?.button ?? "left";
-    const clickCount = options?.clickCount ?? 1;
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      const actionPoint = await this.resolveActionPointReference(reference, options, true);
+      const button = options?.button ?? "left";
+      const clickCount = options?.clickCount ?? 1;
 
-    await this.withPointerActionModifiers(options?.modifiers, async () => {
-      await this.dispatchMouseMove(actionPoint);
-      await this.showScreencastAction("click", actionPoint);
-      for (let index = 0; index < clickCount; index += 1) {
-        await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
-        await delay(options?.delay ?? 0);
-        await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
-      }
+      await this.withPointerActionModifiers(options?.modifiers, async () => {
+        await this.dispatchMouseMove(actionPoint);
+        void this.showScreencastAction("click", actionPoint).catch(() => {});
+        for (let index = 0; index < clickCount; index += 1) {
+          await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
+          await delay(options?.delay ?? 0);
+          await this.dispatchMouseEvent("mouseReleased", actionPoint, button, index + 1);
+        }
+      });
     });
   }
 
@@ -4702,14 +4728,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
-    const actionPoint = await this.runSelectorOperation<ActionPoint>({
-      operation: "actionPoint",
-      reference,
-      ...(options?.force !== undefined ? { force: options.force } : {}),
-      ...(options?.position ? { position: options.position } : {})
-    });
-    await this.withPointerActionModifiers(options?.modifiers, async () => {
-      await this.dispatchMouseMove(actionPoint);
+    await this.enqueuePointerAction(async () => {
+      await this.bringToFront();
+      const actionPoint = await this.resolveActionPointReference(reference, options);
+      await this.withPointerActionModifiers(options?.modifiers, async () => {
+        await this.dispatchMouseMove(actionPoint);
+      });
     });
   }
 
@@ -4723,7 +4747,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         operation: "actionPoint",
         reference
       });
-      await this.showScreencastAction("fill", actionPoint);
+      void this.showScreencastAction("fill", actionPoint).catch(() => {});
     } catch {}
     await this.runSelectorOperation<boolean>({
       operation: "fill",
@@ -8373,6 +8397,19 @@ function isNotAttachedToActivePageError(error: unknown): boolean {
   return (
     error instanceof Error &&
     /Not attached to an active page/i.test(error.message)
+  );
+}
+
+function shouldRetryActionPointError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.replace(/^Error:\s*/, "") : "";
+  return (
+    Boolean(message) &&
+    (
+      message === "No element found." ||
+      message === "Element is not visible." ||
+      message === "Element is not enabled." ||
+      message === "Element does not have an actionable bounding box."
+    )
   );
 }
 

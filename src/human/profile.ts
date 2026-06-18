@@ -6,7 +6,7 @@ import type { ResolvedHumanizationOptions } from "./types.js";
 
 const PROFILE_DEFAULTS: Record<HumanProfileName, ResolvedHumanizationOptions> = {
   cautious: {
-    enabled: true,
+    enabled: false,
     profile: "cautious",
     moveJitterMs: 28,
     clickHoldMs: 90,
@@ -16,7 +16,7 @@ const PROFILE_DEFAULTS: Record<HumanProfileName, ResolvedHumanizationOptions> = 
     hoverBeforeClickMs: 180
   },
   balanced: {
-    enabled: true,
+    enabled: false,
     profile: "balanced",
     moveJitterMs: 16,
     clickHoldMs: 60,
@@ -26,7 +26,7 @@ const PROFILE_DEFAULTS: Record<HumanProfileName, ResolvedHumanizationOptions> = 
     hoverBeforeClickMs: 110
   },
   fast: {
-    enabled: true,
+    enabled: false,
     profile: "fast",
     moveJitterMs: 8,
     clickHoldMs: 30,
@@ -61,4 +61,3 @@ export function resolveHumanizationOptions(
 export function jitter(ms: number): number {
   return Math.round(ms * (0.8 + Math.random() * 0.4));
 }
-

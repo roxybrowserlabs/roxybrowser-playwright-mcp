@@ -6,7 +6,7 @@ describe("resolveHumanizationOptions", () => {
     const result = resolveHumanizationOptions();
 
     expect(result).toEqual({
-      enabled: true,
+      enabled: false,
       profile: "balanced",
       moveJitterMs: 16,
       clickHoldMs: 60,
@@ -14,6 +14,24 @@ describe("resolveHumanizationOptions", () => {
       typingDelayMs: 95,
       typingVarianceMs: 35,
       hoverBeforeClickMs: 110
+    });
+  });
+
+  it("enables humanization only when explicitly requested", () => {
+    const result = resolveHumanizationOptions({
+      enabled: true,
+      profile: "fast"
+    });
+
+    expect(result).toEqual({
+      enabled: true,
+      profile: "fast",
+      moveJitterMs: 8,
+      clickHoldMs: 30,
+      scrollStepPx: 360,
+      typingDelayMs: 45,
+      typingVarianceMs: 20,
+      hoverBeforeClickMs: 45
     });
   });
 
@@ -74,4 +92,3 @@ describe("resolveHumanizationOptions", () => {
     expect(result.hoverBeforeClickMs).toBe(60);
   });
 });
-
