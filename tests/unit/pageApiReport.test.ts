@@ -84,6 +84,18 @@ describe("generatePageApiReport", () => {
     }
   );
 
+  it.each(["Page", "Frame", "ElementHandle", "JSHandle"])(
+    "matches upstream Playwright evaluate signatures for %s",
+    (interfaceName) => {
+      const report = generateApiMethodSignatureReport(interfaceName, [
+        "evaluate",
+        "evaluateHandle"
+      ]);
+
+      expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+    }
+  );
+
   it("matches upstream Playwright Page routing signatures", () => {
     const report = generateApiMethodSignatureReport("Page", [
       "route",
@@ -141,6 +153,7 @@ describe("generatePageApiReport", () => {
       "waitForNavigation",
       "waitForRequest",
       "waitForResponse",
+      "waitForTimeout",
       "waitForURL"
     ]);
 
@@ -210,6 +223,7 @@ describe("generatePageApiReport", () => {
       "check",
       "click",
       "dblclick",
+      "dragAndDrop",
       "fill",
       "hover",
       "press",
@@ -218,6 +232,15 @@ describe("generatePageApiReport", () => {
       "tap",
       "type",
       "uncheck"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("matches upstream Playwright Frame remaining forwarded signatures", () => {
+    const report = generateApiMethodSignatureReport("Frame", [
+      "setInputFiles",
+      "waitForTimeout"
     ]);
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);

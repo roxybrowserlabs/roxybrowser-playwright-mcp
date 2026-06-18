@@ -1054,14 +1054,8 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
 export interface JSHandle<T = unknown> extends Disposable {
   evaluate<R, Arg, O extends T = T>(pageFunction: PageFunctionOn<O, Arg, R>, arg: Arg): Promise<R>;
   evaluate<R, O extends T = T>(pageFunction: PageFunctionOn<O, void, R>, arg?: any): Promise<R>;
-  evaluateHandle<R, Arg, O extends T = T>(
-    pageFunction: PageFunctionOn<O, Arg, R>,
-    arg: Arg
-  ): Promise<SmartHandle<R>>;
-  evaluateHandle<R, O extends T = T>(
-    pageFunction: PageFunctionOn<O, void, R>,
-    arg?: any
-  ): Promise<SmartHandle<R>>;
+  evaluateHandle<R, Arg, O extends T = T>(pageFunction: PageFunctionOn<O, Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
+  evaluateHandle<R, O extends T = T>(pageFunction: PageFunctionOn<O, void, R>, arg?: any): Promise<SmartHandle<R>>;
   jsonValue(): Promise<T>;
   asElement(): ElementHandle | null;
   dispose(): Promise<void>;
