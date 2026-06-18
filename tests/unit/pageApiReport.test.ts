@@ -163,4 +163,23 @@ describe("generatePageApiReport", () => {
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
+
+  it("matches upstream Playwright Page selector query and state signatures", () => {
+    const report = generateApiMethodSignatureReport("Page", [
+      "focus",
+      "getAttribute",
+      "innerHTML",
+      "innerText",
+      "inputValue",
+      "isChecked",
+      "isDisabled",
+      "isEditable",
+      "isEnabled",
+      "isHidden",
+      "isVisible",
+      "textContent"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });

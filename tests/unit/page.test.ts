@@ -52,13 +52,14 @@ describe("RoxyPage", () => {
     await page.close();
 
     expect(adapter.goto).toHaveBeenCalledWith("https://example.com", {
+      timeout: 30000,
       waitUntil: "domcontentloaded"
     });
     expect(adapter.url).toHaveBeenCalled();
-    expect(adapter.goBack).toHaveBeenCalledWith(undefined);
-    expect(adapter.goForward).toHaveBeenCalledWith(undefined);
-    expect(adapter.reload).toHaveBeenCalledWith(undefined);
-    expect(adapter.setContent).toHaveBeenCalledWith("<div>ok</div>");
+    expect(adapter.goBack).toHaveBeenCalledWith({ timeout: 30000 });
+    expect(adapter.goForward).toHaveBeenCalledWith({ timeout: 30000 });
+    expect(adapter.reload).toHaveBeenCalledWith({ timeout: 30000 });
+    expect(adapter.setContent).toHaveBeenCalledWith("<div>ok</div>", { timeout: 30000 });
     expect(adapter.waitForLoadState).toHaveBeenCalledWith("load", 30000);
     expect(adapter.ariaSnapshot).toHaveBeenCalledWith({ mode: "ai", depth: 2 });
     expect(adapter.resolveAriaRef).toHaveBeenCalledWith("e1");
