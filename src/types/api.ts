@@ -1219,6 +1219,7 @@ export interface Frame {
   isDetached(): boolean;
   url(): string;
   name(): string;
+  goto(url: string, options?: PageGotoOptions): Promise<Response | null>;
   setContent(html: string, options?: PageSetContentOptions): Promise<void>;
   evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
@@ -1239,6 +1240,10 @@ export interface Frame {
     options?: WaitForURLOptions
   ): Promise<void>;
   waitForNavigation(options?: WaitForNavigationOptions): Promise<Response | null>;
+  waitForLoadState(
+    state?: "load" | "domcontentloaded" | "networkidle",
+    options?: { timeout?: number }
+  ): Promise<void>;
   waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<ElementHandle | null>;
   $(selector: string): Promise<ElementHandle | null>;
   $$(selector: string): Promise<ElementHandle[]>;

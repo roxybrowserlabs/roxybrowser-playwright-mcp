@@ -16,6 +16,8 @@ import type {
 import type {
   ClickOptions,
   FillOptions,
+  LoadState,
+  PageGotoOptions,
   PageSetContentOptions,
   PressOptions,
   TypeOptions,
@@ -76,6 +78,17 @@ export class RoxyFrame implements Frame {
 
   name(): string {
     return this.snapshot.name;
+  }
+
+  async goto(url: string, options: PageGotoOptions = {}): Promise<Response | null> {
+    if (this.detached) {
+      throw new Error("Navigating frame was detached!");
+    }
+    const navigationPromise = this.waitForNavigation(options);
+    await this.evaluate((targetUrl) => {
+      window.location.href = targetUrl;
+    }, url);
+    return navigationPromise;
   }
 
   async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
@@ -180,6 +193,23 @@ export class RoxyFrame implements Frame {
       throw new Error("Navigating frame was detached!");
     }
     return response;
+  }
+
+  async waitForLoadState(
+    state: LoadState = "load",
+    options: { timeout?: number } = {}
+  ): Promise<void> {
+    if (this.detached) {
+      throw new Error("Navigating frame was detached!");
+    }
+    if (state !== "load" && state !== "domcontentloaded" && state !== "networkidle") {
+      throw new Error("state: expected one of (load|domcontentloaded|networkidle|commit)");
+    }
+    await this.roxyPage.waitForLoadState(state, options);
+    await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
+    if (this.detached) {
+      throw new Error("Navigating frame was detached!");
+    }
   }
 
   async waitForSelector(
