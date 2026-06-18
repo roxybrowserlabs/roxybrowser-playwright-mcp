@@ -1,4 +1,5 @@
-import type { ScreenshotOptions } from "./types/options.js";
+import type { Locator } from "./types/api.js";
+import type { Rect, ScreenshotOptions } from "./types/options.js";
 
 declare global {
   interface Window {
@@ -15,6 +16,7 @@ export interface ScreenshotPageTarget {
 }
 
 type ScreenshotPreparationOptions = Pick<ScreenshotOptions, "animations" | "caret" | "style">;
+type ScreenshotMaskOptions = Pick<ScreenshotOptions, "mask" | "maskColor">;
 
 type ScreenshotPreparationPayload = {
   disableAnimations: boolean;
@@ -26,13 +28,17 @@ type ScreenshotPreparationPayload = {
 
 export async function preparePageForScreenshot(
   page: ScreenshotPageTarget,
-  options: ScreenshotPreparationOptions
+  options: ScreenshotPreparationOptions & ScreenshotMaskOptions
 ): Promise<() => Promise<void>> {
   const payload = createScreenshotPreparationPayload(options);
   const frames = page.frames();
   await Promise.all(frames.map((frame) => prepareFrameForScreenshot(frame, payload)));
+  const cleanupMasks = await maskElements(options);
   return async () => {
-    await Promise.all(frames.map((frame) => restoreFrameAfterScreenshot(frame)));
+    await Promise.all([
+      cleanupMasks(),
+      ...frames.map((frame) => restoreFrameAfterScreenshot(frame))
+    ]);
   };
 }
 
@@ -57,6 +63,60 @@ export async function prepareElementDocumentForScreenshot(
     ).catch(() => {});
   };
 }
+
+async function maskElements(options: ScreenshotMaskOptions): Promise<() => Promise<void>> {
+  if (!options.mask?.length) {
+    return async () => {};
+  }
+
+  const cleanups: Array<() => Promise<void>> = [];
+  try {
+    for (const locator of options.mask) {
+      const handle = await locator.elementHandle({ timeout: 0 }).catch(() => null);
+      const box = await handle?.boundingBox().catch(() => null);
+      if (!handle || !box) {
+        continue;
+      }
+      await maskElement(handle, box, options.maskColor ?? "#F0F");
+      cleanups.push(async () => {
+        await handle.evaluate(() => {
+          document.querySelectorAll("[data-roxy-screenshot-mask]").forEach((node) => node.remove());
+        }).catch(() => {});
+      });
+    }
+    return async () => {
+      await Promise.all(cleanups.map((cleanup) => cleanup()));
+    };
+  } catch (error) {
+    await Promise.all(cleanups.map((cleanup) => cleanup().catch(() => {})));
+    throw error;
+  }
+}
+
+async function maskElement(handle: LocatorMaskHandle, box: Rect, color: string): Promise<void> {
+  await handle.evaluate(
+    (_element, payload) => {
+      const overlay = document.createElement("div");
+      overlay.setAttribute("data-roxy-screenshot-mask", "true");
+      Object.assign(overlay.style, {
+        position: "fixed",
+        left: `${payload.box.x}px`,
+        top: `${payload.box.y}px`,
+        width: `${payload.box.width}px`,
+        height: `${payload.box.height}px`,
+        background: payload.color,
+        pointerEvents: "none",
+        zIndex: "2147483647"
+      });
+      document.documentElement.append(overlay);
+    },
+    { box, color }
+  );
+}
+
+type LocatorMaskHandle = Awaited<ReturnType<Locator["elementHandle"]>> & {
+  boundingBox(): Promise<Rect | null>;
+};
 
 async function prepareFrameForScreenshot(
   frame: ScreenshotEvaluationTarget,

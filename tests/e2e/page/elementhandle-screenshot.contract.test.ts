@@ -130,4 +130,32 @@ describe("elementHandle screenshot contract e2e", () => {
       expect(afterScreenshot).toBe("visible");
     });
   });
+
+  it("mask option should work with element screenshot", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <main style="width: 100px; height: 100px; background: white">
+          <div id="target" style="width: 20px; height: 20px; background: green"></div>
+        </main>
+      `);
+      const handle = await page.$("main");
+      let maskDuringScreenshot: string | null = null;
+
+      await handle!.screenshot({
+        mask: [page.locator("#target")],
+        __testHookBeforeScreenshot: async () => {
+          maskDuringScreenshot = await page.evaluate(() => {
+            const overlay = document.querySelector("[data-roxy-screenshot-mask]") as HTMLElement | null;
+            return overlay ? getComputedStyle(overlay).backgroundColor : null;
+          });
+        }
+      } as never);
+
+      const maskCountAfterScreenshot = await page.evaluate(() =>
+        document.querySelectorAll("[data-roxy-screenshot-mask]").length
+      );
+      expect(maskDuringScreenshot).toBe("rgb(255, 0, 255)");
+      expect(maskCountAfterScreenshot).toBe(0);
+    });
+  });
 });

@@ -155,4 +155,54 @@ describe("page screenshot contract e2e", () => {
       expect(duringScreenshot).toContain("200");
     });
   });
+
+  it("mask option should add overlay during screenshot and remove it afterwards", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div id="target" style="width: 40px; height: 30px; background: green"></div>
+      `);
+      let maskDuringScreenshot: { background: string; height: string; width: string } | null = null;
+
+      await page.screenshot({
+        mask: [page.locator("#target")],
+        maskColor: "#00FF00",
+        __testHookBeforeScreenshot: async () => {
+          maskDuringScreenshot = await page.evaluate(() => {
+            const overlay = document.querySelector("[data-roxy-screenshot-mask]") as HTMLElement | null;
+            if (!overlay) {
+              return null;
+            }
+            const style = getComputedStyle(overlay);
+            return {
+              background: style.backgroundColor,
+              height: style.height,
+              width: style.width
+            };
+          });
+        }
+      } as never);
+
+      const maskCountAfterScreenshot = await page.evaluate(() =>
+        document.querySelectorAll("[data-roxy-screenshot-mask]").length
+      );
+      expect(maskDuringScreenshot).toEqual({
+        background: "rgb(0, 255, 0)",
+        height: "30px",
+        width: "40px"
+      });
+      expect(maskCountAfterScreenshot).toBe(0);
+    });
+  });
+
+  it("mask option should ignore locators that do not resolve", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<main>hello</main>");
+
+      const screenshot = await page.screenshot({
+        mask: [page.locator("non-existent")]
+      });
+
+      expect(screenshot).toBeInstanceOf(Buffer);
+    });
+  });
 });
