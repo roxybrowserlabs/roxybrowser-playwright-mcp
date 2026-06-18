@@ -1234,6 +1234,11 @@ export interface Frame {
     arg?: any,
     options?: { timeout?: number; polling?: number | "raf" }
   ): Promise<SmartHandle<R>>;
+  waitForURL(
+    url: string | RegExp | URLPattern | ((url: URL) => boolean),
+    options?: WaitForURLOptions
+  ): Promise<void>;
+  waitForNavigation(options?: WaitForNavigationOptions): Promise<Response | null>;
   waitForSelector(selector: string, options?: WaitForSelectorOptions): Promise<ElementHandle | null>;
   $(selector: string): Promise<ElementHandle | null>;
   $$(selector: string): Promise<ElementHandle[]>;

@@ -174,4 +174,15 @@ describe("page waitForURL contract e2e", () => {
       expect(resolved).toBe(true);
     });
   });
+
+  it("works on frame", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/frames/one-frame.html");
+      const frame = page.frames()[1]!;
+      await frame.evaluate((url) => {
+        window.location.href = url;
+      }, fixture.server.PREFIX + "/grid.html");
+      await frame.waitForURL("**/grid.html");
+    });
+  });
 });

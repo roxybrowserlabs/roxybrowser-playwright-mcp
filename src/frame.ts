@@ -10,6 +10,7 @@ import type {
   FrameLocator,
   Locator,
   PageFunction,
+  Response,
   SmartHandle
 } from "./types/api.js";
 import type {
@@ -18,8 +19,10 @@ import type {
   PageSetContentOptions,
   PressOptions,
   TypeOptions,
+  WaitForNavigationOptions,
   WaitForSelectorOptions
 } from "./types/options.js";
+import { urlMatches } from "./urlMatch.js";
 
 export interface RoxyFrameSnapshot {
   id: string;
@@ -140,6 +143,43 @@ export class RoxyFrame implements Frame {
     }
 
     throw new TimeoutError(`frame.waitForFunction: Timeout ${timeout}ms exceeded.`);
+  }
+
+  async waitForURL(
+    url: string | RegExp | URLPattern | ((url: URL) => boolean),
+    options: WaitForNavigationOptions = {}
+  ): Promise<void> {
+    const timeout = options.timeout ?? this.roxyPage.defaultNavigationTimeout();
+    const start = Date.now();
+    while (timeout === 0 || Date.now() - start <= timeout) {
+      if (this.detached) {
+        throw new Error("Navigating frame was detached!");
+      }
+      await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
+      if (!urlMatches(this.roxyPage.baseURLForMatching(), this.url(), url)) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
+      if (options.waitUntil !== "commit") {
+        await this.roxyPage.waitForLoadState(
+          options.waitUntil,
+          timeout === 0 ? options : { timeout: Math.max(0, timeout - (Date.now() - start)) }
+        );
+      }
+      return;
+    }
+    throw new TimeoutError(`frame.waitForURL: Timeout ${timeout}ms exceeded.`);
+  }
+
+  async waitForNavigation(options: WaitForNavigationOptions = {}): Promise<Response | null> {
+    if (this.detached) {
+      throw new Error("Navigating frame was detached!");
+    }
+    const response = await this.roxyPage.waitForNavigation(options);
+    if (this.detached) {
+      throw new Error("Navigating frame was detached!");
+    }
+    return response;
   }
 
   async waitForSelector(

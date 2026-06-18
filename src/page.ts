@@ -2323,6 +2323,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.defaultTimeoutMs;
   }
 
+  defaultNavigationTimeout(): number {
+    return this.defaultNavigationTimeoutMs;
+  }
+
+  baseURLForMatching(): string | undefined {
+    return this.baseURL();
+  }
+
   setOpener(page: Page | null): void {
     this.openerPage = page;
   }
@@ -3337,7 +3345,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       allHeaders: async () => ({ ...headers }),
       body: async () => readBodyBuffer(),
       finished: async () => waitForResponseCompletion(readBodyText),
-      frame: () => this.mainFrame(),
+      frame: () => request.frame(),
       fromServiceWorker: () => payload.fromServiceWorker ?? false,
       headers: () => ({ ...headers }),
       headersArray: async () => headerEntries.map((header) => ({ ...header })),
