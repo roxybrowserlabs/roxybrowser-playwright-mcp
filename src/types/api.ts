@@ -900,177 +900,25 @@ export interface Page {
       behavior?: "wait" | "ignoreErrors" | "default";
     }
   ): Promise<void>;
-  waitForEvent(
-    event: "console",
-    optionsOrPredicate?:
-      | ((consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>)
-      | {
-          predicate?: (consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<PageConsoleMessage>;
-  waitForEvent(
-    event: "dialog",
-    optionsOrPredicate?:
-      | ((dialog: Dialog) => boolean | Promise<boolean>)
-      | {
-          predicate?: (dialog: Dialog) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Dialog>;
-  waitForEvent(
-    event: "crash",
-    optionsOrPredicate?:
-      | ((page: Page) => boolean | Promise<boolean>)
-      | {
-          predicate?: (page: Page) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Page>;
-  waitForEvent(
-    event: "close",
-    optionsOrPredicate?:
-      | ((page: Page) => boolean | Promise<boolean>)
-      | {
-          predicate?: (page: Page) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Page>;
-  waitForEvent(
-    event: "download",
-    optionsOrPredicate?:
-      | ((download: Download) => boolean | Promise<boolean>)
-      | {
-          predicate?: (download: Download) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Download>;
-  waitForEvent(
-    event: "domcontentloaded",
-    optionsOrPredicate?:
-      | ((page: Page) => boolean | Promise<boolean>)
-      | {
-          predicate?: (page: Page) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Page>;
-  waitForEvent(
-    event: "filechooser",
-    optionsOrPredicate?:
-      | ((fileChooser: FileChooser) => boolean | Promise<boolean>)
-      | {
-          predicate?: (fileChooser: FileChooser) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<FileChooser>;
-  waitForEvent(
-    event: "frameattached",
-    optionsOrPredicate?:
-      | ((frame: Frame) => boolean | Promise<boolean>)
-      | {
-          predicate?: (frame: Frame) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Frame>;
-  waitForEvent(
-    event: "framedetached",
-    optionsOrPredicate?:
-      | ((frame: Frame) => boolean | Promise<boolean>)
-      | {
-          predicate?: (frame: Frame) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Frame>;
-  waitForEvent(
-    event: "framenavigated",
-    optionsOrPredicate?:
-      | ((frame: Frame) => boolean | Promise<boolean>)
-      | {
-          predicate?: (frame: Frame) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Frame>;
-  waitForEvent(
-    event: "load",
-    optionsOrPredicate?:
-      | ((page: Page) => boolean | Promise<boolean>)
-      | {
-          predicate?: (page: Page) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Page>;
-  waitForEvent(
-    event: "pageerror",
-    optionsOrPredicate?:
-      | ((error: PageErrorEntry) => boolean | Promise<boolean>)
-      | {
-          predicate?: (error: PageErrorEntry) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<PageErrorEntry>;
-  waitForEvent(
-    event: "popup",
-    optionsOrPredicate?:
-      | ((page: Page) => boolean | Promise<boolean>)
-      | {
-          predicate?: (page: Page) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Page>;
-  waitForEvent(
-    event: "request",
-    optionsOrPredicate?:
-      | ((request: Request) => boolean | Promise<boolean>)
-      | {
-          predicate?: (request: Request) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Request>;
-  waitForEvent(
-    event: "requestfinished",
-    optionsOrPredicate?:
-      | ((request: Request) => boolean | Promise<boolean>)
-      | {
-          predicate?: (request: Request) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Request>;
-  waitForEvent(
-    event: "requestfailed",
-    optionsOrPredicate?:
-      | ((request: Request) => boolean | Promise<boolean>)
-      | {
-          predicate?: (request: Request) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Request>;
-  waitForEvent(
-    event: "response",
-    optionsOrPredicate?:
-      | ((response: Response) => boolean | Promise<boolean>)
-      | {
-          predicate?: (response: Response) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Response>;
-  waitForEvent(
-    event: "websocket",
-    optionsOrPredicate?:
-      | ((webSocket: WebSocket) => boolean | Promise<boolean>)
-      | {
-          predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<WebSocket>;
-  waitForEvent(
-    event: "worker",
-    optionsOrPredicate?:
-      | ((worker: Worker) => boolean | Promise<boolean>)
-      | {
-          predicate?: (worker: Worker) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Worker>;
+  waitForEvent(event: 'close', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'console', optionsOrPredicate?: { predicate?: (consoleMessage: ConsoleMessage) => boolean | Promise<boolean>, timeout?: number } | ((consoleMessage: ConsoleMessage) => boolean | Promise<boolean>)): Promise<ConsoleMessage>;
+  waitForEvent(event: 'crash', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'dialog', optionsOrPredicate?: { predicate?: (dialog: Dialog) => boolean | Promise<boolean>, timeout?: number } | ((dialog: Dialog) => boolean | Promise<boolean>)): Promise<Dialog>;
+  waitForEvent(event: 'domcontentloaded', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'download', optionsOrPredicate?: { predicate?: (download: Download) => boolean | Promise<boolean>, timeout?: number } | ((download: Download) => boolean | Promise<boolean>)): Promise<Download>;
+  waitForEvent(event: 'filechooser', optionsOrPredicate?: { predicate?: (fileChooser: FileChooser) => boolean | Promise<boolean>, timeout?: number } | ((fileChooser: FileChooser) => boolean | Promise<boolean>)): Promise<FileChooser>;
+  waitForEvent(event: 'frameattached', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
+  waitForEvent(event: 'framedetached', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
+  waitForEvent(event: 'framenavigated', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
+  waitForEvent(event: 'load', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'pageerror', optionsOrPredicate?: { predicate?: (error: Error) => boolean | Promise<boolean>, timeout?: number } | ((error: Error) => boolean | Promise<boolean>)): Promise<Error>;
+  waitForEvent(event: 'popup', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'request', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
+  waitForEvent(event: 'requestfailed', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
+  waitForEvent(event: 'requestfinished', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
+  waitForEvent(event: 'response', optionsOrPredicate?: { predicate?: (response: Response) => boolean | Promise<boolean>, timeout?: number } | ((response: Response) => boolean | Promise<boolean>)): Promise<Response>;
+  waitForEvent(event: 'websocket', optionsOrPredicate?: { predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>, timeout?: number } | ((webSocket: WebSocket) => boolean | Promise<boolean>)): Promise<WebSocket>;
+  waitForEvent(event: 'worker', optionsOrPredicate?: { predicate?: (worker: Worker) => boolean | Promise<boolean>, timeout?: number } | ((worker: Worker) => boolean | Promise<boolean>)): Promise<Worker>;
   $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
   $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
   $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
