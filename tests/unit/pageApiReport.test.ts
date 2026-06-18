@@ -95,4 +95,19 @@ describe("generatePageApiReport", () => {
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
+
+  it("matches upstream Playwright Page misc signatures", () => {
+    const report = generateApiMethodSignatureReport("Page", [
+      "addLocatorHandler",
+      "consoleMessages",
+      "opener",
+      "pageErrors",
+      "requests",
+      "screenshot",
+      "video",
+      "viewportSize"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });

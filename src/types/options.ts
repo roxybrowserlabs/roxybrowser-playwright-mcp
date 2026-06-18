@@ -276,6 +276,8 @@ export interface ScreenshotOptions {
   type?: ScreenshotType;
 }
 
+export type PageScreenshotOptions = ScreenshotOptions;
+
 export interface AddScriptTagOptions {
   content?: string;
   path?: string;

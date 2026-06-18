@@ -24,6 +24,7 @@ import type {
   LaunchOptions,
   PageCloseOptions,
   PageGotoOptions,
+  PageScreenshotOptions,
   PageSetContentOptions,
   PdfOptions,
   PressOptions,
@@ -40,7 +41,7 @@ import type {
   TimeoutOptions,
   SelectorStrictOptions
 } from "./options.js";
-import type { BrowserContextEventListener, BrowserContextEventName, BrowserContextEventPredicate, PageConsoleMessage, PageErrorEntry } from "./events.js";
+import type { BrowserContextEventListener, BrowserContextEventName, BrowserContextEventPredicate, ConsoleMessage, PageConsoleMessage, PageErrorEntry } from "./events.js";
 import type {
   PageEventListener,
   PageEventMap,
@@ -726,11 +727,7 @@ export interface Page {
     script: string | ((arg: Arg) => unknown) | { path?: string; content?: string },
     arg?: Arg
   ): Promise<Disposable>;
-  addLocatorHandler(
-    locator: Locator,
-    handler: (locator: Locator) => Promise<any>,
-    options?: AddLocatorHandlerOptions
-  ): Promise<void>;
+  addLocatorHandler(locator: Locator, handler: ((locator: Locator) => Promise<any>), options?: { noWaitAfter?: boolean; times?: number; }): Promise<void>;
   exposeBinding(
     name: string,
     playwrightBinding: (source: BindingSource, ...args: any[]) => any
@@ -775,12 +772,12 @@ export interface Page {
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: PageWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;
   waitForSelector(selector: string, options: PageWaitForSelectorOptions): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
   ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
-  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  screenshot(options?: PageScreenshotOptions): Promise<Buffer>;
   context(): BrowserContext;
-  consoleMessages(options?: { filter?: "all" | "since-navigation" }): Promise<Array<PageConsoleMessage>>;
+  consoleMessages(options?: { filter?: "all"|"since-navigation"; }): Promise<Array<ConsoleMessage>>;
   clearConsoleMessages(): Promise<void>;
   clearPageErrors(): Promise<void>;
-  pageErrors(options?: { filter?: "all" | "since-navigation" }): Promise<Array<PageErrorEntry>>;
+  pageErrors(options?: { filter?: "all"|"since-navigation"; }): Promise<Array<Error>>;
   requests(): Promise<Array<Request>>;
   addListener(event: "close", listener: (page: Page) => any): this;
   addListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
@@ -1112,7 +1109,7 @@ export interface Page {
   getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator;
   cancelPickLocator(): Promise<void>;
   hideHighlight(): Promise<void>;
-  opener(): Promise<Page | null>;
+  opener(): Promise<null|Page>;
   pause(): Promise<void>;
   pdf(options?: PdfOptions): Promise<Buffer>;
   pickLocator(): Promise<Locator>;
@@ -1124,7 +1121,7 @@ export interface Page {
   unrouteAll(options?: {
     behavior?: "wait" | "ignoreErrors" | "default";
   }): Promise<void>;
-  video(): Video | null;
+  video(): null|Video;
   workers(): Array<Worker>;
   textContent(selector: string, options?: SelectorStrictOptions): Promise<string | null>;
   innerText(selector: string, options?: SelectorStrictOptions): Promise<string>;
@@ -1171,7 +1168,7 @@ export interface Page {
   setDefaultNavigationTimeout(timeout: number): void;
   setDefaultTimeout(timeout: number): void;
   setViewportSize(viewportSize: ViewportSize): Promise<void>;
-  viewportSize(): ViewportSize | null;
+  viewportSize(): null|{ width: number; height: number; };
   tap(selector: string, options?: TapOptions): Promise<void>;
   dblclick(selector: string, options?: ClickOptions): Promise<void>;
   click(selector: string, options?: ClickOptions): Promise<void>;

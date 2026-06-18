@@ -74,6 +74,8 @@ export interface PageConsoleMessage {
   worker(): Worker | null;
 }
 
+export type ConsoleMessage = PageConsoleMessage;
+
 export interface PageDialog {
   accept(promptText?: string): Promise<void>;
   defaultValue(): string;
