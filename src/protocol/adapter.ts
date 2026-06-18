@@ -183,6 +183,19 @@ export interface ProtocolPageAdapter {
     reference: ProtocolElementHandleReference,
     missingMessage?: string
   ): Promise<ProtocolElementHandleReference>;
+  evaluateOnReference<TResult>(
+    reference: ProtocolElementHandleReference,
+    expression: string,
+    arg?: unknown,
+    missingMessage?: string,
+    isFunction?: boolean
+  ): Promise<TResult>;
+  evaluateOnReferenceAll<TResult>(
+    reference: ProtocolElementHandleReference,
+    expression: string,
+    arg?: unknown,
+    isFunction?: boolean
+  ): Promise<TResult>;
   query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null>;
   queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]>;
   evalOnSelector<TResult>(
@@ -198,6 +211,7 @@ export interface ProtocolPageAdapter {
     arg?: unknown
   ): Promise<TResult>;
   locator(selector: LocatorSelector): ProtocolLocatorAdapter;
+  locatorInFrame?(frameId: string, selector: LocatorSelector): ProtocolLocatorAdapter;
   getByText(text: string | RegExp, options?: GetByTextOptions): ProtocolLocatorAdapter;
   getByAltText(text: string | RegExp, options?: GetByAltTextOptions): ProtocolLocatorAdapter;
   getByLabel(text: string | RegExp, options?: GetByLabelOptions): ProtocolLocatorAdapter;

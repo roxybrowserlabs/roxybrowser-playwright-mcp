@@ -350,6 +350,7 @@ type LocatorPick =
 interface CdpLocatorState {
   chain: LocatorSelector[];
   pick?: LocatorPick;
+  protocolFrameId?: string;
 }
 
 interface ActionPoint {
@@ -1190,6 +1191,8 @@ function createTransientClosedPageAdapter(url: string): ProtocolPageAdapter {
     on: () => () => {},
     createHandle: createClosedHandle,
     createHandleReference: async (reference) => reference,
+    evaluateOnReference: asyncClosed,
+    evaluateOnReferenceAll: asyncClosed,
     query: async () => null,
     queryAll: async () => [],
     evalOnSelector: asyncClosed,
@@ -2080,8 +2083,35 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       childrenByParent.set(frame.parentId, parentFrames);
     }
 
+    const usedDomSnapshotIds = new Set<string>();
+    const takeDomSnapshot = (
+      frame: CdpNativeFrameState,
+      parentId: string | null,
+      syntheticId: string
+    ) => {
+      const exact = domById.get(syntheticId);
+      if (exact && !usedDomSnapshotIds.has(exact.id)) {
+        usedDomSnapshotIds.add(exact.id);
+        return exact;
+      }
+
+      const matching = domSnapshots.find((snapshot) => {
+        if (usedDomSnapshotIds.has(snapshot.id) || snapshot.parentId !== parentId) {
+          return false;
+        }
+        if (frame.url && snapshot.url === frame.url) {
+          return true;
+        }
+        return Boolean(frame.name && snapshot.name === frame.name);
+      });
+      if (matching) {
+        usedDomSnapshotIds.add(matching.id);
+      }
+      return matching;
+    };
+
     const visit = (frame: CdpNativeFrameState, parentId: string | null, syntheticId: string) => {
-      const domSnapshot = domById.get(syntheticId);
+      const domSnapshot = takeDomSnapshot(frame, parentId, syntheticId);
       snapshots.push({
         id: syntheticId,
         name: frame.name || domSnapshot?.name || "",
@@ -2108,7 +2138,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
     const seenSnapshotIds = new Set(snapshots.map((snapshot) => snapshot.id));
     for (const domSnapshot of domSnapshots) {
-      if (seenSnapshotIds.has(domSnapshot.id)) {
+      if (seenSnapshotIds.has(domSnapshot.id) || usedDomSnapshotIds.has(domSnapshot.id)) {
         continue;
       }
       snapshots.push(domSnapshot);
@@ -2705,6 +2735,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
     return new CdpLocatorAdapter(this, {
       chain: [selector]
+    });
+  }
+
+  locatorInFrame(frameId: string, selector: LocatorSelector): ProtocolLocatorAdapter {
+    return new CdpLocatorAdapter(this, {
+      chain: [selector],
+      protocolFrameId: frameId
     });
   }
 
@@ -3759,6 +3796,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         operation: "actionPoint",
         reference: {
           chain: locator.chain,
+          ...(locator.protocolFrameId ? { protocolFrameId: locator.protocolFrameId } : {}),
           ...(locator.pick ? { pick: locator.pick } : {})
         },
         ...(options?.force !== undefined ? { force: options.force } : {}),
@@ -3770,7 +3808,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   }
 
-  private async runLocatorOperation<TResult>(
+  async runLocatorOperation<TResult>(
     locator: CdpLocatorState,
     payload: Omit<SelectorRuntimePayload, "reference">
   ): Promise<TResult> {
@@ -3779,6 +3817,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         ...payload,
         reference: {
           chain: locator.chain,
+          ...(locator.protocolFrameId ? { protocolFrameId: locator.protocolFrameId } : {}),
           ...(locator.pick ? { pick: locator.pick } : {})
         }
       });
@@ -4122,6 +4161,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   private async runSelectorOperation<TResult>(payload: SelectorRuntimePayload): Promise<TResult> {
+    const protocolFrameId = payload.reference.protocolFrameId;
+    if (protocolFrameId) {
+      return await this.evaluateWithArgumentsInFrame<TResult>(
+        protocolFrameId,
+        SELECTOR_RUNTIME_SOURCE,
+        true,
+        [payload],
+        true
+      );
+    }
     return this.evaluateFunction<TResult>(SELECTOR_RUNTIME_SOURCE, payload);
   }
 
@@ -5416,7 +5465,8 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
 
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
     return new CdpLocatorAdapter(this.page, {
-      chain: [...this.state.chain, selector]
+      chain: [...this.state.chain, selector],
+      ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {})
     });
   }
 
@@ -5511,6 +5561,7 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
   async count(): Promise<number> {
     return this.page.countSelector({
       chain: this.state.chain,
+      ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
       ...(this.state.pick ? { pick: this.state.pick } : {})
     });
   }
@@ -5521,7 +5572,11 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
     options?: DispatchEventOptions
   ): Promise<void> {
     void options;
-    await this.page.dispatchEvent(this.state.chain, type, eventInit);
+    await this.page.runLocatorOperation<void>(this.state, {
+      operation: "dispatchEvent",
+      name: type,
+      arg: eventInit
+    });
   }
 
   async evaluate<TResult>(
@@ -5532,6 +5587,7 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
     return this.page.evaluateOnReference(
       {
         chain: this.state.chain,
+        ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
         ...(this.state.pick ? { pick: this.state.pick } : {})
       },
       expression,
@@ -5549,6 +5605,7 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
     return this.page.evaluateOnReferenceAll(
       {
         chain: this.state.chain,
+        ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
         ...(this.state.pick ? { pick: this.state.pick } : {})
       },
       expression,
@@ -5571,6 +5628,7 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
   async boundingBox(): Promise<Rect | null> {
     return this.page.boundingBoxReference({
       chain: this.state.chain,
+      ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
       ...(this.state.pick ? { pick: this.state.pick } : {})
     });
   }
@@ -5653,12 +5711,13 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async tap(options?: TapOptions): Promise<void> {
-    await this.page.tap(this.state.chain, options);
+    await this.page.clickLocator(this.state, options);
   }
 
   async elementHandle(): Promise<ProtocolElementHandleAdapter> {
     const reference: ProtocolElementHandleReference = {
       chain: this.state.chain,
+      ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
       ...(this.state.pick ? { pick: this.state.pick } : {})
     };
     const handleReference = await this.page.createHandleReference(
@@ -5671,12 +5730,14 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
   async elementHandles(): Promise<ProtocolElementHandleAdapter[]> {
     const count = await this.page.countSelector({
       chain: this.state.chain,
+      ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
       ...(this.state.pick ? { pick: this.state.pick } : {})
     });
     const handles: ProtocolElementHandleAdapter[] = [];
     for (let index = 0; index < count; index += 1) {
       const reference: ProtocolElementHandleReference = {
         chain: this.state.chain,
+        ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
         pick: { kind: "nth", index }
       };
       handles.push(this.page.createHandle(await this.page.createHandleReference(reference)));

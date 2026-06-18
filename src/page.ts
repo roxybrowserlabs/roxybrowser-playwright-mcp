@@ -28,6 +28,7 @@ import type {
   LocatorSelector,
   ProtocolElementHandleAdapter,
   ProtocolElementHandleReference,
+  ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "./protocol/adapter.js";
 import type { RoutedRequestCall, RoutedRequestDecision, RoutedResponseData } from "./protocol/routing.js";
@@ -2761,13 +2762,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async queryInFrame(frame: RoxyFrameSnapshot, selector: string): Promise<ElementHandle | null> {
-    const handle = await this.adapter.query(this.chainForFrame(frame, parseSelectorChain(selector)));
+    const handle = await this.adapter.createHandleReference(
+      this.referenceForFrame(frame, parseSelectorChain(selector), { kind: "first" })
+    ).then(
+      (reference) => this.adapter.createHandle(reference),
+      () => null
+    );
     return handle ? this.createElementHandle(handle) : null;
   }
 
   async queryAllInFrame(frame: RoxyFrameSnapshot, selector: string): Promise<ElementHandle[]> {
-    const handles = await this.adapter.queryAll(this.chainForFrame(frame, parseSelectorChain(selector)));
-    return handles.map((handle) => this.createElementHandle(handle));
+    return (await this.locatorInFrame(frame, selector).elementHandles()) as ElementHandle[];
   }
 
   async refreshFramesForExternalMutation(): Promise<void> {
@@ -2780,11 +2785,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     pageFunction: string | ElementCallback<TResult, TArg>,
     arg?: TArg
   ): Promise<TResult> {
-    return this.adapter.evalOnSelector(
-      this.chainForFrame(frame, parseSelectorChain(selector)),
+    return this.adapter.evaluateOnReference(
+      this.referenceForFrame(frame, parseSelectorChain(selector), { kind: "first" }),
       serializePageFunction(pageFunction),
-      typeof pageFunction === "function",
-      serializeEvaluationArgument(arg)
+      serializeEvaluationArgument(arg),
+      `Could not resolve ${selector} to DOM Element`,
+      typeof pageFunction === "function"
     );
   }
 
@@ -2794,16 +2800,23 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     pageFunction: string | ElementArrayCallback<TResult, TArg>,
     arg?: TArg
   ): Promise<TResult> {
-    return this.adapter.evalOnSelectorAll(
-      this.chainForFrame(frame, parseSelectorChain(selector)),
+    return this.adapter.evaluateOnReferenceAll(
+      this.referenceForFrame(frame, parseSelectorChain(selector)),
       serializePageFunction(pageFunction),
-      typeof pageFunction === "function",
-      serializeEvaluationArgument(arg)
+      serializeEvaluationArgument(arg),
+      typeof pageFunction === "function"
     );
   }
 
   locatorInFrame(frame: RoxyFrameSnapshot, selector: string): Locator {
-    return this.createLocatorFromChain(this.chainForFrame(frame, parseSelectorChain(selector)));
+    const chain = parseSelectorChain(selector);
+    if (frame.nativeFrameId && this.adapter.locatorInFrame) {
+      return this.createLocatorFromAdapterChain(
+        this.adapter.locatorInFrame(frame.nativeFrameId, chain[0]!),
+        chain
+      );
+    }
+    return this.createLocatorFromChain(this.chainForFrame(frame, chain));
   }
 
   getByTextInFrame(
@@ -3484,6 +3497,31 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     );
   }
 
+  private createLocatorFromAdapterChain(
+    adapter: ProtocolLocatorAdapter,
+    chain: LocatorSelector[]
+  ): Locator {
+    const [first, ...rest] = chain;
+    if (!first) {
+      throw new Error("Selector must not be empty.");
+    }
+    let current = adapter;
+    for (const part of rest) {
+      current = current.locator(part);
+    }
+    return new RoxyLocator(
+      current,
+      this.humanController,
+      chain,
+      async (locator, options) => {
+        await this.maybeRunLocatorHandlers(locator, options);
+      },
+      this.humanDefaults,
+      this,
+      this
+    );
+  }
+
   private rootLocatorForFrame(frame: RoxyFrameSnapshot): RoxyLocator {
     if (!frame.referenceChain.length) {
       return new RoxyLocator(this.adapter.locator({ strategy: "css", value: ":root" }), this.humanController, null, undefined, this.humanDefaults, this);
@@ -3493,6 +3531,21 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private chainForFrame(frame: RoxyFrameSnapshot, chain: LocatorSelector[]): LocatorSelector[] {
     return [...frame.referenceChain, ...chain];
+  }
+
+  private referenceForFrame(
+    frame: RoxyFrameSnapshot,
+    chain: LocatorSelector[],
+    pick?: ProtocolElementHandleReference["pick"]
+  ): ProtocolElementHandleReference {
+    const scopedChain = frame.nativeFrameId && this.adapter.locatorInFrame
+      ? chain
+      : this.chainForFrame(frame, chain);
+    return {
+      chain: scopedChain,
+      ...(frame.nativeFrameId && this.adapter.locatorInFrame ? { protocolFrameId: frame.nativeFrameId } : {}),
+      ...(pick ? { pick } : {})
+    };
   }
 
   private async refreshFrameSnapshots(): Promise<void> {

@@ -249,7 +249,7 @@ export class RoxyFrame implements Frame {
   async content(): Promise<string> {
     return this.evaluate(() => {
       const doctype = document.doctype
-        ? "<!DOCTYPE " + document.doctype.name + ">"
+        ? new XMLSerializer().serializeToString(document.doctype)
         : "";
       return doctype + document.documentElement.outerHTML;
     });
