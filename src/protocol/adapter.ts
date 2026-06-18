@@ -18,6 +18,7 @@ import type {
   LaunchOptions,
   PageCloseOptions,
   PageGotoOptions,
+  PageSetContentOptions,
   PdfOptions,
   PressOptions,
   Rect,
@@ -109,7 +110,7 @@ export interface ProtocolPageAdapter {
   reload(options?: PageGotoOptions): Promise<PageResponse | null>;
   title(): Promise<string>;
   content(): Promise<string>;
-  setContent(html: string): Promise<void>;
+  setContent(html: string, options?: PageSetContentOptions): Promise<void>;
   addInitScript(source: string, arg?: unknown): Promise<Disposable>;
   evaluate<TResult>(expression: string, arg?: unknown, isFunction?: boolean): Promise<TResult>;
   evaluateHandle?<TResult>(

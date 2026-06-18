@@ -15,6 +15,7 @@ import type {
 import type {
   ClickOptions,
   FillOptions,
+  PageSetContentOptions,
   PressOptions,
   TypeOptions,
   WaitForSelectorOptions
@@ -74,12 +75,18 @@ export class RoxyFrame implements Frame {
     return this.snapshot.name;
   }
 
-  async setContent(html: string): Promise<void> {
+  async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
     await this.evaluate((content) => {
       document.open();
       document.write(content);
       document.close();
     }, html);
+    if (options?.waitUntil !== "commit") {
+      await this.roxyPage.waitForLoadState(
+        options?.waitUntil,
+        options?.timeout === undefined ? {} : { timeout: options.timeout }
+      );
+    }
     await this.roxyPage.refreshFramesForExternalMutation();
   }
 

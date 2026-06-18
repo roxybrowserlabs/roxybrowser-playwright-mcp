@@ -44,6 +44,7 @@ import type {
   MouseButton,
   PageCloseOptions,
   PageGotoOptions,
+  PageSetContentOptions,
   PdfOptions,
   PressOptions,
   Rect,
@@ -695,15 +696,26 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   async content(): Promise<string> {
     return this.evaluateExpression<string>(
       `(() => {
-        const doctype = document.doctype
-          ? "<!DOCTYPE " + document.doctype.name + ">"
-          : "";
-        return doctype + document.documentElement.outerHTML;
+        const doctype = document.doctype ? new XMLSerializer().serializeToString(document.doctype) : "";
+        const documentElement = document.documentElement.cloneNode(true);
+        if (documentElement instanceof Element) {
+          documentElement.querySelectorAll([
+            "#__roxy_screencast_actions_style__",
+            "#__roxy_screencast_overlay_style__",
+            "x-pw-action-overlays",
+            "x-pw-user-overlays",
+            "[data-roxy-highlight-overlay]"
+          ].join(",")).forEach((node) => node.remove());
+        }
+        return doctype + documentElement.outerHTML;
       })()`
     );
   }
 
-  async setContent(html: string): Promise<void> {
+  async setContent(html: string, options: PageSetContentOptions = {}): Promise<void> {
+    const waitUntil = options.waitUntil ?? "load";
+    this.resetNavigationState();
+
     await this.evaluateFunction<void>(
       `(payload) => {
         document.open();
@@ -712,6 +724,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }`,
       { html }
     );
+
+    if (waitUntil !== "commit") {
+      await this.waitForLoadState(waitUntil, options.timeout);
+    }
   }
 
   async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {

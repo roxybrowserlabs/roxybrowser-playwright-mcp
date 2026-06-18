@@ -24,6 +24,7 @@ import type {
   LaunchOptions,
   PageCloseOptions,
   PageGotoOptions,
+  PageSetContentOptions,
   PdfOptions,
   PressOptions,
   Rect,
@@ -614,7 +615,7 @@ export interface Page {
   reload(options?: PageGotoOptions): Promise<Response | null>;
   title(): Promise<string>;
   content(): Promise<string>;
-  setContent(html: string): Promise<void>;
+  setContent(html: string, options?: PageSetContentOptions): Promise<void>;
   evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
   evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
@@ -1218,7 +1219,7 @@ export interface Frame {
   isDetached(): boolean;
   url(): string;
   name(): string;
-  setContent(html: string): Promise<void>;
+  setContent(html: string, options?: PageSetContentOptions): Promise<void>;
   evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
   evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;

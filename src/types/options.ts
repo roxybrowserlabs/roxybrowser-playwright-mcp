@@ -109,6 +109,10 @@ export interface PageGotoOptions extends TimeoutOptions {
   waitUntil?: WaitUntilState;
 }
 
+export interface PageSetContentOptions extends TimeoutOptions {
+  waitUntil?: WaitUntilState;
+}
+
 export interface WaitForFunctionOptions extends TimeoutOptions {
   polling?: number | "raf";
 }

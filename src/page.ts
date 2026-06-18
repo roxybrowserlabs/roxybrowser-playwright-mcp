@@ -100,6 +100,7 @@ import type {
   LoadState,
   PageCloseOptions,
   PageGotoOptions,
+  PageSetContentOptions,
   PdfOptions,
   PressOptions,
   SelectOptionValue,
@@ -819,8 +820,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.adapter.content();
   }
 
-  async setContent(html: string): Promise<void> {
-    await this.adapter.setContent(html);
+  async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
+    await this.adapter.setContent(html, {
+      ...options,
+      timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
+    });
     await this.reinstallExposedBindings();
     await this.refreshFrameSnapshots();
   }
