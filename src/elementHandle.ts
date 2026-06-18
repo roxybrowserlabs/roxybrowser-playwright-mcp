@@ -1,6 +1,7 @@
 import { TimeoutError } from "./errors.js";
 import { DefaultHumanController } from "./human/controller.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
+import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import { RoxyJSHandle, createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
 import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
@@ -12,7 +13,6 @@ import { parseSelectorChain } from "./selectors.js";
 import type { ElementHandle, Frame, JSHandle, PageFunctionOn, SmartHandle } from "./types/api.js";
 import type {
   ClickOptions,
-  FilePayload,
   FillOptions,
   HoverOptions,
   PressOptions,
@@ -362,49 +362,11 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async setInputFiles(
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: InputFiles,
     _options?: SetInputFilesOptions
   ): Promise<void> {
-    const payloads = normalizeFilePayloads(files);
-    await this.evaluate(
-      (element, entries) => {
-        const input = element as HTMLInputElement | null;
-        if (!input || input.tagName !== "INPUT" || input.type !== "file") {
-          throw new Error("Node is not an HTMLInputElement of type file.");
-        }
-
-        const dataTransfer = new DataTransfer();
-        for (const entry of entries) {
-          const bytes = Uint8Array.from(atob(entry.base64), (char) => char.charCodeAt(0));
-          dataTransfer.items.add(
-            new File([bytes], entry.name, {
-              type: entry.mimeType
-            })
-          );
-        }
-        input.files = dataTransfer.files;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-      },
-      payloads
-    );
+    await setInputFilesOnElement(this, files);
   }
-}
-
-function normalizeFilePayloads(
-  files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>
-): Array<{ base64: string; mimeType: string; name: string }> {
-  const entries = Array.isArray(files) ? files : [files];
-  return entries.map((entry) => {
-    if (typeof entry === "string") {
-      throw new Error("File paths are not supported by ElementHandle.setInputFiles yet.");
-    }
-    return {
-      base64: entry.buffer.toString("base64"),
-      mimeType: entry.mimeType,
-      name: entry.name
-    };
-  });
 }
 
 export async function normalizeSelectOptionValues(

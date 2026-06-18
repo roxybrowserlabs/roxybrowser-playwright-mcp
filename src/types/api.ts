@@ -217,7 +217,7 @@ export interface FileChooser {
   isMultiple(): boolean;
   page(): Page;
   setFiles(
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: string | FilePayload | string[] | FilePayload[],
     options?: SetInputFilesOptions
   ): Promise<void>;
 }
@@ -1020,7 +1020,7 @@ export interface Page {
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
   setInputFiles(
     selector: string,
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: string | FilePayload | string[] | FilePayload[],
     options?: SetInputFilesOptions
   ): Promise<void>;
   selectOption(
@@ -1111,7 +1111,7 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
       | Array<string | SelectOptionValue | ElementHandle>
   ): Promise<string[]>;
   setInputFiles(
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: string | FilePayload | string[] | FilePayload[],
     options?: SetInputFilesOptions
   ): Promise<void>;
   dblclick(options?: ClickOptions): Promise<void>;
@@ -1226,7 +1226,7 @@ export interface Locator {
   selectText(options?: TimeoutOptions): Promise<void>;
   setChecked(checked: boolean, options?: ClickOptions): Promise<void>;
   setInputFiles(
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: string | FilePayload | string[] | FilePayload[],
     options?: SetInputFilesOptions
   ): Promise<void>;
   tap(options?: TapOptions): Promise<void>;

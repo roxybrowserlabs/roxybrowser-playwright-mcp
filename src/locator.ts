@@ -4,6 +4,7 @@ import { resolveHumanizationOptions } from "./human/profile.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyElementHandle, serializeEvaluationArgument, type ElementHandleFrameResolver } from "./elementHandle.js";
+import type { InputFiles } from "./inputFiles.js";
 import { createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
 import {
   createAltTextLocatorSelector,
@@ -30,7 +31,6 @@ import type {
   ClickOptions,
   DispatchEventOptions,
   DragAndDropOptions,
-  FilePayload,
   FillOptions,
   GetByAltTextOptions,
   GetByLabelOptions,
@@ -584,7 +584,7 @@ export class RoxyLocator implements Locator {
   }
 
   async setInputFiles(
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
     const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });

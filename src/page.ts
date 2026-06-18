@@ -13,6 +13,7 @@ import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyFrame, type RoxyFrameSnapshot } from "./frame.js";
 import { DefaultHumanController } from "./human/controller.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
+import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import { RoxyJSHandle, createRemoteJSHandle } from "./jsHandle.js";
 import { createSmartHandle } from "./jsHandle.js";
 import { RoxyLocator } from "./locator.js";
@@ -96,7 +97,6 @@ import type {
   DragAndDropOptions,
   DispatchEventOptions,
   EmulateMediaOptions,
-  FilePayload,
   FillOptions,
   GetByAltTextOptions,
   GetByLabelOptions,
@@ -182,7 +182,7 @@ class RoxyFileChooser implements FileChooser {
   }
 
   async setFiles(
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
     await this.roxyPage.setInputFiles(this.input, files, options);
@@ -2190,46 +2190,24 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async setInputFiles(
     selector: string,
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void>;
   async setInputFiles(
     selector: ElementHandle,
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void>;
   async setInputFiles(
     selector: string | ElementHandle,
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>,
+    files: InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
     const handle =
       typeof selector === "string"
         ? await this.requiredElementHandleForSelector(selector, "page.setInputFiles", options)
         : selector;
-    const payloads = await this.normalizeFilePayloads(files);
-    await handle.evaluate(
-      (element, entries) => {
-        const input = element as HTMLInputElement | null;
-        if (!input || input.tagName !== "INPUT" || input.type !== "file") {
-          throw new Error("Node is not an HTMLInputElement of type file.");
-        }
-
-        const dataTransfer = new DataTransfer();
-        for (const entry of entries) {
-          const bytes = Uint8Array.from(atob(entry.base64), (char) => char.charCodeAt(0));
-          dataTransfer.items.add(
-            new File([bytes], entry.name, {
-              type: entry.mimeType
-            })
-          );
-        }
-        input.files = dataTransfer.files;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-      },
-      payloads
-    );
+    await setInputFilesOnElement(handle, files);
   }
 
   async dispatchEvent(
@@ -3849,33 +3827,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         this.nativeFrameBindings.set(state.frameId, resolvedFrame.snapshotState().id);
       }
     }
-  }
-
-  private async normalizeFilePayloads(
-    files: string | ReadonlyArray<string> | FilePayload | ReadonlyArray<FilePayload>
-  ): Promise<Array<{ name: string; mimeType: string; base64: string }>> {
-    const items = Array.isArray(files) ? [...files] : [files];
-    const payloads: Array<{ name: string; mimeType: string; base64: string }> = [];
-
-    for (const item of items) {
-      if (typeof item === "string") {
-        const buffer = await readFile(item);
-        payloads.push({
-          name: item.split("/").pop() ?? "file",
-          mimeType: inferMimeType(item),
-          base64: buffer.toString("base64")
-        });
-        continue;
-      }
-
-      payloads.push({
-        name: item.name,
-        mimeType: item.mimeType,
-        base64: item.buffer.toString("base64")
-      });
-    }
-
-    return payloads;
   }
 
   private async applyEmulatedMedia(): Promise<void> {
