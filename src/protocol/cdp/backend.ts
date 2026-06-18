@@ -215,6 +215,19 @@ interface CdpRemoteObject {
   value?: unknown;
 }
 
+interface CdpDispatchMouseEventParams {
+  button?: MouseButton | "none";
+  buttons?: number;
+  clickCount?: number;
+  deltaX?: number;
+  deltaY?: number;
+  force?: number;
+  modifiers?: number;
+  type: "mouseMoved" | "mousePressed" | "mouseReleased" | "mouseWheel";
+  x: number;
+  y: number;
+}
+
 interface CdpRuntimeClient {
   send(
     method: "Runtime.evaluate",
@@ -4019,7 +4032,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async mouseWheel(deltaX: number, deltaY: number): Promise<void> {
     await this.enqueuePointerAction(async () => {
       await this.bringToFront();
-      await this.options.client.Input.dispatchMouseEvent({
+      await this.dispatchMouseEvent({
         type: "mouseWheel",
         x: this.currentMousePosition.x,
         y: this.currentMousePosition.y,
@@ -4454,13 +4467,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   private async dispatchMouseMove(point: ActionPoint): Promise<void> {
-    await this.options.client.Input.dispatchMouseEvent({
+    await this.dispatchMouseEvent({
       type: "mouseMoved",
       x: point.x,
       y: point.y,
       button: this.lastMouseButton,
       buttons: mouseButtonsMask(this.pressedMouseButtons),
-      modifiers: keyboardModifierMask(this.activePointerModifiers())
+      modifiers: keyboardModifierMask(this.activePointerModifiers()),
+      force: this.pressedMouseButtons.size > 0 ? 0.5 : 0
     });
   }
 
@@ -4476,14 +4490,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     this.lastMouseButton = button;
     this.pressedMouseButtons.add(button);
-    await this.options.client.Input.dispatchMouseEvent({
+    await this.dispatchMouseEvent({
       type: "mousePressed",
       x: point.x,
       y: point.y,
       button,
       buttons: mouseButtonsMask(this.pressedMouseButtons),
       clickCount,
-      modifiers: keyboardModifierMask(this.activePointerModifiers())
+      modifiers: keyboardModifierMask(this.activePointerModifiers()),
+      force: this.pressedMouseButtons.size > 0 ? 0.5 : 0
     });
   }
 
@@ -4494,7 +4509,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     this.lastMouseButton = "none";
     this.pressedMouseButtons.delete(button);
-    await this.options.client.Input.dispatchMouseEvent({
+    await this.dispatchMouseEvent({
       type: "mouseReleased",
       x: point.x,
       y: point.y,
@@ -4503,6 +4518,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       clickCount,
       modifiers: keyboardModifierMask(this.activePointerModifiers())
     });
+  }
+
+  private async dispatchMouseEvent(params: CdpDispatchMouseEventParams): Promise<void> {
+    await (this.options.client as CdpClient & {
+      send(method: "Input.dispatchMouseEvent", params: CdpDispatchMouseEventParams): Promise<unknown>;
+    }).send("Input.dispatchMouseEvent", params);
   }
 
   private activePointerModifiers(): Iterable<string> {

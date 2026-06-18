@@ -152,6 +152,39 @@ describe("page mouse and wheel contract e2e", () => {
     });
   });
 
+  it("sets modifier keys on mouse click", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<button id="target" style="position:absolute;left:0;top:0;width:100px;height:50px">target</button>');
+      await page.evaluate(() => {
+        document.querySelector("#target")!.addEventListener("mousedown", (event) => {
+          (window as unknown as { lastEvent: unknown }).lastEvent = {
+            ctrlKey: event.ctrlKey,
+            shiftKey: event.shiftKey
+          };
+        }, true);
+      });
+
+      const modifiers = [
+        ["Shift", "shiftKey"],
+        ["Control", "ctrlKey"]
+      ] as const;
+      for (const [modifier, property] of modifiers) {
+        await page.keyboard.down(modifier);
+        await page.mouse.click(20, 10);
+        expect(await page.evaluate((key) => {
+          return (window as unknown as { lastEvent: Record<string, boolean> }).lastEvent[key];
+        }, property)).toBe(true);
+        await page.keyboard.up(modifier);
+      }
+
+      await page.mouse.click(20, 10);
+      expect(await page.evaluate(() => (window as unknown as { lastEvent: unknown }).lastEvent)).toEqual({
+        ctrlKey: false,
+        shiftKey: false
+      });
+    });
+  });
+
   it("moves the mouse in the requested number of steps", async () => {
     await withPage(async (page) => {
       await page.evaluate(() => {
