@@ -19,6 +19,7 @@ import { RoxyJSHandle, createRemoteJSHandle } from "./jsHandle.js";
 import { createSmartHandle } from "./jsHandle.js";
 import { RoxyLocator } from "./locator.js";
 import { RoxyScreencast } from "./screencast.js";
+import { preparePageForScreenshot } from "./screenshotPreparation.js";
 import { determineScreenshotType, validateScreenshotOptions } from "./screenshotOptions.js";
 import { isRegExp, isURLPattern, resolveGlobToRegexPattern, type URLMatch, urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
@@ -1480,14 +1481,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
     }
     validateScreenshotOptions(screenshotOptions);
-    const data = await this.adapter.screenshot(screenshotOptions);
+    const cleanup = await preparePageForScreenshot(this, screenshotOptions);
+    try {
+      if ((options as any).__testHookBeforeScreenshot) {
+        await (options as any).__testHookBeforeScreenshot();
+      }
+      const data = await this.adapter.screenshot(screenshotOptions);
+      if ((options as any).__testHookAfterScreenshot) {
+        await (options as any).__testHookAfterScreenshot();
+      }
 
-    if (options.path) {
-      await mkdir(dirname(options.path), { recursive: true });
-      await writeFile(options.path, data);
+      if (options.path) {
+        await mkdir(dirname(options.path), { recursive: true });
+        await writeFile(options.path, data);
+      }
+
+      return data;
+    } finally {
+      await cleanup();
     }
-
-    return data;
   }
 
   context(): BrowserContext {

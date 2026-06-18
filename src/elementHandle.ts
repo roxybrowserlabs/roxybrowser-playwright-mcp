@@ -7,6 +7,11 @@ import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import { RoxyJSHandle, createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
 import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
+import {
+  prepareElementDocumentForScreenshot,
+  preparePageForScreenshot,
+  type ScreenshotPageTarget
+} from "./screenshotPreparation.js";
 import { determineScreenshotType, validateScreenshotOptions } from "./screenshotOptions.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
@@ -289,16 +294,27 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     if (box.height === 0) {
       throw new Error("Node has 0 height.");
     }
-    const screenshot = await this.adapter.screenshot({
-      ...screenshotOptions,
-      clip: box,
-      fullPage: false
-    });
-    if (options?.path) {
-      await mkdir(dirname(options.path), { recursive: true });
-      await writeFile(options.path, screenshot);
+    const cleanup = await this.prepareForScreenshot(screenshotOptions);
+    try {
+      if ((options as any)?.__testHookBeforeScreenshot) {
+        await (options as any).__testHookBeforeScreenshot();
+      }
+      const screenshot = await this.adapter.screenshot({
+        ...screenshotOptions,
+        clip: box,
+        fullPage: false
+      });
+      if ((options as any)?.__testHookAfterScreenshot) {
+        await (options as any).__testHookAfterScreenshot();
+      }
+      if (options?.path) {
+        await mkdir(dirname(options.path), { recursive: true });
+        await writeFile(options.path, screenshot);
+      }
+      return screenshot;
+    } finally {
+      await cleanup();
     }
-    return screenshot;
   }
 
   async scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void> {
@@ -530,6 +546,19 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     _options?: SetInputFilesOptions
   ): Promise<void> {
     await setInputFilesOnElement(this, files);
+  }
+
+  private async prepareForScreenshot(options: ScreenshotOptions): Promise<() => Promise<void>> {
+    const pageTarget = this.screenshotPageTarget();
+    if (pageTarget) {
+      return preparePageForScreenshot(pageTarget, options);
+    }
+    return prepareElementDocumentForScreenshot(this, options);
+  }
+
+  private screenshotPageTarget(): ScreenshotPageTarget | null {
+    const candidate = this.frameResolver as (ElementHandleFrameResolver & Partial<ScreenshotPageTarget>) | undefined;
+    return typeof candidate?.frames === "function" ? candidate as ScreenshotPageTarget : null;
   }
 }
 

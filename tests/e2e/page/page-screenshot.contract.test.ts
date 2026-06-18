@@ -62,4 +62,97 @@ describe("page screenshot contract e2e", () => {
       await rm(directory, { force: true, recursive: true });
     }
   });
+
+  it("style option should apply during screenshot and restore afterwards", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<div data-test-screenshot="hide">target</div>');
+      let duringScreenshot = "";
+
+      await page.screenshot({
+        style: '[data-test-screenshot="hide"] { visibility: hidden; }',
+        __testHookBeforeScreenshot: async () => {
+          duringScreenshot = await page.locator("div").evaluate((element) =>
+            getComputedStyle(element).visibility
+          );
+        }
+      } as never);
+
+      const afterScreenshot = await page.locator("div").evaluate((element) =>
+        getComputedStyle(element).visibility
+      );
+      expect(duringScreenshot).toBe("hidden");
+      expect(afterScreenshot).toBe("visible");
+    });
+  });
+
+  it("should hide caret by default and restore it after screenshot", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<input style="caret-color: rgb(255, 0, 0)" value="hello">');
+      let duringScreenshot = "";
+
+      await page.screenshot({
+        __testHookBeforeScreenshot: async () => {
+          duringScreenshot = await page.locator("input").evaluate((element) =>
+            getComputedStyle(element).caretColor
+          );
+        }
+      } as never);
+
+      const afterScreenshot = await page.locator("input").evaluate((element) =>
+        getComputedStyle(element).caretColor
+      );
+      expect(duringScreenshot).toBe("rgba(0, 0, 0, 0)");
+      expect(afterScreenshot).toBe("rgb(255, 0, 0)");
+    });
+  });
+
+  it("caret initial should leave caret unchanged during screenshot", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<input style="caret-color: rgb(255, 0, 0)" value="hello">');
+      let duringScreenshot = "";
+
+      await page.screenshot({
+        caret: "initial",
+        __testHookBeforeScreenshot: async () => {
+          duringScreenshot = await page.locator("input").evaluate((element) =>
+            getComputedStyle(element).caretColor
+          );
+        }
+      } as never);
+
+      expect(duringScreenshot).toBe("rgb(255, 0, 0)");
+    });
+  });
+
+  it("animations disabled should finish finite animations during screenshot", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <style>
+          #target {
+            width: 10px;
+            height: 10px;
+            background: green;
+            animation: grow 10s linear forwards;
+          }
+          @keyframes grow {
+            from { transform: translateX(0px); }
+            to { transform: translateX(200px); }
+          }
+        </style>
+        <div id="target"></div>
+      `);
+      let duringScreenshot = "";
+
+      await page.screenshot({
+        animations: "disabled",
+        __testHookBeforeScreenshot: async () => {
+          duringScreenshot = await page.locator("#target").evaluate((element) =>
+            getComputedStyle(element).transform
+          );
+        }
+      } as never);
+
+      expect(duringScreenshot).toContain("200");
+    });
+  });
 });

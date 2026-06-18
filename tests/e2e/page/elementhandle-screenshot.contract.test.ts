@@ -107,4 +107,27 @@ describe("elementHandle screenshot contract e2e", () => {
       expect(screenshot).toBeInstanceOf(Buffer);
     });
   });
+
+  it("style option should apply during element screenshot and restore afterwards", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<div data-test-screenshot="hide" style="width: 20px; height: 20px">target</div>');
+      const handle = await page.$("div");
+      let duringScreenshot = "";
+
+      await handle!.screenshot({
+        style: '[data-test-screenshot="hide"] { visibility: hidden; }',
+        __testHookBeforeScreenshot: async () => {
+          duringScreenshot = await page.locator("div").evaluate((element) =>
+            getComputedStyle(element).visibility
+          );
+        }
+      } as never);
+
+      const afterScreenshot = await page.locator("div").evaluate((element) =>
+        getComputedStyle(element).visibility
+      );
+      expect(duringScreenshot).toBe("hidden");
+      expect(afterScreenshot).toBe("visible");
+    });
+  });
 });
