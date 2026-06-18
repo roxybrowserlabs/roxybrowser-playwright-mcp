@@ -30,8 +30,6 @@ import {
   type SerializedValue
 } from "./utilityScriptSerializers.js";
 import type { RoxyBrowserContext } from "./browserContext.js";
-import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
-import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   LocatorSelector,
@@ -1438,30 +1436,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     selector: string,
     options: WaitForSelectorOptions = {}
   ): Promise<ElementHandle | null> {
-    const { state, timeout } = normalizeWaitForSelectorOptions(options, this.defaultTimeoutMs);
-    const startTime = Date.now();
-
-    while (Date.now() - startTime <= timeout) {
-      const handle = await this.$(selector, options.strict === undefined ? undefined : { strict: options.strict });
-      const visible = handle ? await handle.isVisible() : false;
-
-      if (state === "attached" && handle) {
-        return handle;
+    try {
+      return await this.mainFrame().waitForSelector(selector, options);
+    } catch (error) {
+      if (error instanceof TimeoutError) {
+        error.message = error.message.replace(/^Timeout (\d+)ms exceeded\.$/, "page.waitForSelector: Timeout $1ms exceeded.");
       }
-      if (state === "visible" && visible && handle) {
-        return handle;
-      }
-      if (state === "hidden" && !visible) {
-        return null;
-      }
-      if (state === "detached" && !handle) {
-        return null;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      throw error;
     }
-
-    throw new TimeoutError(`page.waitForSelector: Timeout ${timeout}ms exceeded.`);
   }
 
   async ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; timeout?: number; }): Promise<string>;
@@ -2067,14 +2049,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
   async $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
   async $(selector: string, options?: { strict?: boolean }): Promise<ElementHandle | null> {
-    return this.elementHandleForSelector(selector, options);
+    return (this.mainFrame() as RoxyFrame).$(selector, options as { strict: boolean } | undefined);
   }
 
   async $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
   async $$(selector: string): Promise<ElementHandle<SVGElement | HTMLElement>[]>;
   async $$(selector: string): Promise<ElementHandle[]> {
-    const handles = await this.adapter.queryAll(parseSelectorChain(selector));
-    return handles.map((handle) => this.createElementHandle(handle));
+    return this.mainFrame().$$(selector);
   }
 
   async $eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], Arg, R>, arg: Arg): Promise<R>;
@@ -2087,13 +2068,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     arg?: TArg
   ): Promise<TResult> {
     assertMaxArguments(arguments.length, 3);
-    await this.waitForFileChooserInterceptionIfPending();
-    return this.adapter.evalOnSelector(
-      parseSelectorChain(selector),
-      serializePageFunction(pageFunction),
-      isPageFunctionCallable(pageFunction),
-      serializeEvaluationArgument(arg)
-    );
+    const frame = this.mainFrame() as RoxyFrame;
+    return await frame.evalOnSelectorForPage(selector, pageFunction, arg);
   }
 
   async $$eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], Arg, R>, arg: Arg): Promise<R>;
@@ -2106,13 +2082,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     arg?: TArg
   ): Promise<TResult> {
     assertMaxArguments(arguments.length, 3);
-    await this.waitForFileChooserInterceptionIfPending();
-    return this.adapter.evalOnSelectorAll(
-      parseSelectorChain(selector),
-      serializePageFunction(pageFunction),
-      isPageFunctionCallable(pageFunction),
-      serializeEvaluationArgument(arg)
-    );
+    const frame = this.mainFrame() as RoxyFrame;
+    return await frame.evalOnSelectorAllForPage(selector, pageFunction, arg);
   }
 
   frameLocator(selector: string): FrameLocator {
@@ -2575,7 +2546,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
   async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: DispatchEventOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.dispatchEvent", options)).dispatchEvent(type, eventInit);
+    await (this.mainFrame() as RoxyFrame).dispatchEvent(selector, type, eventInit, options);
   }
 
   async requestGC(): Promise<void> {
@@ -3186,7 +3157,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.referenceForFrame(frame, parseSelectorChain(selector), { kind: "first" }),
       serializePageFunction(pageFunction),
       serializeEvaluationArgument(arg),
-      `Could not resolve ${selector} to DOM Element`,
+      `Failed to find element matching selector "${selector}"`,
       typeof pageFunction === "function"
     );
   }
@@ -6326,11 +6297,6 @@ function resolveRedirectUrl(baseUrl: string, location: string): string {
   } catch {
     return location;
   }
-}
-
-function isPageFunctionCallable(pageFunction: unknown): boolean {
-  return typeof pageFunction === "function" ||
-    (typeof pageFunction === "string" && looksLikeFunctionExpression(pageFunction));
 }
 
 function normalizeWebSocketProtocols(protocols?: string | string[]): string[] {

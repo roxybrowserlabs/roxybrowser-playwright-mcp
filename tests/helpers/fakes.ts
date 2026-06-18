@@ -262,6 +262,8 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
     }),
     createHandle: vi.fn(() => elementHandleAdapter),
     createHandleReference: vi.fn(async (reference) => reference),
+    evaluateOnReference: vi.fn(async <TResult>() => "page-selector-value" as TResult),
+    evaluateOnReferenceAll: vi.fn(async <TResult>() => ["page-selector-value"] as TResult),
     query: vi.fn(async () => elementHandleAdapter),
     queryAll: vi.fn(async () => [elementHandleAdapter]),
     evalOnSelector: vi.fn(async <TResult>() => "page-selector-value" as TResult),

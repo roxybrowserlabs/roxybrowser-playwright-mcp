@@ -32,6 +32,7 @@ import type {
   WaitForSelectorOptions
 } from "./types/options.js";
 import { urlMatches } from "./urlMatch.js";
+import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
 
 type LocatorOptions = {
   has?: Locator;
@@ -258,8 +259,7 @@ export class RoxyFrame implements Frame {
     selector: string,
     options: WaitForSelectorOptions = {}
   ): Promise<ElementHandle | null> {
-    const timeout = options.timeout ?? this.roxyPage.defaultTimeout();
-    const state = options.state ?? options.waitFor ?? "visible";
+    const { state, timeout } = normalizeWaitForSelectorOptions(options, this.roxyPage.defaultTimeout());
     const startTime = Date.now();
 
     while (Date.now() - startTime <= timeout) {
@@ -306,6 +306,14 @@ export class RoxyFrame implements Frame {
     pageFunction: string | ElementCallback<TResult, TArg>,
     arg?: TArg
   ): Promise<TResult> {
+    return this.evalOnSelectorForPage(selector, pageFunction, arg);
+  }
+
+  async evalOnSelectorForPage<TResult, TArg = unknown>(
+    selector: string,
+    pageFunction: string | ElementCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult> {
     return this.roxyPage.evalOnSelectorInFrame(
       this.snapshot,
       selector,
@@ -319,6 +327,14 @@ export class RoxyFrame implements Frame {
   async $$eval<K extends keyof HTMLElementTagNameMap, R>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K][], void, R>, arg?: any): Promise<R>;
   async $$eval<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(selector: string, pageFunction: PageFunctionOn<E[], void, R>, arg?: any): Promise<R>;
   async $$eval<TResult, TArg = unknown>(
+    selector: string,
+    pageFunction: string | ElementArrayCallback<TResult, TArg>,
+    arg?: TArg
+  ): Promise<TResult> {
+    return this.evalOnSelectorAllForPage(selector, pageFunction, arg);
+  }
+
+  async evalOnSelectorAllForPage<TResult, TArg = unknown>(
     selector: string,
     pageFunction: string | ElementArrayCallback<TResult, TArg>,
     arg?: TArg

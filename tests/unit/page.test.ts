@@ -2004,16 +2004,21 @@ describe("RoxyPage", () => {
     });
 
     expect(handle).toBeInstanceOf(RoxyElementHandle);
-    expect(adapter.query).toHaveBeenCalledWith([
-      {
-        strategy: "css",
-        value: "div"
-      },
-      {
-        strategy: "text",
-        value: "Hello"
+    expect(adapter.createHandleReference).toHaveBeenCalledWith({
+      chain: [
+        {
+          strategy: "css",
+          value: "div"
+        },
+        {
+          strategy: "text",
+          value: "Hello"
+        }
+      ],
+      pick: {
+        kind: "first"
       }
-    ]);
+    });
   });
 
   it("proxies page query and eval helpers to the page adapter", async () => {
@@ -2042,30 +2047,36 @@ describe("RoxyPage", () => {
     expect(handles[0]).toBeInstanceOf(RoxyElementHandle);
     expect(value).toBe("page-selector-value");
     expect(values).toEqual(["page-selector-value"]);
-    expect(adapter.query).toHaveBeenCalledWith([
-      {
-        strategy: "css",
-        value: "div"
+    expect(adapter.createHandleReference).toHaveBeenCalledWith({
+      chain: [
+        {
+          strategy: "css",
+          value: "div"
+        }
+      ],
+      pick: {
+        kind: "first"
       }
-    ]);
-    expect(adapter.queryAll).toHaveBeenCalledWith([
-      {
-        strategy: "css",
-        value: "div"
+    });
+    expect(adapter.evaluateOnReference).toHaveBeenCalledWith({
+      chain: [
+        {
+          strategy: "css",
+          value: "div"
+        }
+      ],
+      pick: {
+        kind: "first"
       }
-    ]);
-    expect(adapter.evalOnSelector).toHaveBeenCalledWith([
-      {
-        strategy: "css",
-        value: "div"
-      }
-    ], expect.stringContaining("suffix"), true, "!");
-    expect(adapter.evalOnSelectorAll).toHaveBeenCalledWith([
-      {
-        strategy: "css",
-        value: "div"
-      }
-    ], expect.stringContaining("suffix"), true, "!");
+    }, expect.stringContaining("suffix"), "!", 'Failed to find element matching selector "div"', true);
+    expect(adapter.evaluateOnReferenceAll).toHaveBeenCalledWith({
+      chain: [
+        {
+          strategy: "css",
+          value: "div"
+        }
+      ]
+    }, expect.stringContaining("suffix"), "!", true);
   });
 
   it("wraps element handle subtree methods", async () => {
