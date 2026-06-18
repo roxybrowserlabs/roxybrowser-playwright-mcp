@@ -129,4 +129,21 @@ describe("generatePageApiReport", () => {
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
+
+  it("matches upstream Playwright Page navigation and waiting signatures", () => {
+    const report = generateApiMethodSignatureReport("Page", [
+      "goBack",
+      "goForward",
+      "goto",
+      "reload",
+      "setContent",
+      "waitForLoadState",
+      "waitForNavigation",
+      "waitForRequest",
+      "waitForResponse",
+      "waitForURL"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });

@@ -735,38 +735,26 @@ export interface Page {
   exposeFunction(name: string, callback: Function): Promise<Disposable>;
   addScriptTag(options?: AddScriptTagOptions): Promise<ElementHandle>;
   addStyleTag(options?: AddStyleTagOptions): Promise<ElementHandle>;
-  goto(url: string, options?: PageGotoOptions): Promise<Response | null>;
+  goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   url(): string;
-  goBack(options?: PageGotoOptions): Promise<Response | null>;
-  goForward(options?: PageGotoOptions): Promise<Response | null>;
-  reload(options?: PageGotoOptions): Promise<Response | null>;
+  goBack(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  goForward(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  reload(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   title(): Promise<string>;
   content(): Promise<string>;
-  setContent(html: string, options?: PageSetContentOptions): Promise<void>;
+  setContent(html: string, options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
   evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
   evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<SmartHandle<R>>;
   waitForTimeout(timeout: number): Promise<void>;
-  waitForURL(
-    url: string | RegExp | URLPattern | ((url: URL) => boolean),
-    options?: WaitForURLOptions
-  ): Promise<void>;
-  waitForNavigation(options?: WaitForNavigationOptions): Promise<Response | null>;
-  waitForRequest(
-    urlOrPredicate: string | RegExp | ((request: Request) => boolean | Promise<boolean>),
-    options?: { timeout?: number }
-  ): Promise<Request>;
-  waitForResponse(
-    urlOrPredicate: string | RegExp | ((response: Response) => boolean | Promise<boolean>),
-    options?: { timeout?: number }
-  ): Promise<Response>;
+  waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
+  waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  waitForRequest(urlOrPredicate: string|RegExp|((request: Request) => boolean|Promise<boolean>), options?: { timeout?: number; }): Promise<Request>;
+  waitForResponse(urlOrPredicate: string|RegExp|((response: Response) => boolean|Promise<boolean>), options?: { timeout?: number; }): Promise<Response>;
   waitForFunction<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
   waitForFunction<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
-  waitForLoadState(
-    state?: "load" | "domcontentloaded" | "networkidle",
-    options?: { timeout?: number }
-  ): Promise<void>;
+  waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { timeout?: number; }): Promise<void>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
   waitForSelector(selector: string, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: PageWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;

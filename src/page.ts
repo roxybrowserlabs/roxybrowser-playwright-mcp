@@ -1018,6 +1018,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.createElementHandle(await this.adapter.addStyleTag(adapterOptions));
   }
 
+  async goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async goto(url: string, options?: PageGotoOptions): Promise<Response | null> {
     const response = await this.adapter.goto(url, {
       ...options,
@@ -1032,6 +1033,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.adapter.url();
   }
 
+  async goBack(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async goBack(options?: PageGotoOptions): Promise<Response | null> {
     return this.toPublicResponse(await this.adapter.goBack({
       ...options,
@@ -1039,6 +1041,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }));
   }
 
+  async goForward(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async goForward(options?: PageGotoOptions): Promise<Response | null> {
     return this.toPublicResponse(await this.adapter.goForward({
       ...options,
@@ -1046,6 +1049,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }));
   }
 
+  async reload(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async reload(options?: PageGotoOptions): Promise<Response | null> {
     const response = await this.adapter.reload({
       ...options,
@@ -1064,6 +1068,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.adapter.content();
   }
 
+  async setContent(html: string, options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
     await this.adapter.setContent(html, {
       ...options,
@@ -1164,6 +1169,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.waitForFileChooserInterceptionIfPending();
   }
 
+  async waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   async waitForURL(
     url: string | RegExp | URLPattern | ((url: URL) => boolean),
     options: WaitForURLOptions = {}
@@ -1185,6 +1191,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     throw new TimeoutError(`page.waitForURL: Timeout ${timeout}ms exceeded.`);
   }
 
+  async waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async waitForNavigation(options: WaitForNavigationOptions = {}): Promise<Response | null> {
     const initialUrl = this.url();
     const timeout = options.timeout ?? this.defaultNavigationTimeoutMs;
@@ -1322,6 +1329,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return navigationPromise;
   }
 
+  async waitForRequest(urlOrPredicate: string|RegExp|((request: Request) => boolean|Promise<boolean>), options?: { timeout?: number; }): Promise<Request>;
   async waitForRequest(
     urlOrPredicate:
       | string
@@ -1345,6 +1353,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.waitForEvent("request", waitOptions);
   }
 
+  async waitForResponse(urlOrPredicate: string|RegExp|((response: Response) => boolean|Promise<boolean>), options?: { timeout?: number; }): Promise<Response>;
   async waitForResponse(
     urlOrPredicate:
       | string
@@ -1368,6 +1377,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.waitForEvent("response", waitOptions);
   }
 
+  async waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { timeout?: number; }): Promise<void>;
   async waitForLoadState(
     state: LoadState = "load",
     options: { timeout?: number } = {}
