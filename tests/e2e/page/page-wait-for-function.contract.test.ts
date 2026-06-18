@@ -13,6 +13,19 @@ describe("page.waitForFunction contract e2e", () => {
     });
   });
 
+  it("should evaluate in frame scope", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<iframe></iframe>");
+      const frame = page.frames()[1]!;
+      const watchdog = frame.waitForFunction("window.__FRAME_READY === true");
+      await frame.evaluate(() => {
+        window["__FRAME_READY"] = true;
+      });
+      await watchdog;
+      expect(await page.evaluate(() => window["__FRAME_READY"])).toBeUndefined();
+    });
+  });
+
   it("should poll on interval", async () => {
     await withPage(async (page) => {
       const polling = 100;

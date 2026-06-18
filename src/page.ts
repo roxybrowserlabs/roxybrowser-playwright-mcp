@@ -38,6 +38,7 @@ import type {
   ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "./protocol/adapter.js";
+import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import type { RoutedRequestCall, RoutedRequestDecision, RoutedResponseData } from "./protocol/routing.js";
 import { parseSelectorChain } from "./selectors.js";
 import { normalizeSelectOptionValues } from "./selectOptionValues.js";
@@ -1076,10 +1077,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<R> {
     assertMaxArguments(arguments.length, 2);
+    const functionSource = serializePageFunction(pageFunction as string | ElementCallback<R, Arg>);
     const result = await this.adapter.evaluate<R>(
-      serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+      functionSource,
       arg,
-      typeof pageFunction === "function"
+      typeof pageFunction === "function" || looksLikeFunctionExpression(functionSource)
     );
     if (!this.frameSnapshotRefreshInProgress && this.hasFrameEventObservers()) {
       await this.refreshFrameSnapshots();
@@ -1094,20 +1096,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     arg?: Arg
   ): Promise<SmartHandle<R>> {
     assertMaxArguments(arguments.length, 2);
+    const functionSource = serializePageFunction(pageFunction as string | ElementCallback<R, Arg>);
+    const isFunction = typeof pageFunction === "function" || looksLikeFunctionExpression(functionSource);
     if (!this.adapter.evaluateHandle) {
       const value = await this.adapter.evaluate<R>(
-        serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+        functionSource,
         arg,
-        typeof pageFunction === "function"
+        isFunction
       );
       return createSmartHandle(value);
     }
 
     return await createRemoteJSHandle(
       await this.adapter.evaluateHandle<R>(
-        serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+        functionSource,
         arg,
-        typeof pageFunction === "function"
+        isFunction
       ),
       (reference) => this.createElementHandle(this.adapter.createHandle(reference))
     ) as unknown as SmartHandle<R>;
@@ -1128,31 +1132,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     arg?: Arg,
     options: PageWaitForFunctionOptions = {}
   ): Promise<SmartHandle<R>> {
-    const timeout = options.timeout ?? this.defaultTimeoutMs;
-    const polling = options.polling ?? "raf";
-    if (polling !== "raf" && typeof polling !== "number") {
-      throw new Error(`Unknown polling option: ${String(polling)}`);
-    }
-    if (typeof polling === "number" && polling <= 0) {
-      throw new Error("Cannot poll with non-positive interval");
-    }
-
-    const functionSource = serializePageFunction(pageFunction as string | ElementCallback<R, Arg>);
-    const start = Date.now();
-    while (timeout === 0 || Date.now() - start <= timeout) {
-      const result = await this.adapter.evaluate<R>(
-        functionSource,
-        arg,
-        typeof pageFunction === "function"
-      );
-      if (result) {
-        return createSmartHandle(result);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, polling === "raf" ? 16 : polling));
-    }
-
-    throw new TimeoutError(`page.waitForFunction: Timeout ${timeout}ms exceeded.`);
+    const frame = this.mainFrame() as RoxyFrame;
+    return frame.waitForFunction<R, Arg>(pageFunction, arg as Arg, options);
   }
 
   async waitForTimeout(timeout: number): Promise<void> {
@@ -2998,12 +2979,21 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     pageFunction: PageFunction<Arg, R>,
     arg?: Arg
   ): Promise<R> {
+    return this.evaluateInFrameWithFunctionFlag(frame, pageFunction, arg, typeof pageFunction === "function");
+  }
+
+  async evaluateInFrameWithFunctionFlag<R, Arg>(
+    frame: RoxyFrameSnapshot,
+    pageFunction: PageFunction<Arg, R>,
+    arg: Arg | undefined,
+    isFunction: boolean
+  ): Promise<R> {
     if (frame.nativeFrameId && this.adapter.evaluateInFrame) {
       return this.adapter.evaluateInFrame<R>(
         frame.nativeFrameId,
         serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
         arg,
-        typeof pageFunction === "function"
+        isFunction
       );
     }
 
@@ -3034,9 +3024,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       {
         arg: serializeEvaluationArgument(arg),
         expression: serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
-        isFunction:
-          typeof pageFunction !== "string" ||
-          /^\s*(async\s+function|function|\(?\s*[A-Za-z_$\)]).*/s.test(String(pageFunction).trim())
+        isFunction
       }
     );
   }

@@ -9,6 +9,13 @@ describe("page evaluate contract e2e", () => {
     });
   });
 
+  it("should evaluate string functions", async () => {
+    await withPage(async (page) => {
+      expect(await page.evaluate("() => 7 * 3")).toBe(21);
+      expect(await page.evaluate("(value) => value * 2", 11)).toBe(22);
+    });
+  });
+
   it("should transfer unserializable values", async () => {
     await withPage(async (page) => {
       expect(Object.is(await page.evaluate((a) => a, NaN), NaN)).toBe(true);

@@ -1,6 +1,7 @@
 import { createSmartHandle } from "./jsHandle.js";
 import type { RoxyPage } from "./page.js";
 import { TimeoutError } from "./errors.js";
+import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import type { LocatorSelector } from "./protocol/adapter.js";
 import type {
   ElementArrayCallback,
@@ -165,15 +166,17 @@ export class RoxyFrame implements Frame {
     }
 
     const start = Date.now();
+    const isFunction = typeof pageFunction === "function" || looksLikeFunctionExpression(String(pageFunction));
     while (timeout === 0 || Date.now() - start <= timeout) {
-      const result = await this.roxyPage.evaluateInFrame(this.snapshot, pageFunction, arg);
+      const result = await this.roxyPage.evaluateInFrameWithFunctionFlag(this.snapshot, pageFunction, arg, isFunction);
       if (result) {
         return createSmartHandle(result);
       }
       await new Promise((resolve) => setTimeout(resolve, polling === "raf" ? 16 : polling));
     }
 
-    throw new TimeoutError(`frame.waitForFunction: Timeout ${timeout}ms exceeded.`);
+    const apiName = this.snapshot.parentId === null ? "page.waitForFunction" : "frame.waitForFunction";
+    throw new TimeoutError(`${apiName}: Timeout ${timeout}ms exceeded.`);
   }
 
   async waitForURL(
