@@ -57,4 +57,20 @@ describe("frame addScriptTag/addStyleTag contract e2e", () => {
       await expect(frame.addStyleTag()).rejects.toThrow("Provide an object with a `url`, `path` or `content` property");
     });
   });
+
+  it("injects script and style content into a child frame", async () => {
+    await withPage(async (page) => {
+      const attached = page.waitForEvent("frameattached");
+      await page.setContent("<iframe name=child></iframe>");
+      await attached;
+      const frame = page.frame("child");
+      expect(frame).toBeTruthy();
+
+      await frame!.addScriptTag({ content: 'window["__childInjected"] = 17;' });
+      expect(await frame!.evaluate(() => (window as typeof window & { __childInjected?: number }).__childInjected)).toBe(17);
+
+      await frame!.addStyleTag({ content: "body { background-color: green; }" });
+      expect(await frame!.evaluate("window.getComputedStyle(document.body).getPropertyValue('background-color')")).toBe("rgb(0, 128, 0)");
+    });
+  });
 });

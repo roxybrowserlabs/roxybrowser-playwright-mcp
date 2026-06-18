@@ -3161,11 +3161,26 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     options: AddScriptTagOptions = {}
   ): Promise<ElementHandle> {
     const adapterOptions = await this.normalizeScriptTagOptions(options);
-    if (!frame.ownerElementChain.length) {
+    if (frame.parentId === null) {
       return this.createElementHandle(await this.adapter.addScriptTag(adapterOptions));
     }
 
-    throw new Error("frame.addScriptTag is not yet implemented for child frames.");
+    await this.evaluateInFrame(
+      frame,
+      ({ content, type, url }) => {
+        const script = document.createElement("script");
+        if (type !== undefined) script.type = type;
+        if (url !== undefined) script.src = url;
+        if (content !== undefined) script.appendChild(document.createTextNode(content));
+        document.head.appendChild(script);
+      },
+      adapterOptions
+    );
+    const handle = await this.queryInFrame(frame, "script:last-of-type");
+    if (!handle) {
+      throw new Error("Failed to add script tag");
+    }
+    return handle;
   }
 
   async addStyleTagInFrame(
@@ -3173,11 +3188,31 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     options: AddStyleTagOptions = {}
   ): Promise<ElementHandle> {
     const adapterOptions = await this.normalizeStyleTagOptions(options);
-    if (!frame.ownerElementChain.length) {
+    if (frame.parentId === null) {
       return this.createElementHandle(await this.adapter.addStyleTag(adapterOptions));
     }
 
-    throw new Error("frame.addStyleTag is not yet implemented for child frames.");
+    await this.evaluateInFrame(
+      frame,
+      ({ content, url }) => {
+        const element = url === undefined
+          ? document.createElement("style")
+          : document.createElement("link");
+        if (url !== undefined) {
+          (element as HTMLLinkElement).rel = "stylesheet";
+          (element as HTMLLinkElement).href = url;
+        } else if (content !== undefined) {
+          element.textContent = content;
+        }
+        document.head.appendChild(element);
+      },
+      adapterOptions
+    );
+    const handle = await this.queryInFrame(frame, "head > style:last-of-type, head > link[rel=\"stylesheet\"]:last-of-type");
+    if (!handle) {
+      throw new Error("Failed to add style tag");
+    }
+    return handle;
   }
 
   locatorInFrame(frame: RoxyFrameSnapshot, selector: string): Locator {
