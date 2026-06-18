@@ -46,6 +46,7 @@ import type {
   PageEventMap,
   PageEventName,
   PageEventPredicate,
+  ConsoleMessage,
   PageDialog,
   PageRequest,
   PageConsoleMessage,
@@ -88,7 +89,7 @@ import type {
   SmartHandle,
   Touchscreen,
   Video,
-  WebSocket as PageWebSocket,
+  WebSocket,
   WebStorage,
   WebSocketRoute,
   Worker
@@ -276,13 +277,13 @@ interface HostedWebSocketRouteState {
 }
 
 type WebSocketEventMap = {
-  close: PageWebSocket;
+  close: WebSocket;
   framereceived: { payload: string | Buffer };
   framesent: { payload: string | Buffer };
   socketerror: string;
 };
 
-class RoxyWebSocket implements PageWebSocket {
+class RoxyWebSocket implements WebSocket {
   private closed = false;
   private readonly listeners = new Map<keyof WebSocketEventMap, Set<(payload: any) => any>>();
 
@@ -1491,26 +1492,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return [...this.requestHistory];
   }
 
-  on(event: "close", listener: (page: Page) => any): this;
-  on(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
-  on(event: "crash", listener: (page: Page) => any): this;
-  on(event: "dialog", listener: (dialog: Dialog) => any): this;
-  on(event: "domcontentloaded", listener: (page: Page) => any): this;
-  on(event: "download", listener: (download: Download) => any): this;
-  on(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
-  on(event: "frameattached", listener: (frame: Frame) => any): this;
-  on(event: "framedetached", listener: (frame: Frame) => any): this;
-  on(event: "framenavigated", listener: (frame: Frame) => any): this;
-  on(event: "load", listener: (page: Page) => any): this;
-  on(event: "pageerror", listener: (error: PageErrorEntry) => any): this;
-  on(event: "popup", listener: (page: Page) => any): this;
-  on(event: "request", listener: (request: Request) => any): this;
-  on(event: "requestfailed", listener: (request: Request) => any): this;
-  on(event: "requestfinished", listener: (request: Request) => any): this;
-  on(event: "response", listener: (response: Response) => any): this;
-  on(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
-  on(event: "worker", listener: (worker: Worker) => any): this;
-  on<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
+  on(event: 'close', listener: (page: Page) => any): this;
+  on(event: 'console', listener: (consoleMessage: ConsoleMessage) => any): this;
+  on(event: 'crash', listener: (page: Page) => any): this;
+  on(event: 'dialog', listener: (dialog: Dialog) => any): this;
+  on(event: 'domcontentloaded', listener: (page: Page) => any): this;
+  on(event: 'download', listener: (download: Download) => any): this;
+  on(event: 'filechooser', listener: (fileChooser: FileChooser) => any): this;
+  on(event: 'frameattached', listener: (frame: Frame) => any): this;
+  on(event: 'framedetached', listener: (frame: Frame) => any): this;
+  on(event: 'framenavigated', listener: (frame: Frame) => any): this;
+  on(event: 'load', listener: (page: Page) => any): this;
+  on(event: 'pageerror', listener: (error: Error) => any): this;
+  on(event: 'popup', listener: (page: Page) => any): this;
+  on(event: 'request', listener: (request: Request) => any): this;
+  on(event: 'requestfailed', listener: (request: Request) => any): this;
+  on(event: 'requestfinished', listener: (request: Request) => any): this;
+  on(event: 'response', listener: (response: Response) => any): this;
+  on(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
+  on(event: 'worker', listener: (worker: Worker) => any): this;
   on(event: PageEventName, listener: (...args: any[]) => any): this {
     this.maybeStartFileChooserInterception(event);
     const entries = this.ensureListenerSet(event);
@@ -1532,54 +1532,52 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this;
   }
 
-  addListener(event: "close", listener: (page: Page) => any): this;
-  addListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
-  addListener(event: "crash", listener: (page: Page) => any): this;
-  addListener(event: "dialog", listener: (dialog: Dialog) => any): this;
-  addListener(event: "domcontentloaded", listener: (page: Page) => any): this;
-  addListener(event: "download", listener: (download: Download) => any): this;
-  addListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
-  addListener(event: "frameattached", listener: (frame: Frame) => any): this;
-  addListener(event: "framedetached", listener: (frame: Frame) => any): this;
-  addListener(event: "framenavigated", listener: (frame: Frame) => any): this;
-  addListener(event: "load", listener: (page: Page) => any): this;
-  addListener(event: "pageerror", listener: (error: PageErrorEntry) => any): this;
-  addListener(event: "popup", listener: (page: Page) => any): this;
-  addListener(event: "request", listener: (request: Request) => any): this;
-  addListener(event: "requestfailed", listener: (request: Request) => any): this;
-  addListener(event: "requestfinished", listener: (request: Request) => any): this;
-  addListener(event: "response", listener: (response: Response) => any): this;
-  addListener(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
-  addListener(event: "worker", listener: (worker: Worker) => any): this;
-  addListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
+  addListener(event: 'close', listener: (page: Page) => any): this;
+  addListener(event: 'console', listener: (consoleMessage: ConsoleMessage) => any): this;
+  addListener(event: 'crash', listener: (page: Page) => any): this;
+  addListener(event: 'dialog', listener: (dialog: Dialog) => any): this;
+  addListener(event: 'domcontentloaded', listener: (page: Page) => any): this;
+  addListener(event: 'download', listener: (download: Download) => any): this;
+  addListener(event: 'filechooser', listener: (fileChooser: FileChooser) => any): this;
+  addListener(event: 'frameattached', listener: (frame: Frame) => any): this;
+  addListener(event: 'framedetached', listener: (frame: Frame) => any): this;
+  addListener(event: 'framenavigated', listener: (frame: Frame) => any): this;
+  addListener(event: 'load', listener: (page: Page) => any): this;
+  addListener(event: 'pageerror', listener: (error: Error) => any): this;
+  addListener(event: 'popup', listener: (page: Page) => any): this;
+  addListener(event: 'request', listener: (request: Request) => any): this;
+  addListener(event: 'requestfailed', listener: (request: Request) => any): this;
+  addListener(event: 'requestfinished', listener: (request: Request) => any): this;
+  addListener(event: 'response', listener: (response: Response) => any): this;
+  addListener(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
+  addListener(event: 'worker', listener: (worker: Worker) => any): this;
   addListener(event: PageEventName, listener: (...args: any[]) => any): this {
-    return this.on(event, listener);
+    return (this.on as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
   }
 
-  once(event: "close", listener: (page: Page) => any): this;
-  once(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
-  once(event: "crash", listener: (page: Page) => any): this;
-  once(event: "dialog", listener: (dialog: Dialog) => any): this;
-  once(event: "domcontentloaded", listener: (page: Page) => any): this;
-  once(event: "download", listener: (download: Download) => any): this;
-  once(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
-  once(event: "frameattached", listener: (frame: Frame) => any): this;
-  once(event: "framedetached", listener: (frame: Frame) => any): this;
-  once(event: "framenavigated", listener: (frame: Frame) => any): this;
-  once(event: "load", listener: (page: Page) => any): this;
-  once(event: "pageerror", listener: (error: PageErrorEntry) => any): this;
-  once(event: "popup", listener: (page: Page) => any): this;
-  once(event: "request", listener: (request: Request) => any): this;
-  once(event: "requestfailed", listener: (request: Request) => any): this;
-  once(event: "requestfinished", listener: (request: Request) => any): this;
-  once(event: "response", listener: (response: Response) => any): this;
-  once(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
-  once(event: "worker", listener: (worker: Worker) => any): this;
-  once<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
+  once(event: 'close', listener: (page: Page) => any): this;
+  once(event: 'console', listener: (consoleMessage: ConsoleMessage) => any): this;
+  once(event: 'crash', listener: (page: Page) => any): this;
+  once(event: 'dialog', listener: (dialog: Dialog) => any): this;
+  once(event: 'domcontentloaded', listener: (page: Page) => any): this;
+  once(event: 'download', listener: (download: Download) => any): this;
+  once(event: 'filechooser', listener: (fileChooser: FileChooser) => any): this;
+  once(event: 'frameattached', listener: (frame: Frame) => any): this;
+  once(event: 'framedetached', listener: (frame: Frame) => any): this;
+  once(event: 'framenavigated', listener: (frame: Frame) => any): this;
+  once(event: 'load', listener: (page: Page) => any): this;
+  once(event: 'pageerror', listener: (error: Error) => any): this;
+  once(event: 'popup', listener: (page: Page) => any): this;
+  once(event: 'request', listener: (request: Request) => any): this;
+  once(event: 'requestfailed', listener: (request: Request) => any): this;
+  once(event: 'requestfinished', listener: (request: Request) => any): this;
+  once(event: 'response', listener: (response: Response) => any): this;
+  once(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
+  once(event: 'worker', listener: (worker: Worker) => any): this;
   once(event: PageEventName, listener: (...args: any[]) => any): this {
     this.maybeStartFileChooserInterception(event);
     const wrapped = ((payload?: PageEventMap[PageEventName]) => {
-      this.removeListener(event, listener);
+      (this.removeListener as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
       if (payload === undefined) {
         (listener as () => void)();
         return;
@@ -1606,93 +1604,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this;
   }
 
-  prependListener(event: "close", listener: (page: Page) => any): this;
-  prependListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
-  prependListener(event: "crash", listener: (page: Page) => any): this;
-  prependListener(event: "dialog", listener: (dialog: Dialog) => any): this;
-  prependListener(event: "domcontentloaded", listener: (page: Page) => any): this;
-  prependListener(event: "download", listener: (download: Download) => any): this;
-  prependListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
-  prependListener(event: "frameattached", listener: (frame: Frame) => any): this;
-  prependListener(event: "framedetached", listener: (frame: Frame) => any): this;
-  prependListener(event: "framenavigated", listener: (frame: Frame) => any): this;
-  prependListener(event: "load", listener: (page: Page) => any): this;
-  prependListener(event: "pageerror", listener: (error: PageErrorEntry) => any): this;
-  prependListener(event: "popup", listener: (page: Page) => any): this;
-  prependListener(event: "request", listener: (request: Request) => any): this;
-  prependListener(event: "requestfailed", listener: (request: Request) => any): this;
-  prependListener(event: "requestfinished", listener: (request: Request) => any): this;
-  prependListener(event: "response", listener: (response: Response) => any): this;
-  prependListener(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
-  prependListener(event: "worker", listener: (worker: Worker) => any): this;
-  prependListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
-  prependListener(event: PageEventName, listener: (...args: any[]) => any): this {
-    this.maybeStartFileChooserInterception(event);
-    const entries = this.ensureListenerSet(event);
-    const entry = {
-      original: listener as PageEventListener<PageEventName>,
-      wrapped: listener as PageEventListener<PageEventName>
-    };
-    const reordered = new Set<ListenerEntry<PageEventName>>([entry, ...entries]);
-    this.listeners.set(event, reordered);
-
-    if (isAdapterBackedPageEvent(event) && !this.adapterDisposers.has(event)) {
-      const dispose = this.adapter.on(
-        event,
-        ((payload?: RawPageEventMap[RawPageEventName]) => {
-          void this.handleAdapterBackedEvent(event, payload);
-        }) as RawPageEventListener<RawPageEventName>
-      );
-      this.adapterDisposers.set(event, dispose);
-    }
-
-    return this;
-  }
-
-  off(event: "close", listener: (page: Page) => any): this;
-  off(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
-  off(event: "crash", listener: (page: Page) => any): this;
-  off(event: "dialog", listener: (dialog: Dialog) => any): this;
-  off(event: "domcontentloaded", listener: (page: Page) => any): this;
-  off(event: "download", listener: (download: Download) => any): this;
-  off(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
-  off(event: "frameattached", listener: (frame: Frame) => any): this;
-  off(event: "framedetached", listener: (frame: Frame) => any): this;
-  off(event: "framenavigated", listener: (frame: Frame) => any): this;
-  off(event: "load", listener: (page: Page) => any): this;
-  off(event: "pageerror", listener: (error: PageErrorEntry) => any): this;
-  off(event: "popup", listener: (page: Page) => any): this;
-  off(event: "request", listener: (request: Request) => any): this;
-  off(event: "requestfailed", listener: (request: Request) => any): this;
-  off(event: "requestfinished", listener: (request: Request) => any): this;
-  off(event: "response", listener: (response: Response) => any): this;
-  off(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
-  off(event: "worker", listener: (worker: Worker) => any): this;
-  off<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
-  off(event: PageEventName, listener: (...args: any[]) => any): this {
-    return this.removeListener(event, listener);
-  }
-
-  removeListener(event: "close", listener: (page: Page) => any): this;
-  removeListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
-  removeListener(event: "crash", listener: (page: Page) => any): this;
-  removeListener(event: "dialog", listener: (dialog: Dialog) => any): this;
-  removeListener(event: "domcontentloaded", listener: (page: Page) => any): this;
-  removeListener(event: "download", listener: (download: Download) => any): this;
-  removeListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
-  removeListener(event: "frameattached", listener: (frame: Frame) => any): this;
-  removeListener(event: "framedetached", listener: (frame: Frame) => any): this;
-  removeListener(event: "framenavigated", listener: (frame: Frame) => any): this;
-  removeListener(event: "load", listener: (page: Page) => any): this;
-  removeListener(event: "pageerror", listener: (error: PageErrorEntry) => any): this;
-  removeListener(event: "popup", listener: (page: Page) => any): this;
-  removeListener(event: "request", listener: (request: Request) => any): this;
-  removeListener(event: "requestfailed", listener: (request: Request) => any): this;
-  removeListener(event: "requestfinished", listener: (request: Request) => any): this;
-  removeListener(event: "response", listener: (response: Response) => any): this;
-  removeListener(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
-  removeListener(event: "worker", listener: (worker: Worker) => any): this;
-  removeListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
+  removeListener(event: 'close', listener: (page: Page) => any): this;
+  removeListener(event: 'console', listener: (consoleMessage: ConsoleMessage) => any): this;
+  removeListener(event: 'crash', listener: (page: Page) => any): this;
+  removeListener(event: 'dialog', listener: (dialog: Dialog) => any): this;
+  removeListener(event: 'domcontentloaded', listener: (page: Page) => any): this;
+  removeListener(event: 'download', listener: (download: Download) => any): this;
+  removeListener(event: 'filechooser', listener: (fileChooser: FileChooser) => any): this;
+  removeListener(event: 'frameattached', listener: (frame: Frame) => any): this;
+  removeListener(event: 'framedetached', listener: (frame: Frame) => any): this;
+  removeListener(event: 'framenavigated', listener: (frame: Frame) => any): this;
+  removeListener(event: 'load', listener: (page: Page) => any): this;
+  removeListener(event: 'pageerror', listener: (error: Error) => any): this;
+  removeListener(event: 'popup', listener: (page: Page) => any): this;
+  removeListener(event: 'request', listener: (request: Request) => any): this;
+  removeListener(event: 'requestfailed', listener: (request: Request) => any): this;
+  removeListener(event: 'requestfinished', listener: (request: Request) => any): this;
+  removeListener(event: 'response', listener: (response: Response) => any): this;
+  removeListener(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
+  removeListener(event: 'worker', listener: (worker: Worker) => any): this;
   removeListener(event: PageEventName, listener: (...args: any[]) => any): this {
     const entries = this.listeners.get(event);
     if (!entries) {
@@ -1712,6 +1642,71 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         this.adapterDisposers.delete(event);
         dispose();
       }
+    }
+
+    return this;
+  }
+
+  off(event: 'close', listener: (page: Page) => any): this;
+  off(event: 'console', listener: (consoleMessage: ConsoleMessage) => any): this;
+  off(event: 'crash', listener: (page: Page) => any): this;
+  off(event: 'dialog', listener: (dialog: Dialog) => any): this;
+  off(event: 'domcontentloaded', listener: (page: Page) => any): this;
+  off(event: 'download', listener: (download: Download) => any): this;
+  off(event: 'filechooser', listener: (fileChooser: FileChooser) => any): this;
+  off(event: 'frameattached', listener: (frame: Frame) => any): this;
+  off(event: 'framedetached', listener: (frame: Frame) => any): this;
+  off(event: 'framenavigated', listener: (frame: Frame) => any): this;
+  off(event: 'load', listener: (page: Page) => any): this;
+  off(event: 'pageerror', listener: (error: Error) => any): this;
+  off(event: 'popup', listener: (page: Page) => any): this;
+  off(event: 'request', listener: (request: Request) => any): this;
+  off(event: 'requestfailed', listener: (request: Request) => any): this;
+  off(event: 'requestfinished', listener: (request: Request) => any): this;
+  off(event: 'response', listener: (response: Response) => any): this;
+  off(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
+  off(event: 'worker', listener: (worker: Worker) => any): this;
+  off(event: PageEventName, listener: (...args: any[]) => any): this {
+    return (this.removeListener as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
+  }
+
+  prependListener(event: 'close', listener: (page: Page) => any): this;
+  prependListener(event: 'console', listener: (consoleMessage: ConsoleMessage) => any): this;
+  prependListener(event: 'crash', listener: (page: Page) => any): this;
+  prependListener(event: 'dialog', listener: (dialog: Dialog) => any): this;
+  prependListener(event: 'domcontentloaded', listener: (page: Page) => any): this;
+  prependListener(event: 'download', listener: (download: Download) => any): this;
+  prependListener(event: 'filechooser', listener: (fileChooser: FileChooser) => any): this;
+  prependListener(event: 'frameattached', listener: (frame: Frame) => any): this;
+  prependListener(event: 'framedetached', listener: (frame: Frame) => any): this;
+  prependListener(event: 'framenavigated', listener: (frame: Frame) => any): this;
+  prependListener(event: 'load', listener: (page: Page) => any): this;
+  prependListener(event: 'pageerror', listener: (error: Error) => any): this;
+  prependListener(event: 'popup', listener: (page: Page) => any): this;
+  prependListener(event: 'request', listener: (request: Request) => any): this;
+  prependListener(event: 'requestfailed', listener: (request: Request) => any): this;
+  prependListener(event: 'requestfinished', listener: (request: Request) => any): this;
+  prependListener(event: 'response', listener: (response: Response) => any): this;
+  prependListener(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
+  prependListener(event: 'worker', listener: (worker: Worker) => any): this;
+  prependListener(event: PageEventName, listener: (...args: any[]) => any): this {
+    this.maybeStartFileChooserInterception(event);
+    const entries = this.ensureListenerSet(event);
+    const entry = {
+      original: listener as PageEventListener<PageEventName>,
+      wrapped: listener as PageEventListener<PageEventName>
+    };
+    const reordered = new Set<ListenerEntry<PageEventName>>([entry, ...entries]);
+    this.listeners.set(event, reordered);
+
+    if (isAdapterBackedPageEvent(event) && !this.adapterDisposers.has(event)) {
+      const dispose = this.adapter.on(
+        event,
+        ((payload?: RawPageEventMap[RawPageEventName]) => {
+          void this.handleAdapterBackedEvent(event, payload);
+        }) as RawPageEventListener<RawPageEventName>
+      );
+      this.adapterDisposers.set(event, dispose);
     }
 
     return this;
@@ -1906,12 +1901,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async waitForEvent(
     event: "websocket",
     optionsOrPredicate?:
-      | ((webSocket: PageWebSocket) => boolean | Promise<boolean>)
+      | ((webSocket: WebSocket) => boolean | Promise<boolean>)
       | {
-          predicate?: (webSocket: PageWebSocket) => boolean | Promise<boolean>;
+          predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>;
           timeout?: number;
         }
-  ): Promise<PageWebSocket>;
+  ): Promise<WebSocket>;
   async waitForEvent(
     event: "worker",
     optionsOrPredicate?:
@@ -1962,7 +1957,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         if (timer) {
           clearTimeout(timer);
         }
-        this.removeListener(event, listener);
+        (this.removeListener as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
         if (event !== "close") {
           this.removeListener("close", closeListener as PageEventListener<"close">);
         }
@@ -1992,7 +1987,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       if (event !== "close") {
         this.on("close", closeListener as PageEventListener<PageEventName>);
       }
-      this.on(event, listener);
+      (this.on as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
       interceptionPromise?.catch((error) => {
         cleanup();
         reject(error instanceof Error ? error : new Error(String(error)));
@@ -3467,7 +3462,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return normalized as unknown as PageEventMap[K];
   }
 
-  private handleRawWebSocketEvent(payload: RawPageWebSocketEvent): PageWebSocket | undefined {
+  private handleRawWebSocketEvent(payload: RawPageWebSocketEvent): WebSocket | undefined {
     if (payload.kind === "created") {
       const webSocket = new RoxyWebSocket(this, payload.url);
       this.webSockets.set(payload.requestId, webSocket);
@@ -6450,16 +6445,16 @@ function installRouteBridge(): void {
     binaryType: BinaryType = "blob";
     bufferedAmount = 0;
     extensions = "";
-    onclose: ((this: WebSocket, event: CloseEvent) => any) | null = null;
-    onerror: ((this: WebSocket, event: Event) => any) | null = null;
-    onmessage: ((this: WebSocket, event: MessageEvent) => any) | null = null;
-    onopen: ((this: WebSocket, event: Event) => any) | null = null;
+    onclose: ((this: globalThis.WebSocket, event: CloseEvent) => any) | null = null;
+    onerror: ((this: globalThis.WebSocket, event: Event) => any) | null = null;
+    onmessage: ((this: globalThis.WebSocket, event: MessageEvent) => any) | null = null;
+    onopen: ((this: globalThis.WebSocket, event: Event) => any) | null = null;
     protocol = "";
     readyState = RoxyInterceptedWebSocket.CONNECTING;
     readonly url: string;
     private readonly _socketId: string;
     private readonly _protocolsArg: string | string[] | undefined;
-    private _nativeSocket: WebSocket | null = null;
+    private _nativeSocket: globalThis.WebSocket | null = null;
 
     constructor(url: string | URL, protocols?: string | string[]) {
       super();
@@ -6567,13 +6562,13 @@ function installRouteBridge(): void {
     private _emit(type: "close" | "error" | "message" | "open", event: Event): void {
       this.dispatchEvent(event);
       if (type === "open") {
-        this.onopen?.call(this as unknown as WebSocket, event);
+        this.onopen?.call(this as unknown as globalThis.WebSocket, event);
       } else if (type === "message") {
-        this.onmessage?.call(this as unknown as WebSocket, event as MessageEvent);
+        this.onmessage?.call(this as unknown as globalThis.WebSocket, event as MessageEvent);
       } else if (type === "close") {
-        this.onclose?.call(this as unknown as WebSocket, event as CloseEvent);
+        this.onclose?.call(this as unknown as globalThis.WebSocket, event as CloseEvent);
       } else {
-        this.onerror?.call(this as unknown as WebSocket, event);
+        this.onerror?.call(this as unknown as globalThis.WebSocket, event);
       }
     }
 

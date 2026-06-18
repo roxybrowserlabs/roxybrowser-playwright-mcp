@@ -116,4 +116,17 @@ describe("generatePageApiReport", () => {
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
+
+  it("matches upstream Playwright Page event listener signatures", () => {
+    const report = generateApiMethodSignatureReport("Page", [
+      "on",
+      "once",
+      "addListener",
+      "removeListener",
+      "off",
+      "prependListener"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
 });

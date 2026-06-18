@@ -32,6 +32,7 @@ const BUBBLED_PAGE_EVENTS = [
   "requestfinished",
   "response"
 ] as const;
+type BubbledPageEvent = typeof BUBBLED_PAGE_EVENTS[number];
 
 interface ContextListenerEntry<K extends BrowserContextEventName> {
   original: BrowserContextEventListener<K>;
@@ -425,9 +426,11 @@ export class RoxyBrowserContext implements BrowserContext {
     for (const event of BUBBLED_PAGE_EVENTS) {
       const listener = ((payload: PageConsoleMessage | Dialog | Request | Response) => {
         this.emit(event, payload as BrowserContextEventMap[typeof event]);
-      }) as never;
-      page.on(event, listener);
-      disposers.push(() => page.off(event, listener));
+      }) as (...args: any[]) => any;
+      (page.on as (event: BubbledPageEvent, listener: (...args: any[]) => any) => RoxyPage)(event, listener);
+      disposers.push(() => {
+        (page.off as (event: BubbledPageEvent, listener: (...args: any[]) => any) => RoxyPage)(event, listener);
+      });
     }
     this.pageEventDisposers.set(page, disposers);
   }
