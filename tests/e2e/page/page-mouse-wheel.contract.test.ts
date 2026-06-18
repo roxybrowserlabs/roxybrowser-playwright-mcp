@@ -125,6 +125,33 @@ describe("page mouse and wheel contract e2e", () => {
     });
   });
 
+  it("reports mouse pointer type", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => {
+        (window as unknown as { events: unknown[] }).events = [];
+        const handler = (event: PointerEvent) => {
+          (window as unknown as { events: unknown[] }).events.push({
+            pointerType: event.pointerType,
+            type: event.type
+          });
+        };
+        window.addEventListener("pointerdown", handler);
+        window.addEventListener("pointermove", handler);
+        window.addEventListener("pointerup", handler);
+      });
+
+      await page.mouse.move(60, 50);
+      await page.mouse.down();
+      await page.mouse.up();
+
+      expect(await page.evaluate(() => (window as unknown as { events: unknown[] }).events)).toEqual([
+        { pointerType: "mouse", type: "pointermove" },
+        { pointerType: "mouse", type: "pointerdown" },
+        { pointerType: "mouse", type: "pointerup" }
+      ]);
+    });
+  });
+
   it("moves the mouse in the requested number of steps", async () => {
     await withPage(async (page) => {
       await page.evaluate(() => {
@@ -147,6 +174,35 @@ describe("page mouse and wheel contract e2e", () => {
         { x: 180, y: 260 },
         { x: 200, y: 300 }
       ]);
+    });
+  });
+
+  it("always rounds coordinates down", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => {
+        document.addEventListener("mousedown", (event) => {
+          (window as unknown as { result: number[] }).result = [event.clientX, event.clientY];
+        });
+      });
+
+      await page.mouse.click(50.1, 50.9);
+
+      expect(await page.evaluate(() => (window as unknown as { result: number[] }).result)).toEqual([50, 50]);
+    });
+  });
+
+  it("does not crash on mouse drag with any button", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => {
+        window.addEventListener("contextmenu", (event) => event.preventDefault());
+      });
+
+      for (const button of ["left", "middle", "right"] as const) {
+        await page.mouse.move(50, 50);
+        await page.mouse.down({ button });
+        await page.mouse.move(100, 100);
+        await page.mouse.up({ button });
+      }
     });
   });
 
