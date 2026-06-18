@@ -40,19 +40,19 @@ describe("browser context contract e2e", () => {
           await pageOne.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
           await pageTwo.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
 
-          await pageOne.evaluate(`() => {
+          await pageOne.evaluate(() => {
             localStorage.setItem("name", "page-one");
             document.cookie = "name=page-one";
-          }`);
-          await pageTwo.evaluate(`() => {
+          });
+          await pageTwo.evaluate(() => {
             localStorage.setItem("name", "page-two");
             document.cookie = "name=page-two";
-          }`);
+          });
 
-          expect(await pageOne.evaluate("() => localStorage.getItem('name')")).toBe("page-one");
-          expect(await pageTwo.evaluate("() => localStorage.getItem('name')")).toBe("page-two");
-          expect(await pageOne.evaluate("() => document.cookie")).toContain("name=page-one");
-          expect(await pageTwo.evaluate("() => document.cookie")).toContain("name=page-two");
+          expect(await pageOne.evaluate(() => localStorage.getItem("name"))).toBe("page-one");
+          expect(await pageTwo.evaluate(() => localStorage.getItem("name"))).toBe("page-two");
+          expect(await pageOne.evaluate(() => document.cookie)).toContain("name=page-one");
+          expect(await pageTwo.evaluate(() => document.cookie)).toContain("name=page-two");
         } finally {
           await pageOne.close();
           await pageTwo.close();
@@ -88,12 +88,20 @@ describe("browser context contract e2e", () => {
           await pageTwo.setContent(html);
 
           await Promise.all([
-            ...Array.from({ length: 12 }, () => pageOne.click("button")),
-            ...Array.from({ length: 8 }, () => pageTwo.click("button"))
+            (async () => {
+              for (let index = 0; index < 12; index += 1) {
+                await pageOne.click("button");
+              }
+            })(),
+            (async () => {
+              for (let index = 0; index < 8; index += 1) {
+                await pageTwo.click("button");
+              }
+            })()
           ]);
 
-          expect(await pageOne.evaluate<number>("() => window.__clicks")).toBe(12);
-          expect(await pageTwo.evaluate<number>("() => window.__clicks")).toBe(8);
+          expect(await pageOne.evaluate<number>(() => window.__clicks)).toBe(12);
+          expect(await pageTwo.evaluate<number>(() => window.__clicks)).toBe(8);
         } finally {
           await pageOne.close();
           await pageTwo.close();
@@ -101,6 +109,37 @@ describe("browser context contract e2e", () => {
       } finally {
         await contextOne.close();
         await contextTwo.close();
+      }
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("applies Playwright strictSelectors context option to page selector APIs", async () => {
+    const browser = await launchBrowser();
+    try {
+      const looseContext = await browser.newContext();
+      const strictContext = await browser.newContext({ strictSelectors: true });
+
+      try {
+        const loosePage = await looseContext.newPage();
+        const strictPage = await strictContext.newPage();
+
+        try {
+          const html = `<span>span1</span><div><span>target</span></div>`;
+          await loosePage.setContent(html);
+          await strictPage.setContent(html);
+
+          expect(await loosePage.textContent("span")).toBe("span1");
+          await expect(strictPage.textContent("span")).rejects.toThrow(/strict mode violation/);
+          expect(await strictPage.textContent("span", { strict: false })).toBe("span1");
+        } finally {
+          await loosePage.close();
+          await strictPage.close();
+        }
+      } finally {
+        await looseContext.close();
+        await strictContext.close();
       }
     } finally {
       await browser.close();

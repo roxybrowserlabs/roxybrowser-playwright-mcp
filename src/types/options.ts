@@ -98,6 +98,7 @@ export interface BrowserContextOptions {
   extraHTTPHeaders?: { [key: string]: string };
   recordVideo?: RecordVideoOptions;
   reuseDefaultUserContext?: boolean;
+  strictSelectors?: boolean;
   human?: HumanizationOptions;
 }
 

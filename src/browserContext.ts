@@ -304,7 +304,7 @@ export class RoxyBrowserContext implements BrowserContext {
   }
 
   private async createPage(pageAdapter: ProtocolPageAdapter): Promise<RoxyPage> {
-    const page = new RoxyPage(pageAdapter, this.humanDefaults, this);
+    const page = new RoxyPage(pageAdapter, this.humanDefaults, this, this.options);
     this.pageSet.add(page);
     this.pageByAdapter.set(pageAdapter, page);
     this.adapterByPage.set(page, pageAdapter);

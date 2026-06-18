@@ -86,6 +86,7 @@ import type {
   AddStyleTagOptions,
   AddLocatorHandlerOptions,
   AriaSnapshotOptions,
+  BrowserContextOptions,
   ClickOptions,
   DragAndDropOptions,
   DispatchEventOptions,
@@ -702,7 +703,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   constructor(
     private readonly adapter: ProtocolPageAdapter,
     private readonly humanDefaults: ResolvedHumanizationOptions,
-    private readonly browserContext?: RoxyBrowserContext
+    private readonly browserContext?: RoxyBrowserContext,
+    private readonly contextOptions: BrowserContextOptions = {}
   ) {
     this.humanController = new DefaultHumanController(humanDefaults);
     this.clock = browserContext?.clock ?? new RoxyClock(createUnsupportedClockDelegate("page.clock"));
@@ -3638,9 +3640,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     selector: string,
     options?: { strict?: boolean }
   ): Promise<ElementHandle | null> {
+    const strict = typeof options?.strict === "boolean"
+      ? options.strict
+      : Boolean(this.contextOptions.strictSelectors);
     const reference = {
       chain: parseSelectorChain(selector),
-      ...(options?.strict ? {} : { pick: { kind: "first" } as const })
+      ...(strict ? {} : { pick: { kind: "first" } as const })
     };
     const handle = await this.adapter.createHandleReference(reference).then(
       (resolved) => this.adapter.createHandle(resolved),
