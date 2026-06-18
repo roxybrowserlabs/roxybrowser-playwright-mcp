@@ -4029,6 +4029,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       await this.withPointerActionModifiers(options?.modifiers, async () => {
         await this.dispatchMouseMove(actionPoint);
+        await this.resolveActionPoint(locator, options, true);
         void this.showScreencastAction("click", actionPoint).catch(() => {});
         for (let index = 0; index < clickCount; index += 1) {
           await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
@@ -4497,7 +4498,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         await delay(50);
       }
     }
-    throw lastError instanceof Error ? lastError : new TimeoutError(`Timeout ${timeout}ms exceeded.`);
+    void lastError;
+    throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
 
   async runLocatorOperation<TResult>(
@@ -4755,6 +4757,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       await this.withPointerActionModifiers(options?.modifiers, async () => {
         await this.dispatchMouseMove(actionPoint);
+        await this.resolveActionPointReference(reference, options, true);
         void this.showScreencastAction("click", actionPoint).catch(() => {});
         for (let index = 0; index < clickCount; index += 1) {
           await this.dispatchMouseEvent("mousePressed", actionPoint, button, index + 1);
@@ -8475,7 +8478,8 @@ function shouldRetryActionPointError(error: unknown): boolean {
       message === "No element found." ||
       message === "Element is not visible." ||
       message === "Element is not enabled." ||
-      message === "Element does not have an actionable bounding box."
+      message === "Element does not have an actionable bounding box." ||
+      message === "Element intercepts pointer events."
     )
   );
 }

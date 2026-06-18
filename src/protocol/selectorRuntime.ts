@@ -747,6 +747,27 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
     return isTextNode(node) && isElementNode(node.parentElement) ? node.parentElement : null;
   };
+  const parentElementOrShadowHost = (element: Element): Element | undefined => {
+    if (element.parentElement) {
+      return element.parentElement;
+    }
+    if (!element.parentNode) {
+      return undefined;
+    }
+    if (element.parentNode.nodeType === 11 && (element.parentNode as ShadowRoot).host) {
+      return (element.parentNode as ShadowRoot).host;
+    }
+    return undefined;
+  };
+  const isInsideScope = (scope: Node, element: Element | null): boolean => {
+    while (element) {
+      if (scope.contains(element)) {
+        return true;
+      }
+      element = parentElementOrShadowHost(element) ?? null;
+    }
+    return false;
+  };
 
   const resolveSingleElementFrom = (elements: Element[]): Element | null => {
     if (!payload.reference.pick && elements.length > 1) {
@@ -829,10 +850,16 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       currentWindow = currentWindow.parent === currentWindow ? null : currentWindow.parent;
     }
 
-    return {
-      x: frameOffsetX + rect.left + offsetX,
-      y: frameOffsetY + rect.top + offsetY
-    };
+    const x = frameOffsetX + rect.left + offsetX;
+    const y = frameOffsetY + rect.top + offsetY;
+    if (!payload.force) {
+      const hitTarget = firstElement.ownerDocument.elementFromPoint(rect.left + offsetX, rect.top + offsetY);
+      if (hitTarget && !isInsideScope(hitTarget, firstElement)) {
+        throw new Error("Element intercepts pointer events.");
+      }
+    }
+
+    return { x, y };
   };
   const frameOffsetForElement = (element: Element): { x: number; y: number } => {
     let x = 0;
@@ -855,7 +882,8 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       error.message === "No element found." ||
       error.message === "Element is not visible." ||
       error.message === "Element is not enabled." ||
-      error.message === "Element does not have an actionable bounding box."
+      error.message === "Element does not have an actionable bounding box." ||
+      error.message === "Element intercepts pointer events."
     );
   };
   const resolvedElements = resolveReference(payload.reference);
