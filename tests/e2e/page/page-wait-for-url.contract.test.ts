@@ -81,6 +81,21 @@ describe("page waitForURL contract e2e", () => {
     });
   });
 
+  it("supports commit and about:blank", async () => {
+    await withPage(async (page) => {
+      await page.waitForURL("about:blank", { waitUntil: "commit" });
+    });
+  });
+
+  it("supports anchor navigations", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent("<a href='#foobar'>foobar</a>");
+      await page.click("a");
+      await page.waitForURL("**/*#foobar");
+    });
+  });
+
   it("supports same-document navigations and URLPattern", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);
@@ -93,6 +108,70 @@ describe("page waitForURL contract e2e", () => {
       await page.click("a");
       await page.waitForURL(new URLPattern({ pathname: "/wow.html" }));
       expect(page.url()).toBe(fixture.server.PREFIX + "/wow.html");
+    });
+  });
+
+  it("supports history.replaceState()", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent(`
+        <a onclick='javascript:replaceState()'>SPA</a>
+        <script>
+          function replaceState() { history.replaceState({}, '', '/replaced.html') }
+        </script>
+      `);
+      await page.click("a");
+      await page.waitForURL("**/replaced.html");
+      expect(page.url()).toBe(fixture.server.PREFIX + "/replaced.html");
+    });
+  });
+
+  it("supports DOM history.back()/history.forward()", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent(`
+        <a id=back onclick='javascript:goBack()'>back</a>
+        <a id=forward onclick='javascript:goForward()'>forward</a>
+        <script>
+          function goBack() { history.back(); }
+          function goForward() { history.forward(); }
+          history.pushState({}, '', '/first.html');
+          history.pushState({}, '', '/second.html');
+        </script>
+      `);
+      expect(page.url()).toBe(fixture.server.PREFIX + "/second.html");
+
+      await page.click("a#back");
+      await page.waitForURL("**/first.html");
+      expect(page.url()).toBe(fixture.server.PREFIX + "/first.html");
+
+      await page.click("a#forward");
+      await page.waitForURL("**/second.html");
+      expect(page.url()).toBe(fixture.server.PREFIX + "/second.html");
+    });
+  });
+
+  it("matches same-document navigations by URL", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      let resolved = false;
+      const waitPromise = page.waitForURL(/third\.html/).then(() => {
+        resolved = true;
+      });
+      expect(resolved).toBe(false);
+      await page.evaluate(() => {
+        history.pushState({}, "", "/first.html");
+      });
+      expect(resolved).toBe(false);
+      await page.evaluate(() => {
+        history.pushState({}, "", "/second.html");
+      });
+      expect(resolved).toBe(false);
+      await page.evaluate(() => {
+        history.pushState({}, "", "/third.html");
+      });
+      await waitPromise;
+      expect(resolved).toBe(true);
     });
   });
 });
