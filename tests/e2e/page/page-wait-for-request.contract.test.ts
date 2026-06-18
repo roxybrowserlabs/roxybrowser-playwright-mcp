@@ -67,6 +67,19 @@ describe("page waitForRequest contract e2e", () => {
     });
   });
 
+  it("should log the url", async () => {
+    await withPage(async (page) => {
+      const error = await page
+        .waitForRequest("long-long-long-long-long-long-long-long-long-long-long-long-long-long.css", {
+          timeout: 1000
+        })
+        .catch((caught) => caught);
+      expect(error.message).toContain(
+        'waiting for request "long-long-long-long-long-long-long-long-long-long…"'
+      );
+    });
+  });
+
   it("should work with no timeout", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);

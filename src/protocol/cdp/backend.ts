@@ -1613,6 +1613,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         frameId?: string;
         initiator?: { type?: string };
         loaderId?: string;
+        request: typeof event.request & {
+          postDataEntries?: Array<{ bytes?: string }>;
+        };
         type?: string;
       };
       if (event.request.url.startsWith("data:")) {
@@ -1657,6 +1660,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         isNavigationRequest,
         method: event.request.method,
         ...(event.request.postData !== undefined ? { postData: event.request.postData } : {}),
+        ...postDataBufferFieldsFromCdpEntries(requestEvent.request.postDataEntries),
         requestId: event.requestId,
         resourceType: toPlaywrightResourceType(requestEvent.type),
         url: event.request.url
@@ -5131,6 +5135,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       headers: Record<string, string>;
       method: string;
       postData?: string;
+      postDataEntries?: Array<{ bytes?: string }>;
       url: string;
     };
     resourceType: string;
@@ -5177,9 +5182,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       return;
     }
 
-    const bodyBuffer = event.request.postData
+    const bodyBuffer = postDataBufferFromCdpEntries(event.request.postDataEntries) ??
+      (event.request.postData
       ? Buffer.from(event.request.postData, "utf8")
-      : null;
+      : null);
     const decision = await this.requestInterceptor({
       id: event.requestId,
       ...(event.networkId ? { requestId: event.networkId } : {}),
@@ -7577,6 +7583,20 @@ async function withTimeout<TResult>(
       }
     );
   });
+}
+
+function postDataBufferFromCdpEntries(entries?: Array<{ bytes?: string }>): Buffer | null {
+  const buffers = entries
+    ?.filter((entry) => typeof entry.bytes === "string")
+    .map((entry) => Buffer.from(entry.bytes!, "base64"));
+  return buffers?.length ? Buffer.concat(buffers) : null;
+}
+
+function postDataBufferFieldsFromCdpEntries(entries?: Array<{ bytes?: string }>): {
+  postDataBufferBase64?: string;
+} {
+  const buffer = postDataBufferFromCdpEntries(entries);
+  return buffer ? { postDataBufferBase64: buffer.toString("base64") } : {};
 }
 
 function delay(timeoutMs: number): Promise<void> {
