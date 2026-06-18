@@ -335,6 +335,47 @@ function locatorOperation(payload: LocatorPayload) {
       rect.height > 0
     );
   };
+  const hasVisibleStyle = (element: Element): boolean => {
+    let current: Element | null = element;
+    while (current) {
+      const style = window.getComputedStyle(current);
+      if (
+        style.visibility === "hidden" ||
+        style.display === "none" ||
+        Number.parseFloat(style.opacity || "1") === 0
+      ) {
+        return false;
+      }
+      current = current.parentElement;
+    }
+    return true;
+  };
+  const chooseActionRect = (element: Element): DOMRect | null => {
+    const viewport = {
+      bottom: window.innerHeight,
+      left: 0,
+      right: window.innerWidth,
+      top: 0
+    };
+    const intersect = (rect: DOMRect): DOMRect | null => {
+      const left = Math.max(rect.left, viewport.left);
+      const right = Math.min(rect.right, viewport.right);
+      const top = Math.max(rect.top, viewport.top);
+      const bottom = Math.min(rect.bottom, viewport.bottom);
+      if (right - left <= 0 || bottom - top <= 0) {
+        return null;
+      }
+      return new DOMRect(left, top, right - left, bottom - top);
+    };
+    for (const rect of Array.from(element.getClientRects())) {
+      const visiblePart = intersect(rect);
+      if (visiblePart && visiblePart.width * visiblePart.height > 0.99) {
+        return visiblePart;
+      }
+    }
+    const visibleBoundingBox = intersect(element.getBoundingClientRect());
+    return visibleBoundingBox && visibleBoundingBox.width * visibleBoundingBox.height > 0.99 ? visibleBoundingBox : null;
+  };
   const isDisabled = (element: Element): boolean => {
     if (
       element instanceof HTMLButtonElement ||
@@ -496,13 +537,13 @@ function locatorOperation(payload: LocatorPayload) {
         behavior: "instant"
       });
 
-      if (!payload.force && !isVisible(firstElement)) {
+      if (!payload.force && !hasVisibleStyle(firstElement)) {
         throw new Error("Element is not visible.");
       }
 
-      const rect = firstElement.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) {
-        throw new Error("Element does not have an actionable bounding box.");
+      const rect = chooseActionRect(firstElement);
+      if (!rect || rect.width <= 0 || rect.height <= 0) {
+        throw new Error("Element is outside of the viewport.");
       }
 
       const offsetX = payload.position ? payload.position.x : rect.width / 2;

@@ -581,6 +581,21 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       rect.height > 0
     );
   };
+  const hasVisibleStyle = (element: Element): boolean => {
+    let current: Element | null = element;
+    while (current) {
+      const style = window.getComputedStyle(current);
+      if (
+        style.visibility === "hidden" ||
+        style.display === "none" ||
+        Number.parseFloat(style.opacity || "1") === 0
+      ) {
+        return false;
+      }
+      current = current.parentElement;
+    }
+    return true;
+  };
   const isDisabled = (element: Element): boolean => {
     if (element instanceof HTMLOptionElement && element.parentElement instanceof HTMLOptGroupElement && element.parentElement.disabled) {
       return true;
@@ -819,7 +834,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
   const isInsideScope = (scope: Node, element: Element | null): boolean => {
     while (element) {
-      if (scope.contains(element)) {
+      if (element === scope || scope.contains(element)) {
         return true;
       }
       element = parentElementOrShadowHost(element) ?? null;
@@ -875,24 +890,62 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       behavior: "instant"
     });
 
-    if (!isVisible(firstElement)) {
+    if (!hasVisibleStyle(firstElement)) {
       throw new Error("Element is not visible.");
     }
     if (payload.waitForEnabled && !isEnabled(firstElement)) {
       throw new Error("Element is not enabled.");
     }
 
+    const viewportRect = {
+      bottom: window.innerHeight,
+      left: 0,
+      right: window.innerWidth,
+      top: 0
+    };
+    const intersectWithViewport = (rect: DOMRect): DOMRect | null => {
+      const left = Math.max(rect.left, viewportRect.left);
+      const right = Math.min(rect.right, viewportRect.right);
+      const top = Math.max(rect.top, viewportRect.top);
+      const bottom = Math.min(rect.bottom, viewportRect.bottom);
+      if (right - left <= 0 || bottom - top <= 0) {
+        return null;
+      }
+      return new DOMRect(left, top, right - left, bottom - top);
+    };
+    const chooseActionRect = (element: Element): DOMRect | null => {
+      for (const candidate of Array.from(element.getClientRects())) {
+        const visiblePart = intersectWithViewport(candidate);
+        if (visiblePart && visiblePart.width * visiblePart.height > 0.99) {
+          return visiblePart;
+        }
+      }
+      const visibleBoundingBox = intersectWithViewport(element.getBoundingClientRect());
+      if (visibleBoundingBox && visibleBoundingBox.width * visibleBoundingBox.height > 0.99) {
+        return visibleBoundingBox;
+      }
+      return null;
+    };
+
     const rect = isTextNode(firstNode)
       ? (() => {
           const range = document.createRange();
           range.selectNodeContents(firstNode);
-          const rangeRect = range.getBoundingClientRect();
+          const rangeRect = (() => {
+            for (const candidate of Array.from(range.getClientRects())) {
+              const visiblePart = intersectWithViewport(candidate);
+              if (visiblePart && visiblePart.width * visiblePart.height > 0.99) {
+                return visiblePart;
+              }
+            }
+            return intersectWithViewport(range.getBoundingClientRect());
+          })();
           range.detach();
           return rangeRect;
         })()
-      : firstElement.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
-      throw new Error("Element does not have an actionable bounding box.");
+      : chooseActionRect(firstElement);
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      throw new Error("Element is outside of the viewport.");
     }
 
     const offsetX = payload.position ? payload.position.x : rect.width / 2;
@@ -912,7 +965,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     const y = frameOffsetY + rect.top + offsetY;
     if (!payload.force) {
       const hitTarget = firstElement.ownerDocument.elementFromPoint(rect.left + offsetX, rect.top + offsetY);
-      if (hitTarget && !isInsideScope(hitTarget, firstElement)) {
+      if (hitTarget && !isInsideScope(firstElement, hitTarget) && !isInsideScope(hitTarget, firstElement)) {
         throw new Error("Element intercepts pointer events.");
       }
     }

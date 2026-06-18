@@ -119,6 +119,17 @@ describe("elementHandle click contract e2e", () => {
     });
   });
 
+  it("throws for <br> elements with force", async () => {
+    await withPage(async (page) => {
+      await page.setContent("hello<br>goodbye");
+      const br = await page.$("br");
+
+      const error = await br!.click({ force: true }).catch((caught) => caught);
+
+      expect(String(error?.message ?? error)).toContain("Element is outside of the viewport");
+    });
+  });
+
   it("double-clicks a button", async () => {
     await withPage(async (page) => {
       await page.setContent(`
