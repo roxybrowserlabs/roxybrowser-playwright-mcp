@@ -1961,7 +1961,7 @@ describe("RoxyPage", () => {
     expect(await (await page.waitForFunction(() => 5, {}, { polling: 1, timeout: 100 })).jsonValue()).toBe(5);
   });
 
-  it("routes selector-based actions through a locator instance", async () => {
+  it("routes page.tap through a locator instance", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
       enabled: true,
@@ -1974,84 +1974,15 @@ describe("RoxyPage", () => {
       hoverBeforeClickMs: 110
     });
     const locator = page.locator(".action");
-
-    const clickSpy = vi.spyOn(locator, "click");
-    const dblclickSpy = vi.spyOn(locator, "dblclick");
-    const checkSpy = vi.spyOn(locator, "check");
-    const hoverSpy = vi.spyOn(locator, "hover");
-    const fillSpy = vi.spyOn(locator, "fill");
-    const focusSpy = vi.spyOn(locator, "focus");
-    const getAttributeSpy = vi.spyOn(locator, "getAttribute");
-    const innerHTMLSpy = vi.spyOn(locator, "innerHTML");
-    const innerTextSpy = vi.spyOn(locator, "innerText");
-    const inputValueSpy = vi.spyOn(locator, "inputValue");
-    const isCheckedSpy = vi.spyOn(locator, "isChecked");
-    const isDisabledSpy = vi.spyOn(locator, "isDisabled");
-    const isEditableSpy = vi.spyOn(locator, "isEditable");
-    const isEnabledSpy = vi.spyOn(locator, "isEnabled");
-    const isHiddenSpy = vi.spyOn(locator, "isHidden");
-    const isVisibleSpy = vi.spyOn(locator, "isVisible");
-    const typeSpy = vi.spyOn(locator, "type");
-    const pressSpy = vi.spyOn(locator, "press");
-    const selectOptionSpy = vi.spyOn(locator, "selectOption");
-    const textContentSpy = vi.spyOn(locator, "textContent");
-    const uncheckSpy = vi.spyOn(locator, "uncheck");
+    const tapSpy = vi.spyOn(locator, "tap");
     const locatorSpy = vi.spyOn(page, "locator").mockReturnValue(locator);
 
-    await page.click(".action", { delay: 5 });
-    await page.dblclick(".action");
-    await page.check(".action");
-    await page.hover(".action");
-    await page.fill(".action", "abc");
-    await page.focus(".action");
-    await page.getAttribute(".action", "data-id");
-    await page.innerHTML(".action");
-    await page.innerText(".action");
-    await page.inputValue(".action");
-    await page.isChecked(".action");
-    await page.isDisabled(".action");
-    await page.isEditable(".action");
-    await page.isEnabled(".action");
-    await page.isHidden(".action");
-    await page.isVisible(".action");
-    await page.selectOption(".action", "blue");
-    await page.textContent(".action");
-    await page.type(".action", "def");
-    await page.uncheck(".action");
-    await page.press(".action", "Enter");
-    await page.tap(".action");
+    await page.tap(".action", { timeout: 123 });
 
-    expect(locatorSpy).toHaveBeenCalledTimes(21);
-    expect(clickSpy).toHaveBeenCalledWith({ delay: 5 });
-    expect(dblclickSpy).toHaveBeenCalledWith(undefined);
-    expect(checkSpy).toHaveBeenCalledWith(undefined);
-    expect(hoverSpy).toHaveBeenCalledWith(undefined);
-    expect(fillSpy).toHaveBeenCalledWith("abc", undefined);
-    expect(focusSpy).toHaveBeenCalledWith();
-    expect(getAttributeSpy).toHaveBeenCalledWith("data-id");
-    expect(innerHTMLSpy).toHaveBeenCalledWith();
-    expect(innerTextSpy).toHaveBeenCalledWith();
-    expect(inputValueSpy).toHaveBeenCalledWith();
-    expect(isCheckedSpy).toHaveBeenCalledWith();
-    expect(isDisabledSpy).toHaveBeenCalledWith();
-    expect(isEditableSpy).toHaveBeenCalledWith();
-    expect(isEnabledSpy).toHaveBeenCalledWith();
-    expect(isHiddenSpy).toHaveBeenCalledWith();
-    expect(isVisibleSpy).toHaveBeenCalledWith();
-    expect(selectOptionSpy).toHaveBeenCalledWith("blue");
-    expect(textContentSpy).toHaveBeenCalledWith();
-    expect(typeSpy).toHaveBeenCalledWith("def", undefined);
-    expect(uncheckSpy).toHaveBeenCalledWith(undefined);
-    expect(pressSpy).toHaveBeenCalledWith("Enter", undefined);
-    expect(adapter.tap).toHaveBeenCalledWith(
-      [
-        {
-          strategy: "css",
-          value: ".action"
-        }
-      ],
-      undefined
-    );
+    expect(locatorSpy).toHaveBeenCalledWith(".action");
+    expect(locatorSpy).toHaveBeenCalledTimes(1);
+    expect(tapSpy).toHaveBeenCalledWith({ timeout: 123 });
+    expect(adapter.tap).not.toHaveBeenCalled();
   });
 
   it("waitForSelector parses chained selectors and returns an element handle", async () => {

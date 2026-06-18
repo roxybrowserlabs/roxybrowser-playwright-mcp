@@ -292,6 +292,16 @@ describe("page form action contract e2e", () => {
     });
   });
 
+  it("taps an element through the page shortcut", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<button ontouchstart="window.touched = true" onclick="window.clicked = true">Tap me</button>');
+
+      await page.tap("button");
+
+      expect(await page.evaluate(() => (window as any).clicked)).toBe(true);
+    });
+  });
+
   it("selects options by value, label and index", async () => {
     await withPage(async (page) => {
       await page.setContent(`
