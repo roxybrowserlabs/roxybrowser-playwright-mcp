@@ -1595,6 +1595,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly pressedMouseButtons = new Set<MouseButton>();
   private pointerActionQueue = Promise.resolve();
   private readonly pressedKeyboardModifiers = new Set<string>();
+  private readonly pressedKeyboardCodes = new Set<string>();
   private pointerActionModifiers: Set<string> | null = null;
   private readonly jsCoverageState: CdpJsCoverageState = {
     enabled: false,
@@ -3851,14 +3852,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.bringToFront();
     const normalizedKey = normalizeShortcutKey(key);
     const keyDefinition = resolveKeyDefinition(normalizedKey);
+    const autoRepeat = this.pressedKeyboardCodes.has(keyDefinition.code);
     const nextModifiers = new Set(this.pressedKeyboardModifiers);
     if (isKeyboardModifier(normalizedKey)) {
       nextModifiers.add(normalizedKey);
     }
+    this.pressedKeyboardCodes.add(keyDefinition.code);
     await this.options.client.Input.dispatchKeyEvent({
       type: "keyDown",
       key: keyDefinition.key,
       code: keyDefinition.code,
+      autoRepeat,
       ...(keyDefinition.text !== undefined
         ? {
             text: keyDefinition.text,
@@ -3929,16 +3933,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.bringToFront();
     const normalizedKey = normalizeShortcutKey(key);
     const keyDefinition = resolveKeyDefinition(normalizedKey);
+    const nextModifiers = new Set(this.pressedKeyboardModifiers);
+    if (isKeyboardModifier(normalizedKey)) {
+      nextModifiers.delete(normalizedKey);
+    }
+    this.pressedKeyboardCodes.delete(keyDefinition.code);
     await this.options.client.Input.dispatchKeyEvent({
       type: "keyUp",
       key: keyDefinition.key,
       code: keyDefinition.code,
       windowsVirtualKeyCode: keyDefinition.keyCode,
       nativeVirtualKeyCode: keyDefinition.keyCode,
-      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+      modifiers: keyboardModifierMask(nextModifiers)
     });
-    if (isKeyboardModifier(normalizedKey)) {
-      this.pressedKeyboardModifiers.delete(normalizedKey);
+    this.pressedKeyboardModifiers.clear();
+    for (const modifier of nextModifiers) {
+      this.pressedKeyboardModifiers.add(modifier);
     }
   }
 
@@ -8517,6 +8527,9 @@ function resolveKeyDefinition(key: string): {
   }
 
   if (key.length === 1) {
+    if (!/^[\x20-\x7E]$/.test(key)) {
+      throw new Error(`Unknown key: "${key}"`);
+    }
     const upper = key.toUpperCase();
     return {
       code: `Key${upper}`,
@@ -8526,11 +8539,7 @@ function resolveKeyDefinition(key: string): {
     };
   }
 
-  return {
-    code: key,
-    key,
-    keyCode: 0
-  };
+  throw new Error(`Unknown key: "${key}"`);
 }
 
 function parseKeyboardShortcut(shortcut: string): {

@@ -97,4 +97,44 @@ describe("page keyboard contract e2e", () => {
       ]);
     });
   });
+
+  it("specifies repeat property", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<textarea></textarea>");
+      await page.focus("textarea");
+      await page.evaluate(() => {
+        (window as unknown as { lastEvent: KeyboardEvent | null }).lastEvent = null;
+        document.querySelector("textarea")!.addEventListener("keydown", (event) => {
+          (window as unknown as { lastEvent: KeyboardEvent }).lastEvent = event;
+        });
+      });
+
+      await page.keyboard.down("a");
+      expect(await page.evaluate(() => (window as unknown as { lastEvent: KeyboardEvent }).lastEvent.repeat)).toBe(false);
+      await page.keyboard.press("a");
+      expect(await page.evaluate(() => (window as unknown as { lastEvent: KeyboardEvent }).lastEvent.repeat)).toBe(true);
+
+      await page.keyboard.down("b");
+      expect(await page.evaluate(() => (window as unknown as { lastEvent: KeyboardEvent }).lastEvent.repeat)).toBe(false);
+      await page.keyboard.down("b");
+      expect(await page.evaluate(() => (window as unknown as { lastEvent: KeyboardEvent }).lastEvent.repeat)).toBe(true);
+
+      await page.keyboard.up("a");
+      await page.keyboard.down("a");
+      expect(await page.evaluate(() => (window as unknown as { lastEvent: KeyboardEvent }).lastEvent.repeat)).toBe(false);
+    });
+  });
+
+  it("throws on unknown keys", async () => {
+    await withPage(async (page) => {
+      let error = await page.keyboard.press("NotARealKey").catch((caught) => caught);
+      expect(error.message).toContain('Unknown key: "NotARealKey"');
+
+      error = await page.keyboard.press("ё").catch((caught) => caught);
+      expect(error.message).toContain('Unknown key: "ё"');
+
+      error = await page.keyboard.press("😊").catch((caught) => caught);
+      expect(error.message).toContain('Unknown key: "😊"');
+    });
+  });
 });
