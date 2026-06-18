@@ -581,6 +581,13 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
     throw new Error("Node is not an <input>, <textarea> or <select> element.");
   };
+  const assertCanFillInput = (input: HTMLInputElement): void => {
+    const type = input.type.toLowerCase();
+    const unsupported = ["button", "checkbox", "file", "image", "radio", "reset", "submit"];
+    if (unsupported.includes(type)) {
+      throw new Error(`Input of type "${type}" cannot be filled`);
+    }
+  };
   const innerTextValue = (element: Element): string => {
     if (element instanceof HTMLElement) {
       return element.innerText;
@@ -953,7 +960,10 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           firstElement.focus();
         }
 
-        if (firstElement instanceof HTMLInputElement || firstElement instanceof HTMLTextAreaElement) {
+        if (firstElement instanceof HTMLInputElement) {
+          assertCanFillInput(firstElement);
+          firstElement.value = payload.value ?? "";
+        } else if (firstElement instanceof HTMLTextAreaElement) {
           firstElement.value = payload.value ?? "";
         } else if (firstElement instanceof HTMLElement && firstElement.isContentEditable) {
           firstElement.textContent = payload.value ?? "";

@@ -332,6 +332,13 @@ function locatorOperation(payload: LocatorPayload) {
       rect.height > 0
     );
   };
+  const assertCanFillInput = (input: HTMLInputElement): void => {
+    const type = input.type.toLowerCase();
+    const unsupported = ["button", "checkbox", "file", "image", "radio", "reset", "submit"];
+    if (unsupported.includes(type)) {
+      throw new Error(`Input of type "${type}" cannot be filled`);
+    }
+  };
 
   const firstElement = resolveElements()[0] ?? null;
 
@@ -352,7 +359,10 @@ function locatorOperation(payload: LocatorPayload) {
       }
       firstElement.focus();
 
-      if (firstElement instanceof HTMLInputElement || firstElement instanceof HTMLTextAreaElement) {
+      if (firstElement instanceof HTMLInputElement) {
+        assertCanFillInput(firstElement);
+        firstElement.value = payload.value ?? "";
+      } else if (firstElement instanceof HTMLTextAreaElement) {
         firstElement.value = payload.value ?? "";
       } else if (firstElement.isContentEditable) {
         firstElement.textContent = payload.value ?? "";
