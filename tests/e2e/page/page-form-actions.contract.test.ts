@@ -74,6 +74,42 @@ describe("page form action contract e2e", () => {
     });
   });
 
+  it("fill input event.composed crosses shadow dom boundary like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <body>
+          <script>
+            const div = document.createElement('div');
+            const shadowRoot = div.attachShadow({ mode: 'open' });
+            shadowRoot.innerHTML = '<input type=text></input>';
+            document.body.appendChild(div);
+          </script>
+        </body>
+      `);
+      await page.locator("body").evaluate((body) => {
+        (window as any).firedBodyEvents = [];
+        for (const event of ["input", "change"]) {
+          body.addEventListener(event, (e) => {
+            (window as any).firedBodyEvents.push(e.type + ":" + e.composed);
+          });
+        }
+      });
+      await page.locator("input").evaluate((input) => {
+        (window as any).firedEvents = [];
+        for (const event of ["input", "change"]) {
+          input.addEventListener(event, (e) => {
+            (window as any).firedEvents.push(e.type + ":" + e.composed);
+          });
+        }
+      });
+
+      await page.locator("input").fill("hello");
+
+      expect(await page.evaluate(() => (window as any).firedEvents)).toEqual(["input:true", "change:false"]);
+      expect(await page.evaluate(() => (window as any).firedBodyEvents)).toEqual(["input:true"]);
+    });
+  });
+
   it("focuses element and emits blur/focus events", async () => {
     await withPage(async (page) => {
       await page.setContent(`

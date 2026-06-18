@@ -966,7 +966,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           }
         }
 
-        firstElement.dispatchEvent(new Event("input", { bubbles: true }));
+        firstElement.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         firstElement.dispatchEvent(new Event("change", { bubbles: true }));
         return selectedValues;
       }
@@ -991,7 +991,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           throw new Error("Element does not support fill().");
         }
 
-        firstElement.dispatchEvent(new Event("input", { bubbles: true }));
+        firstElement.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         firstElement.dispatchEvent(new Event("change", { bubbles: true }));
         return true;
       }
