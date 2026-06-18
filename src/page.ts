@@ -2464,7 +2464,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.setChecked", options)).setChecked(checked, options);
+    await this.mainFrame().setChecked(selector, checked, options);
   }
 
   async setExtraHTTPHeaders(headers: { [key: string]: string; }): Promise<void> {
