@@ -4073,7 +4073,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     options?: TypeOptions
   ): Promise<void> {
     await this.runLocatorOperation<boolean>(locator, {
-      operation: "focus"
+      operation: "focus",
+      resetSelectionIfNotFocused: true
     });
 
     for (const character of value) {
@@ -4836,7 +4837,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     await this.runSelectorOperation<boolean>({
       operation: "focus",
-      reference
+      reference,
+      resetSelectionIfNotFocused: true
     });
 
     for (const character of value) {

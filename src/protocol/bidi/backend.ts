@@ -1927,7 +1927,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async typeLocator(locator: BidiLocatorState, value: string, options?: TypeOptions): Promise<void> {
     await this.runLocatorOperation<boolean>(locator, {
-      operation: "focus"
+      operation: "focus",
+      resetSelectionIfNotFocused: true
     });
 
     const actions = value.split("").flatMap((character) => [
@@ -2362,7 +2363,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     await this.runSelectorOperation<boolean>({
       operation: "focus",
-      reference
+      reference,
+      resetSelectionIfNotFocused: true
     });
 
     const actions = value.split("").flatMap((character) => [
