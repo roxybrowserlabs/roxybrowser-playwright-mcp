@@ -51,6 +51,7 @@ import type {
   PageConsoleMessage,
   PageErrorEntry,
   PageResponse,
+  RawPageWebSocketEvent,
   RawPageEventMap,
   RawPageEventListener,
   RawPageEventName
@@ -259,6 +260,196 @@ interface HostedWebSocketRouteState {
   serverConnected: boolean;
   serverMessageHandler: ((message: string | Buffer) => any) | null;
   url: string;
+}
+
+type WebSocketEventMap = {
+  close: PageWebSocket;
+  framereceived: { payload: string | Buffer };
+  framesent: { payload: string | Buffer };
+  socketerror: string;
+};
+
+class RoxyWebSocket implements PageWebSocket {
+  private closed = false;
+  private readonly listeners = new Map<keyof WebSocketEventMap, Set<(payload: any) => any>>();
+
+  constructor(
+    private readonly roxyPage: RoxyPage,
+    private readonly socketUrl: string
+  ) {}
+
+  addListener<K extends keyof WebSocketEventMap>(
+    event: K,
+    listener: (payload: WebSocketEventMap[K]) => any
+  ): this {
+    return this.on(event, listener);
+  }
+
+  isClosed(): boolean {
+    return this.closed;
+  }
+
+  off<K extends keyof WebSocketEventMap>(
+    event: K,
+    listener: (payload: WebSocketEventMap[K]) => any
+  ): this {
+    return this.removeListener(event, listener);
+  }
+
+  on<K extends keyof WebSocketEventMap>(
+    event: K,
+    listener: (payload: WebSocketEventMap[K]) => any
+  ): this {
+    const entries = this.listeners.get(event) ?? new Set<(payload: any) => any>();
+    entries.add(listener);
+    this.listeners.set(event, entries);
+    return this;
+  }
+
+  once<K extends keyof WebSocketEventMap>(
+    event: K,
+    listener: (payload: WebSocketEventMap[K]) => any
+  ): this {
+    const wrapped = ((payload: WebSocketEventMap[K]) => {
+      this.removeListener(event, wrapped);
+      listener(payload);
+    }) as (payload: WebSocketEventMap[K]) => any;
+    return this.on(event, wrapped);
+  }
+
+  prependListener<K extends keyof WebSocketEventMap>(
+    event: K,
+    listener: (payload: WebSocketEventMap[K]) => any
+  ): this {
+    const entries = this.listeners.get(event) ?? new Set<(payload: any) => any>();
+    this.listeners.set(event, new Set<(payload: any) => any>([listener, ...entries]));
+    return this;
+  }
+
+  removeListener<K extends keyof WebSocketEventMap>(
+    event: K,
+    listener: (payload: WebSocketEventMap[K]) => any
+  ): this {
+    const entries = this.listeners.get(event);
+    entries?.delete(listener);
+    if (entries?.size === 0) {
+      this.listeners.delete(event);
+    }
+    return this;
+  }
+
+  url(): string {
+    return this.socketUrl;
+  }
+
+  waitForEvent<K extends keyof WebSocketEventMap>(
+    event: K,
+    optionsOrPredicate?:
+      | ((payload: WebSocketEventMap[K]) => boolean | Promise<boolean>)
+      | {
+          predicate?: (payload: WebSocketEventMap[K]) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<WebSocketEventMap[K]> {
+    const predicate =
+      typeof optionsOrPredicate === "function"
+        ? optionsOrPredicate
+        : optionsOrPredicate?.predicate;
+    const timeout =
+      typeof optionsOrPredicate === "function"
+        ? this.roxyPage.defaultTimeout()
+        : optionsOrPredicate?.timeout ?? this.roxyPage.defaultTimeout();
+
+    return new Promise<WebSocketEventMap[K]>((resolve, reject) => {
+      let settled = false;
+      const timer =
+        timeout === 0
+          ? null
+          : setTimeout(() => {
+              cleanup();
+              reject(new TimeoutError(`Timeout ${timeout}ms exceeded while waiting for event "${event}"`));
+            }, timeout);
+
+      const cleanup = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        this.removeListener(event, listener);
+        if (event !== "socketerror") {
+          this.removeListener("socketerror", socketErrorListener);
+        }
+        if (event !== "close") {
+          this.removeListener("close", closeListener);
+        }
+        this.roxyPage.removeListener("close", pageCloseListener);
+      };
+
+      const listener = (async (payload: WebSocketEventMap[K]) => {
+        try {
+          const accepted = predicate ? await predicate(payload) : true;
+          if (!accepted) {
+            return;
+          }
+          cleanup();
+          resolve(payload);
+        } catch (error) {
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      }) as (payload: WebSocketEventMap[K]) => any;
+      const socketErrorListener = ((message: string) => {
+        cleanup();
+        reject(new Error(message || "Socket error"));
+      }) as (payload: WebSocketEventMap["socketerror"]) => any;
+      const closeListener = (() => {
+        cleanup();
+        reject(new Error("Socket closed"));
+      }) as (payload: WebSocketEventMap["close"]) => any;
+      const pageCloseListener = (() => {
+        cleanup();
+        reject(new Error("Target page, context or browser has been closed"));
+      }) as PageEventListener<"close">;
+
+      this.on(event, listener);
+      if (event !== "socketerror") {
+        this.on("socketerror", socketErrorListener);
+      }
+      if (event !== "close") {
+        this.on("close", closeListener);
+      }
+      this.roxyPage.on("close", pageCloseListener);
+    });
+  }
+
+  emitClose(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.emit("close", this);
+  }
+
+  emitFrameReceived(payload: string | Buffer): void {
+    this.emit("framereceived", { payload });
+  }
+
+  emitFrameSent(payload: string | Buffer): void {
+    this.emit("framesent", { payload });
+  }
+
+  emitSocketError(message: string): void {
+    this.emit("socketerror", message);
+  }
+
+  private emit<K extends keyof WebSocketEventMap>(event: K, payload: WebSocketEventMap[K]): void {
+    for (const listener of Array.from(this.listeners.get(event) ?? [])) {
+      listener(payload);
+    }
+  }
 }
 
 const DEFAULT_CONSOLE_LOCATION = {
@@ -678,6 +869,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private routePumpStarted = false;
   private readonly routeHandlers: RouteHandlerEntry[] = [];
   private readonly websocketRouteHandlers: WebSocketRouteHandlerEntry[] = [];
+  private readonly webSockets = new Map<string, RoxyWebSocket>();
   private readonly hostedWebSocketRoutes = new Map<string, HostedWebSocketRouteState>();
   private readonly harRoutes: HarRouteEntry[] = [];
   private readonly activeRouteDispatches = new Set<Promise<void>>();
@@ -3185,6 +3377,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       await this.refreshFrameSnapshots().catch(() => {});
       return;
     }
+    if (event === "websocket" && payload && (payload as RawPageWebSocketEvent).kind !== "created") {
+      this.handleRawWebSocketEvent(payload as RawPageWebSocketEvent);
+      return;
+    }
     this.emit(event, payload as never);
   }
 
@@ -3220,11 +3416,38 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       normalized = this.observeRequestFailure(
         payload as unknown as { errorText: string; method: string; url: string }
       );
+    } else if (event === "websocket") {
+      normalized = this.handleRawWebSocketEvent(payload as RawPageWebSocketEvent);
     }
     if (typeof payload === "object") {
       this.normalizedEventPayloads.set(payload as object, normalized);
     }
     return normalized as unknown as PageEventMap[K];
+  }
+
+  private handleRawWebSocketEvent(payload: RawPageWebSocketEvent): PageWebSocket | undefined {
+    if (payload.kind === "created") {
+      const webSocket = new RoxyWebSocket(this, payload.url);
+      this.webSockets.set(payload.requestId, webSocket);
+      return webSocket;
+    }
+
+    const webSocket = this.webSockets.get(payload.requestId);
+    if (!webSocket) {
+      return undefined;
+    }
+
+    if (payload.kind === "frameReceived") {
+      webSocket.emitFrameReceived(deserializeWebSocketFrame(payload.opcode, payload.data));
+    } else if (payload.kind === "frameSent") {
+      webSocket.emitFrameSent(deserializeWebSocketFrame(payload.opcode, payload.data));
+    } else if (payload.kind === "socketError") {
+      webSocket.emitSocketError(payload.errorMessage);
+    } else if (payload.kind === "closed") {
+      webSocket.emitClose();
+      this.webSockets.delete(payload.requestId);
+    }
+    return webSocket;
   }
 
   private createPublicDialog(payload: PageDialog): Dialog {
@@ -5995,6 +6218,10 @@ function serializeWebSocketMessage(message: string | Buffer): string {
 
 function deserializeWebSocketMessage(message: string): string | Buffer {
   return message;
+}
+
+function deserializeWebSocketFrame(opcode: number, data: string): string | Buffer {
+  return opcode === 2 ? Buffer.from(data, "base64") : data;
 }
 
 function serializePageWebSocketData(

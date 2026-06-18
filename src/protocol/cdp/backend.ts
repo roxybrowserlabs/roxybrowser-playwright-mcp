@@ -2048,6 +2048,73 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
     });
 
+    client.Network.webSocketCreated?.((event: {
+      requestId: string;
+      url: string;
+    }) => {
+      this.emit("websocket", {
+        kind: "created",
+        requestId: event.requestId,
+        url: event.url
+      });
+    });
+
+    client.Network.webSocketFrameSent?.((event: {
+      requestId: string;
+      response: {
+        opcode: number;
+        payloadData?: string;
+      };
+    }) => {
+      if (event.response.payloadData === undefined) {
+        return;
+      }
+      this.emit("websocket", {
+        data: event.response.payloadData,
+        kind: "frameSent",
+        opcode: event.response.opcode,
+        requestId: event.requestId
+      });
+    });
+
+    client.Network.webSocketFrameReceived?.((event: {
+      requestId: string;
+      response: {
+        opcode: number;
+        payloadData?: string;
+      };
+    }) => {
+      if (event.response.payloadData === undefined) {
+        return;
+      }
+      this.emit("websocket", {
+        data: event.response.payloadData,
+        kind: "frameReceived",
+        opcode: event.response.opcode,
+        requestId: event.requestId
+      });
+    });
+
+    client.Network.webSocketFrameError?.((event: {
+      errorMessage: string;
+      requestId: string;
+    }) => {
+      this.emit("websocket", {
+        errorMessage: event.errorMessage,
+        kind: "socketError",
+        requestId: event.requestId
+      });
+    });
+
+    client.Network.webSocketClosed?.((event: {
+      requestId: string;
+    }) => {
+      this.emit("websocket", {
+        kind: "closed",
+        requestId: event.requestId
+      });
+    });
+
     client.Network.requestWillBeSentExtraInfo?.((event) => {
       if (this.ignoredRequestIds.has(event.requestId)) {
         return;

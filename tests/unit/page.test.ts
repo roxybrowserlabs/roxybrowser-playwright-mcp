@@ -9,7 +9,7 @@ import { RoxyLocator } from "../../src/locator.js";
 import { RoxyPage } from "../../src/page.js";
 import { RoxyVideo } from "../../src/video.js";
 import { RoxyWorker } from "../../src/worker.js";
-import type { Download, Request, WebSocket } from "../../src/types/api.js";
+import type { Download, Request } from "../../src/types/api.js";
 import { createPageAdapterStub } from "../helpers/fakes.js";
 
 describe("RoxyPage", () => {
@@ -3199,11 +3199,8 @@ describe("RoxyPage", () => {
       suggestedFilename: () => "example.txt",
       url: () => "https://example.com/example.txt"
     } as Download;
-    const webSocket = {
-      isClosed: () => false,
-      url: () => "wss://example.com/socket"
-    } as WebSocket;
     const seen: Array<unknown> = [];
+    const socketLog: string[] = [];
 
     page.on("crash", (crashedPage) => {
       seen.push(crashedPage);
@@ -3213,6 +3210,15 @@ describe("RoxyPage", () => {
     });
     page.on("websocket", (eventWebSocket) => {
       seen.push(eventWebSocket);
+      eventWebSocket.on("framesent", (data) => {
+        socketLog.push(`sent:${data.payload.toString()}`);
+      });
+      eventWebSocket.on("framereceived", (data) => {
+        socketLog.push(`received:${data.payload.toString()}`);
+      });
+      eventWebSocket.on("close", (closedWebSocket) => {
+        socketLog.push(`close:${closedWebSocket.url()}:${closedWebSocket.isClosed()}`);
+      });
     });
 
     const crashPromise = page.waitForEvent("crash");
@@ -3221,12 +3227,39 @@ describe("RoxyPage", () => {
 
     adapter.emit("crash", undefined);
     adapter.emit("download", download);
-    adapter.emit("websocket", webSocket);
+    adapter.emit("websocket", {
+      kind: "created",
+      requestId: "ws-1",
+      url: "wss://example.com/socket"
+    });
+    const webSocket = await webSocketPromise;
+    const framePromise = webSocket.waitForEvent("framereceived");
+    adapter.emit("websocket", {
+      data: "outgoing",
+      kind: "frameSent",
+      opcode: 1,
+      requestId: "ws-1"
+    });
+    adapter.emit("websocket", {
+      data: "incoming",
+      kind: "frameReceived",
+      opcode: 1,
+      requestId: "ws-1"
+    });
+    adapter.emit("websocket", {
+      kind: "closed",
+      requestId: "ws-1"
+    });
 
     await expect(crashPromise).resolves.toBe(page);
     await expect(downloadPromise).resolves.toBe(download);
-    await expect(webSocketPromise).resolves.toBe(webSocket);
     expect(seen).toEqual([page, download, webSocket]);
+    await expect(framePromise).resolves.toEqual({ payload: "incoming" });
+    expect(socketLog).toEqual([
+      "sent:outgoing",
+      "received:incoming",
+      "close:wss://example.com/socket:true"
+    ]);
   });
 
   it("rejects pending video saveAs when the page closes externally", async () => {

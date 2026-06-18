@@ -97,6 +97,28 @@ export interface ScreencastFrame {
   viewportHeight: number;
 }
 
+export type RawPageWebSocketEvent =
+  | {
+      kind: "created";
+      requestId: string;
+      url: string;
+    }
+  | {
+      data: string;
+      kind: "frameReceived" | "frameSent";
+      opcode: number;
+      requestId: string;
+    }
+  | {
+      errorMessage: string;
+      kind: "socketError";
+      requestId: string;
+    }
+  | {
+      kind: "closed";
+      requestId: string;
+    };
+
 export interface PageFrameNavigation {
   frameId?: string;
   parentFrameId?: string | null;
@@ -120,7 +142,7 @@ export interface RawPageEventMap {
   requestfailed: PageRequestFailure;
   response: PageResponse;
   screencastFrame: ScreencastFrame;
-  websocket: WebSocket;
+  websocket: RawPageWebSocketEvent;
   worker: Worker;
 }
 
