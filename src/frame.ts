@@ -3,6 +3,7 @@ import type { RoxyPage } from "./page.js";
 import { assertFillValue } from "./assertions.js";
 import { TimeoutError } from "./errors.js";
 import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
+import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import type { LocatorSelector } from "./protocol/adapter.js";
 import type {
   ElementArrayCallback,
@@ -30,6 +31,7 @@ import type {
   PressOptions,
   SelectOptionValue,
   SelectorStrictOptions,
+  SetInputFilesOptions,
   TapOptions,
   TypeOptions,
   WaitForNavigationOptions,
@@ -502,6 +504,17 @@ export class RoxyFrame implements Frame {
     options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number }
   ): Promise<Array<string>> {
     return this.locator(selector).selectOption(values, options);
+  }
+
+  async setInputFiles(
+    selector: string,
+    files: InputFiles,
+    options?: SetInputFilesOptions
+  ): Promise<void> {
+    await setInputFilesOnElement(
+      await this.requiredElementHandleForSelector(selector, "frame.setInputFiles", options),
+      files
+    );
   }
 
   private async elementHandleForSelector(

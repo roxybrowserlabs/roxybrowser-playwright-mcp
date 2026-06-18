@@ -40,7 +40,6 @@ import type {
 import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import type { RoutedRequestCall, RoutedRequestDecision, RoutedResponseData } from "./protocol/routing.js";
 import { parseSelectorChain } from "./selectors.js";
-import { normalizeSelectOptionValues } from "./selectOptionValues.js";
 import type {
   PageEventListener,
   PageEventMap,
@@ -119,7 +118,6 @@ import type {
   PageSetContentOptions,
   PdfOptions,
   PressOptions,
-  SelectOptionValue,
   SetInputFilesOptions,
   ScreenshotOptions,
   TapOptions,
@@ -152,19 +150,7 @@ type PlaywrightSelectOptionValues =
   | ReadonlyArray<string>
   | PlaywrightSelectOptionValue
   | ReadonlyArray<ElementHandle>
-  | ReadonlyArray<PlaywrightSelectOptionValue | null>;
-type InternalSelectOptionValues =
-  | null
-  | string
-  | SelectOptionValue
-  | ElementHandle
-  | Array<string | SelectOptionValue | ElementHandle | null>;
-
-function normalizeSelectOptionValuesForInternal(values: PlaywrightSelectOptionValues): InternalSelectOptionValues {
-  return Array.isArray(values)
-    ? [...values] as Array<string | SelectOptionValue | ElementHandle | null>
-    : values as InternalSelectOptionValues;
-}
+  | ReadonlyArray<PlaywrightSelectOptionValue>;
 
 interface ListenerEntry<K extends PageEventName> {
   original: PageEventListener<K>;
@@ -2410,7 +2396,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async focus(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
   async focus(selector: string, options?: SelectorStrictOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "page.focus", options)).focus();
+    await this.mainFrame().focus(selector, options);
   }
 
   async check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
@@ -2494,11 +2480,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     files: PlaywrightInputFiles | InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
-    const handle =
-      typeof selector === "string"
-        ? await this.requiredElementHandleForSelector(selector, "page.setInputFiles", options)
-        : selector;
-    await setInputFilesOnElement(handle, files as InputFiles);
+    if (typeof selector === "string") {
+      await this.mainFrame().setInputFiles(selector, files as InputFiles, options);
+      return;
+    }
+    await setInputFilesOnElement(selector, files as InputFiles);
   }
 
   async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
@@ -2520,11 +2506,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     values: PlaywrightSelectOptionValues,
     options?: SelectorStrictOptions & { force?: boolean; noWaitAfter?: boolean; }
   ): Promise<string[]> {
-    const handle = await this.requiredElementHandleForSelector(selector, "page.selectOption", options);
-    return handle.selectOption(
-      await normalizeSelectOptionValues(handle, normalizeSelectOptionValuesForInternal(values)),
-      options
-    );
+    return this.mainFrame().selectOption(selector, values, options);
   }
 
   async bringToFront(): Promise<void> {
