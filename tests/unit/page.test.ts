@@ -85,6 +85,12 @@ describe("RoxyPage", () => {
     const screenshot = await page.screenshot({ path: outputPath });
 
     expect(adapter.screenshot).toHaveBeenCalledWith({
+      clip: {
+        height: 720,
+        width: 1280,
+        x: 0,
+        y: 0
+      },
       path: outputPath,
       type: "jpeg"
     });
@@ -110,6 +116,12 @@ describe("RoxyPage", () => {
     const screenshot = await page.screenshot({ path: outputPath });
 
     expect(adapter.screenshot).toHaveBeenCalledWith({
+      clip: {
+        height: 720,
+        width: 1280,
+        x: 0,
+        y: 0
+      },
       path: outputPath,
       type: "png"
     });

@@ -63,6 +63,92 @@ describe("page screenshot contract e2e", () => {
     }
   });
 
+  it("should clip rect to the viewport", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 300, height: 300 });
+      await page.setContent("<main style=\"width: 800px; height: 800px; background: green\"></main>");
+
+      const screenshot = await page.screenshot({
+        clip: {
+          x: 250,
+          y: 250,
+          width: 100,
+          height: 100
+        }
+      });
+
+      expect(pngSize(screenshot)).toEqual({ width: 50, height: 50 });
+    });
+  });
+
+  it("should throw on clip outside the viewport", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 300, height: 300 });
+      await page.setContent("<main style=\"width: 800px; height: 800px; background: green\"></main>");
+
+      const error = await page.screenshot({
+        clip: {
+          x: 50,
+          y: 350,
+          width: 100,
+          height: 100
+        }
+      }).catch((caught: Error) => caught);
+
+      expect(error.message).toContain("Clipped area is either empty or outside the resulting image");
+    });
+  });
+
+  it("should take fullPage screenshots using the full document size", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 300, height: 300 });
+      await page.setContent("<style>body { margin: 0 }</style><main style=\"width: 420px; height: 640px; background: green\"></main>");
+
+      const screenshot = await page.screenshot({ fullPage: true });
+
+      expect(pngSize(screenshot)).toEqual({ width: 420, height: 640 });
+    });
+  });
+
+  it("should clip rect with fullPage against the full document", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 300, height: 300 });
+      await page.setContent("<style>body { margin: 0 }</style><main style=\"width: 420px; height: 640px; background: green\"></main>");
+      await page.evaluate(() => window.scrollBy(100, 200));
+
+      const screenshot = await page.screenshot({
+        fullPage: true,
+        clip: {
+          x: 50,
+          y: 100,
+          width: 150,
+          height: 100
+        }
+      });
+
+      expect(pngSize(screenshot)).toEqual({ width: 150, height: 100 });
+    });
+  });
+
+  it("should offset viewport clip by current scroll position", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 300, height: 300 });
+      await page.setContent("<main style=\"width: 300px; height: 700px; background: green\"></main>");
+      await page.evaluate(() => window.scrollBy(0, 200));
+
+      const screenshot = await page.screenshot({
+        clip: {
+          x: 10,
+          y: 20,
+          width: 80,
+          height: 60
+        }
+      });
+
+      expect(pngSize(screenshot)).toEqual({ width: 80, height: 60 });
+    });
+  });
+
   it("style option should apply during screenshot and restore afterwards", async () => {
     await withPage(async (page) => {
       await page.setContent('<div data-test-screenshot="hide">target</div>');

@@ -20,7 +20,7 @@ import { createSmartHandle } from "./jsHandle.js";
 import { RoxyLocator } from "./locator.js";
 import { RoxyScreencast } from "./screencast.js";
 import { preparePageForScreenshot } from "./screenshotPreparation.js";
-import { determineScreenshotType, validateScreenshotOptions } from "./screenshotOptions.js";
+import { determineScreenshotType, normalizePageScreenshotOptions, validateScreenshotOptions } from "./screenshotOptions.js";
 import { isRegExp, isURLPattern, resolveGlobToRegexPattern, type URLMatch, urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
 import { RoxyWorker } from "./worker.js";
@@ -1481,12 +1481,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
     }
     validateScreenshotOptions(screenshotOptions);
-    const cleanup = await preparePageForScreenshot(this, screenshotOptions);
+    const normalizedScreenshotOptions = await normalizePageScreenshotOptions(screenshotOptions, this);
+    const cleanup = await preparePageForScreenshot(this, normalizedScreenshotOptions);
     try {
       if ((options as any).__testHookBeforeScreenshot) {
         await (options as any).__testHookBeforeScreenshot();
       }
-      const data = await this.adapter.screenshot(screenshotOptions);
+      const data = await this.adapter.screenshot(normalizedScreenshotOptions);
       if ((options as any).__testHookAfterScreenshot) {
         await (options as any).__testHookAfterScreenshot();
       }

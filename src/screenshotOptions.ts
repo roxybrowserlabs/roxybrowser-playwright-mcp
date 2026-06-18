@@ -1,5 +1,5 @@
 import { extname } from "node:path";
-import type { Rect, ScreenshotOptions, ScreenshotType } from "./types/options.js";
+import type { Rect, ScreenshotOptions, ScreenshotType, ViewportSize } from "./types/options.js";
 
 export function determineScreenshotType(options: { path?: string; type?: ScreenshotType }): ScreenshotType | undefined {
   if (options.type) {
@@ -44,6 +44,97 @@ export function validateScreenshotOptions(options: ScreenshotOptions): "jpeg" | 
     validateClip(options.clip);
   }
   return format;
+}
+
+export function trimClipToSize(clip: Rect, size: ViewportSize): Rect {
+  const p1 = {
+    x: Math.max(0, Math.min(clip.x, size.width)),
+    y: Math.max(0, Math.min(clip.y, size.height))
+  };
+  const p2 = {
+    x: Math.max(0, Math.min(clip.x + clip.width, size.width)),
+    y: Math.max(0, Math.min(clip.y + clip.height, size.height))
+  };
+  const result = { x: p1.x, y: p1.y, width: p2.x - p1.x, height: p2.y - p1.y };
+  if (!result.width || !result.height) {
+    throw new Error("Clipped area is either empty or outside the resulting image");
+  }
+  return result;
+}
+
+export async function normalizePageScreenshotOptions(
+  options: ScreenshotOptions,
+  page: {
+    evaluate<R, Arg>(pageFunction: (arg: Arg) => R | Promise<R>, arg: Arg): Promise<R>;
+    evaluate<R>(pageFunction: () => R | Promise<R>, arg?: any): Promise<R>;
+    viewportSize(): ViewportSize | null;
+  }
+): Promise<ScreenshotOptions> {
+  const screenshotOptions: ScreenshotOptions = { ...options };
+  const viewportSize = page.viewportSize()
+    ?? await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+
+  if (options.fullPage) {
+    const evaluatedFullPageSize = await page.evaluate(() => {
+      if (!document.body || !document.documentElement) {
+        return { width: window.innerWidth, height: window.innerHeight };
+      }
+      return {
+        width: Math.max(
+          document.body.scrollWidth,
+          document.documentElement.scrollWidth,
+          document.body.offsetWidth,
+          document.documentElement.offsetWidth,
+          document.body.clientWidth,
+          document.documentElement.clientWidth
+        ),
+        height: Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight,
+          document.body.offsetHeight,
+          document.documentElement.offsetHeight,
+          document.body.clientHeight,
+          document.documentElement.clientHeight
+        )
+      };
+    });
+    const fullPageSize = isSize(evaluatedFullPageSize) ? evaluatedFullPageSize : viewportSize;
+    screenshotOptions.clip = options.clip
+      ? trimClipToSize(options.clip, fullPageSize)
+      : { x: 0, y: 0, width: fullPageSize.width, height: fullPageSize.height };
+    return screenshotOptions;
+  }
+
+  const viewportClip = options.clip
+    ? trimClipToSize(options.clip, viewportSize)
+    : { x: 0, y: 0, width: viewportSize.width, height: viewportSize.height };
+  const scrollOffset = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+  const normalizedScrollOffset = isPoint(scrollOffset) ? scrollOffset : { x: 0, y: 0 };
+  screenshotOptions.clip = {
+    x: normalizedScrollOffset.x + viewportClip.x,
+    y: normalizedScrollOffset.y + viewportClip.y,
+    width: viewportClip.width,
+    height: viewportClip.height
+  };
+  return screenshotOptions;
+}
+
+function isPoint(value: unknown): value is { x: number; y: number } {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as { x?: unknown }).x === "number" &&
+    typeof (value as { y?: unknown }).y === "number"
+  );
+}
+
+function isSize(value: unknown): value is ViewportSize {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as { width?: unknown }).width === "number" &&
+    typeof (value as { height?: unknown }).height === "number"
+  );
 }
 
 function validateClip(clip: Rect): void {
