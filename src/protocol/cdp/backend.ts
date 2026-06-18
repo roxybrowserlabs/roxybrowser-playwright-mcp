@@ -3107,6 +3107,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const format = options.type ?? "png";
     const response = await this.options.client.Page.captureScreenshot({
       captureBeyondViewport: options.fullPage ?? false,
+      ...(options.clip
+        ? {
+            clip: {
+              x: options.clip.x,
+              y: options.clip.y,
+              width: options.clip.width,
+              height: options.clip.height,
+              scale: 1
+            }
+          }
+        : {}),
       ...(format === "jpeg"
         ? {
             format,

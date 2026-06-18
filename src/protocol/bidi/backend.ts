@@ -1090,7 +1090,18 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
     const response = await this.client.browsingContextCaptureScreenshot({
       context: this.contextId,
-      ...(options.fullPage ? { origin: "document" } : {}),
+      ...(options.clip
+        ? {
+            origin: "viewport" as const,
+            clip: {
+              type: "box" as const,
+              x: options.clip.x,
+              y: options.clip.y,
+              width: options.clip.width,
+              height: options.clip.height
+            }
+          }
+        : options.fullPage ? { origin: "document" as const } : {}),
       format: {
         type: options.type ?? "png",
         ...(options.quality !== undefined ? { quality: options.quality } : {})

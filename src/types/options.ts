@@ -274,9 +274,11 @@ export interface GetByTitleOptions extends ExactTextLocatorOptions {}
 export type ScreenshotType = "jpeg" | "png";
 
 export interface ScreenshotOptions {
+  clip?: Rect;
   fullPage?: boolean;
   path?: string;
   quality?: number;
+  timeout?: number;
   type?: ScreenshotType;
 }
 

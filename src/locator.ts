@@ -571,7 +571,11 @@ export class RoxyLocator implements Locator {
   }
 
   async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
-    return this.adapter.screenshot(options);
+    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+    if (!handle) {
+      throw new Error("No element found.");
+    }
+    return handle.screenshot(options);
   }
 
   async scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void> {

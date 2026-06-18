@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, extname } from "node:path";
 import { TimeoutError } from "./errors.js";
 import { assertFillValue } from "./assertions.js";
 import { DefaultHumanController } from "./human/controller.js";
@@ -259,7 +261,29 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
-    return this.adapter.screenshot(options);
+    await this.waitForElementState("visible", options);
+    await this.scrollIntoViewIfNeeded(options);
+    const box = await this.boundingBox();
+    if (!box) {
+      throw new Error("Node is either not visible or not an HTMLElement");
+    }
+    if (box.width === 0) {
+      throw new Error("Node has 0 width.");
+    }
+    if (box.height === 0) {
+      throw new Error("Node has 0 height.");
+    }
+    const screenshot = await this.adapter.screenshot({
+      ...options,
+      clip: box,
+      fullPage: false,
+      type: options?.type ?? inferScreenshotType(options?.path)
+    });
+    if (options?.path) {
+      await mkdir(dirname(options.path), { recursive: true });
+      await writeFile(options.path, screenshot);
+    }
+    return screenshot;
   }
 
   async scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void> {
@@ -492,6 +516,19 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   ): Promise<void> {
     await setInputFilesOnElement(this, files);
   }
+}
+
+function inferScreenshotType(path?: string): "jpeg" | "png" {
+  if (!path) {
+    return "png";
+  }
+
+  const extension = extname(path).toLowerCase();
+  if (extension === ".jpg" || extension === ".jpeg") {
+    return "jpeg";
+  }
+
+  return "png";
 }
 
 export async function normalizeSelectOptionValues(
