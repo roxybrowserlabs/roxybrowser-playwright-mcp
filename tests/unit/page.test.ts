@@ -9,7 +9,7 @@ import { RoxyLocator } from "../../src/locator.js";
 import { RoxyPage } from "../../src/page.js";
 import { RoxyVideo } from "../../src/video.js";
 import { RoxyWorker } from "../../src/worker.js";
-import type { Request } from "../../src/types/api.js";
+import type { Download, Request, WebSocket } from "../../src/types/api.js";
 import { createPageAdapterStub } from "../helpers/fakes.js";
 
 describe("RoxyPage", () => {
@@ -3181,6 +3181,52 @@ describe("RoxyPage", () => {
 
     await expect(closePromise).resolves.toBe(worker);
     expect(seen).toEqual([worker]);
+  });
+
+  it("supports Playwright page crash, download and websocket events", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const download = {
+      suggestedFilename: () => "example.txt",
+      url: () => "https://example.com/example.txt"
+    } as Download;
+    const webSocket = {
+      isClosed: () => false,
+      url: () => "wss://example.com/socket"
+    } as WebSocket;
+    const seen: Array<unknown> = [];
+
+    page.on("crash", (crashedPage) => {
+      seen.push(crashedPage);
+    });
+    page.on("download", (eventDownload) => {
+      seen.push(eventDownload);
+    });
+    page.on("websocket", (eventWebSocket) => {
+      seen.push(eventWebSocket);
+    });
+
+    const crashPromise = page.waitForEvent("crash");
+    const downloadPromise = page.waitForEvent("download");
+    const webSocketPromise = page.waitForEvent("websocket");
+
+    adapter.emit("crash", undefined);
+    adapter.emit("download", download);
+    adapter.emit("websocket", webSocket);
+
+    await expect(crashPromise).resolves.toBe(page);
+    await expect(downloadPromise).resolves.toBe(download);
+    await expect(webSocketPromise).resolves.toBe(webSocket);
+    expect(seen).toEqual([page, download, webSocket]);
   });
 
   it("rejects pending video saveAs when the page closes externally", async () => {

@@ -455,6 +455,18 @@ export interface Dialog {
   type(): string;
 }
 
+export interface Download {
+  cancel(): Promise<void>;
+  createReadStream(): Promise<ReadStream | null>;
+  delete(): Promise<void>;
+  failure(): Promise<string | null>;
+  page(): Page;
+  path(): Promise<string>;
+  saveAs(path: string): Promise<void>;
+  suggestedFilename(): string;
+  url(): string;
+}
+
 export interface Response {
   allHeaders(): Promise<{ [key: string]: string }>;
   body(): Promise<Buffer>;
@@ -589,6 +601,62 @@ export interface WebSocketRoute {
   [Symbol.asyncDispose](): Promise<void>;
 }
 
+export interface WebSocket {
+  addListener(event: "close", listener: (webSocket: WebSocket) => any): this;
+  addListener(event: "framereceived", listener: (data: { payload: string | Buffer }) => any): this;
+  addListener(event: "framesent", listener: (data: { payload: string | Buffer }) => any): this;
+  addListener(event: "socketerror", listener: (error: string) => any): this;
+  isClosed(): boolean;
+  off(event: "close", listener: (webSocket: WebSocket) => any): this;
+  off(event: "framereceived", listener: (data: { payload: string | Buffer }) => any): this;
+  off(event: "framesent", listener: (data: { payload: string | Buffer }) => any): this;
+  off(event: "socketerror", listener: (error: string) => any): this;
+  on(event: "close", listener: (webSocket: WebSocket) => any): this;
+  on(event: "framereceived", listener: (data: { payload: string | Buffer }) => any): this;
+  on(event: "framesent", listener: (data: { payload: string | Buffer }) => any): this;
+  on(event: "socketerror", listener: (error: string) => any): this;
+  once(event: "close", listener: (webSocket: WebSocket) => any): this;
+  once(event: "framereceived", listener: (data: { payload: string | Buffer }) => any): this;
+  once(event: "framesent", listener: (data: { payload: string | Buffer }) => any): this;
+  once(event: "socketerror", listener: (error: string) => any): this;
+  prependListener(event: "close", listener: (webSocket: WebSocket) => any): this;
+  prependListener(event: "framereceived", listener: (data: { payload: string | Buffer }) => any): this;
+  prependListener(event: "framesent", listener: (data: { payload: string | Buffer }) => any): this;
+  prependListener(event: "socketerror", listener: (error: string) => any): this;
+  removeListener(event: "close", listener: (webSocket: WebSocket) => any): this;
+  removeListener(event: "framereceived", listener: (data: { payload: string | Buffer }) => any): this;
+  removeListener(event: "framesent", listener: (data: { payload: string | Buffer }) => any): this;
+  removeListener(event: "socketerror", listener: (error: string) => any): this;
+  url(): string;
+  waitForEvent(
+    event: "close",
+    optionsOrPredicate?:
+      | ((webSocket: WebSocket) => boolean | Promise<boolean>)
+      | {
+          predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<WebSocket>;
+  waitForEvent(
+    event: "framereceived" | "framesent",
+    optionsOrPredicate?:
+      | ((data: { payload: string | Buffer }) => boolean | Promise<boolean>)
+      | {
+          predicate?: (data: { payload: string | Buffer }) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<{ payload: string | Buffer }>;
+  waitForEvent(
+    event: "socketerror",
+    optionsOrPredicate?:
+      | ((error: string) => boolean | Promise<boolean>)
+      | {
+          predicate?: (error: string) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<string>;
+}
+
 export interface PageNavigationResult {
   ok(): boolean;
   url(): string;
@@ -689,8 +757,10 @@ export interface Page {
   requests(): Promise<Array<Request>>;
   addListener(event: "close", listener: (page: Page) => any): this;
   addListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  addListener(event: "crash", listener: (page: Page) => any): this;
   addListener(event: "dialog", listener: (dialog: Dialog) => any): this;
   addListener(event: "domcontentloaded", listener: (page: Page) => any): this;
+  addListener(event: "download", listener: (download: Download) => any): this;
   addListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   addListener(event: "frameattached", listener: (frame: Frame) => any): this;
   addListener(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -702,11 +772,14 @@ export interface Page {
   addListener(event: "requestfailed", listener: (request: Request) => any): this;
   addListener(event: "requestfinished", listener: (request: Request) => any): this;
   addListener(event: "response", listener: (response: Response) => any): this;
+  addListener(event: "websocket", listener: (webSocket: WebSocket) => any): this;
   addListener(event: "worker", listener: (worker: Worker) => any): this;
   on(event: "close", listener: (page: Page) => any): this;
   on(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  on(event: "crash", listener: (page: Page) => any): this;
   on(event: "dialog", listener: (dialog: Dialog) => any): this;
   on(event: "domcontentloaded", listener: (page: Page) => any): this;
+  on(event: "download", listener: (download: Download) => any): this;
   on(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   on(event: "frameattached", listener: (frame: Frame) => any): this;
   on(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -718,11 +791,14 @@ export interface Page {
   on(event: "requestfailed", listener: (request: Request) => any): this;
   on(event: "requestfinished", listener: (request: Request) => any): this;
   on(event: "response", listener: (response: Response) => any): this;
+  on(event: "websocket", listener: (webSocket: WebSocket) => any): this;
   on(event: "worker", listener: (worker: Worker) => any): this;
   once(event: "close", listener: (page: Page) => any): this;
   once(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  once(event: "crash", listener: (page: Page) => any): this;
   once(event: "dialog", listener: (dialog: Dialog) => any): this;
   once(event: "domcontentloaded", listener: (page: Page) => any): this;
+  once(event: "download", listener: (download: Download) => any): this;
   once(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   once(event: "frameattached", listener: (frame: Frame) => any): this;
   once(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -734,11 +810,14 @@ export interface Page {
   once(event: "requestfailed", listener: (request: Request) => any): this;
   once(event: "requestfinished", listener: (request: Request) => any): this;
   once(event: "response", listener: (response: Response) => any): this;
+  once(event: "websocket", listener: (webSocket: WebSocket) => any): this;
   once(event: "worker", listener: (worker: Worker) => any): this;
   prependListener(event: "close", listener: (page: Page) => any): this;
   prependListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  prependListener(event: "crash", listener: (page: Page) => any): this;
   prependListener(event: "dialog", listener: (dialog: Dialog) => any): this;
   prependListener(event: "domcontentloaded", listener: (page: Page) => any): this;
+  prependListener(event: "download", listener: (download: Download) => any): this;
   prependListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   prependListener(event: "frameattached", listener: (frame: Frame) => any): this;
   prependListener(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -750,11 +829,14 @@ export interface Page {
   prependListener(event: "requestfailed", listener: (request: Request) => any): this;
   prependListener(event: "requestfinished", listener: (request: Request) => any): this;
   prependListener(event: "response", listener: (response: Response) => any): this;
+  prependListener(event: "websocket", listener: (webSocket: WebSocket) => any): this;
   prependListener(event: "worker", listener: (worker: Worker) => any): this;
   off(event: "close", listener: (page: Page) => any): this;
   off(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  off(event: "crash", listener: (page: Page) => any): this;
   off(event: "dialog", listener: (dialog: Dialog) => any): this;
   off(event: "domcontentloaded", listener: (page: Page) => any): this;
+  off(event: "download", listener: (download: Download) => any): this;
   off(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   off(event: "frameattached", listener: (frame: Frame) => any): this;
   off(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -766,11 +848,14 @@ export interface Page {
   off(event: "requestfailed", listener: (request: Request) => any): this;
   off(event: "requestfinished", listener: (request: Request) => any): this;
   off(event: "response", listener: (response: Response) => any): this;
+  off(event: "websocket", listener: (webSocket: WebSocket) => any): this;
   off(event: "worker", listener: (worker: Worker) => any): this;
   removeListener(event: "close", listener: (page: Page) => any): this;
   removeListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  removeListener(event: "crash", listener: (page: Page) => any): this;
   removeListener(event: "dialog", listener: (dialog: Dialog) => any): this;
   removeListener(event: "domcontentloaded", listener: (page: Page) => any): this;
+  removeListener(event: "download", listener: (download: Download) => any): this;
   removeListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   removeListener(event: "frameattached", listener: (frame: Frame) => any): this;
   removeListener(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -782,6 +867,7 @@ export interface Page {
   removeListener(event: "requestfailed", listener: (request: Request) => any): this;
   removeListener(event: "requestfinished", listener: (request: Request) => any): this;
   removeListener(event: "response", listener: (response: Response) => any): this;
+  removeListener(event: "websocket", listener: (webSocket: WebSocket) => any): this;
   removeListener(event: "worker", listener: (worker: Worker) => any): this;
   removeAllListeners(event?: PageEventName): this;
   removeAllListeners(
@@ -809,6 +895,15 @@ export interface Page {
         }
   ): Promise<Dialog>;
   waitForEvent(
+    event: "crash",
+    optionsOrPredicate?:
+      | ((page: Page) => boolean | Promise<boolean>)
+      | {
+          predicate?: (page: Page) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<Page>;
+  waitForEvent(
     event: "close",
     optionsOrPredicate?:
       | ((page: Page) => boolean | Promise<boolean>)
@@ -817,6 +912,15 @@ export interface Page {
           timeout?: number;
         }
   ): Promise<Page>;
+  waitForEvent(
+    event: "download",
+    optionsOrPredicate?:
+      | ((download: Download) => boolean | Promise<boolean>)
+      | {
+          predicate?: (download: Download) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<Download>;
   waitForEvent(
     event: "domcontentloaded",
     optionsOrPredicate?:
@@ -925,6 +1029,15 @@ export interface Page {
           timeout?: number;
         }
   ): Promise<Response>;
+  waitForEvent(
+    event: "websocket",
+    optionsOrPredicate?:
+      | ((webSocket: WebSocket) => boolean | Promise<boolean>)
+      | {
+          predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<WebSocket>;
   waitForEvent(
     event: "worker",
     optionsOrPredicate?:

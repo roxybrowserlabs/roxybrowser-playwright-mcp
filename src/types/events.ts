@@ -1,4 +1,4 @@
-import type { BrowserContext, Dialog, FileChooser, Frame, JSHandle, Page, Request, Response, Worker } from "./api.js";
+import type { BrowserContext, Dialog, Download, FileChooser, Frame, JSHandle, Page, Request, Response, WebSocket, Worker } from "./api.js";
 import type { Header } from "./options.js";
 
 export interface PageRequest {
@@ -106,8 +106,10 @@ export interface PageFrameNavigation {
 export interface RawPageEventMap {
   close: void;
   console: PageConsoleMessage;
+  crash: void;
   dialog: PageDialog;
   domcontentloaded: void;
+  download: Download;
   frameattached: void;
   framedetached: void;
   framenavigated: PageFrameNavigation;
@@ -118,14 +120,17 @@ export interface RawPageEventMap {
   requestfailed: PageRequestFailure;
   response: PageResponse;
   screencastFrame: ScreencastFrame;
+  websocket: WebSocket;
   worker: Worker;
 }
 
 export interface PageEventMap {
   close: Page;
   console: PageConsoleMessage;
+  crash: Page;
   dialog: Dialog;
   domcontentloaded: Page;
+  download: Download;
   filechooser: FileChooser;
   frameattached: Frame;
   framedetached: Frame;
@@ -137,6 +142,7 @@ export interface PageEventMap {
   requestfinished: Request;
   requestfailed: Request;
   response: Response;
+  websocket: WebSocket;
   worker: Worker;
 }
 

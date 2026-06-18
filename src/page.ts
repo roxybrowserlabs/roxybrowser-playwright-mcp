@@ -76,6 +76,7 @@ import type {
   Clock,
   Coverage,
   Dialog,
+  Download,
   JSHandle,
   Keyboard,
   Mouse,
@@ -84,6 +85,7 @@ import type {
   SmartHandle,
   Touchscreen,
   Video,
+  WebSocket as PageWebSocket,
   WebStorage,
   WebSocketRoute,
   Worker
@@ -1270,8 +1272,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   on(event: "close", listener: (page: Page) => any): this;
   on(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  on(event: "crash", listener: (page: Page) => any): this;
   on(event: "dialog", listener: (dialog: Dialog) => any): this;
   on(event: "domcontentloaded", listener: (page: Page) => any): this;
+  on(event: "download", listener: (download: Download) => any): this;
   on(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   on(event: "frameattached", listener: (frame: Frame) => any): this;
   on(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -1283,6 +1287,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   on(event: "requestfailed", listener: (request: Request) => any): this;
   on(event: "requestfinished", listener: (request: Request) => any): this;
   on(event: "response", listener: (response: Response) => any): this;
+  on(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
   on(event: "worker", listener: (worker: Worker) => any): this;
   on<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   on(event: PageEventName, listener: (...args: any[]) => any): this {
@@ -1308,8 +1313,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   addListener(event: "close", listener: (page: Page) => any): this;
   addListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  addListener(event: "crash", listener: (page: Page) => any): this;
   addListener(event: "dialog", listener: (dialog: Dialog) => any): this;
   addListener(event: "domcontentloaded", listener: (page: Page) => any): this;
+  addListener(event: "download", listener: (download: Download) => any): this;
   addListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   addListener(event: "frameattached", listener: (frame: Frame) => any): this;
   addListener(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -1321,6 +1328,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   addListener(event: "requestfailed", listener: (request: Request) => any): this;
   addListener(event: "requestfinished", listener: (request: Request) => any): this;
   addListener(event: "response", listener: (response: Response) => any): this;
+  addListener(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
   addListener(event: "worker", listener: (worker: Worker) => any): this;
   addListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   addListener(event: PageEventName, listener: (...args: any[]) => any): this {
@@ -1329,8 +1337,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   once(event: "close", listener: (page: Page) => any): this;
   once(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  once(event: "crash", listener: (page: Page) => any): this;
   once(event: "dialog", listener: (dialog: Dialog) => any): this;
   once(event: "domcontentloaded", listener: (page: Page) => any): this;
+  once(event: "download", listener: (download: Download) => any): this;
   once(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   once(event: "frameattached", listener: (frame: Frame) => any): this;
   once(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -1342,6 +1352,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   once(event: "requestfailed", listener: (request: Request) => any): this;
   once(event: "requestfinished", listener: (request: Request) => any): this;
   once(event: "response", listener: (response: Response) => any): this;
+  once(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
   once(event: "worker", listener: (worker: Worker) => any): this;
   once<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   once(event: PageEventName, listener: (...args: any[]) => any): this {
@@ -1376,8 +1387,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   prependListener(event: "close", listener: (page: Page) => any): this;
   prependListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  prependListener(event: "crash", listener: (page: Page) => any): this;
   prependListener(event: "dialog", listener: (dialog: Dialog) => any): this;
   prependListener(event: "domcontentloaded", listener: (page: Page) => any): this;
+  prependListener(event: "download", listener: (download: Download) => any): this;
   prependListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   prependListener(event: "frameattached", listener: (frame: Frame) => any): this;
   prependListener(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -1389,6 +1402,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   prependListener(event: "requestfailed", listener: (request: Request) => any): this;
   prependListener(event: "requestfinished", listener: (request: Request) => any): this;
   prependListener(event: "response", listener: (response: Response) => any): this;
+  prependListener(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
   prependListener(event: "worker", listener: (worker: Worker) => any): this;
   prependListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   prependListener(event: PageEventName, listener: (...args: any[]) => any): this {
@@ -1416,8 +1430,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   off(event: "close", listener: (page: Page) => any): this;
   off(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  off(event: "crash", listener: (page: Page) => any): this;
   off(event: "dialog", listener: (dialog: Dialog) => any): this;
   off(event: "domcontentloaded", listener: (page: Page) => any): this;
+  off(event: "download", listener: (download: Download) => any): this;
   off(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   off(event: "frameattached", listener: (frame: Frame) => any): this;
   off(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -1429,6 +1445,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   off(event: "requestfailed", listener: (request: Request) => any): this;
   off(event: "requestfinished", listener: (request: Request) => any): this;
   off(event: "response", listener: (response: Response) => any): this;
+  off(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
   off(event: "worker", listener: (worker: Worker) => any): this;
   off<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   off(event: PageEventName, listener: (...args: any[]) => any): this {
@@ -1437,8 +1454,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   removeListener(event: "close", listener: (page: Page) => any): this;
   removeListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
+  removeListener(event: "crash", listener: (page: Page) => any): this;
   removeListener(event: "dialog", listener: (dialog: Dialog) => any): this;
   removeListener(event: "domcontentloaded", listener: (page: Page) => any): this;
+  removeListener(event: "download", listener: (download: Download) => any): this;
   removeListener(event: "filechooser", listener: (fileChooser: FileChooser) => any): this;
   removeListener(event: "frameattached", listener: (frame: Frame) => any): this;
   removeListener(event: "framedetached", listener: (frame: Frame) => any): this;
@@ -1450,6 +1469,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   removeListener(event: "requestfailed", listener: (request: Request) => any): this;
   removeListener(event: "requestfinished", listener: (request: Request) => any): this;
   removeListener(event: "response", listener: (response: Response) => any): this;
+  removeListener(event: "websocket", listener: (webSocket: PageWebSocket) => any): this;
   removeListener(event: "worker", listener: (worker: Worker) => any): this;
   removeListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): this;
   removeListener(event: PageEventName, listener: (...args: any[]) => any): this {
@@ -1528,6 +1548,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
   ): Promise<Dialog>;
   async waitForEvent<K extends PageEventName>(
+    event: "crash",
+    optionsOrPredicate?:
+      | ((page: Page) => boolean | Promise<boolean>)
+      | {
+          predicate?: (page: Page) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<Page>;
+  async waitForEvent<K extends PageEventName>(
     event: "close",
     optionsOrPredicate?:
       | ((page: Page) => boolean | Promise<boolean>)
@@ -1545,6 +1574,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           timeout?: number;
         }
   ): Promise<Page>;
+  async waitForEvent(
+    event: "download",
+    optionsOrPredicate?:
+      | ((download: Download) => boolean | Promise<boolean>)
+      | {
+          predicate?: (download: Download) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<Download>;
   async waitForEvent(
     event: "filechooser",
     optionsOrPredicate?:
@@ -1644,6 +1682,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           timeout?: number;
         }
   ): Promise<Response>;
+  async waitForEvent(
+    event: "websocket",
+    optionsOrPredicate?:
+      | ((webSocket: PageWebSocket) => boolean | Promise<boolean>)
+      | {
+          predicate?: (webSocket: PageWebSocket) => boolean | Promise<boolean>;
+          timeout?: number;
+        }
+  ): Promise<PageWebSocket>;
   async waitForEvent(
     event: "worker",
     optionsOrPredicate?:
@@ -3145,7 +3192,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     event: K,
     payload: unknown
   ): PageEventMap[K] | undefined {
-    if (event === "close" || event === "domcontentloaded" || event === "load") {
+    if (event === "close" || event === "crash" || event === "domcontentloaded" || event === "load") {
       return this as unknown as PageEventMap[K];
     }
     if (!payload) {
