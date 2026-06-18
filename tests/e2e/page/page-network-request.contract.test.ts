@@ -71,6 +71,69 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("does not expose redirect request to route interception like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRedirect("/foo.html", "/empty.html");
+      const requests = [];
+      await page.route("**", (route) => {
+        requests.push(route.request());
+        void route.continue();
+      });
+
+      await page.goto(fixture.server.PREFIX + "/foo.html");
+
+      expect(page.url()).toBe(fixture.server.PREFIX + "/empty.html");
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.url()).toBe(fixture.server.PREFIX + "/foo.html");
+    });
+  });
+
+  it("returns headers", async () => {
+    await withPage(async (page) => {
+      const response = await page.goto(fixture.server.EMPTY_PAGE);
+      expect(response!.request().headers()["user-agent"]).toContain("Chrome");
+    });
+  });
+
+  it("gets the same headers as the server", async () => {
+    await withPage(async (page) => {
+      let serverRequestHeaders: Record<string, string | string[] | undefined> | null = null;
+      fixture.server.setRoute("/empty.html", (request, response) => {
+        serverRequestHeaders = request.headers;
+        response.end("done");
+      });
+
+      const response = await page.goto(fixture.server.PREFIX + "/empty.html");
+      const headers = await response!.request().allHeaders();
+      expect(headers).toEqual(serverRequestHeaders);
+    });
+  });
+
+  it("does not return allHeaders until they are available", async () => {
+    await withPage(async (page) => {
+      let requestHeadersPromise: Promise<Record<string, string>> | undefined;
+      page.on("request", (request) => {
+        requestHeadersPromise = request.allHeaders();
+      });
+      let responseHeadersPromise: Promise<Record<string, string>> | undefined;
+      page.on("response", (response) => {
+        responseHeadersPromise = response.allHeaders();
+      });
+
+      let serverRequestHeaders: Record<string, string | string[] | undefined> | null = null;
+      fixture.server.setRoute("/empty.html", async (request, response) => {
+        serverRequestHeaders = request.headers;
+        response.writeHead(200, { foo: "bar" });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        response.end("done");
+      });
+
+      await page.goto(fixture.server.PREFIX + "/empty.html");
+      expect(await requestHeadersPromise!).toEqual(serverRequestHeaders);
+      expect((await responseHeadersPromise!)["foo"]).toBe("bar");
+    });
+  });
+
   it("returns postData", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);
@@ -329,6 +392,30 @@ describe("page network request contract e2e", () => {
       expect(response2!.status()).toBe(200);
       expect(response2!.statusText()).toBe("OK");
       expect(await response2!.text()).toBe("<div>Test</div>");
+    });
+  });
+
+  it("returns multipart/form-data", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      fixture.server.setRoute("/post", (_request, response) => response.end());
+      await page.route("**/*", (route) => route.continue());
+      const requestPromise = page.waitForRequest("**/post");
+      await page.evaluate(async () => {
+        const body = new FormData();
+        body.set("name1", "value1");
+        body.set("file", new File(["file-value"], "foo.txt"));
+        body.set("name2", "value2");
+        body.append("name2", "another-value2");
+        await fetch("/post", { method: "POST", body });
+      });
+      const request = await requestPromise;
+      const contentType = await request.headerValue("Content-Type");
+      const re = /^multipart\/form-data; boundary=(.*)$/;
+      expect(contentType).toMatch(re);
+      const boundary = contentType!.match(re)![1]!;
+      const expected = `--${boundary}\r\nContent-Disposition: form-data; name=\"name1\"\r\n\r\nvalue1\r\n--${boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"foo.txt\"\r\nContent-Type: application/octet-stream\r\n\r\nfile-value\r\n--${boundary}\r\nContent-Disposition: form-data; name=\"name2\"\r\n\r\nvalue2\r\n--${boundary}\r\nContent-Disposition: form-data; name=\"name2\"\r\n\r\nanother-value2\r\n--${boundary}--\r\n`;
+      expect(request.postDataBuffer()!.toString("utf8")).toBe(expected);
     });
   });
 });

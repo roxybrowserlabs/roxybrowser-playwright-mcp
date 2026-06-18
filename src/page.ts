@@ -640,6 +640,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private readonly activeRequests = new Map<string, Request[]>();
   private readonly observedRequestsById = new Map<string, ObservedRequestState>();
   private readonly observedRequestsByUrl = new Map<string, ObservedRequestState[]>();
+  private readonly pendingRoutedRequestStates = new Map<string, RoutedRequestCall>();
   private readonly redirectTargets = new Map<string, ObservedRequestState[]>();
   private readonly normalizedEventPayloads = new WeakMap<object, unknown>();
   private readonly nativeFrameBindings = new Map<string, string>();
@@ -3233,6 +3234,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (state.requestId) {
       this.observedRequestsById.set(state.requestId, state);
     }
+    const pendingRouted = this.consumePendingRoutedRequestState(payload);
+    if (pendingRouted) {
+      this.applyRoutedRequestStateToObservedRequestState(state, pendingRouted);
+    }
     return request;
   }
 
@@ -4689,9 +4694,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       original.requestId ?? original.id
     );
     if (!observed) {
+      this.pendingRoutedRequestStates.set(original.requestId ?? original.id, routed);
       return;
     }
+    this.applyRoutedRequestStateToObservedRequestState(observed, routed);
+  }
 
+  private applyRoutedRequestStateToObservedRequestState(
+    observed: ObservedRequestState,
+    routed: RoutedRequestCall
+  ): void {
     this.removeObservedRequestFromUrlIndex(observed.url, observed);
     observed.url = routed.url;
     observed.method = routed.method;
@@ -4711,6 +4723,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       queue.push(observed);
     }
     this.observedRequestsByUrl.set(routed.url, queue);
+  }
+
+  private consumePendingRoutedRequestState(payload: PageRequest): RoutedRequestCall | null {
+    const key = payload.requestId ?? payload.url;
+    const routed = this.pendingRoutedRequestStates.get(key);
+    if (!routed) {
+      return null;
+    }
+    this.pendingRoutedRequestStates.delete(key);
+    return routed;
   }
 
   private async dispatchHarRoute(
