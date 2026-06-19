@@ -1009,9 +1009,21 @@ export class RoxyLocator implements Locator {
       await this.beforeAction?.(this, {
         timeout: timeout === 0 ? 0 : Math.max(0, timeout - (Date.now() - startTime))
       });
-      const count = await this.count().catch(() => 0);
+      const count = await this.count().catch((error) => {
+        if (shouldRethrowWaitForResolutionError(error)) {
+          throw error;
+        }
+        return 0;
+      });
       const attached = count > 0;
-      const visible = attached ? await this.isVisible().catch(() => false) : false;
+      const visible = attached
+        ? await this.isVisible().catch((error) => {
+            if (shouldRethrowWaitForResolutionError(error)) {
+              throw error;
+            }
+            return false;
+          })
+        : false;
       if (state === "attached" && attached) return;
       if (state === "visible" && visible) return;
       if (state === "hidden" && !visible) return;
@@ -1175,6 +1187,15 @@ function looksLikeTimeoutOptions(value: unknown): value is TimeoutOptions {
       && typeof value === "object"
       && "timeout" in value
       && Object.keys(value).every((key) => key === "timeout")
+  );
+}
+
+function shouldRethrowWaitForResolutionError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  return (
+    message.includes("strict mode violation")
+    || message.includes("Can't query n-th element")
+    || message.includes("<iframe> was expected")
   );
 }
 
