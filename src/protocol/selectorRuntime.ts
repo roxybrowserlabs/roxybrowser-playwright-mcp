@@ -263,7 +263,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
 
   const queryCss = (root: ParentNode | Element, selector: string, includeRoot: boolean): Element[] => {
-    const normalizedSelector = relativeCssSelector(selector);
+    const normalizedSelector = normalizeHasScopeSelector(relativeCssSelector(selector));
     const matches: Element[] = [];
 
     if (includeRoot && isElementNode(root) && root.matches(normalizedSelector)) {
@@ -278,7 +278,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
 
     if (!/^[>+~]/.test(selector.trim()) && !selector.includes(":scope")) {
-      const querySelector = isElementNode(root)
+      const querySelector = isElementNode(root) && root.tagName.toLowerCase() !== "html"
         ? scopeCssSelectorList(normalizedSelector)
         : normalizedSelector;
       for (const element of querySelectorAllPierce(root, querySelector)) {
@@ -309,6 +309,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
     }
   };
+
+  const normalizeHasScopeSelector = (selector: string): string =>
+    selector.replace(/:has\(\s*:scope\s*([>+~])/g, ":has($1");
 
   const compilePattern = (selector: LocatorSelector, kind: "value" | "name" | "label") => {
     const value =

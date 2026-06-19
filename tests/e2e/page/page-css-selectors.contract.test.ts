@@ -85,9 +85,45 @@ describe("page CSS selector contract e2e", () => {
       expect(await page.$$eval(`css=span,div`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("SPAN,DIV");
       expect(await page.$$eval(`css=div,span`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("SPAN,DIV");
       expect(await page.$$eval(`css=span div, div`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("DIV");
+      expect(await page.$$eval(`*css=section >> css=div,span`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("SECTION");
+      expect(await page.$$eval(`css=section >> *css=div >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("DIV");
+      expect(await page.$$eval(`css=section >> *css=div,span >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("SPAN,DIV");
+      expect(await page.$$eval(`css=section >> *css=div,span >> css=y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("SPAN,DIV");
       expect(await page.$$eval(`css=span,div >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X,Y");
       expect(await page.$$eval(`css=div >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X,Y");
       expect(await page.$$eval(`css=section >> css=div,span >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X,Y");
+    });
+  });
+
+  it("returns multiple captures for the same node like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div><div><div><span></span></div></div></div>`);
+
+      expect(await page.$$eval(`*css=div >> span`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("DIV,DIV,DIV");
+    });
+  });
+
+  it("returns multiple captures when going up the hierarchy like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<section>Hello<ul><li></li><li></li></ul></section>`);
+
+      expect(await page.$$eval(`*css=li >> ../.. >> text=Hello`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("LI,LI");
+    });
+  });
+
+  it("supports comma separated selector lists in various positions like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<section><span><div><x></x><y></y></div></span></section>`);
+
+      expect(await page.$$eval(`css=span,div >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X,Y");
+      expect(await page.$$eval(`css=span,div >> css=x`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X");
+      expect(await page.$$eval(`css=div >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X,Y");
+      expect(await page.$$eval(`css=div >> css=x`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X");
+      expect(await page.$$eval(`css=section >> css=div >> css=x`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X");
+      expect(await page.$$eval(`css=section >> css=span >> css=div >> css=y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("Y");
+      expect(await page.$$eval(`css=section >> css=div >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X,Y");
+      expect(await page.$$eval(`css=section >> css=div,span >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X,Y");
+      expect(await page.$$eval(`css=section >> css=span >> css=x,y`, (elements) => elements.map((element) => element.nodeName).join(","))).toBe("X,Y");
     });
   });
 
@@ -193,6 +229,68 @@ describe("page CSS selector contract e2e", () => {
     });
   });
 
+  it("supports nth-child of notation with nested functions like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div>
+          <span>span1</span>
+          <span class=foo>span2<dd></dd></span>
+          <span class=foo>span3<dd class=marker></dd></span>
+          <span class=foo>span4<dd class=marker></dd></span>
+          <span class=foo>span5<dd></dd></span>
+          <span>span6</span>
+        </div>
+      `);
+
+      expect(await page.$$eval(`css=span:nth-child(1)`, (elements) => elements.map((element) => element.textContent))).toEqual(["span1"]);
+      expect(await page.$$eval(`css=span:nth-child(1 of .foo)`, (elements) => elements.map((element) => element.textContent))).toEqual(["span2"]);
+      expect(await page.$$eval(`css=span:nth-child(1 of .foo:has(dd.marker))`, (elements) => elements.map((element) => element.textContent))).toEqual(["span3"]);
+      expect(await page.$$eval(`css=span:nth-last-child(1 of .foo:has(dd.marker))`, (elements) => elements.map((element) => element.textContent))).toEqual(["span4"]);
+      expect(await page.$$eval(`css=span:nth-last-child(1 of .foo)`, (elements) => elements.map((element) => element.textContent))).toEqual(["span5"]);
+      expect(await page.$$eval(`css=span:nth-last-child(  1  )`, (elements) => elements.map((element) => element.textContent))).toEqual(["span6"]);
+      expect(await page.$$eval(`css=span:nth-child(1 of .foo:nth-child(3))`, (elements) => elements.map((element) => element.textContent))).toEqual(["span3"]);
+      expect(await page.$$eval(`css=span:nth-child(1 of .foo:nth-child(6))`, (elements) => elements.map((element) => element.textContent))).toEqual([]);
+    });
+  });
+
+  it("supports :has selector lists like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<section><span></span><div></div></section><section><br></section>`);
+
+      expect(await page.$$eval(`section:has(span, div)`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`section:has(br)`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`section:has(span, br)`, (elements) => elements.length)).toBe(2);
+      expect(await page.$$eval(`section:has(span, br, div)`, (elements) => elements.length)).toBe(2);
+    });
+  });
+
+  it("supports :scope and class locator filtering like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div class="apple"></div>
+        <div class="apple selected"></div>
+      `);
+
+      expect(await page.locator(".apple").locator(":scope.selected").count()).toBe(1);
+    });
+  });
+
+  it("uses light DOM structure for child combinator with slotted content like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <my-button>
+          <template shadowrootmode="open">
+            <button><slot></slot></button>
+          </template>
+          <div class="content">Foo</div>
+        </my-button>
+      `);
+
+      expect(await page.$eval(`my-button > div`, (element) => element.className)).toBe("content");
+      expect(await page.$eval(`my-button > .content`, (element) => element.textContent)).toBe("Foo");
+    });
+  });
+
   it("supports sibling combinators and :scope like Playwright", async () => {
     await withPage(async (page) => {
       await page.setContent(`
@@ -210,6 +308,13 @@ describe("page CSS selector contract e2e", () => {
       expect(await page.$$eval(`#div3 >> ~ *`, (elements) => elements.map((element) => element.id))).toEqual(["div4", "div5", "div6"]);
       expect(await page.$$eval(`#div3 >> #div1 ~ :scope`, (elements) => elements.map((element) => element.id))).toEqual(["div3"]);
       expect(await page.$$eval(`#div3 >> #div4 ~ :scope`, (elements) => elements.map((element) => element.id))).toEqual([]);
+      expect(await page.$$eval(`css=#div1 ~ div ~ #div6`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`css=#div1 ~ div ~ div`, (elements) => elements.length)).toBe(4);
+      expect(await page.$$eval(`css=#div3 ~ div ~ div`, (elements) => elements.length)).toBe(2);
+      expect(await page.$$eval(`css=#div4 ~ div ~ div`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`css=#div5 ~ div ~ div`, (elements) => elements.length)).toBe(0);
+      expect(await page.$$eval(`css=#div3 ~ #div2 ~ #div6`, (elements) => elements.length)).toBe(0);
+      expect(await page.$$eval(`css=#div3 ~ #div4 ~ #div5`, (elements) => elements.length)).toBe(1);
     });
   });
 
@@ -232,6 +337,19 @@ describe("page CSS selector contract e2e", () => {
       expect(await page.$$eval(`#div1 >> + *`, (elements) => elements.map((element) => element.id))).toEqual(["div2"]);
       expect(await page.$$eval(`#div3 >> div + :scope`, (elements) => elements.map((element) => element.id))).toEqual(["div3"]);
       expect(await page.$$eval(`#div3 >> #div1 + :scope`, (elements) => elements.map((element) => element.id))).toEqual([]);
+      expect(await page.$$eval(`css=#div1 ~ div + #div6`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`css=#div1 ~ div + div`, (elements) => elements.length)).toBe(4);
+      expect(await page.$$eval(`css=#div3 + div + div`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`css=#div4 ~ #div5 + div`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`css=#div5 + div + div`, (elements) => elements.length)).toBe(0);
+      expect(await page.$$eval(`css=#div3 ~ #div2 + #div6`, (elements) => elements.length)).toBe(0);
+      expect(await page.$$eval(`css=#div3 + #div4 + #div5`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`css=div + #div1`, (elements) => elements.length)).toBe(0);
+      expect(await page.$$eval(`css=section > div + div ~ div`, (elements) => elements.length)).toBe(4);
+      expect(await page.$$eval(`css=section > div + #div4 ~ div`, (elements) => elements.length)).toBe(2);
+      expect(await page.$$eval(`css=section:has(:scope > div + #div2)`, (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval(`css=section:has(:scope > div + #div1)`, (elements) => elements.length)).toBe(0);
+      expect(await page.$eval(`css=div:has(:scope + #div5)`, (element) => element.id)).toBe("div4");
     });
   });
 
