@@ -893,6 +893,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private emulatedMedia: EmulateMediaOptions = {};
   private readonly exposedBindings = new Map<string, ExposedBindingEntry>();
   private readonly locatorHandlers: LocatorHandlerEntry[] = [];
+  private locatorHandlerRunningCounter = 0;
   private pickLocatorState: PickLocatorState | null = null;
   private bindingPumpStarted = false;
   private fileChooserBridgeInstalled = false;
@@ -2674,11 +2675,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.browserContext?.detachPage(this);
   }
 
-  async maybeRunLocatorHandlers(locator: Locator, options?: { force?: boolean; timeout?: number }): Promise<void> {
-    if (options?.force) {
-      return;
+  async maybeRunLocatorHandlers(
+    locator: Locator,
+    options?: { force?: boolean; timeout?: number; __roxyBeforeActionRetry?: () => Promise<boolean | void> }
+  ): Promise<boolean> {
+    if (options?.force || this.locatorHandlerRunningCounter > 0) {
+      if (this.locatorHandlerRunningCounter > 0) {
+        delete options?.__roxyBeforeActionRetry;
+      }
+      return false;
     }
 
+    let didRunHandler = false;
     for (const entry of [...this.locatorHandlers]) {
       if (entry.running) {
         continue;
@@ -2692,6 +2700,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         continue;
       }
 
+      didRunHandler = true;
       entry.running = true;
       const timeout = options?.timeout ?? this.defaultTimeoutMs;
       let timedOut = false;
@@ -2702,6 +2711,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         shouldRemove = entry.remainingTimes <= 0;
       }
       try {
+        this.locatorHandlerRunningCounter++;
         await runWithTimeout(handlerPromise, timeout, () => {
           timedOut = true;
         });
@@ -2712,6 +2722,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           await this.waitForLocatorToHide(entry.locator, timeout);
         }
       } finally {
+        this.locatorHandlerRunningCounter--;
         if (timedOut) {
           void handlerPromise
             .catch(() => {})
@@ -2730,6 +2741,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
 
     await this.maybeResolvePickLocator(locator);
+    return didRunHandler;
   }
 
   frameById(id: string): RoxyFrame | null {
@@ -4078,7 +4090,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.humanController,
       chain,
       async (locator, options) => {
-        await this.maybeRunLocatorHandlers(locator, options);
+        return await this.maybeRunLocatorHandlers(locator, options);
       },
       this.humanDefaults,
       this
@@ -4102,7 +4114,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.humanController,
       chain,
       async (locator, options) => {
-        await this.maybeRunLocatorHandlers(locator, options);
+        return await this.maybeRunLocatorHandlers(locator, options);
       },
       this.humanDefaults,
       this,

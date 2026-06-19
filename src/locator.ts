@@ -61,6 +61,7 @@ const DEFAULT_LOCATOR_HUMAN_DEFAULTS = resolveHumanizationOptions({ enabled: fal
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 
 type ActionOptionsLike = { force?: boolean; timeout?: number } | undefined;
+type PointerActionOptions = (ClickOptions | HoverOptions) | undefined;
 type LocatorOptions = {
   has?: Locator;
   hasNot?: Locator;
@@ -202,7 +203,7 @@ export class RoxyLocator implements Locator {
     private readonly adapter: ProtocolLocatorAdapter,
     private readonly humanController: HumanController,
     selectorChain: LocatorSelector[] | null = null,
-    private readonly beforeAction?: (locator: RoxyLocator, options?: ActionOptionsLike) => Promise<void>,
+    private readonly beforeAction?: (locator: RoxyLocator, options?: ActionOptionsLike) => Promise<boolean | void>,
     private readonly humanDefaults: ResolvedHumanizationOptions = DEFAULT_LOCATOR_HUMAN_DEFAULTS,
     private readonly frameResolver?: ElementHandleFrameResolver,
     private readonly ownerPage?: Page
@@ -509,13 +510,15 @@ export class RoxyLocator implements Locator {
   }
 
   async dblclick(options?: ClickOptions): Promise<void> {
-    await this.beforeAction?.(this, options);
-    await this.adapter.dblclick(options);
+    const actionOptions = this.withBeforeActionRetry(options);
+    await this.beforeAction?.(this, actionOptions);
+    await this.adapter.dblclick(actionOptions);
   }
 
   async check(options?: ClickOptions): Promise<void> {
-    await this.beforeAction?.(this, options);
-    await this.adapter.check(options);
+    const actionOptions = this.withBeforeActionRetry(options);
+    await this.beforeAction?.(this, actionOptions);
+    await this.adapter.check(actionOptions);
   }
 
   async clear(options?: LocatorClearOptions): Promise<void> {
@@ -523,13 +526,15 @@ export class RoxyLocator implements Locator {
   }
 
   async click(options?: ClickOptions): Promise<void> {
-    await this.beforeAction?.(this, options);
-    await this.humanController.click(this.adapter, options);
+    const actionOptions = this.withBeforeActionRetry(options);
+    await this.beforeAction?.(this, actionOptions);
+    await this.humanController.click(this.adapter, actionOptions);
   }
 
   async hover(options?: HoverOptions): Promise<void> {
-    await this.beforeAction?.(this, options);
-    await this.humanController.hover(this.adapter, options);
+    const actionOptions = this.withBeforeActionRetry(options);
+    await this.beforeAction?.(this, actionOptions);
+    await this.humanController.hover(this.adapter, actionOptions);
   }
 
   async fill(value: string, options?: FillOptions): Promise<void> {
@@ -724,8 +729,9 @@ export class RoxyLocator implements Locator {
   }
 
   async uncheck(options?: ClickOptions): Promise<void> {
-    await this.beforeAction?.(this, options);
-    await this.adapter.uncheck(options);
+    const actionOptions = this.withBeforeActionRetry(options);
+    await this.beforeAction?.(this, actionOptions);
+    await this.adapter.uncheck(actionOptions);
   }
 
   async selectOption(
@@ -883,6 +889,18 @@ export class RoxyLocator implements Locator {
       case "getByTitle":
         return [...current, createTitleLocatorSelector(value, options as GetByTitleOptions | undefined)];
     }
+  }
+
+  private withBeforeActionRetry<TOptions extends PointerActionOptions>(options: TOptions): TOptions {
+    if (!this.beforeAction) {
+      return options;
+    }
+    return {
+      ...(options ?? {}),
+      __roxyBeforeActionRetry: async () => {
+        return await this.beforeAction?.(this, options);
+      }
+    } as unknown as TOptions;
   }
 }
 

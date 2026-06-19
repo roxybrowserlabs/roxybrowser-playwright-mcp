@@ -578,12 +578,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
 
   const isVisible = (element: Element): boolean => {
-    const style = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     return (
-      style.visibility !== "hidden" &&
-      style.display !== "none" &&
-      Number.parseFloat(style.opacity || "1") !== 0 &&
+      hasVisibleStyle(element) &&
       rect.width > 0 &&
       rect.height > 0
     );
@@ -841,7 +838,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
   const isInsideScope = (scope: Node, element: Element | null): boolean => {
     while (element) {
-      if (element === scope || scope.contains(element)) {
+      if (element === scope) {
         return true;
       }
       element = parentElementOrShadowHost(element) ?? null;

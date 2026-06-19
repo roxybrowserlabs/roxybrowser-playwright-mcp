@@ -156,6 +156,7 @@ export interface HoverOptions extends SelectorStrictOptions, HumanizedOption {
   modifiers?: KeyboardModifier[];
   trial?: boolean;
   position?: Point;
+  __roxyBeforeActionRetry?: () => Promise<boolean | void>;
 }
 
 export interface ClickOptions extends HoverOptions {

@@ -713,12 +713,9 @@ function locatorOperation(payload: LocatorPayload) {
   };
 
   const isVisible = (element: HTMLElement): boolean => {
-    const style = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     return (
-      style.visibility !== "hidden" &&
-      style.display !== "none" &&
-      Number.parseFloat(style.opacity || "1") !== 0 &&
+      hasVisibleStyle(element) &&
       rect.width > 0 &&
       rect.height > 0
     );
@@ -4131,15 +4128,29 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async clickLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
-    await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
-      const actionPoint = await this.resolveActionPoint(locator, options, true);
-      const button = options?.button ?? "left";
-      const clickCount = options?.clickCount ?? 1;
+    await this.bringToFront();
+    const actionPoint = await this.resolveActionPoint(locator, options, true);
+    const button = options?.button ?? "left";
+    const clickCount = options?.clickCount ?? 1;
 
+    await this.enqueuePointerAction(async () => {
       await this.withPointerActionModifiers(options?.modifiers, async () => {
         await this.dispatchMouseMove(actionPoint);
-        await this.resolveActionPoint(locator, options, true);
+      });
+    });
+
+    if (await options?.__roxyBeforeActionRetry?.()) {
+      await this.enqueuePointerAction(async () => {
+        await this.withPointerActionModifiers(options?.modifiers, async () => {
+          await this.dispatchMouseMove({ x: 0, y: 0 });
+          await this.dispatchMouseMove(actionPoint);
+        });
+      });
+    }
+    await this.resolveActionPoint(locator, options, true);
+
+    await this.enqueuePointerAction(async () => {
+      await this.withPointerActionModifiers(options?.modifiers, async () => {
         void this.showScreencastAction("click", actionPoint).catch(() => {});
         for (let index = 0; index < clickCount; index += 1) {
           await this.dispatchMouseDown(actionPoint, button, index + 1);
@@ -4151,13 +4162,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async hoverLocator(locator: CdpLocatorState, options?: HoverOptions): Promise<void> {
+    await this.bringToFront();
+    const actionPoint = await this.resolveActionPoint(locator, options);
+
     await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
-      const actionPoint = await this.resolveActionPoint(locator, options);
       await this.withPointerActionModifiers(options?.modifiers, async () => {
         await this.dispatchMouseMove(actionPoint);
       });
     });
+    if (await options?.__roxyBeforeActionRetry?.()) {
+      await this.enqueuePointerAction(async () => {
+        await this.withPointerActionModifiers(options?.modifiers, async () => {
+          await this.dispatchMouseMove({ x: 0, y: 0 });
+          await this.dispatchMouseMove(actionPoint);
+        });
+      });
+    }
   }
 
   async fillLocator(
@@ -4621,6 +4641,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         if (!shouldRetryActionPointError(error)) {
           throw error;
         }
+        await options?.__roxyBeforeActionRetry?.();
         await delay(50);
       }
     }
@@ -4893,15 +4914,29 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
-    await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
-      const actionPoint = await this.resolveActionPointReference(reference, options, true);
-      const button = options?.button ?? "left";
-      const clickCount = options?.clickCount ?? 1;
+    await this.bringToFront();
+    const actionPoint = await this.resolveActionPointReference(reference, options, true);
+    const button = options?.button ?? "left";
+    const clickCount = options?.clickCount ?? 1;
 
+    await this.enqueuePointerAction(async () => {
       await this.withPointerActionModifiers(options?.modifiers, async () => {
         await this.dispatchMouseMove(actionPoint);
-        await this.resolveActionPointReference(reference, options, true);
+      });
+    });
+
+    if (await options?.__roxyBeforeActionRetry?.()) {
+      await this.enqueuePointerAction(async () => {
+        await this.withPointerActionModifiers(options?.modifiers, async () => {
+          await this.dispatchMouseMove({ x: 0, y: 0 });
+          await this.dispatchMouseMove(actionPoint);
+        });
+      });
+    }
+    await this.resolveActionPointReference(reference, options, true);
+
+    await this.enqueuePointerAction(async () => {
+      await this.withPointerActionModifiers(options?.modifiers, async () => {
         void this.showScreencastAction("click", actionPoint).catch(() => {});
         for (let index = 0; index < clickCount; index += 1) {
           await this.dispatchMouseDown(actionPoint, button, index + 1);
@@ -4942,13 +4977,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
+    await this.bringToFront();
+    const actionPoint = await this.resolveActionPointReference(reference, options);
+
     await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
-      const actionPoint = await this.resolveActionPointReference(reference, options);
       await this.withPointerActionModifiers(options?.modifiers, async () => {
         await this.dispatchMouseMove(actionPoint);
       });
     });
+    if (await options?.__roxyBeforeActionRetry?.()) {
+      await this.enqueuePointerAction(async () => {
+        await this.withPointerActionModifiers(options?.modifiers, async () => {
+          await this.dispatchMouseMove({ x: 0, y: 0 });
+          await this.dispatchMouseMove(actionPoint);
+        });
+      });
+    }
   }
 
   async fillReference(
