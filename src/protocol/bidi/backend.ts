@@ -87,6 +87,7 @@ import { spawn } from "node:child_process";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { terminateProcessTree } from "../../processCleanup.js";
 import type { BidiProtocolClient } from "./client.js";
 import { getBidiClientFactory } from "./client.js";
 
@@ -3992,6 +3993,7 @@ async function launchFirefoxBidi(options: BrowserConnectOptions): Promise<Firefo
   const port = options.port ?? await pickFreePort();
   const args = buildFirefoxLaunchArgs(options, userDataDir, port);
   const proc = spawn(executable, args, {
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"]
   });
 
@@ -4015,33 +4017,7 @@ async function cleanupFirefoxProcess(
   userDataDir: string | undefined
 ): Promise<void> {
   if (proc) {
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
-      };
-
-      proc.once("exit", finish);
-      proc.once("close", finish);
-      proc.once("error", finish);
-      try {
-        proc.kill("SIGTERM");
-      } catch {
-        finish();
-        return;
-      }
-      setTimeout(() => {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // The process may have failed to spawn or already exited.
-        }
-        finish();
-      }, CLEANUP_FIREFOX_PROCESS_TIMEOUT_MS);
-    });
+    await terminateProcessTree(proc, { timeoutMs: CLEANUP_FIREFOX_PROCESS_TIMEOUT_MS });
   }
 
   if (userDataDir) {

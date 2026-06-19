@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,6 +56,7 @@ import {
   RENDER_SCREencast_OVERLAYS_SOURCE
 } from "../../screencastOverlay.js";
 import { RENDER_SCREENCAST_ACTIONS_SOURCE } from "../../screencastActions.js";
+import { terminateProcessTree } from "../../processCleanup.js";
 import type {
   AddScriptTagOptions,
   AddStyleTagOptions,
@@ -399,15 +400,8 @@ interface CdpConnectionDetails {
   browserWsEndpoint: string;
   host: string;
   port: number;
-  spawnedProcess?: BrowserProcess;
+  spawnedProcess?: ChildProcess;
   userDataDir?: string;
-}
-
-interface BrowserProcess {
-  kill(signal?: string): boolean;
-  once(event: string, listener: (...args: unknown[]) => void): BrowserProcess;
-  stdout?: StreamLike;
-  stderr?: StreamLike;
 }
 
 interface StreamLike {
@@ -7698,8 +7692,9 @@ async function launchBrowser(options: LaunchOptions): Promise<CdpConnectionDetai
 
   for (const executable of executableCandidates) {
     const processRef = spawn(executable, args, {
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"]
-    }) as BrowserProcess;
+    });
 
     try {
       const browserWsEndpoint = await waitForDebuggerEndpoint(processRef, 15_000);
@@ -7711,7 +7706,7 @@ async function launchBrowser(options: LaunchOptions): Promise<CdpConnectionDetai
       };
     } catch (error) {
       lastError = error;
-      processRef.kill("SIGKILL");
+      await terminateProcessTree(processRef, { timeoutMs: 500 });
     }
   }
 
@@ -7731,22 +7726,7 @@ async function cleanupConnection(connection: CdpConnectionDetails): Promise<void
   const { spawnedProcess, userDataDir } = connection;
 
   if (spawnedProcess) {
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
-      };
-
-      spawnedProcess.once("exit", finish);
-      spawnedProcess.kill("SIGTERM");
-      setTimeout(() => {
-        spawnedProcess.kill("SIGKILL");
-        finish();
-      }, 3_000);
-    });
+    await terminateProcessTree(spawnedProcess, { timeoutMs: 3_000 });
   }
 
   if (userDataDir) {
@@ -7758,7 +7738,7 @@ async function cleanupConnection(connection: CdpConnectionDetails): Promise<void
 }
 
 async function waitForDebuggerEndpoint(
-  processRef: BrowserProcess,
+  processRef: ChildProcess,
   timeoutMs: number
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {

@@ -24,7 +24,9 @@ const ROXYBROWSER_PROFILE_NAME = process.env.ROXYBROWSER_PROFILE_NAME ?? "RoxyBr
 const ROXYBROWSER_PROFILE_MATCH = process.env.ROXYBROWSER_PROFILE_MATCH ?? "firefox";
 const ROXYBROWSER_CORE_VERSION = process.env.ROXYBROWSER_CORE_VERSION ?? "146";
 const ROXYBROWSER_DEBUG = process.env.ROXYBROWSER_DEBUG === "1";
-const KEEP_BIDI_BROWSER_OPEN = process.env.ROXY_BIDI_KEEP_BROWSER_OPEN === "1";
+const KEEP_BIDI_BROWSER_OPEN =
+  process.env.ROXY_BIDI_KEEP_BROWSER_OPEN === "1" && Boolean(BIDI_WS_ENDPOINT);
+const TEST_CLOSE_TIMEOUT_MS = 5_000;
 
 let usesExternalBidiEndpoint = false;
 let externalBidiBrowser: Browser | undefined;
@@ -130,14 +132,14 @@ export async function withBidiPage<T>(
       try {
         return await run(page, context, browser);
       } finally {
-        await page.close();
+        await closeForTest("page.close", () => page.close()).catch(() => {});
       }
     } finally {
-      await context.close();
+      await closeForTest("context.close", () => context.close()).catch(() => {});
     }
   } finally {
     if (!keepBrowserOpen) {
-      await browser.close().catch(() => {});
+      await closeForTest("browser.close", () => browser.close()).catch(() => {});
       if (usesExternalBidiEndpoint) {
         externalBidiBrowser = undefined;
         externalBidiBrowserKey = undefined;
@@ -167,7 +169,7 @@ async function closeExternalBidiBrowser(): Promise<void> {
     return;
   }
 
-  await browser.close().catch(() => {});
+  await closeForTest("browser.close", () => browser.close()).catch(() => {});
   await delay(250);
 }
 
@@ -204,4 +206,22 @@ export async function cleanupExternalBidiTestState(): Promise<void> {
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {
   await cleanupLocalTestBrowserProcesses();
+}
+
+async function closeForTest(label: string, close: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      close(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${TEST_CLOSE_TIMEOUT_MS}ms.`));
+        }, TEST_CLOSE_TIMEOUT_MS);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
