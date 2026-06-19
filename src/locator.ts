@@ -58,6 +58,16 @@ const ENTER_FRAME_SELECTOR: LocatorSelector = {
   strategy: "control",
   value: "enter-frame"
 };
+const FIRST_SELECTOR: LocatorSelector = {
+  strategy: "control",
+  value: "pick",
+  pick: { kind: "first" }
+};
+const LAST_SELECTOR: LocatorSelector = {
+  strategy: "control",
+  value: "pick",
+  pick: { kind: "last" }
+};
 const DEFAULT_LOCATOR_HUMAN_DEFAULTS = resolveHumanizationOptions({ enabled: false });
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 
@@ -453,15 +463,25 @@ export class RoxyLocator implements Locator {
   }
 
   first(): Locator {
-    return this.cloneWith(this.adapter.first());
+    return this.cloneWith(this.adapter.first(), [...(this.selectorChain ?? []), FIRST_SELECTOR]);
   }
 
   last(): Locator {
-    return this.cloneWith(this.adapter.last());
+    return this.cloneWith(this.adapter.last(), [...(this.selectorChain ?? []), LAST_SELECTOR]);
   }
 
   nth(index: number): Locator {
-    return this.cloneWith(this.adapter.nth(index));
+    if (this.selectorChain?.some((selector) => selector.capture)) {
+      throw new Error("Can't query n-th element");
+    }
+    return this.cloneWith(this.adapter.nth(index), [
+      ...(this.selectorChain ?? []),
+      {
+        strategy: "control",
+        value: "pick",
+        pick: { kind: "nth", index }
+      }
+    ]);
   }
 
   filter(options?: LocatorFilterOptions): Locator {
@@ -1203,6 +1223,12 @@ function formatLocatorSelector(selector: LocatorSelector): string | null {
   if (selector.strategy === "control") {
     if (selector.value === "enter-frame") {
       return "contentFrame()";
+    }
+    if (selector.value === "pick" && selector.pick) {
+      if (selector.pick.kind === "nth") {
+        return `nth(${selector.pick.index})`;
+      }
+      return `${selector.pick.kind}()`;
     }
     if (selector.value === "chain" && selector.hasChain) {
       return `locator(${formatLocatorChain(selector.hasChain)})`;

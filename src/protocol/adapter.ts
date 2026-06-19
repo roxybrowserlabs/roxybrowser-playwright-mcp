@@ -62,6 +62,7 @@ export interface LocatorSelector {
   nameRegexFlags?: string;
   labelIsRegex?: boolean;
   labelRegexFlags?: string;
+  pick?: LocatorPick;
   visible?: boolean;
 }
 
@@ -69,6 +70,14 @@ export type LocatorPick =
   | { kind: "first" }
   | { kind: "last" }
   | { kind: "nth"; index: number };
+
+export function locatorSelectorForPick(pick: LocatorPick): LocatorSelector {
+  return {
+    strategy: "control",
+    value: "pick",
+    pick
+  };
+}
 
 export interface ProtocolElementHandleReference {
   chain: LocatorSelector[];

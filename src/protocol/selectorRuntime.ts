@@ -1031,6 +1031,19 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     const pickedElement = elements[pick.index];
     return pickedElement ? [pickedElement] : [];
   };
+  const applyMatchPick = (matches: SelectorMatch[], pick?: LocatorPick): SelectorMatch[] => {
+    if (!pick) {
+      return matches;
+    }
+    if (pick.kind === "first") {
+      return matches.slice(0, 1);
+    }
+    if (pick.kind === "last") {
+      return matches.slice(-1);
+    }
+    const pickedMatch = matches[pick.index];
+    return pickedMatch ? [pickedMatch] : [];
+  };
 
   const compareElementsInDomOrder = (left: Node, right: Node): number => {
     if (left === right) {
@@ -1085,6 +1098,13 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           }
         }
         current = next;
+        continue;
+      }
+      if (selector.strategy === "control" && selector.value === "pick" && selector.pick) {
+        if (selector.pick.kind === "nth" && current.some((match) => match.capture)) {
+          throw new Error("Can't query n-th element");
+        }
+        current = applyMatchPick(current, selector.pick);
         continue;
       }
 

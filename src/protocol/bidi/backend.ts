@@ -81,6 +81,7 @@ import type {
   ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "../adapter.js";
+import { locatorSelectorForPick } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
 import { looksLikeFunctionExpression } from "../evaluate.js";
 import { spawn } from "node:child_process";
@@ -3065,9 +3066,13 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   ) {}
 
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
+    const { pick: _pick, ...stateWithoutPick } = this.state;
+    const chain = this.state.pick
+      ? [...this.state.chain, locatorSelectorForPick(this.state.pick), selector]
+      : [...this.state.chain, selector];
     return new BidiLocatorAdapter(this.page, {
-      ...this.state,
-      chain: [...this.state.chain, selector]
+      ...stateWithoutPick,
+      chain
     });
   }
 

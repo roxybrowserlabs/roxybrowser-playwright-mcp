@@ -107,6 +107,7 @@ import type {
   ProtocolLocatorAdapter,
   ProtocolPageAdapter
 } from "../adapter.js";
+import { locatorSelectorForPick } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
 import { looksLikeFunctionExpression } from "../evaluate.js";
 import {
@@ -6747,8 +6748,11 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
   ) {}
 
   locator(selector: LocatorSelector): ProtocolLocatorAdapter {
+    const chain = this.state.pick
+      ? [...this.state.chain, locatorSelectorForPick(this.state.pick), selector]
+      : [...this.state.chain, selector];
     return new CdpLocatorAdapter(this.page, {
-      chain: [...this.state.chain, selector],
+      chain,
       ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {})
     });
   }

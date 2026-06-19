@@ -151,6 +151,27 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
     const body = engineMatch[2]!;
     switch (engine) {
       case "internal:control":
+        if (body.trim() === "first") {
+          return withCapture({
+            strategy: "control",
+            value: "pick",
+            pick: { kind: "first" }
+          });
+        }
+        if (body.trim() === "last") {
+          return withCapture({
+            strategy: "control",
+            value: "pick",
+            pick: { kind: "last" }
+          });
+        }
+        if (body.trim().startsWith("nth=")) {
+          return withCapture({
+            strategy: "control",
+            value: "pick",
+            pick: { kind: "nth", index: Number(body.trim().slice("nth=".length)) }
+          });
+        }
         return withCapture({
           strategy: "control",
           value: body.trim()

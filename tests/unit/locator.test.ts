@@ -75,6 +75,18 @@ describe("RoxyLocator", () => {
     expect(nested).toBeInstanceOf(RoxyLocator);
   });
 
+  it("throws on capture with nth like Playwright", () => {
+    const locator = new RoxyLocator(createLocatorAdapterStub(), {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    });
+
+    expect(() => locator.locator("*css=div >> p").nth(1)).toThrow("Can't query n-th element");
+  });
+
   it("matches Playwright locator description semantics", () => {
     const rootAdapter = createLocatorAdapterStub();
     rootAdapter.locator = vi.fn(() => rootAdapter);
