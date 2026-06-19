@@ -1,5 +1,11 @@
 import { afterAll, afterEach } from "vitest";
-import { cleanupBidiTestStateAfterTest, cleanupExternalBidiTestState } from "./bidi.js";
+import {
+  cleanupBidiTestStateAfterTest,
+  cleanupExternalBidiTestState,
+  installBidiTestCleanupHooks
+} from "./bidi.js";
+
+installBidiTestCleanupHooks();
 
 afterEach(async () => {
   await cleanupBidiTestStateAfterTest();

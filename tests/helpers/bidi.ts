@@ -29,6 +29,7 @@ const KEEP_BIDI_BROWSER_OPEN =
   process.env.ROXY_BIDI_KEEP_BROWSER_OPEN === "1" && Boolean(BIDI_WS_ENDPOINT);
 const REUSE_EXTERNAL_BIDI_BROWSER = process.env.ROXY_BIDI_REUSE_BROWSER === "1";
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
+const SIGNAL_EXIT_GRACE_MS = Number(process.env.ROXY_TEST_BROWSER_SIGNAL_EXIT_GRACE_MS ?? 20_000);
 
 let usesExternalBidiEndpoint = false;
 let externalBidiBrowser: Browser | undefined;
@@ -221,6 +222,62 @@ export async function cleanupBidiTestStateAfterTest(): Promise<void> {
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {
   await cleanupLocalTestBrowserProcesses();
+}
+
+export function installBidiTestCleanupHooks(): void {
+  const state = globalThis as typeof globalThis & {
+    __roxyBidiTestCleanupHooksInstalled?: boolean;
+  };
+  if (state.__roxyBidiTestCleanupHooksInstalled) {
+    return;
+  }
+  state.__roxyBidiTestCleanupHooksInstalled = true;
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      const exitCode = signal === "SIGINT" ? 130 : 143;
+      const fallback = setTimeout(() => {
+        process.exit(exitCode);
+      }, SIGNAL_EXIT_GRACE_MS);
+
+      void cleanupExternalBidiTestState()
+        .catch(() => {})
+        .finally(() => {
+          clearTimeout(fallback);
+          process.exit(exitCode);
+        });
+    });
+  }
+
+  process.once("uncaughtException", (error) => {
+    const fallback = setTimeout(() => {
+      throw error;
+    }, SIGNAL_EXIT_GRACE_MS);
+
+    void cleanupExternalBidiTestState()
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(fallback);
+        setTimeout(() => {
+          throw error;
+        }, 0);
+      });
+  });
+
+  process.once("unhandledRejection", (reason) => {
+    const fallback = setTimeout(() => {
+      throw reason;
+    }, SIGNAL_EXIT_GRACE_MS);
+
+    void cleanupExternalBidiTestState()
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(fallback);
+        setTimeout(() => {
+          throw reason;
+        }, 0);
+      });
+  });
 }
 
 async function closeForTest(label: string, close: () => Promise<void>): Promise<void> {

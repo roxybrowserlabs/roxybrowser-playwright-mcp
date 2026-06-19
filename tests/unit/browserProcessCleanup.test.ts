@@ -44,12 +44,16 @@ describe("browser process cleanup", () => {
     await cleanup;
 
     expect(killSpy).toHaveBeenCalledWith(101, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(-101, "SIGTERM");
     expect(killSpy).toHaveBeenCalledWith(102, "SIGTERM");
     expect(killSpy).toHaveBeenCalledWith(301, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(-301, "SIGTERM");
     expect(killSpy).toHaveBeenCalledWith(302, "SIGTERM");
     expect(killSpy).toHaveBeenCalledWith(101, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(-101, "SIGKILL");
     expect(killSpy).toHaveBeenCalledWith(102, "SIGKILL");
     expect(killSpy).toHaveBeenCalledWith(301, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(-301, "SIGKILL");
     expect(killSpy).toHaveBeenCalledWith(302, "SIGKILL");
     expect(killSpy).not.toHaveBeenCalledWith(201, expect.anything());
   });
@@ -69,10 +73,33 @@ describe("browser process cleanup", () => {
     cleanupLocalTestBrowserProcessesSync();
 
     expect(killSpy).toHaveBeenCalledWith(701, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(-701, "SIGTERM");
     expect(killSpy).toHaveBeenCalledWith(702, "SIGTERM");
     expect(killSpy).toHaveBeenCalledWith(701, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(-701, "SIGKILL");
     expect(killSpy).toHaveBeenCalledWith(702, "SIGKILL");
     expect(killSpy).not.toHaveBeenCalledWith(801, expect.anything());
+  });
+
+  it("exposes the matched local test browser roots for group cleanup", async () => {
+    const { collectLocalTestBrowserProcessTree } = await import(
+      "../helpers/browser-process-cleanup.js"
+    );
+
+    expect(
+      collectLocalTestBrowserProcessTree(
+        [
+          "101 1 /Applications/Firefox.app/Contents/MacOS/firefox -profile /var/folders/roxybrowser-bidi-a --remote-debugging-port=1234",
+          "102 101 /Applications/Firefox.app/Contents/MacOS/plugin-container child",
+          "103 102 /Applications/Firefox.app/Contents/MacOS/plugin-container grandchild",
+          "201 1 /Applications/Firefox.app/Contents/MacOS/firefox -profile /Users/me/default"
+        ].join("\n"),
+        999
+      )
+    ).toEqual({
+      rootPids: [101],
+      pids: [101, 102, 103]
+    });
   });
 
   it("installs local test browser cleanup hooks once", async () => {

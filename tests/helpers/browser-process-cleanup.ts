@@ -17,6 +17,7 @@ const TEST_BROWSER_COMMAND_MARKERS = [
   "chromium",
   "chrome"
 ];
+const SIGNAL_EXIT_GRACE_MS = Number(process.env.ROXY_TEST_BROWSER_SIGNAL_EXIT_GRACE_MS ?? 20_000);
 
 export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
   if (process.platform === "win32") {
@@ -26,8 +27,8 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
   await cleanupRegisteredTestBrowserProcesses();
 
   const stdout = await execFileText("ps", ["-eo", "pid=,ppid=,command="]).catch(() => "");
-  const pids = collectLocalTestBrowserProcessTreePids(stdout, process.pid);
-  await terminateLocalTestBrowserProcessPids(pids);
+  const processTree = collectLocalTestBrowserProcessTree(stdout, process.pid);
+  await terminateLocalTestBrowserProcessPids(processTree);
 }
 
 export function cleanupLocalTestBrowserProcessesSync(): void {
@@ -41,12 +42,18 @@ export function cleanupLocalTestBrowserProcessesSync(): void {
     encoding: "utf8"
   });
   const stdout = typeof result?.stdout === "string" ? result.stdout : "";
-  const pids = collectLocalTestBrowserProcessTreePids(stdout, process.pid);
+  const processTree = collectLocalTestBrowserProcessTree(stdout, process.pid);
 
-  for (const pid of pids) {
+  for (const pid of processTree.rootPids) {
+    killProcessGroup(pid, "SIGTERM");
+  }
+  for (const pid of processTree.pids) {
     killPid(pid, "SIGTERM");
   }
-  for (const pid of pids) {
+  for (const pid of processTree.rootPids) {
+    killProcessGroup(pid, "SIGKILL");
+  }
+  for (const pid of processTree.pids) {
     killPid(pid, "SIGKILL");
   }
 }
@@ -67,22 +74,32 @@ export function installLocalTestBrowserProcessCleanupHooks(): void {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
       cleanupLocalTestBrowserProcessesSync();
-      process.exit(signal === "SIGINT" ? 130 : 143);
+      scheduleProcessExit(signal === "SIGINT" ? 130 : 143);
     });
   }
 
   process.once("uncaughtException", (error) => {
     cleanupLocalTestBrowserProcessesSync();
-    throw error;
+    scheduleThrow(error);
   });
 
   process.once("unhandledRejection", (reason) => {
     cleanupLocalTestBrowserProcessesSync();
-    throw reason;
+    scheduleThrow(reason);
   });
 }
 
-function collectLocalTestBrowserProcessTreePids(stdout: string, currentPid: number): number[] {
+export function collectLocalTestBrowserProcessTreePids(
+  stdout: string,
+  currentPid: number
+): number[] {
+  return collectLocalTestBrowserProcessTree(stdout, currentPid).pids;
+}
+
+export function collectLocalTestBrowserProcessTree(
+  stdout: string,
+  currentPid: number
+): LocalTestBrowserProcessTree {
   const processes = stdout
     .split("\n")
     .map((line) => {
@@ -107,16 +124,24 @@ function collectLocalTestBrowserProcessTreePids(stdout: string, currentPid: numb
     children.push(process);
     childrenByParentPid.set(process.ppid, children);
   }
-  const rootPids = processes
-    .filter(isLocalTestBrowserProcess)
-    .map((process) => process.pid);
+  const rootPids = processes.filter(isLocalTestBrowserProcess).map((process) => process.pid);
   const pids = [...collectProcessTreePids(rootPids, childrenByParentPid)]
     .filter((pid) => pid !== currentPid);
 
-  return pids;
+  return {
+    rootPids,
+    pids
+  };
 }
 
-async function terminateLocalTestBrowserProcessPids(pids: number[]): Promise<void> {
+async function terminateLocalTestBrowserProcessPids(
+  processTree: LocalTestBrowserProcessTree
+): Promise<void> {
+  const { rootPids, pids } = processTree;
+
+  for (const pid of rootPids) {
+    killProcessGroup(pid, "SIGTERM");
+  }
   for (const pid of pids) {
     killPid(pid, "SIGTERM");
   }
@@ -126,9 +151,17 @@ async function terminateLocalTestBrowserProcessPids(pids: number[]): Promise<voi
   }
 
   await delay(500);
+  for (const pid of rootPids) {
+    killProcessGroup(pid, "SIGKILL");
+  }
   for (const pid of pids) {
     killPid(pid, "SIGKILL");
   }
+}
+
+export interface LocalTestBrowserProcessTree {
+  rootPids: number[];
+  pids: number[];
 }
 
 interface ProcessInfo {
@@ -180,6 +213,18 @@ function killPid(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // The browser may not have its own process group, or it may already be gone.
+  }
+}
+
 function execFileText(file: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(file, args, (error, stdout) => {
@@ -190,4 +235,17 @@ function execFileText(file: string, args: string[]): Promise<string> {
       resolve(stdout);
     });
   });
+}
+
+function scheduleProcessExit(code: number): void {
+  process.exitCode = code;
+  setTimeout(() => {
+    process.exit(code);
+  }, SIGNAL_EXIT_GRACE_MS);
+}
+
+function scheduleThrow(reason: unknown): void {
+  setTimeout(() => {
+    throw reason;
+  }, SIGNAL_EXIT_GRACE_MS);
 }
