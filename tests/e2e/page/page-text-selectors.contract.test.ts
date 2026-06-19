@@ -107,4 +107,45 @@ describe("page text selector contract e2e", () => {
       expect(await page.$$(`text="lo \nwo"`)).toHaveLength(0);
     });
   });
+
+  it("supports CSS text pseudo selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div>yo</div><div>ya</div><div>\nHELLO   \n world  </div>`);
+
+      expect(await page.$eval(`:text("ya")`, (element) => element.outerHTML)).toBe("<div>ya</div>");
+      expect(await page.$eval(`:text-is("ya")`, (element) => element.outerHTML)).toBe("<div>ya</div>");
+      expect(await page.$eval(`:text("y")`, (element) => element.outerHTML)).toBe("<div>yo</div>");
+      expect(await page.$(`:text-is("Y")`)).toBe(null);
+      expect(await page.$eval(`:text("hello world")`, (element) => element.outerHTML)).toBe("<div>\nHELLO   \n world  </div>");
+      expect(await page.$eval(`:text-is("HELLO world")`, (element) => element.outerHTML)).toBe("<div>\nHELLO   \n world  </div>");
+      expect(await page.$eval(`:text("lo wo")`, (element) => element.outerHTML)).toBe("<div>\nHELLO   \n world  </div>");
+      expect(await page.$(`:text-is("lo wo")`)).toBe(null);
+      expect(await page.$eval(`:text-matches("^[ay]+$")`, (element) => element.outerHTML)).toBe("<div>ya</div>");
+      expect(await page.$eval(`:text-matches("y", "g")`, (element) => element.outerHTML)).toBe("<div>yo</div>");
+      expect(await page.$eval(`:text-matches("Y", "i")`, (element) => element.outerHTML)).toBe("<div>yo</div>");
+      expect(await page.$(`:text-matches("^y$")`)).toBe(null);
+
+      const error1 = await page.$(`:text("foo", "bar")`).catch((error) => error);
+      expect(error1.message).toContain(`"text" engine expects a single string`);
+      const error2 = await page.$(`:text(foo > bar)`).catch((error) => error);
+      expect(error2.message).toContain(`"text" engine expects a single string`);
+    });
+  });
+
+  it("supports empty string CSS text pseudo selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div></div><div>ya</div><div>\nHELLO   \n world  </div>`);
+
+      expect(await page.$eval(`div:text-is("")`, (element) => element.outerHTML)).toBe("<div></div>");
+      expect(await page.$$eval(`div:text-is("")`, (elements) => elements.length)).toBe(1);
+      expect(await page.$eval(`div:text("")`, (element) => element.outerHTML)).toBe("<div></div>");
+      expect(await page.$$eval(`div:text("")`, (elements) => elements.length)).toBe(3);
+      expect(await page.$eval(`div >> text=""`, (element) => element.outerHTML)).toBe("<div></div>");
+      expect(await page.$$eval(`div >> text=""`, (elements) => elements.length)).toBe(1);
+      expect(await page.$eval(`div >> text=/^$/`, (element) => element.outerHTML)).toBe("<div></div>");
+      expect(await page.$$eval(`div >> text=/^$/`, (elements) => elements.length)).toBe(1);
+      expect(await page.$eval(`div:text-matches("")`, (element) => element.outerHTML)).toBe("<div></div>");
+      expect(await page.$$eval(`div:text-matches("")`, (elements) => elements.length)).toBe(3);
+    });
+  });
 });

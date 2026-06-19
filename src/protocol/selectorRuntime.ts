@@ -123,11 +123,67 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
 
   const matchesTextSelector = (element: Element, selector: LocatorSelector): boolean => {
     if (selector.exact && !selector.isRegex) {
-      return immediateTextNodesForSelector(element).some((text) =>
+      const immediateTextNodes = immediateTextNodesForSelector(element);
+      if (!normalize(selector.value) && !immediateTextNodes.length) {
+        return true;
+      }
+      return immediateTextNodes.some((text) =>
         matchesPattern(text, selector, "value")
       );
     }
     return matchesPattern(textForSelector(element), selector, "value");
+  };
+
+  type CssTextPseudoName = "text" | "text-is" | "text-matches";
+  type CssTextPseudo = {
+    name: CssTextPseudoName;
+    args: string[];
+    start: number;
+    end: number;
+  };
+
+  const elementFullTextForSelector = (element: Element): string =>
+    textForSelector(element);
+
+  const elementImmediateTextForSelector = (element: Element): string[] =>
+    immediateTextNodesForSelector(element);
+
+  const elementMatchesCssTextPseudoSelf = (element: Element, pseudo: CssTextPseudo): boolean => {
+    if (shouldSkipTextSelectorElement(element)) {
+      return false;
+    }
+
+    if (pseudo.name === "text") {
+      if (pseudo.args.length !== 1) {
+        throw new Error(`"text" engine expects a single string`);
+      }
+      return normalize(elementFullTextForSelector(element))
+        .toLowerCase()
+        .includes(normalize(pseudo.args[0]).toLowerCase());
+    }
+
+    if (pseudo.name === "text-is") {
+      if (pseudo.args.length !== 1) {
+        throw new Error(`"text-is" engine expects a single string`);
+      }
+      const text = normalize(pseudo.args[0]);
+      const immediate = elementImmediateTextForSelector(element);
+      if (!text && !immediate.length) {
+        return true;
+      }
+      return immediate.some((candidate) => normalize(candidate) === text);
+    }
+
+    if (
+      pseudo.args.length === 0 ||
+      pseudo.args[0] === undefined ||
+      pseudo.args.length > 2 ||
+      (pseudo.args.length === 2 && typeof pseudo.args[1] !== "string")
+    ) {
+      throw new Error(`"text-matches" engine expects a regexp body and optional regexp flags`);
+    }
+    const regexp = new RegExp(pseudo.args[0], pseudo.args[1]);
+    return regexp.test(elementFullTextForSelector(element));
   };
 
   const isDocumentNode = (node: unknown): node is Document =>
@@ -303,6 +359,10 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
 
   const queryCss = (root: ParentNode | Element, selector: string, includeRoot: boolean): Element[] => {
     const normalizedSelector = normalizeHasScopeSelector(relativeCssSelector(selector));
+    const cssTextPseudoSelector = parseCssTextPseudoSelector(normalizedSelector);
+    if (cssTextPseudoSelector) {
+      return queryCssTextPseudo(root, cssTextPseudoSelector, includeRoot);
+    }
     const matches: Element[] = [];
 
     if (includeRoot && isElementNode(root) && root.matches(normalizedSelector)) {
@@ -351,6 +411,215 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
 
   const normalizeHasScopeSelector = (selector: string): string =>
     selector.replace(/:has\(\s*:scope\s*([>+~])/g, ":has($1");
+
+  const parseCssTextPseudoSelector = (selector: string): {
+    baseSelector: string;
+    pseudos: CssTextPseudo[];
+  } | null => {
+    const pseudos: CssTextPseudo[] = [];
+    let quote: string | undefined;
+    let escapeNext = false;
+    let bracketDepth = 0;
+    let replacement = "";
+    let cursor = 0;
+
+    for (let index = 0; index < selector.length; index += 1) {
+      const char = selector[index]!;
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (quote) {
+        if (char === "\\") {
+          escapeNext = true;
+        } else if (char === quote) {
+          quote = undefined;
+        }
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        quote = char;
+        continue;
+      }
+      if (char === "[") {
+        bracketDepth += 1;
+        continue;
+      }
+      if (char === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        continue;
+      }
+      if (bracketDepth !== 0 || char !== ":") {
+        continue;
+      }
+
+      const nameMatch = /^:(text-is|text-matches|text)\s*\(/.exec(selector.slice(index));
+      if (!nameMatch) {
+        continue;
+      }
+
+      const name = nameMatch[1] as CssTextPseudoName;
+      const argsStart = index + nameMatch[0].length;
+      const argsEnd = findCssFunctionEnd(selector, argsStart);
+      if (argsEnd === -1) {
+        continue;
+      }
+
+      const argsSource = selector.slice(argsStart, argsEnd);
+      const args = parseCssTextPseudoArgs(name, argsSource);
+      pseudos.push({
+        name,
+        args,
+        start: index,
+        end: argsEnd + 1
+      });
+      replacement += selector.slice(cursor, index);
+      cursor = argsEnd + 1;
+      index = argsEnd;
+    }
+
+    if (!pseudos.length) {
+      return null;
+    }
+
+    replacement += selector.slice(cursor);
+    const baseSelector = replacement.trim() || "*";
+    return {
+      baseSelector,
+      pseudos
+    };
+  };
+
+  const findCssFunctionEnd = (selector: string, argsStart: number): number => {
+    let quote: string | undefined;
+    let escapeNext = false;
+    let depth = 1;
+    for (let index = argsStart; index < selector.length; index += 1) {
+      const char = selector[index]!;
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (quote) {
+        if (char === "\\") {
+          escapeNext = true;
+        } else if (char === quote) {
+          quote = undefined;
+        }
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        quote = char;
+        continue;
+      }
+      if (char === "(") {
+        depth += 1;
+        continue;
+      }
+      if (char === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          return index;
+        }
+      }
+    }
+    return -1;
+  };
+
+  const parseCssTextPseudoArgs = (name: CssTextPseudoName, argsSource: string): string[] => {
+    const args: string[] = [];
+    let quote: string | undefined;
+    let escapeNext = false;
+    let current = "";
+    let hasNonWhitespaceOutsideString = false;
+
+    for (let index = 0; index < argsSource.length; index += 1) {
+      const char = argsSource[index]!;
+      if (escapeNext) {
+        current += cssUnescapeCharacter(char);
+        escapeNext = false;
+        continue;
+      }
+      if (quote) {
+        if (char === "\\") {
+          escapeNext = true;
+        } else if (char === quote) {
+          quote = undefined;
+        } else {
+          current += char;
+        }
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        quote = char;
+        continue;
+      }
+      if (char === ",") {
+        args.push(current);
+        current = "";
+        hasNonWhitespaceOutsideString = false;
+        continue;
+      }
+      if (!/\s/.test(char)) {
+        hasNonWhitespaceOutsideString = true;
+      }
+      current += char;
+    }
+
+    if (quote || hasNonWhitespaceOutsideString) {
+      throwCssTextPseudoArgumentError(name);
+    }
+
+    args.push(current);
+    return args.map((arg) => arg.trim());
+  };
+
+  const cssUnescapeCharacter = (char: string): string => {
+    if (char.toLowerCase() === "a") {
+      return "\n";
+    }
+    if (char === "n") {
+      return "\n";
+    }
+    if (char === "t") {
+      return "\t";
+    }
+    return char;
+  };
+
+  const throwCssTextPseudoArgumentError = (name: CssTextPseudoName): never => {
+    if (name === "text") {
+      throw new Error(`"text" engine expects a single string`);
+    }
+    if (name === "text-is") {
+      throw new Error(`"text-is" engine expects a single string`);
+    }
+    throw new Error(`"text-matches" engine expects a regexp body and optional regexp flags`);
+  };
+
+  const elementMatchesCssTextPseudos = (element: Element, pseudos: CssTextPseudo[]): boolean => {
+    for (const pseudo of pseudos) {
+      if (!elementMatchesCssTextPseudoSelf(element, pseudo)) {
+        return false;
+      }
+      if (pseudo.name === "text" || pseudo.name === "text-matches") {
+        const childElements = descendantsOf(element, false);
+        if (childElements.some((child) => elementMatchesCssTextPseudoSelf(child, pseudo))) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  const queryCssTextPseudo = (
+    root: ParentNode | Element,
+    parsed: { baseSelector: string; pseudos: CssTextPseudo[] },
+    includeRoot: boolean
+  ): Element[] => {
+    const candidates = queryCss(root, parsed.baseSelector, includeRoot);
+    return candidates.filter((element) => elementMatchesCssTextPseudos(element, parsed.pseudos));
+  };
 
   const compilePattern = (selector: LocatorSelector, kind: "value" | "name" | "label") => {
     const value =
