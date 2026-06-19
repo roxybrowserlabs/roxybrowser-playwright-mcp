@@ -2,6 +2,87 @@ import { describe, expect, it } from "vitest";
 import { withPage } from "../../helpers/browser.js";
 
 describe("page selectors contract e2e", () => {
+  it("throws for non-string selector like Playwright", async () => {
+    await withPage(async (page) => {
+      const error = await (page.$ as any)(null).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("selector: expected string, got object");
+    });
+  });
+
+  it("queries existing elements with css, text, xpath, and inferred selectors", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<section>test</section>");
+
+      await expect(page.$("css=section")).resolves.toBeTruthy();
+      await expect(page.$('text="test"')).resolves.toBeTruthy();
+      await expect(page.$("xpath=/html/body/section")).resolves.toBeTruthy();
+      await expect(page.$("section")).resolves.toBeTruthy();
+      await expect(page.$('"test"')).resolves.toBeTruthy();
+      await expect(page.$("//html/body/section")).resolves.toBeTruthy();
+      await expect(page.$("(//section)[1]")).resolves.toBeTruthy();
+    });
+  });
+
+  it("returns null for non-existing element", async () => {
+    await withPage(async (page) => {
+      expect(await page.$("non-existing-element")).toBe(null);
+    });
+  });
+
+  it("auto-detects xpath selector starting with parent axis", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div><section>test</section><span></span></div>");
+
+      const span = await page.$('"test" >> ../span');
+      expect(await span!.evaluate((element) => element.nodeName)).toBe("SPAN");
+
+      const div = await page.$('"test" >> ..');
+      expect(await div!.evaluate((element) => element.nodeName)).toBe("DIV");
+    });
+  });
+
+  it("supports Playwright >> selector syntax", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<section><div>test</div></section>");
+
+      expect(await page.$("css=section >> css=div")).toBeTruthy();
+    });
+  });
+
+  it("queries existing elements and preserves order", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div>A</div><br/><div>B</div>");
+
+      const elements = await page.$$("div");
+      const text = await Promise.all(elements.map((element) => page.evaluate((node) => node.textContent, element)));
+
+      expect(elements).toHaveLength(2);
+      expect(text).toEqual(["A", "B"]);
+    });
+  });
+
+  it("returns empty array if no elements are found", async () => {
+    await withPage(async (page) => {
+      expect(await page.$$("div")).toEqual([]);
+    });
+  });
+
+  it("queries multiple elements with xpath selectors", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<section>test</section>");
+      const section = await page.$$("xpath=/html/body/section");
+      expect(section).toHaveLength(1);
+      expect(section[0]).toBeTruthy();
+
+      expect(await page.$$("xpath=//html/body/non-existing-element")).toEqual([]);
+
+      await page.setContent("<div></div><div></div>");
+      expect(await page.$$("xpath=/html/body/div")).toHaveLength(2);
+    });
+  });
+
   it("finds content with getByText using string and regex queries", async () => {
     await withPage(async (page) => {
       await page.setContent(`

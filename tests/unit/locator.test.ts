@@ -1,8 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { RoxyFrameLocator, RoxyLocator } from "../../src/locator.js";
+import { parseSelectorChain } from "../../src/selectors.js";
 import { createElementHandleAdapterStub, createLocatorAdapterStub } from "../helpers/fakes.js";
 
 describe("RoxyLocator", () => {
+  it("matches Playwright selector parser errors for non-string selectors", () => {
+    expect(() => (parseSelectorChain as any)(null)).toThrow("selector: expected string, got object");
+  });
+
+  it("auto-detects parenthesized xpath selectors", () => {
+    expect(parseSelectorChain("(//section)[1]")).toEqual([
+      {
+        strategy: "xpath",
+        value: "(//section)[1]"
+      }
+    ]);
+  });
+
   it("builds nested css locators from the adapter", () => {
     const rootAdapter = createLocatorAdapterStub();
     const childAdapter = createLocatorAdapterStub();

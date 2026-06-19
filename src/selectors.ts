@@ -1,6 +1,10 @@
 import type { LocatorSelector } from "./protocol/adapter.js";
 
 export function parseSelectorChain(selector: string): LocatorSelector[] {
+  if (typeof selector !== "string") {
+    throw new Error(`selector: expected string, got ${typeof selector}`);
+  }
+
   const parts = selector
     .split(/\s*>>\s*/)
     .map((part) => part.trim())
@@ -90,7 +94,7 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
     return withCapture(parseTextSelector(bodyPart));
   }
 
-  if (bodyPart.startsWith("//") || bodyPart.startsWith("..")) {
+  if (bodyPart.startsWith("//") || bodyPart.startsWith("(") || bodyPart.startsWith("..")) {
     return withCapture({
       strategy: "xpath",
       value: bodyPart
