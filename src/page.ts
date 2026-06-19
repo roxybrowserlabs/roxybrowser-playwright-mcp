@@ -4014,12 +4014,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       resourceType: () => state.resourceType,
       response: async () => state.responsePromise,
       serviceWorker: () => null,
-      sizes: async () => ({
-        requestBodySize: state.postDataBuffer?.byteLength ?? 0,
-        requestHeadersSize: headerSize(state.headers),
-        responseBodySize: state.response ? await measureResponseBodySize(state.response) : 0,
-        responseHeadersSize: state.response ? headerSize(await state.response.allHeaders()) : 0
-      }),
+      sizes: async () => observedRequestSizes(state),
       timing: () => ({
         startTime: state.timingStartTime,
         domainLookupStart: -1,
@@ -5842,6 +5837,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       response: async () => currentResponse() ?? (await currentObserved()?.request.response()) ?? null,
       serviceWorker: () => null,
       sizes: async () => {
+        const failure = currentFailure() ?? currentObserved()?.request.failure() ?? null;
+        if (failure) {
+          throw new Error("Unable to fetch sizes for failed request");
+        }
         const response = currentResponse();
         const observed = currentObserved();
         if (!response && observed) {
@@ -6513,6 +6512,24 @@ function isProtocolOrObservedResponse(
   response: APIResponse | Response | PageResponse
 ): response is APIResponse | Response {
   return typeof (response as Response).status === "function";
+}
+
+async function observedRequestSizes(state: ObservedRequestState): Promise<{
+  requestBodySize: number;
+  requestHeadersSize: number;
+  responseBodySize: number;
+  responseHeadersSize: number;
+}> {
+  if (state.failure) {
+    throw new Error("Unable to fetch sizes for failed request");
+  }
+
+  return {
+    requestBodySize: state.postDataBuffer?.byteLength ?? 0,
+    requestHeadersSize: headerSize(state.headers),
+    responseBodySize: state.response ? await measureResponseBodySize(state.response) : 0,
+    responseHeadersSize: state.response ? headerSize(await state.response.allHeaders()) : 0
+  };
 }
 
 function parsePostData(postData: string | null): unknown {
