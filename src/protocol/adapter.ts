@@ -147,6 +147,7 @@ export interface ProtocolPageAdapter {
   addStyleTag(options?: AddStyleTagOptions): Promise<ProtocolElementHandleAdapter>;
   waitForLoadState(state?: LoadState | "commit", timeout?: number): Promise<void>;
   waitForNavigationResponse?(options?: {
+    frameId?: string;
     initialUrl?: string;
     signal?: AbortSignal;
     timeout?: number;

@@ -241,7 +241,7 @@ export class RoxyFrame implements Frame {
     if (this.detached) {
       throw new Error("Navigating frame was detached!");
     }
-    const response = await this.roxyPage.waitForNavigation(options);
+    const response = await this.roxyPage.waitForNavigationInFrame(this.snapshot, options);
     if (this.detached) {
       throw new Error("Navigating frame was detached!");
     }

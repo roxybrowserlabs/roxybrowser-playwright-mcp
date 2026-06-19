@@ -2556,7 +2556,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
               : {})
           }),
           options.timeout,
-          `page.goto: Timeout ${options.timeout}ms exceeded.\n${targetUrl}`
+          `page.goto: Timeout ${options.timeout}ms exceeded.\n` +
+            `navigating to "${targetUrl}", waiting until "${waitUntil}"`
         ),
         failureCapture
       );
@@ -2564,7 +2565,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       if (waitUntil !== "commit") {
         await this.raceNavigationFailure(
-          this.waitForLoadState(waitUntil, options.timeout),
+          this.waitForLoadState(waitUntil, options.timeout).catch((error) => {
+            if (error instanceof TimeoutError) {
+              throw new TimeoutError(
+                `page.goto: Timeout ${options.timeout}ms exceeded.\n` +
+                  `navigating to "${targetUrl}", waiting until "${waitUntil}"`
+              );
+            }
+            throw error;
+          }),
           failureCapture
         );
       }
@@ -2623,6 +2632,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async waitForNavigationResponse(options: {
+    frameId?: string;
     initialUrl?: string;
     signal?: AbortSignal;
     timeout?: number;
@@ -2630,6 +2640,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   } = {}): Promise<PageResponse | null> {
     const capture = this.beginNavigationResponseCapture({
       predicate: (response) => {
+        if (options.frameId && response.frameId !== options.frameId) {
+          return false;
+        }
         if (options.initialUrl && response.url === options.initialUrl) {
           return false;
         }
@@ -6169,13 +6182,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
     const request = this.requestMetadata.get(event.requestId);
     const isNavigationRequest = request?.isNavigationRequest ?? false;
+    const frameId = event.frameId ?? request?.frameId;
 
     const response = createPageResponse({
       fromCache: Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache),
       ...(event.response.fromServiceWorker !== undefined
         ? { fromServiceWorker: event.response.fromServiceWorker }
         : {}),
-      ...(event.frameId ? { frameId: event.frameId } : {}),
+      ...(frameId ? { frameId } : {}),
       headers: headerEntries,
       isNavigationRequest,
       mimeType: event.response.mimeType,
@@ -6190,7 +6204,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
     this.emit("response", response);
 
-    if (isNavigationRequest && event.frameId && this.isMainFrameId(event.frameId)) {
+    if (isNavigationRequest && frameId) {
       this.captureNavigationResponse(response);
     }
   }

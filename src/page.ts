@@ -1163,7 +1163,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async waitForNavigation(options: WaitForNavigationOptions = {}): Promise<Response | null> {
-    const initialUrl = this.url();
+    return this.waitForNavigationInFrame(null, options);
+  }
+
+  async waitForNavigationInFrame(
+    frame: RoxyFrameSnapshot | null,
+    options: WaitForNavigationOptions = {}
+  ): Promise<Response | null> {
+    const frameObject = frame ? this.frameById(frame.id) : null;
+    const initialUrl = frameObject?.url() ?? this.url();
     const timeout = options.timeout ?? this.defaultNavigationTimeoutMs;
     const waitUntil = options.waitUntil ?? "load";
     const navigationTargetDescription = options.url ? ` to "${String(options.url)}"` : "";
@@ -1190,7 +1198,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
                     `=========================== logs ===========================\n` +
                     `waiting for navigation${navigationTargetDescription} until "${waitUntil}"\n` +
                     `============================================================\n` +
-                    `navigated to "${this.url()}"`
+                    `navigated to "${frameObject?.url() ?? this.url()}"`
                 )
               );
             }, timeout);
@@ -1202,12 +1210,27 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       const navigationResponsePromise = new Promise<void>((resolve) => {
         resolveNavigationResponse = resolve;
       });
+      const matchesNavigationUrl = (url: string) => {
+        if (!options.url) {
+          return false;
+        }
+        const parsed = this.tryParseUrl(url);
+        return parsed ? this.matchesURL(parsed, options.url) : false;
+      };
       void adapterNavigationResponsePromise?.then(
-        (response) => {
+        async (response) => {
           if (response) {
-            latestNavigationResponse = this.toPublicResponse(response);
-            resolveNavigationResponse?.();
-            void checkForMatch();
+            await this.refreshFrameSnapshots().catch(() => {});
+            const publicResponse = this.toPublicResponse(response);
+            if (
+              !frameObject ||
+              publicResponse?.frame() === frameObject ||
+              (options.url && matchesNavigationUrl(response.url))
+            ) {
+              latestNavigationResponse = publicResponse;
+              resolveNavigationResponse?.();
+              void checkForMatch();
+            }
           }
         },
         () => {}
@@ -1225,6 +1248,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         navigationResponseAbortController.abort();
         this.removeListener("response", responseListener);
         this.removeListener("close", closeListener);
+        this.removeListener("framedetached", frameDetachedListener);
       };
 
       const closeListener = (() => {
@@ -1232,7 +1256,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         reject(new Error("Navigation failed because page was closed!"));
       }) as PageEventListener<"close">;
 
+      const frameDetachedListener = ((detachedFrame: Frame) => {
+        if (frameObject && detachedFrame === frameObject) {
+          cleanup();
+          reject(new Error("Navigating frame was detached!"));
+        }
+      }) as PageEventListener<"framedetached">;
+
       const isLikelyNavigationResponse = (response: Response) => {
+        if (frameObject && response.frame() !== frameObject && !matchesNavigationUrl(response.url())) {
+          return false;
+        }
         if (response.request().isNavigationRequest()) {
           return true;
         }
@@ -1249,7 +1283,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       };
 
       const matchesUrl = () => {
-        const current = this.tryParseUrl(this.url());
+        const current = this.tryParseUrl(frameObject?.url() ?? this.url());
         if (!current) {
           return false;
         }
@@ -1277,7 +1311,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           }
         }
         cleanup();
-        resolve(latestNavigationResponse);
+        resolve(frameObject && latestNavigationResponse
+          ? responseWithFrame(latestNavigationResponse, frameObject)
+          : latestNavigationResponse);
       };
 
       const responseListener = (async (response: Response) => {
@@ -1287,12 +1323,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
         if (waitUntil === "commit" && matchesUrl()) {
           cleanup();
-          resolve(latestNavigationResponse);
+          resolve(frameObject && latestNavigationResponse
+            ? responseWithFrame(latestNavigationResponse, frameObject)
+            : latestNavigationResponse);
         }
       }) as PageEventListener<"response">;
 
       this.on("response", responseListener);
       this.on("close", closeListener);
+      this.on("framedetached", frameDetachedListener);
       void checkForMatch();
     });
 
@@ -3252,7 +3291,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async gotoInFrame(frame: RoxyFrameSnapshot, url: string, options: PageGotoOptions = {}): Promise<Response | null> {
-    if (frame.parentId === null) {
+    await this.refreshFrameSnapshots().catch(() => {});
+    const currentFrame = this.frameById(frame.id);
+    const currentSnapshot = currentFrame?.snapshotState() ?? frame;
+    if (currentSnapshot.parentId === null) {
       const previousUrl = this.mainFrame().url();
       const response = await this.adapter.goto(url, {
         ...options,
@@ -3272,12 +3314,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return this.toPublicResponse(response);
     }
 
-    const frameObject = this.frameById(frame.id);
-    if (!frameObject) {
+    if (!currentFrame) {
       throw new Error("Navigating frame was detached!");
     }
-    const navigationPromise = frameObject.waitForNavigation(options);
-    await this.evaluateInFrame(frame, (targetUrl) => {
+    const navigationPromise = currentFrame.waitForNavigation({
+      url,
+      ...options
+    });
+    await this.evaluateInFrame(currentSnapshot, (targetUrl) => {
       window.location.href = targetUrl;
     }, url);
     return navigationPromise;
@@ -4000,7 +4044,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       value: header.value
     }));
     const headers = aggregateHeaders(headerEntries);
-    const request = linkedRequest ?? this.createObservedRequestForResponseOnly(payload.url);
+    const request = linkedRequest ?? this.createObservedRequestForResponseOnly(
+      payload.url,
+      payload.frameId ?? null,
+      payload.isNavigationRequest ?? false,
+      payload.resourceType
+    );
     const responseUrl = linkedRequest ? linkedRequest.url() : payload.url;
     const readBodyBuffer = createResponseBodyReader(
       payload.status,
@@ -4037,8 +4086,21 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     };
   }
 
-  private createObservedRequestForResponseOnly(url: string): Request {
-    return this.observeSyntheticObservedRequest(url, "GET", null).request;
+  private createObservedRequestForResponseOnly(
+    url: string,
+    frameId: string | null,
+    isNavigationRequest: boolean,
+    resourceType?: string
+  ): Request {
+    return this.observeSyntheticObservedRequest(
+      url,
+      "GET",
+      {
+        frameId,
+        isNavigationRequest,
+        resourceType: resourceType ?? (isNavigationRequest ? "document" : "other")
+      }
+    ).request;
   }
 
   private toPublicResponse(response: PageResponse | null): Response | null {
@@ -4152,15 +4214,28 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private observeSyntheticObservedRequest(
     url: string,
     method: string,
-    requestId: string | null
+    requestIdOrOptions: string | null | {
+      frameId?: string | null;
+      isNavigationRequest?: boolean;
+      requestId?: string | null;
+      resourceType?: string;
+    }
   ): ObservedRequestState {
+    const options = typeof requestIdOrOptions === "object" && requestIdOrOptions !== null
+      ? requestIdOrOptions
+      : { requestId: requestIdOrOptions };
     this.observeAdapterRequest({
+      ...(options.frameId !== undefined ? { frameId: options.frameId } : {}),
       headers: [],
+      ...(options.isNavigationRequest !== undefined
+        ? { isNavigationRequest: options.isNavigationRequest }
+        : {}),
       method,
-      ...(requestId ? { requestId } : {}),
+      ...(options.requestId ? { requestId: options.requestId } : {}),
+      ...(options.resourceType ? { resourceType: options.resourceType } : {}),
       url
     });
-    return this.findObservedRequestState(url, method, requestId)!;
+    return this.findObservedRequestState(url, method, options.requestId)!;
   }
 
   private findObservedRequestForResponse(payload: PageResponse): ObservedRequestState | null {
@@ -6375,6 +6450,19 @@ function createRoutedResponse(data: RoutedResponseData, request: Request): Respo
     statusText: () => data.statusText,
     text: async () => readBodyText(),
     url: () => data.url
+  };
+}
+
+function responseWithFrame(response: Response, frame: Frame): Response {
+  const request = response.request();
+  const framedRequest: Request = {
+    ...request,
+    frame: () => frame
+  };
+  return {
+    ...response,
+    frame: () => frame,
+    request: () => framedRequest
   };
 }
 
