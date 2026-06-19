@@ -135,6 +135,24 @@ const CDP_CAPABILITIES: ProtocolCapabilities = {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
 const REQUEST_EXTRA_INFO_FALLBACK_MS = 250;
+const HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE = `() => {
+  const hydrate = (root) => {
+    for (const template of Array.from(root.querySelectorAll('template[shadowrootmode]'))) {
+      const mode = template.getAttribute('shadowrootmode');
+      if (mode !== 'open' && mode !== 'closed')
+        continue;
+      const host = template.parentElement;
+      if (!host)
+        continue;
+      const shadowRoot = host.shadowRoot || host.attachShadow({ mode });
+      shadowRoot.append(...Array.from(template.content.childNodes));
+      template.remove();
+      if (mode === 'open')
+        hydrate(shadowRoot);
+    }
+  };
+  hydrate(document);
+}`;
 
 function toPlaywrightResourceType(type?: string): string {
   switch (type) {
@@ -341,6 +359,13 @@ interface CdpPageFrameClient {
   ): Promise<{
     frameTree: CdpFrameTreePayload;
   }>;
+  send(
+    method: "Page.setDocumentContent",
+    params: {
+      frameId: string;
+      html: string;
+    }
+  ): Promise<unknown>;
 }
 
 interface CdpExceptionDetails {
@@ -2653,14 +2678,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     this.resetNavigationState();
 
-    await this.evaluateFunction<void>(
-      `(payload) => {
-        document.open();
-        document.write(payload.html);
-        document.close();
-      }`,
-      { html }
-    );
+    if (this.mainFrameId) {
+      await (this.options.client as CdpPageFrameClient).send("Page.setDocumentContent", {
+        frameId: this.mainFrameId,
+        html
+      });
+    } else {
+      await this.evaluateFunction<void>(
+        `(payload) => {
+          document.open();
+          document.write(payload.html);
+          document.close();
+        }`,
+        { html }
+      );
+    }
+    await this.evaluateFunction<void>(HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE);
 
     if (waitUntil !== "commit") {
       await this.waitForLoadState(waitUntil, options.timeout);
@@ -2748,6 +2781,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     id: string;
     name: string;
     nativeFrameId?: string;
+    ownerElementReference?: ProtocolElementHandleReference;
     ownerElementChain: LocatorSelector[];
     parentId: string | null;
     referenceChain: LocatorSelector[];
@@ -2762,6 +2796,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       id: string;
       name: string;
       nativeFrameId?: string;
+      ownerElementReference?: ProtocolElementHandleReference;
       ownerElementChain: LocatorSelector[];
       parentId: string | null;
       referenceChain: LocatorSelector[];
@@ -2801,26 +2836,31 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       return matching;
     };
 
-    const visit = (frame: CdpNativeFrameState, parentId: string | null, syntheticId: string) => {
+    const visit = async (frame: CdpNativeFrameState, parentId: string | null, syntheticId: string) => {
       const domSnapshot = takeDomSnapshot(frame, parentId, syntheticId);
       snapshots.push({
         id: syntheticId,
         name: frame.name || domSnapshot?.name || "",
         nativeFrameId: frame.id,
+        ...(parentId ? await this.ownerElementReferenceForFrame(frame.id).then(
+          (ownerElementReference) => ownerElementReference ? { ownerElementReference } : {},
+          () => ({})
+        ) : {}),
         ownerElementChain: domSnapshot?.ownerElementChain ?? [],
         parentId,
         referenceChain: domSnapshot?.referenceChain ?? [],
         url: frame.url || domSnapshot?.url || "about:blank"
       });
-      childrenByParent.get(frame.id)?.forEach((child, index) => {
-        visit(child, syntheticId, `${syntheticId}.${index + 1}`);
-      });
+      const children = childrenByParent.get(frame.id) ?? [];
+      for (const [index, child] of children.entries()) {
+        await visit(child, syntheticId, `${syntheticId}.${index + 1}`);
+      }
     };
     const rootFrame = this.mainFrameId ? this.nativeFrames.get(this.mainFrameId) : undefined;
     if (rootFrame) {
-      visit(rootFrame, null, "main");
+      await visit(rootFrame, null, "main");
     } else {
-      visit({
+      await visit({
         id: frameTree.frameTree.frame.id,
         name: frameTree.frameTree.frame.name ?? "",
         parentId: null,
@@ -2835,6 +2875,30 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       snapshots.push(domSnapshot);
     }
     return snapshots;
+  }
+
+  async frameElementReference(frameId: string): Promise<ProtocolElementHandleReference | null> {
+    return this.ownerElementReferenceForFrame(frameId);
+  }
+
+  private async ownerElementReferenceForFrame(frameId: string): Promise<ProtocolElementHandleReference | null> {
+    const { backendNodeId } = await (this.options.client as CdpDomClient).send("DOM.getFrameOwner", {
+      frameId
+    });
+    const parentFrameId = this.nativeFrames.get(frameId)?.parentId ?? undefined;
+    const executionContextId = parentFrameId
+      ? await this.defaultExecutionContextIdForFrame(parentFrameId).catch(() => undefined)
+      : undefined;
+    const resolved = await (this.options.client as CdpDomClient).send("DOM.resolveNode", {
+      backendNodeId,
+      ...(executionContextId !== undefined ? { executionContextId } : {})
+    });
+    const objectId = resolved.object.objectId;
+    if (!objectId || resolved.object.subtype === "null") {
+      return null;
+    }
+    const handle = new CdpJSHandleAdapter<unknown>(this, resolved.object, undefined, parentFrameId);
+    return this.storeRemoteElementHandle(handle, { disposeHandle: false });
   }
 
   private syncNativeFrameTree(root: CdpFrameTreePayload): void {
@@ -2922,7 +2986,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         parentId,
         chain
       ) => {
-        const frames = Array.from(documentRoot.querySelectorAll("iframe,frame"));
+        const frames = [];
+        const collectFrames = (root) => {
+          frames.push(...Array.from(root.querySelectorAll("iframe,frame")));
+          for (const element of Array.from(root.querySelectorAll("*"))) {
+            if (element.shadowRoot)
+              collectFrames(element.shadowRoot);
+          }
+        };
+        collectFrames(documentRoot);
         frames.forEach((frameElement, index) => {
           const iframe = frameElement;
           let contentDocument = null;
@@ -4796,6 +4868,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async ownerFrameIdForReference(reference: ProtocolElementHandleReference): Promise<string | null> {
+    if (reference.protocolFrameId) {
+      return reference.protocolFrameId;
+    }
     if (reference.protocolObjectId) {
       let documentElementObjectId: string | undefined;
       try {
@@ -5684,7 +5759,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
     const sessionId = handle instanceof CdpJSHandleAdapter ? handle.sessionId() : undefined;
     const frameId = handle instanceof CdpJSHandleAdapter
-      ? await this.ownerFrameIdForRemoteHandle(handle).catch(() => handle.frameId())
+      ? handle.frameId() ?? await this.ownerFrameIdForRemoteHandle(handle).catch(() => undefined)
       : undefined;
     const response = await this.sendRuntimeCallFunctionOn({
       functionDeclaration: `function() {

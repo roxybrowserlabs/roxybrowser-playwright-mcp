@@ -240,6 +240,7 @@ describe("generatePageApiReport", () => {
   it("matches upstream Playwright Frame remaining forwarded signatures", () => {
     const report = generateApiMethodSignatureReport("Frame", [
       "childFrames",
+      "frameElement",
       "isDetached",
       "name",
       "page",

@@ -2761,15 +2761,72 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.createElementHandle(this.adapter.createHandle(reference));
   }
 
+  async frameElementForFrame(frame: RoxyFrameSnapshot): Promise<ElementHandle | null> {
+    if (frame.ownerElementReference) {
+      return this.createElementHandleFromReference(frame.ownerElementReference);
+    }
+    if (frame.nativeFrameId && this.adapter.frameElementReference) {
+      const reference = await this.adapter.frameElementReference(frame.nativeFrameId).catch(() => null);
+      if (reference) {
+        return this.createElementHandleFromReference(reference);
+      }
+    }
+    if (frame.ownerElementChain.length) {
+      return this.createElementHandleFromReference({
+        chain: frame.ownerElementChain,
+        pick: { kind: "first" }
+      });
+    }
+    if (frame.name) {
+      const escapedName = cssStringEscape(frame.name);
+      const escapedId = cssIdentifierEscape(frame.name);
+      const handle = await this.adapter.query([
+        {
+          strategy: "css",
+          value: `iframe[name="${escapedName}"],frame[name="${escapedName}"],iframe#${escapedId},frame#${escapedId}`
+        }
+      ]).catch(() => null);
+      if (handle) {
+        return this.createElementHandle(handle);
+      }
+    }
+    if (frame.parentId) {
+      const siblings = this.frames()
+        .filter((candidate): candidate is RoxyFrame => candidate instanceof RoxyFrame)
+        .filter((candidate) => candidate.snapshotState().parentId === frame.parentId);
+      const index = siblings.findIndex((candidate) => {
+        const candidateSnapshot = candidate.snapshotState();
+        return candidateSnapshot.id === frame.id ||
+          Boolean(frame.nativeFrameId && candidateSnapshot.nativeFrameId === frame.nativeFrameId);
+      });
+      if (index !== -1) {
+        const handles = await this.adapter.queryAll([
+          { strategy: "css", value: "iframe,frame" }
+        ]).catch(() => []);
+        const handle = handles[index];
+        if (handle) {
+          return this.createElementHandle(handle);
+        }
+      }
+    }
+    return null;
+  }
+
   async contentFrameForElement(handle: RoxyElementHandle): Promise<Frame | null> {
     await this.refreshFrameSnapshots().catch(() => {});
     const nativeFrameId = await handle.protocolContentFrameId().catch(() => null);
     if (nativeFrameId) {
       const frame = this.frameByNativeId(nativeFrameId);
-      if (frame) {
+      if (frame && frame.parentFrame() !== null) {
         return frame;
       }
-      return this.ensureContentFrame(nativeFrameId, handle);
+      if (!frame) {
+        return this.ensureContentFrame(nativeFrameId, handle);
+      }
+      const matchedFrame = await this.matchContentFrameByOwnerElement(handle);
+      if (matchedFrame) {
+        return matchedFrame;
+      }
     }
     for (const frame of this.frames()) {
       const snapshot = (frame as RoxyFrame).snapshotState();
@@ -2786,10 +2843,52 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return null;
   }
 
+  private async matchContentFrameByOwnerElement(handle: RoxyElementHandle): Promise<Frame | null> {
+    const ownerInfo = await handle.evaluate((element) => {
+      if (!(element instanceof HTMLIFrameElement) && !(element instanceof HTMLFrameElement)) {
+        return null;
+      }
+      return {
+        id: element.id,
+        name: element.getAttribute("name") ?? element.id ?? "",
+        index: Array.from(element.ownerDocument.querySelectorAll("iframe,frame")).indexOf(element),
+        src: element.src || "about:blank"
+      };
+    }).catch(() => null);
+    if (!ownerInfo) {
+      return null;
+    }
+    await this.refreshFrameSnapshots().catch(() => {});
+    const byName = this.frames().find((frame) => {
+      if (frame.parentFrame() === null) {
+        return false;
+      }
+      return Boolean(ownerInfo.id && (frame as RoxyFrame).snapshotState().name === ownerInfo.id) ||
+        Boolean(ownerInfo.name && frame.name() === ownerInfo.name);
+    });
+    if (byName) {
+      return byName;
+    }
+    const siblings = this.frames().filter((frame) => frame.parentFrame() !== null);
+    if (ownerInfo.index >= 0 && siblings[ownerInfo.index]) {
+      return siblings[ownerInfo.index]!;
+    }
+    return this.frames().find((frame) =>
+      frame.parentFrame() !== null &&
+      Boolean(ownerInfo.src !== "about:blank" && frame.url() === ownerInfo.src)
+    ) ?? null;
+  }
+
   private async ensureContentFrame(nativeFrameId: string, owner: RoxyElementHandle): Promise<Frame> {
     const existing = this.frameByNativeId(nativeFrameId);
     if (existing) {
       return existing;
+    }
+    await this.refreshFrameSnapshots().catch(() => {});
+    const refreshed = this.frameByNativeId(nativeFrameId);
+    if (refreshed) {
+      this.nativeFrameBindings.set(nativeFrameId, (refreshed as RoxyFrame).snapshotState().id);
+      return refreshed;
     }
 
     const ownerReference = owner.reference();
@@ -2809,6 +2908,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           : ""
       ).catch(() => ""),
       nativeFrameId,
+      ownerElementReference: ownerReference,
       ownerElementChain,
       parentId: "main",
       referenceChain,
@@ -2820,6 +2920,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     };
     const frame = new RoxyFrame(this, snapshot);
     this.frameMap.set(id, frame);
+    this.nativeFrameBindings.set(nativeFrameId, id);
     this.frameOrder.push(id);
     this.emit("frameattached", frame);
     this.emit("framenavigated", frame);
@@ -2855,9 +2956,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private frameByNativeId(nativeFrameId: string): Frame | null {
+    const boundFrameId = this.nativeFrameBindings.get(nativeFrameId);
+    if (boundFrameId) {
+      const boundFrame = this.frameById(boundFrameId);
+      if (boundFrame) {
+        return boundFrame;
+      }
+      this.nativeFrameBindings.delete(nativeFrameId);
+    }
     for (const frame of this.frames()) {
       const snapshot = (frame as RoxyFrame).snapshotState();
       if (snapshot.nativeFrameId === nativeFrameId || snapshot.id === nativeFrameId) {
+        this.nativeFrameBindings.set(nativeFrameId, snapshot.id);
         return frame;
       }
     }
@@ -2981,21 +3091,23 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     isFunction: boolean
   ): Promise<R> {
     if (frame.nativeFrameId && this.adapter.evaluateInFrame) {
-      return this.adapter.evaluateInFrame<R>(
-        frame.nativeFrameId,
-        serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
-        arg,
-        isFunction
-      );
+      try {
+        return await this.adapter.evaluateInFrame<R>(
+          frame.nativeFrameId,
+          serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+          arg,
+          isFunction
+        );
+      } catch (error) {
+        if (!this.shouldFallbackToOwnerElementFrameEvaluation(error, frame)) {
+          throw error;
+        }
+      }
     }
 
-    if (!frame.ownerElementChain.length) {
-      return this.evaluate(pageFunction, arg as Arg);
-    }
-
-    const owner = await this.adapter.query(frame.ownerElementChain);
+    const owner = frame.ownerElementChain.length ? await this.ownerElementAdapterForFrame(frame) : null;
     if (!owner) {
-      throw new Error("Frame is not available.");
+      return this.evaluate(pageFunction, arg as Arg);
     }
 
     return this.createElementHandle(owner).evaluate(
@@ -3027,24 +3139,26 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     arg?: Arg
   ): Promise<SmartHandle<R>> {
     if (frame.nativeFrameId && this.adapter.evaluateHandleInFrame) {
-      return await createRemoteJSHandle(
-        await this.adapter.evaluateHandleInFrame<R>(
-          frame.nativeFrameId,
-          serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
-          arg,
-          typeof pageFunction === "function"
-        ),
-        (reference) => this.createElementHandle(this.adapter.createHandle(reference))
-      ) as unknown as SmartHandle<R>;
+      try {
+        return await createRemoteJSHandle(
+          await this.adapter.evaluateHandleInFrame<R>(
+            frame.nativeFrameId,
+            serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+            arg,
+            typeof pageFunction === "function"
+          ),
+          (reference) => this.createElementHandle(this.adapter.createHandle(reference))
+        ) as unknown as SmartHandle<R>;
+      } catch (error) {
+        if (!this.shouldFallbackToOwnerElementFrameEvaluation(error, frame)) {
+          throw error;
+        }
+      }
     }
 
-    if (!frame.ownerElementChain.length) {
-      return this.evaluateHandle(pageFunction, arg as Arg);
-    }
-
-    const owner = await this.adapter.query(frame.ownerElementChain);
+    const owner = frame.ownerElementChain.length ? await this.ownerElementAdapterForFrame(frame) : null;
     if (!owner) {
-      throw new Error("Frame is not available.");
+      return this.evaluateHandle(pageFunction, arg as Arg);
     }
 
     const expression = `(iframe, payload) => {
@@ -3074,7 +3188,30 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return createSmartHandle(value);
     }
 
-    return this.createElementHandle(owner).evaluateHandle<R>(expression, payload);
+    const handle = await this.createElementHandle(owner).evaluateHandle<R>(expression, payload);
+    const element = handle.asElement();
+    if (element && frame.nativeFrameId) {
+      const reference = (element as unknown as RoxyElementHandle).reference();
+      reference.protocolFrameId ??= frame.nativeFrameId;
+    }
+    return handle;
+  }
+
+  private shouldFallbackToOwnerElementFrameEvaluation(error: unknown, frame: RoxyFrameSnapshot): boolean {
+    if (!frame.ownerElementReference && !frame.ownerElementChain.length) {
+      return false;
+    }
+    return error instanceof Error && error.message.includes("Frame execution context is not available");
+  }
+
+  private async ownerElementAdapterForFrame(frame: RoxyFrameSnapshot): Promise<ProtocolElementHandleAdapter | null> {
+    if (frame.ownerElementReference) {
+      return this.adapter.createHandle(frame.ownerElementReference);
+    }
+    if (!frame.ownerElementChain.length) {
+      return null;
+    }
+    return this.adapter.query(frame.ownerElementChain);
   }
 
   async queryInFrame(
@@ -4243,7 +4380,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           parentId: string,
           chain: Array<LocatorSelector>
         ) => {
-          const frames = Array.from(documentRoot.querySelectorAll("iframe,frame"));
+          const frames: Array<HTMLIFrameElement | HTMLFrameElement> = [];
+          const collectFrames = (root: Document | ShadowRoot) => {
+            frames.push(...Array.from(root.querySelectorAll("iframe,frame")) as Array<HTMLIFrameElement | HTMLFrameElement>);
+            for (const element of Array.from(root.querySelectorAll("*"))) {
+              if (element.shadowRoot) {
+                collectFrames(element.shadowRoot);
+              }
+            }
+          };
+          collectFrames(documentRoot);
           frames.forEach((frameElement, index) => {
             const iframe = frameElement as HTMLIFrameElement | HTMLFrameElement;
             const contentDocument = iframe.contentDocument;
@@ -4313,12 +4459,20 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           if (id !== snapshot.id) {
             this.frameMap.delete(id);
             this.frameMap.set(snapshot.id, frame);
+            this.nativeFrameBindings.set(snapshot.nativeFrameId, snapshot.id);
           }
           break;
         }
       }
       if (existing) {
         existing.setDetached(false);
+        const existingSnapshot = existing.snapshotState();
+        if (!snapshot.ownerElementReference && existingSnapshot.ownerElementReference) {
+          snapshot.ownerElementReference = existingSnapshot.ownerElementReference;
+        }
+        if (!snapshot.ownerElementReference && previous?.ownerElementReference) {
+          snapshot.ownerElementReference = previous.ownerElementReference;
+        }
         existing.setSnapshot(snapshot);
         if (previous && previous.url !== snapshot.url) {
           navigatedFrames.push(existing);
@@ -7363,6 +7517,14 @@ async function evaluationScript<Arg>(
 
 function addSourceUrlToScript(source: string, path: string): string {
   return `${source}\n//# sourceURL=${path.replace(/\n/g, "")}`;
+}
+
+function cssStringEscape(value: string): string {
+  return value.replace(/["\\]/g, "\\$&");
+}
+
+function cssIdentifierEscape(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`);
 }
 
 function createWaitForEventTimeoutError(

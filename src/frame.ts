@@ -4,7 +4,7 @@ import { assertFillValue } from "./assertions.js";
 import { TimeoutError } from "./errors.js";
 import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
-import type { LocatorSelector } from "./protocol/adapter.js";
+import type { LocatorSelector, ProtocolElementHandleReference } from "./protocol/adapter.js";
 import type {
   ElementArrayCallback,
   ElementCallback,
@@ -64,6 +64,7 @@ export interface RoxyFrameSnapshot {
   id: string;
   name: string;
   nativeFrameId?: string;
+  ownerElementReference?: ProtocolElementHandleReference;
   url: string;
   parentId: string | null;
   ownerElementChain: LocatorSelector[];
@@ -112,6 +113,21 @@ export class RoxyFrame implements Frame {
 
   name(): string {
     return this.snapshot.name;
+  }
+
+  async frameElement(): Promise<ElementHandle> {
+    if (this.detached) {
+      throw new Error("Frame has been detached.");
+    }
+    await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
+    if (this.detached) {
+      throw new Error("Frame has been detached.");
+    }
+    const handle = await this.roxyPage.frameElementForFrame(this.snapshot);
+    if (!handle) {
+      throw new Error("Frame has no owner element.");
+    }
+    return handle;
   }
 
   async goto(url: string, options: PageGotoOptions = {}): Promise<Response | null> {

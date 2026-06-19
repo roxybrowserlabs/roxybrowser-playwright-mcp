@@ -136,11 +136,13 @@ export interface ProtocolPageAdapter {
     id: string;
     name: string;
     nativeFrameId?: string;
+    ownerElementReference?: ProtocolElementHandleReference;
     ownerElementChain: LocatorSelector[];
     parentId: string | null;
     referenceChain: LocatorSelector[];
     url: string;
   }>>;
+  frameElementReference?(frameId: string): Promise<ProtocolElementHandleReference | null>;
   addScriptTag(options?: AddScriptTagOptions): Promise<ProtocolElementHandleAdapter>;
   addStyleTag(options?: AddStyleTagOptions): Promise<ProtocolElementHandleAdapter>;
   waitForLoadState(state?: LoadState | "commit", timeout?: number): Promise<void>;

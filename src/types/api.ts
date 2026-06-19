@@ -1204,6 +1204,7 @@ export interface Frame {
   isDetached(): boolean;
   url(): string;
   name(): string;
+  frameElement(): Promise<ElementHandle>;
   goto(url: string, options?: PageGotoOptions): Promise<Response | null>;
   setContent(html: string, options?: PageSetContentOptions): Promise<void>;
   title(): Promise<string>;

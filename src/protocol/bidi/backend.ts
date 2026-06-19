@@ -101,6 +101,24 @@ const BIDI_CAPABILITIES: ProtocolCapabilities = {
 };
 
 const CLEANUP_FIREFOX_PROCESS_TIMEOUT_MS = 5_000;
+const HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE = `() => {
+  const hydrate = (root) => {
+    for (const template of Array.from(root.querySelectorAll('template[shadowrootmode]'))) {
+      const mode = template.getAttribute('shadowrootmode');
+      if (mode !== 'open' && mode !== 'closed')
+        continue;
+      const host = template.parentElement;
+      if (!host)
+        continue;
+      const shadowRoot = host.shadowRoot || host.attachShadow({ mode });
+      shadowRoot.append(...Array.from(template.content.childNodes));
+      template.remove();
+      if (mode === 'open')
+        hydrate(shadowRoot);
+    }
+  };
+  hydrate(document);
+}`;
 
 type BidiEvaluateResult =
   | {
@@ -914,6 +932,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }`,
       { html }
     );
+    await this.evaluateFunction<void>(HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE);
 
     if (waitUntil !== "commit") {
       await this.waitForLoadState(waitUntil, options.timeout);
