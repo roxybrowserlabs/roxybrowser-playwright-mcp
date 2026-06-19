@@ -4121,6 +4121,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return this.mainFrame();
     }
 
+    const nativeFrame = this.frameByNativeId(state.frameId);
+    if (nativeFrame) {
+      return nativeFrame;
+    }
+
     const boundFrameId = this.nativeFrameBindings.get(state.frameId);
     if (boundFrameId) {
       const boundFrame = this.frameById(boundFrameId);

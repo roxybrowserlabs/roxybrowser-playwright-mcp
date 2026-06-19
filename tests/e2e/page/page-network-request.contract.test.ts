@@ -158,6 +158,82 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("returns correct postData buffer for utf-8 body like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      fixture.server.setRoute("/title.html", (_request, response) => response.end());
+      const value = "baẞ";
+      const [request] = await Promise.all([
+        page.waitForRequest("**/title.html"),
+        page.evaluate(({ url, value }) => {
+          const request = new Request(url, {
+            method: "POST",
+            body: JSON.stringify(value)
+          });
+          request.headers.set("content-type", "application/json;charset=UTF-8");
+          return fetch(request);
+        }, { url: fixture.server.PREFIX + "/title.html", value })
+      ]);
+
+      expect(request.postDataBuffer()?.equals(Buffer.from(JSON.stringify(value), "utf-8"))).toBe(true);
+      expect(request.postDataJSON()).toBe(value);
+    });
+  });
+
+  it("returns post data without content-type like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      fixture.server.setRoute("/title.html", (_request, response) => response.end());
+      const [request] = await Promise.all([
+        page.waitForRequest("**/title.html"),
+        page.evaluate((url) => {
+          const request = new Request(url, {
+            method: "POST",
+            body: JSON.stringify({ value: 42 })
+          });
+          request.headers.set("content-type", "");
+          return fetch(request);
+        }, fixture.server.PREFIX + "/title.html")
+      ]);
+
+      expect(request.postDataJSON()).toEqual({ value: 42 });
+    });
+  });
+
+  it("throws on invalid JSON in post data like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      fixture.server.setRoute("/title.html", (_request, response) => response.end());
+      const [request] = await Promise.all([
+        page.waitForRequest("**/title.html"),
+        page.evaluate((url) => fetch(url, {
+          method: "POST",
+          body: "<not a json>"
+        }), fixture.server.PREFIX + "/title.html")
+      ]);
+
+      expect(() => request.postDataJSON()).toThrow(
+        "POST data is not a valid JSON object: <not a json>"
+      );
+    });
+  });
+
+  it("returns post data for PUT requests like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      fixture.server.setRoute("/title.html", (_request, response) => response.end());
+      const [request] = await Promise.all([
+        page.waitForRequest("**/title.html"),
+        page.evaluate((url) => fetch(url, {
+          method: "PUT",
+          body: JSON.stringify({ value: 42 })
+        }), fixture.server.PREFIX + "/title.html")
+      ]);
+
+      expect(request.postDataJSON()).toEqual({ value: 42 });
+    });
+  });
+
   it("works with binary post data", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);
