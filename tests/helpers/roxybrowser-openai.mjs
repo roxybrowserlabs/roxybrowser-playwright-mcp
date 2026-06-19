@@ -4,16 +4,16 @@ export class RoxyClient {
         this.token = token;
         this.host = '127.0.0.1';
         this.url = "http://" + this.host + ":" + this.port
+        this.timeoutMs = Number(process.env.ROXYBROWSER_API_TIMEOUT_MS ?? process.env.ROXY_API_TIMEOUT_MS ?? 5000)
     }
     _build_headers() {
         return {"Content-Type": "application/json","token":this.token}
     }
     async _post(path,data) {
-        const response = await fetch(`http://${this.host}:${this.port}${path}`, {
+        const response = await this._fetchWithTimeout(`http://${this.host}:${this.port}${path}`, {
             method: 'post',
             body: JSON.stringify(data),
-            headers: this._build_headers(),
-            timeout:10000
+            headers: this._build_headers()
         });
         return response.json()
     }
@@ -34,11 +34,31 @@ export class RoxyClient {
         }
         let base_url = `http://${this.host}:${this.port}${path}`
         // console.log(base_url)
-        const response = await fetch(parmas==""?base_url:`${base_url}?${parmas}`, {
-            headers: this._build_headers(),
-            timeout:10000});
+        const response = await this._fetchWithTimeout(parmas==""?base_url:`${base_url}?${parmas}`, {
+            headers: this._build_headers()
+        });
         return await response.json();
         
+    }
+
+    async _fetchWithTimeout(url, options = {}) {
+        const timeoutMs = Number.isFinite(this.timeoutMs) && this.timeoutMs > 0 ? this.timeoutMs : 5000
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+        try {
+            return await fetch(url, {
+                ...options,
+                signal: controller.signal
+            })
+        } catch (error) {
+            if (error?.name === "AbortError") {
+                throw new Error(`RoxyBrowser API request timed out after ${timeoutMs}ms: ${url}`)
+            }
+            throw error
+        } finally {
+            clearTimeout(timer)
+        }
     }
 
     /*

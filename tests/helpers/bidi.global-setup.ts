@@ -1,9 +1,9 @@
-import { cleanupExternalBidiTestState } from "./bidi.js";
+import { cleanupLocalBidiTestProcesses } from "./bidi.js";
 
 export default async function globalSetup() {
-  await cleanupExternalBidiTestState();
+  await cleanupLocalBidiTestProcesses();
 
   return async () => {
-    await cleanupExternalBidiTestState();
+    await cleanupLocalBidiTestProcesses();
   };
 }

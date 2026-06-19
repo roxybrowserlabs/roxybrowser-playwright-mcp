@@ -24,9 +24,10 @@ const ROXYBROWSER_PROFILE_NAME = process.env.ROXYBROWSER_PROFILE_NAME ?? "RoxyBr
 const ROXYBROWSER_PROFILE_MATCH = process.env.ROXYBROWSER_PROFILE_MATCH ?? "firefox";
 const ROXYBROWSER_CORE_VERSION = process.env.ROXYBROWSER_CORE_VERSION ?? "146";
 const ROXYBROWSER_DEBUG = process.env.ROXYBROWSER_DEBUG === "1";
+const USE_ROXYBROWSER_API = process.env.ROXY_BIDI_USE_ROXYBROWSER_API === "1";
 const KEEP_BIDI_BROWSER_OPEN =
   process.env.ROXY_BIDI_KEEP_BROWSER_OPEN === "1" && Boolean(BIDI_WS_ENDPOINT);
-const REUSE_EXTERNAL_BIDI_BROWSER = process.env.ROXY_BIDI_REUSE_BROWSER !== "0";
+const REUSE_EXTERNAL_BIDI_BROWSER = process.env.ROXY_BIDI_REUSE_BROWSER === "1";
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
 
 let usesExternalBidiEndpoint = false;
@@ -84,7 +85,7 @@ export async function openBidiBrowser(): Promise<Browser> {
 }
 
 async function resolveRoxyBrowserBidiEndpoint(): Promise<string | undefined> {
-  if (!ROXYBROWSER_API_TOKEN) {
+  if (!USE_ROXYBROWSER_API || !ROXYBROWSER_API_TOKEN) {
     return undefined;
   }
 
@@ -208,6 +209,14 @@ export async function cleanupExternalBidiTestState(): Promise<void> {
     windowRemark: "firefox bidi e2e"
   });
   await cleanupLocalTestBrowserProcesses();
+}
+
+export async function cleanupBidiTestStateAfterTest(): Promise<void> {
+  if (KEEP_BIDI_BROWSER_OPEN || REUSE_EXTERNAL_BIDI_BROWSER) {
+    return;
+  }
+
+  await cleanupExternalBidiTestState();
 }
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {

@@ -11,6 +11,10 @@ if (existsSync(envPath)) {
 
 let cachedProfileDirId;
 
+const ROXYBROWSER_OPERATION_TIMEOUT_MS = Number(
+  process.env.ROXYBROWSER_OPERATION_TIMEOUT_MS ?? process.env.ROXY_OPERATION_TIMEOUT_MS ?? 15000
+);
+
 export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
   const apiPort = options.apiPort ?? process.env.ROXYBROWSER_API_PORT ?? process.env.ROXY_API_PORT ?? "50000";
   const apiToken = options.apiToken ?? process.env.ROXYBROWSER_API_TOKEN ?? process.env.ROXY_API_TOKEN;
@@ -125,7 +129,11 @@ export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
 
   const dirId = selectedProfile.dirId;
   cachedProfileDirId = dirId;
-  const openResponse = await client.browser_open(dirId, []);
+  const openResponse = await withTimeout(
+    client.browser_open(dirId, []),
+    ROXYBROWSER_OPERATION_TIMEOUT_MS,
+    `RoxyBrowser profile ${dirId} did not open`
+  );
   const endpoint = extractBidiCandidate(openResponse.data, dirId);
 
   if (endpoint) {
@@ -133,7 +141,11 @@ export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
   }
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const connectionInfo = await client.browser_connection_info(dirId);
+    const connectionInfo = await withTimeout(
+      client.browser_connection_info(dirId),
+      ROXYBROWSER_OPERATION_TIMEOUT_MS,
+      `RoxyBrowser profile ${dirId} connection info did not respond`
+    );
     const connectionEndpoint = extractBidiCandidate(connectionInfo.data, dirId);
     if (connectionEndpoint) {
       return connectionEndpoint;
@@ -213,8 +225,16 @@ export async function closeRoxyBrowserFirefoxBidiProfile(options = {}) {
   cachedProfileDirId = undefined;
 
   for (const dirId of new Set(dirIds.filter(Boolean))) {
-    await client.browser_close(dirId).catch(() => {});
-    await waitForRoxyBrowserProfileToClose(client, dirId);
+    await withTimeout(
+      client.browser_close(dirId),
+      ROXYBROWSER_OPERATION_TIMEOUT_MS,
+      `RoxyBrowser profile ${dirId} did not close`
+    ).catch(() => {});
+    await withTimeout(
+      waitForRoxyBrowserProfileToClose(client, dirId),
+      ROXYBROWSER_OPERATION_TIMEOUT_MS,
+      `RoxyBrowser profile ${dirId} close confirmation timed out`
+    ).catch(() => {});
   }
 }
 
@@ -317,6 +337,22 @@ function toBidiWsEndpoint(endpoint) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${message} after ${timeoutMs}ms.`)), timeoutMs);
+    })
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
 }
 
 async function waitForRoxyBrowserProfileToClose(client, dirId) {
