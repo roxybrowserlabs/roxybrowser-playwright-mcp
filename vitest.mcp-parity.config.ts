@@ -21,6 +21,9 @@ export default defineConfig({
   },
   test: {
     include: ["tests/mcp-parity/**/*.test.ts"],
+    fileParallelism: false,
+    globalSetup: ["tests/helpers/browser-process-cleanup.global-setup.ts"],
+    setupFiles: ["tests/helpers/browser-process-cleanup.setup.ts"],
     environment: "node",
     testTimeout: 120_000,
     hookTimeout: 120_000
