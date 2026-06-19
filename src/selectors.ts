@@ -39,6 +39,20 @@ function splitSelectorChain(selector: string): string[] {
     return !!match && !!match[1];
   };
 
+  const isInsideUnpairedTextSelectorQuoteLike = (index: number): boolean => {
+    const prefix = selector.substring(start, index);
+    const match = prefix.match(/^\s*text\s*=(.*)$/s);
+    if (!match || !match[1]) {
+      return false;
+    }
+    const body = match[1];
+    const trimmedBody = body.trim();
+    if (!trimmedBody || !/^[`'"]$/.test(trimmedBody)) {
+      return false;
+    }
+    return true;
+  };
+
   for (let index = 0; index < selector.length; index += 1) {
     const char = selector[index]!;
 
@@ -91,7 +105,8 @@ function splitSelectorChain(selector: string): string[] {
       selector[index + 1] === ">" &&
       bracketDepth === 0 &&
       parenDepth === 0 &&
-      braceDepth === 0
+      braceDepth === 0 &&
+      !isInsideUnpairedTextSelectorQuoteLike(index)
     ) {
       const part = selector.slice(start, index).trim();
       if (part) {

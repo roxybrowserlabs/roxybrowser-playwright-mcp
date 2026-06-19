@@ -273,6 +273,20 @@ describe("page text selector contract e2e", () => {
       expect(await page.$eval("text=ello`wor >> span", (element) => element.outerHTML)).toBe("<span>oh</span>");
       expect(await page.locator("text=ello`wor").locator("span").first().textContent()).toBe("oh");
       expect(await page.locator("text=ello`wor").locator("span").nth(1).textContent()).toBe("oh2");
+
+      expect(await page.$(`text='wor >> span`)).toBe(null);
+      expect(await page.$(`text=" >> span`)).toBe(null);
+      expect(await page.$("text=` >> span")).toBe(null);
+    });
+  });
+
+  it("supports paired quotes in the middle of text selector like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div>pattern "^-?\\d+$"</div>`);
+
+      expect(await page.locator(`div >> text=pattern "^-?\\d+$`).isVisible()).toBe(true);
+      expect(await page.locator(`div >> text=pattern "^-?\\d+$"`).isVisible()).toBe(true);
+      expect(await page.locator(`div >> text='pattern "^-?\\\\d+$"'`).isVisible()).toBe(true);
     });
   });
 });
