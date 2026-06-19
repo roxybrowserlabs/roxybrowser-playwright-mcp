@@ -2606,6 +2606,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.defaultTimeoutMs;
   }
 
+  strictSelectors(): boolean {
+    return Boolean(this.contextOptions.strictSelectors);
+  }
+
   defaultNavigationTimeout(): number {
     return this.defaultNavigationTimeoutMs;
   }

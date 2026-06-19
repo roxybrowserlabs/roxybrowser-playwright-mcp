@@ -291,7 +291,7 @@ export class RoxyFrame implements Frame {
     while (Date.now() - startTime <= timeout) {
       const handle = await this.$(
         selector,
-        options.strict === undefined ? undefined : { strict: options.strict }
+        { strict: this.strictForSelectorOptions(options) }
       );
       const visible = handle ? await handle.isVisible() : false;
 
@@ -554,17 +554,15 @@ export class RoxyFrame implements Frame {
     selector: string,
     options?: { strict?: boolean }
   ): Promise<ElementHandle | null> {
-    const strict = typeof options?.strict === "boolean"
+    return this.roxyPage.queryInFrame(this.snapshot, selector, {
+      strict: this.strictForSelectorOptions(options)
+    });
+  }
+
+  private strictForSelectorOptions(options?: { strict?: boolean }): boolean {
+    return typeof options?.strict === "boolean"
       ? options.strict
-      : false;
-    if (strict) {
-      const handles = await this.$$(selector);
-      if (handles.length > 1) {
-        throw new Error(`strict mode violation: selector "${selector}" resolved to ${handles.length} elements`);
-      }
-      return handles[0] ?? null;
-    }
-    return this.$(selector);
+      : this.roxyPage.strictSelectors();
   }
 
   private async requiredElementHandleForSelector(
