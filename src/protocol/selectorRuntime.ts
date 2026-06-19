@@ -1013,6 +1013,20 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return pickedElement ? [pickedElement] : [];
   };
 
+  const compareElementsInDomOrder = (left: Node, right: Node): number => {
+    if (left === right) {
+      return 0;
+    }
+    const position = left.compareDocumentPosition(right);
+    if (position & Node.DOCUMENT_POSITION_PRECEDING) {
+      return 1;
+    }
+    if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
+      return -1;
+    }
+    return 0;
+  };
+
   type SelectorMatch = {
     node: ParentNode | Element;
     capture: Element | null;
@@ -1057,6 +1071,44 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
 
       const includeRoot = (!hasScope && index === 0) || selector.strategy === "text";
       const next: SelectorMatch[] = [];
+      if (selector.composite && selector.hasChain) {
+        if (selector.composite === "and") {
+          const andElements = new Set(resolveSelectorChain(roots, selector.hasChain, undefined, hasScope));
+          for (const match of current) {
+            const node = match.capture ?? match.node;
+            if (isElementNode(node) && andElements.has(node)) {
+              next.push(match);
+            }
+          }
+        } else if (selector.composite === "or") {
+          for (const match of current) {
+            next.push(match);
+          }
+          for (const candidate of resolveSelectorChain(roots, selector.hasChain, undefined, hasScope)) {
+            if (!next.some((entry) => entry.node === candidate && entry.capture === null)) {
+              next.push({
+                node: candidate,
+                capture: null
+              });
+            }
+          }
+          next.sort((left, right) => compareElementsInDomOrder(left.capture ?? left.node, right.capture ?? right.node));
+        } else {
+          for (const match of current) {
+            for (const candidate of resolveSelectorChain([match.node], selector.hasChain, undefined, true)) {
+              const capture = match.capture;
+              if (!next.some((entry) => entry.node === candidate && entry.capture === capture)) {
+                next.push({
+                  node: candidate,
+                  capture
+                });
+              }
+            }
+          }
+        }
+        current = next;
+        continue;
+      }
       for (const match of current) {
         if (selector.filter) {
           const matched = isElementNode(match.node) && matchesFilterSelector(match.node, selector);

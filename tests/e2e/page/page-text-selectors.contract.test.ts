@@ -378,4 +378,51 @@ describe("page text selector contract e2e", () => {
       expect(await page.locator("div").filter({ hasNot: page.locator("span") }).count()).toBe(0);
     });
   });
+
+  it("supports locator.and like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div data-testid=foo>hello</div><div data-testid=bar>world</div>
+        <span data-testid=foo>hello2</span><span data-testid=bar>world2</span>
+      `);
+
+      expect(await page.locator("div").and(page.locator("div")).count()).toBe(2);
+      expect(await page.locator("div").and(page.getByTestId("foo")).allTextContents()).toEqual(["hello"]);
+      expect(await page.locator("div").and(page.getByTestId("bar")).allTextContents()).toEqual(["world"]);
+      expect(await page.getByTestId("foo").and(page.locator("div")).allTextContents()).toEqual(["hello"]);
+      expect(await page.getByTestId("bar").and(page.locator("span")).allTextContents()).toEqual(["world2"]);
+      expect(await page.locator("span").and(page.getByTestId(/bar|foo/)).count()).toBe(2);
+    });
+  });
+
+  it("supports locator.or like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div>hello</div><span>world</span>`);
+
+      expect(await page.locator("div").or(page.locator("span")).count()).toBe(2);
+      expect(await page.locator("div").or(page.locator("span")).allTextContents()).toEqual(["hello", "world"]);
+      expect(await page.locator("span").or(page.locator("article")).or(page.locator("div")).allTextContents()).toEqual(["hello", "world"]);
+      expect(await page.locator("article").or(page.locator("something")).count()).toBe(0);
+      expect(await page.locator("article").or(page.locator("div")).textContent()).toBe("hello");
+      expect(await page.locator("article").or(page.locator("span")).textContent()).toBe("world");
+      expect(await page.locator("div").or(page.locator("article")).textContent()).toBe("hello");
+      expect(await page.locator("span").or(page.locator("article")).textContent()).toBe("world");
+    });
+  });
+
+  it("supports locator.locator with and/or like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div>one <span>two</span> <button>three</button> </div>
+        <span>four</span>
+        <button>five</button>
+      `);
+
+      expect(await page.locator("div").locator(page.locator("button")).allTextContents()).toEqual(["three"]);
+      expect(await page.locator("div").locator(page.locator("button").or(page.locator("span"))).allTextContents()).toEqual(["two", "three"]);
+      expect(await page.locator("button").or(page.locator("span")).allTextContents()).toEqual(["two", "three", "four", "five"]);
+      expect(await page.locator("div").locator(page.locator("button").and(page.getByRole("button"))).allTextContents()).toEqual(["three"]);
+      expect(await page.locator("button").and(page.getByRole("button")).allTextContents()).toEqual(["three", "five"]);
+    });
+  });
 });

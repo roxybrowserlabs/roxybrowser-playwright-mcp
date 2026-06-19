@@ -195,6 +195,84 @@ describe("RoxyLocator", () => {
     expect(nested).toBeInstanceOf(RoxyLocator);
   });
 
+  it("builds Playwright internal chain locators when nesting a locator", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    const chainedAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => chainedAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller).locator("div");
+    const inner = new RoxyLocator(rootAdapter, controller).locator("button");
+
+    const nested = locator.locator(inner);
+
+    expect(chainedAdapter.locator).toHaveBeenCalledWith({
+      strategy: "control",
+      value: "chain",
+      composite: "chain",
+      hasChain: [
+        {
+          strategy: "css",
+          value: "button"
+        }
+      ]
+    });
+    expect(nested).toBeInstanceOf(RoxyLocator);
+  });
+
+  it("builds Playwright internal and/or composite locators", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    const divAdapter = createLocatorAdapterStub();
+    const andAdapter = createLocatorAdapterStub();
+    const orAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => divAdapter);
+    divAdapter.locator = vi
+      .fn()
+      .mockReturnValueOnce(andAdapter)
+      .mockReturnValueOnce(orAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller).locator("div");
+    const testIdLocator = new RoxyLocator(rootAdapter, controller).getByTestId("foo");
+    const spanLocator = new RoxyLocator(rootAdapter, controller).locator("span");
+
+    expect(locator.and(testIdLocator)).toBeInstanceOf(RoxyLocator);
+    expect(locator.or(spanLocator)).toBeInstanceOf(RoxyLocator);
+    expect(divAdapter.locator).toHaveBeenNthCalledWith(1, {
+      strategy: "control",
+      value: "and",
+      composite: "and",
+      hasChain: [
+        {
+          strategy: "css",
+          value: "foo",
+          label: "testId"
+        }
+      ]
+    });
+    expect(divAdapter.locator).toHaveBeenNthCalledWith(2, {
+      strategy: "control",
+      value: "or",
+      composite: "or",
+      hasChain: [
+        {
+          strategy: "css",
+          value: "span"
+        }
+      ]
+    });
+  });
+
   it("builds frame locators by inserting an enter-frame control step", () => {
     const rootAdapter = createLocatorAdapterStub();
     const frameAdapter = createLocatorAdapterStub();

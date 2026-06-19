@@ -118,6 +118,14 @@ function selectorChainForLocator(locator: Locator, optionName: "has" | "hasNot")
   return cloneLocatorSelectorChain(chain);
 }
 
+function sameFrameSelectorChainForLocator(locator: Locator, errorMessage: string): LocatorSelector[] {
+  const chain = locator._roxySelectorChain?.();
+  if (!chain) {
+    throw new Error(errorMessage);
+  }
+  return cloneLocatorSelectorChain(chain);
+}
+
 class DisposableStub implements Disposable {
   constructor(private readonly callback: () => Promise<void> | void) {}
 
@@ -260,7 +268,20 @@ export class RoxyLocator implements Locator {
 
   locator(selectorOrLocator: string | Locator, options?: LocatorOptions): Locator {
     if (typeof selectorOrLocator !== "string") {
-      return selectorOrLocator.filter(options);
+      const selector: LocatorSelector = {
+        strategy: "control",
+        value: "chain",
+        composite: "chain",
+        hasChain: sameFrameSelectorChainForLocator(
+          selectorOrLocator,
+          "Locators must belong to the same frame."
+        )
+      };
+      const locator = this.cloneWith(
+        this.adapter.locator(selector),
+        [...(this.selectorChain ?? []), selector]
+      );
+      return options ? locator.filter(options) : locator;
     }
     const selector = selectorOrLocator;
     const chain = parseSelectorChain(selector);
@@ -436,13 +457,29 @@ export class RoxyLocator implements Locator {
   }
 
   and(locator: Locator): Locator {
-    void locator;
-    return this.cloneWith(this.adapter);
+    const selector: LocatorSelector = {
+      strategy: "control",
+      value: "and",
+      composite: "and",
+      hasChain: sameFrameSelectorChainForLocator(locator, "Locators must belong to the same frame.")
+    };
+    return this.cloneWith(
+      this.adapter.locator(selector),
+      [...(this.selectorChain ?? []), selector]
+    );
   }
 
   or(locator: Locator): Locator {
-    void locator;
-    return this.cloneWith(this.adapter);
+    const selector: LocatorSelector = {
+      strategy: "control",
+      value: "or",
+      composite: "or",
+      hasChain: sameFrameSelectorChainForLocator(locator, "Locators must belong to the same frame.")
+    };
+    return this.cloneWith(
+      this.adapter.locator(selector),
+      [...(this.selectorChain ?? []), selector]
+    );
   }
 
   describe(description: string): Locator {
