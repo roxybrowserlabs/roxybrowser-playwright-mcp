@@ -74,6 +74,7 @@ export interface SelectorRuntimePayload {
   timeoutMs?: number;
   waitForEnabled?: boolean;
   resetSelectionIfNotFocused?: boolean;
+  retargetForAction?: "follow-label";
 }
 
 function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
@@ -915,7 +916,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     if (!firstNode.isConnected) {
       throw new Error("Element is not attached to the DOM");
     }
-    const firstElement = nodeToActionElement(firstNode);
+    const firstElement = payload.retargetForAction === "follow-label"
+      ? retargetElement(firstNode, "follow-label")
+      : nodeToActionElement(firstNode);
     if (!firstElement) {
       throw new Error("Element is not attached to the DOM");
     }

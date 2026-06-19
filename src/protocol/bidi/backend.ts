@@ -1469,24 +1469,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     }
   ): Promise<void> {
     const point = { x, y };
-    const button = options?.button ?? "left";
-    const clickCount = options?.clickCount ?? 1;
-    const actions: BidiMouseAction[] = [
-      this.mousePointerMove(point)
-    ];
-
-    for (let index = 0; index < clickCount; index += 1) {
-      actions.push(this.mousePointerDown(button));
-      if (options?.delay) {
-        actions.push({
-          type: "pause",
-          duration: options.delay
-        });
-      }
-      actions.push(this.mousePointerUp(button));
-    }
-
-    await this.performMousePointerActions(actions);
+    await this.performMouseClickActions(point, options);
     this.currentMousePosition = point;
   }
 
@@ -1591,6 +1574,40 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         }
       ]
     });
+  }
+
+  private async performMouseClickActions(
+    point: ActionPoint,
+    options?: ClickOptions,
+    movePointer = true
+  ): Promise<void> {
+    const button = options?.button ?? "left";
+    const clickCount = options?.clickCount ?? 1;
+    const delayMs = options?.delay ?? 0;
+    if (delayMs > 0) {
+      if (movePointer) {
+        await this.performMousePointerActions([this.mousePointerMove(point)]);
+      }
+      for (let index = 1; index <= clickCount; index += 1) {
+        await this.performMousePointerActions([this.mousePointerDown(button)]);
+        await delay(delayMs);
+        await this.performMousePointerActions([this.mousePointerUp(button)]);
+        if (index < clickCount) {
+          await delay(delayMs);
+        }
+      }
+      return;
+    }
+
+    const promises: Array<Promise<void>> = [];
+    if (movePointer) {
+      promises.push(this.performMousePointerActions([this.mousePointerMove(point)]));
+    }
+    for (let index = 0; index < clickCount; index += 1) {
+      promises.push(this.performMousePointerActions([this.mousePointerDown(button)]));
+      promises.push(this.performMousePointerActions([this.mousePointerUp(button)]));
+    }
+    await Promise.all(promises);
   }
 
   private mousePointerMove(point: ActionPoint): BidiMouseAction {
@@ -1892,22 +1909,16 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     return this.evaluateExpression<TResult>(wrappedExpression);
   }
 
-  async clickLocator(locator: BidiLocatorState, options?: ClickOptions): Promise<void> {
-    const point = await this.resolveActionPoint(locator, options);
-    const button = options?.button ?? "left";
-    const clickCount = options?.clickCount ?? 1;
-    const actions: BidiMouseAction[] = [
-      this.mousePointerMove(point)
-    ];
-
-    for (let index = 0; index < clickCount; index += 1) {
-      actions.push(this.mousePointerDown(button));
-      if (options?.delay) {
-        actions.push({ type: "pause", duration: options.delay });
-      }
-      actions.push(this.mousePointerUp(button));
-    }
-    await this.performMousePointerActions(actions);
+  async clickLocator(
+    locator: BidiLocatorState,
+    options?: ClickOptions,
+    retargetForAction?: "follow-label"
+  ): Promise<void> {
+    await this.bringToFront();
+    const point = await this.resolveActionPoint(locator, options, true, retargetForAction);
+    await this.performMousePointerActions([this.mousePointerMove(point)]);
+    await this.resolveActionPoint(locator, options, true, retargetForAction);
+    await this.performMouseClickActions(point, options, false);
     this.currentMousePosition = point;
     await this.showScreencastAction("click", point);
   }
@@ -1978,18 +1989,34 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async checkLocator(locator: BidiLocatorState, options?: ClickOptions): Promise<void> {
-    await this.runLocatorOperation<boolean>(locator, {
-      operation: "check",
-      checked: true,
-      ...(options?.force !== undefined ? { force: options.force } : {})
-    });
+    await this.setCheckedLocator(locator, true, options);
   }
 
   async uncheckLocator(locator: BidiLocatorState, options?: ClickOptions): Promise<void> {
+    await this.setCheckedLocator(locator, false, options);
+  }
+
+  private async setCheckedLocator(locator: BidiLocatorState, checked: boolean, options?: ClickOptions): Promise<void> {
     await this.runLocatorOperation<boolean>(locator, {
       operation: "check",
-      checked: false,
+      checked,
       ...(options?.force !== undefined ? { force: options.force } : {})
+    });
+    if (await this.checkedStateLocator(locator) === checked) {
+      return;
+    }
+    if (options?.trial) {
+      return;
+    }
+    await this.clickLocator(locator, options, "follow-label");
+    if (await this.checkedStateLocator(locator) !== checked) {
+      throw new Error("Clicking the checkbox did not change its state");
+    }
+  }
+
+  private async checkedStateLocator(locator: BidiLocatorState): Promise<boolean> {
+    return this.runLocatorOperation<boolean>(locator, {
+      operation: "checkedState"
     });
   }
 
@@ -2139,10 +2166,35 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async checkReference(reference: ProtocolElementHandleReference, checked: boolean): Promise<void> {
+    await this.setCheckedReference(reference, checked);
+  }
+
+  async setCheckedReference(
+    reference: ProtocolElementHandleReference,
+    checked: boolean,
+    options?: ClickOptions
+  ): Promise<void> {
     await this.runSelectorOperation<boolean>({
       operation: "check",
       reference,
       checked
+    });
+    if (await this.checkedStateReference(reference) === checked) {
+      return;
+    }
+    if (options?.trial) {
+      return;
+    }
+    await this.clickReference(reference, options);
+    if (await this.checkedStateReference(reference) !== checked) {
+      throw new Error("Clicking the checkbox did not change its state");
+    }
+  }
+
+  private async checkedStateReference(reference: ProtocolElementHandleReference): Promise<boolean> {
+    return this.runSelectorOperation<boolean>({
+      operation: "checkedState",
+      reference
     });
   }
 
@@ -2160,7 +2212,9 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   private async resolveActionPoint(
     locator: BidiLocatorState,
-    options?: HoverOptions
+    options?: HoverOptions,
+    waitForEnabled?: boolean,
+    retargetForAction?: "follow-label"
   ): Promise<ActionPoint> {
     return this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
@@ -2169,7 +2223,9 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         ...(locator.pick ? { pick: locator.pick } : {})
       },
       ...(options?.force !== undefined ? { force: options.force } : {}),
-      ...(options?.position ? { position: options.position } : {})
+      ...(options?.position ? { position: options.position } : {}),
+      ...(waitForEnabled ? { waitForEnabled } : {}),
+      ...(retargetForAction ? { retargetForAction } : {})
     });
   }
 
@@ -2280,26 +2336,23 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
+    await this.bringToFront();
     const point = await this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
       reference,
       ...(options?.force !== undefined ? { force: options.force } : {}),
-      ...(options?.position ? { position: options.position } : {})
+      ...(options?.position ? { position: options.position } : {}),
+      waitForEnabled: true
     });
-    const button = options?.button ?? "left";
-    const clickCount = options?.clickCount ?? 1;
-    const actions: BidiMouseAction[] = [
-      this.mousePointerMove(point)
-    ];
-
-    for (let index = 0; index < clickCount; index += 1) {
-      actions.push(this.mousePointerDown(button));
-      if (options?.delay) {
-        actions.push({ type: "pause", duration: options.delay });
-      }
-      actions.push(this.mousePointerUp(button));
-    }
-    await this.performMousePointerActions(actions);
+    await this.performMousePointerActions([this.mousePointerMove(point)]);
+    await this.runSelectorOperation<ActionPoint>({
+      operation: "actionPoint",
+      reference,
+      ...(options?.force !== undefined ? { force: options.force } : {}),
+      ...(options?.position ? { position: options.position } : {}),
+      waitForEnabled: true
+    });
+    await this.performMouseClickActions(point, options, false);
     this.currentMousePosition = point;
     await this.showScreencastAction("click", point);
   }
@@ -3434,8 +3487,7 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async check(options?: ClickOptions): Promise<void> {
-    void options;
-    await this.page.checkReference(this.reference(), true);
+    await this.page.setCheckedReference(this.reference(), true, options);
   }
 
   async hover(options?: HoverOptions): Promise<void> {
@@ -3503,8 +3555,7 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async uncheck(options?: ClickOptions): Promise<void> {
-    void options;
-    await this.page.checkReference(this.reference(), false);
+    await this.page.setCheckedReference(this.reference(), false, options);
   }
 
   async selectOption(
@@ -3545,6 +3596,10 @@ function buttonNumber(button: MouseButton): number {
     case "right":
       return 2;
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function hasContext(payload: unknown, contextId: string): boolean {
