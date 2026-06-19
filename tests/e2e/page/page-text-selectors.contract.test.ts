@@ -148,4 +148,39 @@ describe("page text selector contract e2e", () => {
       expect(await page.$$eval(`div:text-matches("")`, (elements) => elements.length)).toBe(3);
     });
   });
+
+  it("supports CSS has-text pseudo selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <input id=input2>
+        <div id=div1>
+          <span>  Find me  </span>
+          or
+          <wrap><span id=span2>maybe me  </span></wrap>
+          <div><input id=input1></div>
+        </div>
+      `);
+
+      expect(await page.$eval(`:has-text("find me")`, (element) => element.tagName)).toBe("HTML");
+      expect(await page.$eval(`span:has-text("find me")`, (element) => element.outerHTML)).toBe("<span>  Find me  </span>");
+      expect(await page.$eval(`div:has-text("find me")`, (element) => element.id)).toBe("div1");
+      expect(await page.$eval(`div:has-text("find me") input`, (element) => element.id)).toBe("input1");
+      expect(await page.$eval(`:has-text("find me") input`, (element) => element.id)).toBe("input2");
+      expect(await page.$eval(`div:has-text("find me or maybe me")`, (element) => element.id)).toBe("div1");
+      expect(await page.$(`div:has-text("find noone")`)).toBe(null);
+      expect(await page.$$eval(`:is(div,span):has-text("maybe")`, (elements) => elements.map((element) => element.id).join(";"))).toBe("div1;span2");
+      expect(await page.$eval(`div:has-text("find me") :has-text("maybe me")`, (element) => element.tagName)).toBe("WRAP");
+      expect(await page.$eval(`div:has-text("find me") span:has-text("maybe me")`, (element) => element.id)).toBe("span2");
+
+      await page.setContent(`<div id=me>hello
+      wo"r>>ld</div>`);
+      expect(await page.$eval(`div:has-text("hello wo\\"r>>ld")`, (element) => element.id)).toBe("me");
+      expect(await page.$eval(`div:has-text("hello\\a wo\\"r>>ld")`, (element) => element.id)).toBe("me");
+
+      const error1 = await page.$(`:has-text("foo", "bar")`).catch((error) => error);
+      expect(error1.message).toContain(`"has-text" engine expects a single string`);
+      const error2 = await page.$(`:has-text(foo > bar)`).catch((error) => error);
+      expect(error2.message).toContain(`"has-text" engine expects a single string`);
+    });
+  });
 });

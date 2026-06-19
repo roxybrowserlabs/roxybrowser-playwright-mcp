@@ -134,7 +134,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return matchesPattern(textForSelector(element), selector, "value");
   };
 
-  type CssTextPseudoName = "text" | "text-is" | "text-matches";
+  type CssTextPseudoName = "text" | "text-is" | "text-matches" | "has-text";
   type CssTextPseudo = {
     name: CssTextPseudoName;
     args: string[];
@@ -156,6 +156,15 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     if (pseudo.name === "text") {
       if (pseudo.args.length !== 1) {
         throw new Error(`"text" engine expects a single string`);
+      }
+      return normalize(elementFullTextForSelector(element))
+        .toLowerCase()
+        .includes(normalize(pseudo.args[0]).toLowerCase());
+    }
+
+    if (pseudo.name === "has-text") {
+      if (pseudo.args.length !== 1) {
+        throw new Error(`"has-text" engine expects a single string`);
       }
       return normalize(elementFullTextForSelector(element))
         .toLowerCase()
@@ -414,8 +423,14 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
 
   const parseCssTextPseudoSelector = (selector: string): {
     baseSelector: string;
+    descendantSelector?: string;
     pseudos: CssTextPseudo[];
   } | null => {
+    const head = splitCssTextPseudoHead(selector);
+    if (!head) {
+      return null;
+    }
+
     const pseudos: CssTextPseudo[] = [];
     let quote: string | undefined;
     let escapeNext = false;
@@ -423,8 +438,8 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     let replacement = "";
     let cursor = 0;
 
-    for (let index = 0; index < selector.length; index += 1) {
-      const char = selector[index]!;
+    for (let index = 0; index < head.selector.length; index += 1) {
+      const char = head.selector[index]!;
       if (escapeNext) {
         escapeNext = false;
         continue;
@@ -453,19 +468,19 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         continue;
       }
 
-      const nameMatch = /^:(text-is|text-matches|text)\s*\(/.exec(selector.slice(index));
+      const nameMatch = /^:(text-is|text-matches|has-text|text)\s*\(/.exec(head.selector.slice(index));
       if (!nameMatch) {
         continue;
       }
 
       const name = nameMatch[1] as CssTextPseudoName;
       const argsStart = index + nameMatch[0].length;
-      const argsEnd = findCssFunctionEnd(selector, argsStart);
+      const argsEnd = findCssFunctionEnd(head.selector, argsStart);
       if (argsEnd === -1) {
         continue;
       }
 
-      const argsSource = selector.slice(argsStart, argsEnd);
+      const argsSource = head.selector.slice(argsStart, argsEnd);
       const args = parseCssTextPseudoArgs(name, argsSource);
       pseudos.push({
         name,
@@ -473,21 +488,86 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         start: index,
         end: argsEnd + 1
       });
-      replacement += selector.slice(cursor, index);
+      replacement += head.selector.slice(cursor, index);
       cursor = argsEnd + 1;
       index = argsEnd;
     }
 
-    if (!pseudos.length) {
-      return null;
-    }
-
-    replacement += selector.slice(cursor);
-    const baseSelector = replacement.trim() || "*";
+    replacement += head.selector.slice(cursor);
+    const trimmedReplacement = replacement.trim();
+    const baseSelector = trimmedReplacement || "*";
     return {
       baseSelector,
+      ...(head.descendantSelector ? { descendantSelector: head.descendantSelector } : {}),
       pseudos
     };
+  };
+
+  const splitCssTextPseudoHead = (selector: string): {
+    selector: string;
+    descendantSelector?: string;
+  } | null => {
+    let quote: string | undefined;
+    let escapeNext = false;
+    let bracketDepth = 0;
+    let parenDepth = 0;
+    let firstPseudoEnd = -1;
+
+    for (let index = 0; index < selector.length; index += 1) {
+      const char = selector[index]!;
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (quote) {
+        if (char === "\\") {
+          escapeNext = true;
+        } else if (char === quote) {
+          quote = undefined;
+        }
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        quote = char;
+        continue;
+      }
+      if (char === "[") {
+        bracketDepth += 1;
+        continue;
+      }
+      if (char === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        continue;
+      }
+      if (char === "(") {
+        parenDepth += 1;
+        continue;
+      }
+      if (char === ")") {
+        parenDepth = Math.max(0, parenDepth - 1);
+        continue;
+      }
+      if (bracketDepth === 0 && parenDepth === 0 && char === ":") {
+        const nameMatch = /^:(text-is|text-matches|has-text|text)\s*\(/.exec(selector.slice(index));
+        if (nameMatch) {
+          const argsStart = index + nameMatch[0].length;
+          const argsEnd = findCssFunctionEnd(selector, argsStart);
+          if (argsEnd !== -1) {
+            firstPseudoEnd = argsEnd + 1;
+            index = argsEnd;
+            continue;
+          }
+        }
+      }
+      if (firstPseudoEnd !== -1 && bracketDepth === 0 && parenDepth === 0 && /\s/.test(char)) {
+        const headSelector = selector.slice(0, index).trim();
+        const descendantSelector = selector.slice(index).trim();
+        if (headSelector && descendantSelector) {
+          return { selector: headSelector, descendantSelector };
+        }
+      }
+    }
+    return firstPseudoEnd === -1 ? null : { selector };
   };
 
   const findCssFunctionEnd = (selector: string, argsStart: number): number => {
@@ -594,6 +674,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     if (name === "text-is") {
       throw new Error(`"text-is" engine expects a single string`);
     }
+    if (name === "has-text") {
+      throw new Error(`"has-text" engine expects a single string`);
+    }
     throw new Error(`"text-matches" engine expects a regexp body and optional regexp flags`);
   };
 
@@ -614,11 +697,24 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
 
   const queryCssTextPseudo = (
     root: ParentNode | Element,
-    parsed: { baseSelector: string; pseudos: CssTextPseudo[] },
+    parsed: { baseSelector: string; descendantSelector?: string; pseudos: CssTextPseudo[] },
     includeRoot: boolean
   ): Element[] => {
-    const candidates = queryCss(root, parsed.baseSelector, includeRoot);
-    return candidates.filter((element) => elementMatchesCssTextPseudos(element, parsed.pseudos));
+    const candidates = parsed.baseSelector === "*"
+      ? descendantsOf(root, includeRoot)
+      : queryCss(root, parsed.baseSelector, includeRoot);
+    const matching = candidates.filter((element) => elementMatchesCssTextPseudos(element, parsed.pseudos));
+    if (!parsed.descendantSelector) {
+      return matching;
+    }
+
+    const descendants: Element[] = [];
+    for (const element of matching) {
+      for (const descendant of queryCss(element, parsed.descendantSelector, false)) {
+        pushUnique(descendants, descendant);
+      }
+    }
+    return descendants;
   };
 
   const compilePattern = (selector: LocatorSelector, kind: "value" | "name" | "label") => {
