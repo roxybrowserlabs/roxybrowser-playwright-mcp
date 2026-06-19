@@ -209,9 +209,11 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
 
     const normalizedPattern = normalize(pattern);
-    return selector.exact
-      ? normalizedCandidate === normalizedPattern
-      : normalizedCandidate.includes(normalizedPattern);
+    if (selector.exact) {
+      return normalizedCandidate === normalizedPattern;
+    }
+
+    return normalizedCandidate.toLowerCase().includes(normalizedPattern.toLowerCase());
   };
 
   const implicitRole = (element: Element): string | null => {
@@ -253,9 +255,6 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     normalize(element.getAttribute("role")) || implicitRole(element);
 
   const accessibleName = (element: Element): string => {
-    const ariaLabel = element.getAttribute("aria-label");
-    if (ariaLabel) return normalize(ariaLabel);
-
     const labelledBy = element.getAttribute("aria-labelledby");
     if (labelledBy) {
       const ids = labelledBy.split(/\s+/);
@@ -269,6 +268,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       const text = parts.join(" ");
       if (text) return normalize(text);
     }
+
+    const ariaLabel = element.getAttribute("aria-label");
+    if (ariaLabel) return normalize(ariaLabel);
 
     const labels =
       "labels" in element

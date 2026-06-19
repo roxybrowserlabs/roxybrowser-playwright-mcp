@@ -112,6 +112,112 @@ describe("page selectors contract e2e", () => {
     });
   });
 
+  it("getByTestId matches Playwright default test id attributes and regex", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <section>
+          <div data-testid="Hello">Hello world</div>
+          <div data-test-id="Hello">Legacy test id</div>
+          <div data-test="Hello">Legacy test</div>
+          <div data-testid='He"llo'>Escaped id</div>
+        </section>
+      `);
+
+      expect(await page.getByTestId("Hello").allTextContents()).toEqual([
+        "Hello world",
+        "Legacy test id",
+        "Legacy test"
+      ]);
+      expect(await page.mainFrame().getByTestId("Hello").first().textContent()).toBe("Hello world");
+      expect(await page.locator("section").getByTestId("Hello").allTextContents()).toEqual([
+        "Hello world",
+        "Legacy test id",
+        "Legacy test"
+      ]);
+      expect(await page.getByTestId('He"llo').textContent()).toBe("Escaped id");
+      expect(await page.getByTestId(/He[l]*o/).first().textContent()).toBe("Hello world");
+    });
+  });
+
+  it("getByLabel follows Playwright label and aria precedence", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div><label for=target>Name</label><input id=target type=text></div>`);
+      expect(await page.getByText("Name").evaluate((element) => element.nodeName)).toBe("LABEL");
+      expect(await page.getByLabel("Name").evaluate((element) => element.nodeName)).toBe("INPUT");
+      expect(await page.mainFrame().getByLabel("Name").evaluate((element) => element.nodeName)).toBe("INPUT");
+      expect(await page.locator("div").getByLabel("Name").evaluate((element) => element.nodeName)).toBe("INPUT");
+
+      await page.setContent(`<label for=target>Last <span>Name</span></label><input id=target type=text>`);
+      expect(await page.getByLabel("last name").getAttribute("id")).toBe("target");
+      expect(await page.getByLabel("st na").getAttribute("id")).toBe("target");
+      expect(await page.getByLabel("Name").getAttribute("id")).toBe("target");
+      expect(await page.getByLabel("Last Name", { exact: true }).getAttribute("id")).toBe("target");
+      expect(await page.getByLabel(/Last\s+name/i).getAttribute("id")).toBe("target");
+      expect(await page.getByLabel("Last", { exact: true }).elementHandles()).toEqual([]);
+      expect(await page.getByLabel("Name", { exact: true }).elementHandles()).toEqual([]);
+
+      await page.setContent(`<label for=target>Name</label><input id=target type=text><label for=target>First or Last</label>`);
+      expect(await page.getByLabel("Name").evaluate((element) => element.id)).toBe("target");
+      expect(await page.getByLabel("First or Last").evaluate((element) => element.id)).toBe("target");
+
+      await page.setContent(`<label>Name<button id=target>Click me</button><input type=text></label>`);
+      expect(await page.getByLabel("Name").evaluate((element) => element.id)).toBe("target");
+
+      await page.setContent(`
+        <label for=target>Name<input type=text id=nontarget></label>
+        <input type=text id=target>
+      `);
+      expect(await page.getByLabel("Name").evaluate((element) => element.id)).toBe("target");
+
+      await page.setContent(`<label id=name-label>Name</label><button aria-labelledby=name-label>Click me</button>`);
+      expect(await page.getByLabel("Name").evaluate((element) => element.textContent)).toBe("Click me");
+
+      await page.setContent(`
+        <label id=name-label>Name</label>
+        <label>Wrong<button aria-labelledby=name-label>Click me</button></label>
+      `);
+      expect(await page.getByLabel("Name").evaluate((element) => element.textContent)).toBe("Click me");
+
+      await page.setContent(`<input id=target aria-label="Name">`);
+      expect(await page.getByLabel("Name").evaluate((element) => element.id)).toBe("target");
+
+      await page.setContent(`<label for=target>Last Name</label><input id=target type=text aria-label>`);
+      expect(await page.getByLabel("Last Name").evaluate((element) => element.id)).toBe("target");
+
+      await page.setContent(`<label id=other-label>Other</label><input id=target aria-label="Name" aria-labelledby=other-label>`);
+      expect(await page.getByLabel("Other").evaluate((element) => element.id)).toBe("target");
+    });
+  });
+
+  it("getByPlaceholder, getByAltText, and getByTitle match Playwright exact and regex behavior", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div>
+          <input placeholder="Hello" alt="Hello" title="Hello">
+          <input placeholder="Hello World" alt="Hello World" title="Hello World">
+        </div>
+      `);
+
+      expect(await page.getByPlaceholder("hello").count()).toBe(2);
+      expect(await page.getByPlaceholder("Hello", { exact: true }).count()).toBe(1);
+      expect(await page.getByPlaceholder(/wor/i).count()).toBe(1);
+      expect(await page.mainFrame().getByPlaceholder("hello").count()).toBe(2);
+      expect(await page.locator("div").getByPlaceholder("hello").count()).toBe(2);
+
+      expect(await page.getByAltText("hello").count()).toBe(2);
+      expect(await page.getByAltText("Hello", { exact: true }).count()).toBe(1);
+      expect(await page.getByAltText(/wor/i).count()).toBe(1);
+      expect(await page.mainFrame().getByAltText("hello").count()).toBe(2);
+      expect(await page.locator("div").getByAltText("hello").count()).toBe(2);
+
+      expect(await page.getByTitle("hello").count()).toBe(2);
+      expect(await page.getByTitle("Hello", { exact: true }).count()).toBe(1);
+      expect(await page.getByTitle(/wor/i).count()).toBe(1);
+      expect(await page.mainFrame().getByTitle("hello").count()).toBe(2);
+      expect(await page.locator("div").getByTitle("hello").count()).toBe(2);
+    });
+  });
+
   it("finds buttons with getByRole and accessible names", async () => {
     await withPage(async (page) => {
       await page.setContent(`

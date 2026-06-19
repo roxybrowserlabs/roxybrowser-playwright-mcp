@@ -621,7 +621,11 @@ function locatorOperation(payload: LocatorPayload) {
       return pattern.test(normalizedCandidate);
     }
 
-    return selector.exact ? normalizedCandidate === pattern : normalizedCandidate.includes(pattern);
+    if (selector.exact) {
+      return normalizedCandidate === pattern;
+    }
+
+    return normalizedCandidate.toLowerCase().includes(pattern.toLowerCase());
   };
 
   const implicitRole = (element: Element): string | null => {
@@ -663,9 +667,6 @@ function locatorOperation(payload: LocatorPayload) {
     normalize(element.getAttribute("role")) || implicitRole(element);
 
   const accessibleName = (element: Element): string => {
-    const ariaLabel = element.getAttribute("aria-label");
-    if (ariaLabel) return normalize(ariaLabel);
-
     const labelledBy = element.getAttribute("aria-labelledby");
     if (labelledBy) {
       const text = labelledBy
@@ -677,6 +678,9 @@ function locatorOperation(payload: LocatorPayload) {
 
       if (text) return normalize(text);
     }
+
+    const ariaLabel = element.getAttribute("aria-label");
+    if (ariaLabel) return normalize(ariaLabel);
 
     if (
       element instanceof HTMLInputElement &&
