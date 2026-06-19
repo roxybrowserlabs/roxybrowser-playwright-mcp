@@ -1064,6 +1064,7 @@ export interface JSHandle<T = unknown> extends Disposable {
 }
 
 export interface Locator {
+  _roxyFrameIdentity?(): string | undefined;
   _roxySelectorChain?(): LocatorSelector[] | null;
   page(): Page;
   locator(selectorOrLocator: string|Locator, options?: {

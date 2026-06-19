@@ -3476,10 +3476,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (frame.nativeFrameId && this.adapter.locatorInFrame) {
       return this.createLocatorFromAdapterChain(
         this.adapter.locatorInFrame(frame.nativeFrameId, chain[0]!),
-        chain
+        chain,
+        frame.id
       );
     }
-    return this.createLocatorFromChain(this.chainForFrame(frame, chain));
+    return this.createLocatorFromChain(this.chainForFrame(frame, chain), frame.id);
   }
 
   getByTextInFrame(
@@ -4307,7 +4308,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return status >= 300 && status < 400 ? previous : null;
   }
 
-  private createLocatorFromChain(chain: LocatorSelector[]): Locator {
+  private createLocatorFromChain(chain: LocatorSelector[], frameIdentity?: string): Locator {
     const [first, ...rest] = chain;
     if (!first) {
       throw new Error("Selector must not be empty.");
@@ -4324,13 +4325,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         return await this.maybeRunLocatorHandlers(locator, options);
       },
       this.humanDefaults,
-      this
+      this,
+      this,
+      frameIdentity
     );
   }
 
   private createLocatorFromAdapterChain(
     adapter: ProtocolLocatorAdapter,
-    chain: LocatorSelector[]
+    chain: LocatorSelector[],
+    frameIdentity?: string
   ): Locator {
     const [first, ...rest] = chain;
     if (!first) {
@@ -4349,15 +4353,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       },
       this.humanDefaults,
       this,
-      this
+      this,
+      frameIdentity
     );
   }
 
   private rootLocatorForFrame(frame: RoxyFrameSnapshot): RoxyLocator {
     if (!frame.referenceChain.length) {
-      return new RoxyLocator(this.adapter.locator({ strategy: "css", value: ":root" }), this.humanController, null, undefined, this.humanDefaults, this);
+      return new RoxyLocator(this.adapter.locator({ strategy: "css", value: ":root" }), this.humanController, null, undefined, this.humanDefaults, this, this, frame.id);
     }
-    return this.createLocatorFromChain(frame.referenceChain) as RoxyLocator;
+    return this.createLocatorFromChain(frame.referenceChain, frame.id) as RoxyLocator;
   }
 
   private chainForFrame(frame: RoxyFrameSnapshot, chain: LocatorSelector[]): LocatorSelector[] {

@@ -273,6 +273,36 @@ describe("RoxyLocator", () => {
     });
   });
 
+  it("enforces same-frame locators for Playwright composite options", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    const mainLocator = new RoxyLocator(
+      rootAdapter,
+      undefined,
+      [{ strategy: "css", value: "div" }],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "main"
+    );
+    const childLocator = new RoxyLocator(
+      rootAdapter,
+      undefined,
+      [{ strategy: "css", value: "span" }],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "child"
+    );
+
+    expect(() => mainLocator.locator(childLocator)).toThrow("Locators must belong to the same frame.");
+    expect(() => mainLocator.and(childLocator)).toThrow("Locators must belong to the same frame.");
+    expect(() => mainLocator.or(childLocator)).toThrow("Locators must belong to the same frame.");
+    expect(() => mainLocator.filter({ has: childLocator })).toThrow('Inner "has" locator must belong to the same frame.');
+    expect(() => mainLocator.filter({ hasNot: childLocator })).toThrow('Inner "hasNot" locator must belong to the same frame.');
+  });
+
   it("builds frame locators by inserting an enter-frame control step", () => {
     const rootAdapter = createLocatorAdapterStub();
     const frameAdapter = createLocatorAdapterStub();

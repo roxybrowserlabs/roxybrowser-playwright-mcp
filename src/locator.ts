@@ -118,7 +118,31 @@ function selectorChainForLocator(locator: Locator, optionName: "has" | "hasNot")
   return cloneLocatorSelectorChain(chain);
 }
 
-function sameFrameSelectorChainForLocator(locator: Locator, errorMessage: string): LocatorSelector[] {
+function frameIdentityForLocator(locator: Locator): string | undefined {
+  return locator._roxyFrameIdentity?.();
+}
+
+function assertSameFrameLocator(
+  currentFrameIdentity: string | undefined,
+  locator: Locator,
+  errorMessage: string
+): void {
+  const innerFrameIdentity = frameIdentityForLocator(locator);
+  if (
+    currentFrameIdentity !== undefined &&
+    innerFrameIdentity !== undefined &&
+    currentFrameIdentity !== innerFrameIdentity
+  ) {
+    throw new Error(errorMessage);
+  }
+}
+
+function selectorChainForSameFrameLocator(
+  currentFrameIdentity: string | undefined,
+  locator: Locator,
+  errorMessage: string
+): LocatorSelector[] {
+  assertSameFrameLocator(currentFrameIdentity, locator, errorMessage);
   const chain = locator._roxySelectorChain?.();
   if (!chain) {
     throw new Error(errorMessage);
@@ -235,13 +259,18 @@ export class RoxyLocator implements Locator {
     private readonly beforeAction?: (locator: RoxyLocator, options?: ActionOptionsLike) => Promise<boolean | void>,
     private readonly humanDefaults: ResolvedHumanizationOptions = DEFAULT_LOCATOR_HUMAN_DEFAULTS,
     private readonly frameResolver?: ElementHandleFrameResolver,
-    private readonly ownerPage?: Page
+    private readonly ownerPage?: Page,
+    private readonly frameIdentity?: string
   ) {
     this.selectorChain = selectorChain ? cloneLocatorSelectorChain(selectorChain) : null;
   }
 
   _roxySelectorChain(): LocatorSelector[] | null {
     return this.selectorChain ? cloneLocatorSelectorChain(this.selectorChain) : null;
+  }
+
+  _roxyFrameIdentity(): string | undefined {
+    return this.frameIdentity;
   }
 
   page(): Page {
@@ -262,7 +291,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
   }
 
@@ -272,7 +302,8 @@ export class RoxyLocator implements Locator {
         strategy: "control",
         value: "chain",
         composite: "chain",
-        hasChain: sameFrameSelectorChainForLocator(
+        hasChain: selectorChainForSameFrameLocator(
+          this.frameIdentity,
           selectorOrLocator,
           "Locators must belong to the same frame."
         )
@@ -292,7 +323,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
     return options ? locator.filter(options) : locator;
   }
@@ -311,7 +343,8 @@ export class RoxyLocator implements Locator {
         this.beforeAction,
         this.humanDefaults,
         this.frameResolver,
-        this.ownerPage
+        this.ownerPage,
+        this.frameIdentity
       )
     );
   }
@@ -324,7 +357,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
   }
 
@@ -336,7 +370,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
   }
 
@@ -348,7 +383,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
   }
 
@@ -360,7 +396,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
   }
 
@@ -372,7 +409,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
   }
 
@@ -384,7 +422,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
   }
 
@@ -396,7 +435,8 @@ export class RoxyLocator implements Locator {
       this.beforeAction,
       this.humanDefaults,
       this.frameResolver,
-      this.ownerPage
+      this.ownerPage,
+      this.frameIdentity
     );
   }
 
@@ -420,7 +460,11 @@ export class RoxyLocator implements Locator {
         strategy: "control",
         value: "has",
         filter: true,
-        hasChain: selectorChainForLocator(options.has, "has")
+        hasChain: selectorChainForSameFrameLocator(
+          this.frameIdentity,
+          options.has,
+          'Inner "has" locator must belong to the same frame.'
+        )
       };
       adapter = adapter.locator(selector);
       chain.push(selector);
@@ -431,7 +475,11 @@ export class RoxyLocator implements Locator {
         value: "has-not",
         filter: true,
         negate: true,
-        hasChain: selectorChainForLocator(options.hasNot, "hasNot")
+        hasChain: selectorChainForSameFrameLocator(
+          this.frameIdentity,
+          options.hasNot,
+          'Inner "hasNot" locator must belong to the same frame.'
+        )
       };
       adapter = adapter.locator(selector);
       chain.push(selector);
@@ -461,7 +509,11 @@ export class RoxyLocator implements Locator {
       strategy: "control",
       value: "and",
       composite: "and",
-      hasChain: sameFrameSelectorChainForLocator(locator, "Locators must belong to the same frame.")
+      hasChain: selectorChainForSameFrameLocator(
+        this.frameIdentity,
+        locator,
+        "Locators must belong to the same frame."
+      )
     };
     return this.cloneWith(
       this.adapter.locator(selector),
@@ -474,7 +526,11 @@ export class RoxyLocator implements Locator {
       strategy: "control",
       value: "or",
       composite: "or",
-      hasChain: sameFrameSelectorChainForLocator(locator, "Locators must belong to the same frame.")
+      hasChain: selectorChainForSameFrameLocator(
+        this.frameIdentity,
+        locator,
+        "Locators must belong to the same frame."
+      )
     };
     return this.cloneWith(
       this.adapter.locator(selector),

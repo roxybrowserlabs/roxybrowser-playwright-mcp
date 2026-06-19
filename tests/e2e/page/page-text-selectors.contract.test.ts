@@ -425,4 +425,28 @@ describe("page text selector contract e2e", () => {
       expect(await page.locator("button").and(page.getByRole("button")).allTextContents()).toEqual(["three", "five"]);
     });
   });
+
+  it("enforces same frame for has locator option like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<iframe srcdoc="<span>child</span>"></iframe><div>main</div>`);
+      const child = page.frames().find((frame) => frame !== page.mainFrame());
+      expect(child).toBeDefined();
+
+      expect(() => page.locator("div", { has: child!.locator("span") })).toThrow(
+        'Inner "has" locator must belong to the same frame.'
+      );
+      expect(() => page.locator("div", { hasNot: child!.locator("span") })).toThrow(
+        'Inner "hasNot" locator must belong to the same frame.'
+      );
+      expect(() => page.locator("div").locator(child!.locator("span"))).toThrow(
+        "Locators must belong to the same frame."
+      );
+      expect(() => page.locator("div").and(child!.locator("span"))).toThrow(
+        "Locators must belong to the same frame."
+      );
+      expect(() => page.locator("div").or(child!.locator("span"))).toThrow(
+        "Locators must belong to the same frame."
+      );
+    });
+  });
 });
