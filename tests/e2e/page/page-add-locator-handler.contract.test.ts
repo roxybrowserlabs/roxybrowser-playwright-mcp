@@ -111,6 +111,27 @@ describe("page addLocatorHandler contract e2e", () => {
     });
   });
 
+  it("runs locator handlers before locator.waitFor", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/input/handle-locator.html");
+
+      let called = 0;
+      await page.addLocatorHandler(page.getByText("This interstitial covers the button"), async () => {
+        called++;
+        await page.locator("#close").click();
+      });
+
+      await page.evaluate(() => {
+        window.clicked = 0;
+        window.setupAnnoyingInterstitial("remove", 1);
+      });
+      await page.locator("#target").waitFor();
+
+      expect(await page.locator("#interstitial").isVisible()).toBe(false);
+      expect(called).toBe(1);
+    });
+  });
+
   it("does not run locator handlers for force actions", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.PREFIX + "/input/handle-locator.html");

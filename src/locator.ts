@@ -811,6 +811,9 @@ export class RoxyLocator implements Locator {
     const startTime = Date.now();
 
     while (timeout === 0 || Date.now() - startTime <= timeout) {
+      await this.beforeAction?.(this, {
+        timeout: timeout === 0 ? 0 : Math.max(0, timeout - (Date.now() - startTime))
+      });
       const count = await this.count().catch(() => 0);
       const attached = count > 0;
       const visible = attached ? await this.isVisible().catch(() => false) : false;
