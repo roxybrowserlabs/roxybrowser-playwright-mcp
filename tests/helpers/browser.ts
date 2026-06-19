@@ -1,6 +1,6 @@
 import { chromium } from "../../src/index.js";
 import type { Browser, BrowserContext, Page, ResolvedAriaRef } from "../../src/types/api.js";
-import { cleanupLocalTestBrowserProcesses } from "./browser-process-cleanup.js";
+import { cleanupLocalTestBrowserProcessesWithTimeout } from "./browser-process-cleanup.js";
 
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
 
@@ -34,7 +34,7 @@ export async function withPage<T>(
     }
   } finally {
     await closeForTest("browser.close", () => browser.close()).catch(() => {});
-    await cleanupLocalTestBrowserProcesses();
+    await cleanupLocalTestBrowserProcessesWithTimeout();
   }
 }
 

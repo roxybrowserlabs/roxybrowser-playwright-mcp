@@ -58,6 +58,39 @@ describe("browser process cleanup", () => {
     expect(killSpy).not.toHaveBeenCalledWith(201, expect.anything());
   });
 
+  it("rescans before force-killing local test browser process trees", async () => {
+    vi.mocked(execFile)
+      .mockImplementationOnce((_file, _args, callback) => {
+        callback(
+          null,
+          "101 1 /Applications/Firefox.app/Contents/MacOS/firefox -profile /tmp/roxybrowser-bidi-a --remote-debugging-port=1234"
+        );
+        return undefined as never;
+      })
+      .mockImplementationOnce((_file, _args, callback) => {
+        callback(
+          null,
+          [
+            "111 1 /Applications/Firefox.app/Contents/MacOS/firefox -profile /tmp/roxybrowser-bidi-a --remote-debugging-port=1234",
+            "112 111 /Applications/Firefox.app/Contents/MacOS/plugin-container child"
+          ].join("\n")
+        );
+        return undefined as never;
+      });
+
+    const { cleanupLocalTestBrowserProcesses } = await import("../helpers/browser-process-cleanup.js");
+    const cleanup = cleanupLocalTestBrowserProcesses();
+
+    await vi.advanceTimersByTimeAsync(500);
+    await cleanup;
+
+    expect(killSpy).toHaveBeenCalledWith(-101, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(101, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(-111, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(111, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(112, "SIGKILL");
+  });
+
   it("synchronously cleans local test browser process trees on process exit", async () => {
     vi.mocked(spawnSync).mockReturnValue({
       stdout: [

@@ -57,7 +57,7 @@ async function cleanupLocalTestBrowserProcessesOnce(): Promise<void> {
 
   const stdout = await execFileText("ps", ["-eo", "pid=,ppid=,command="]).catch(() => "");
   const processTree = collectLocalTestBrowserProcessTree(stdout, process.pid);
-  await terminateLocalTestBrowserProcessPids(processTree);
+  await terminateLocalTestBrowserProcessTree(processTree);
 }
 
 export function cleanupLocalTestBrowserProcessesSync(): void {
@@ -163,7 +163,7 @@ export function collectLocalTestBrowserProcessTree(
   };
 }
 
-async function terminateLocalTestBrowserProcessPids(
+async function terminateLocalTestBrowserProcessTree(
   processTree: LocalTestBrowserProcessTree
 ): Promise<void> {
   const { rootPids, pids } = processTree;
@@ -180,10 +180,19 @@ async function terminateLocalTestBrowserProcessPids(
   }
 
   await delay(500);
-  for (const pid of rootPids) {
+  const stdout = await execFileText("ps", ["-eo", "pid=,ppid=,command="]).catch(() => "");
+  const remainingProcessTree = collectLocalTestBrowserProcessTree(stdout, process.pid);
+  const remainingRootPids = remainingProcessTree.rootPids.length
+    ? remainingProcessTree.rootPids
+    : rootPids;
+  const remainingPids = remainingProcessTree.pids.length
+    ? remainingProcessTree.pids
+    : pids;
+
+  for (const pid of remainingRootPids) {
     killProcessGroup(pid, "SIGKILL");
   }
-  for (const pid of pids) {
+  for (const pid of remainingPids) {
     killPid(pid, "SIGKILL");
   }
 }

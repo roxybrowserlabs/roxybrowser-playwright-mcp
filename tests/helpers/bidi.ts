@@ -7,7 +7,7 @@ import {
 import {
   toBidiWsEndpoint
 } from "./roxybrowser.js";
-import { cleanupLocalTestBrowserProcesses } from "./browser-process-cleanup.js";
+import { cleanupLocalTestBrowserProcessesWithTimeout } from "./browser-process-cleanup.js";
 
 const FIREFOX_EXECUTABLE =
   process.env.ROXY_BIDI_EXECUTABLE_PATH
@@ -163,7 +163,7 @@ export async function withBidiPage<T>(
           windowRemark: "firefox bidi e2e"
         });
       }
-      await cleanupLocalTestBrowserProcesses();
+      await cleanupLocalTestBrowserProcessesWithTimeout();
     }
   }
 }
@@ -209,7 +209,7 @@ export async function cleanupExternalBidiTestState(): Promise<void> {
     coreVersion: ROXYBROWSER_CORE_VERSION,
     windowRemark: "firefox bidi e2e"
   });
-  await cleanupLocalTestBrowserProcesses();
+  await cleanupLocalTestBrowserProcessesWithTimeout();
 }
 
 export async function cleanupBidiTestStateAfterTest(): Promise<void> {
@@ -221,7 +221,7 @@ export async function cleanupBidiTestStateAfterTest(): Promise<void> {
 }
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {
-  await cleanupLocalTestBrowserProcesses();
+  await cleanupLocalTestBrowserProcessesWithTimeout();
 }
 
 export function installBidiTestCleanupHooks(): void {
