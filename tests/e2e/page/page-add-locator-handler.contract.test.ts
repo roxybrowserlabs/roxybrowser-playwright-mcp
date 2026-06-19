@@ -92,6 +92,31 @@ describe("page addLocatorHandler contract e2e", () => {
     });
   });
 
+  it("throws when locator handler times out without re-entering it", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/input/handle-locator.html");
+
+      let called = 0;
+      await page.addLocatorHandler(page.getByText("This interstitial covers the button"), async () => {
+        called++;
+        await new Promise(() => {});
+      });
+
+      await page.locator("#aside").hover();
+      await page.evaluate(() => {
+        window.clicked = 0;
+        window.setupAnnoyingInterstitial("mouseover", 1);
+      });
+
+      const error = await page.locator("#target").click({ timeout: 3000 }).catch((caught) => caught);
+      expect(error.message).toContain("Timeout 3000ms exceeded");
+
+      const error2 = await page.locator("#target").click({ timeout: 3000 }).catch((caught) => caught);
+      expect(error2.message).toContain("Timeout 3000ms exceeded");
+      expect(called).toBe(1);
+    });
+  });
+
   it("supports the times option", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.PREFIX + "/input/handle-locator.html");

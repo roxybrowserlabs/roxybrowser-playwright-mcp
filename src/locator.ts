@@ -60,7 +60,7 @@ const ENTER_FRAME_SELECTOR: LocatorSelector = {
 const DEFAULT_LOCATOR_HUMAN_DEFAULTS = resolveHumanizationOptions({ enabled: false });
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 
-type ActionOptionsLike = { force?: boolean } | undefined;
+type ActionOptionsLike = { force?: boolean; timeout?: number } | undefined;
 type LocatorOptions = {
   has?: Locator;
   hasNot?: Locator;
@@ -539,12 +539,12 @@ export class RoxyLocator implements Locator {
   }
 
   async type(value: string, options?: TypeOptions): Promise<void> {
-    await this.beforeAction?.(this, undefined);
+    await this.beforeAction?.(this, options);
     await this.humanController.type(this.adapter, value, options);
   }
 
   async press(key: string, options?: PressOptions): Promise<void> {
-    await this.beforeAction?.(this, undefined);
+    await this.beforeAction?.(this, options);
     await this.humanController.press(this.adapter, key, options);
   }
 

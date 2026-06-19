@@ -2693,19 +2693,39 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
 
       entry.running = true;
+      const timeout = options?.timeout ?? this.defaultTimeoutMs;
+      let timedOut = false;
+      let shouldRemove = false;
+      const handlerPromise = Promise.resolve().then(() => entry.handler(entry.locator));
+      if (entry.remainingTimes !== null) {
+        entry.remainingTimes -= 1;
+        shouldRemove = entry.remainingTimes <= 0;
+      }
       try {
-        await entry.handler(entry.locator);
-        if (entry.remainingTimes !== null) {
-          entry.remainingTimes -= 1;
-          if (entry.remainingTimes <= 0) {
-            await this.removeLocatorHandler(entry.locator);
-          }
+        await runWithTimeout(handlerPromise, timeout, () => {
+          timedOut = true;
+        });
+        if (shouldRemove) {
+          await this.removeLocatorHandler(entry.locator);
         }
         if (!entry.noWaitAfter) {
-          await this.waitForLocatorToHide(entry.locator, options?.timeout ?? this.defaultTimeoutMs);
+          await this.waitForLocatorToHide(entry.locator, timeout);
         }
       } finally {
-        entry.running = false;
+        if (timedOut) {
+          void handlerPromise
+            .catch(() => {})
+            .then(async () => {
+              if (shouldRemove) {
+                await this.removeLocatorHandler(entry.locator).catch(() => {});
+              }
+            })
+            .finally(() => {
+              entry.running = false;
+            });
+        } else {
+          entry.running = false;
+        }
       }
     }
 
@@ -7241,6 +7261,32 @@ function trimUrlForWaitLog(param: unknown): string | undefined {
     return `"${trimStringWithEllipsis(param, 50)}"`;
   }
   return undefined;
+}
+
+async function runWithTimeout<T>(
+  promise: Promise<T>,
+  timeout: number,
+  onTimeout?: () => void
+): Promise<T> {
+  if (timeout === 0) {
+    return promise;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          onTimeout?.();
+          reject(new TimeoutError(`Timeout ${timeout}ms exceeded.`));
+        }, timeout);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function formatLocatorForMessage(locator: Locator): string {
