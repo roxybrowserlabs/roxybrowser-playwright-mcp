@@ -201,6 +201,7 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
 
 function parseTextSelector(body: string): LocatorSelector {
   const trimmed = body.trim();
+  const hasLeadingWhitespace = /^\s/.test(body);
   if (!trimmed) {
     return {
       strategy: "text",
@@ -227,10 +228,10 @@ function parseTextSelector(body: string): LocatorSelector {
     };
   }
 
-  if (
+  const isQuoted =
     (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
+    (trimmed.startsWith("'") && trimmed.endsWith("'"));
+  if (!hasLeadingWhitespace && isQuoted) {
     const quote = trimmed[0]!;
     return {
       strategy: "text",

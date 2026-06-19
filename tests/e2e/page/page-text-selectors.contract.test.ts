@@ -183,4 +183,96 @@ describe("page text selector contract e2e", () => {
       expect(error2.message).toContain(`"has-text" engine expects a single string`);
     });
   });
+
+  it("matches text selector root after chained selector like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<section>test</section>");
+
+      const element = await page.$("css=section >> text=test");
+      expect(element).toBeTruthy();
+      const element2 = await page.$("text=test >> text=test");
+      expect(element2).toBeTruthy();
+    });
+  });
+
+  it("matches text selector root after chained selector with capture like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<button> hello world </button> <button> hellow <span> world </span> </button>`);
+
+      expect(await page.$$eval("*css=button >> text=hello >> text=world", (elements) => elements.length)).toBe(2);
+    });
+  });
+
+  it("prioritizes light DOM over shadow DOM text in the same parent like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => {
+        const div = document.createElement("div");
+        document.body.appendChild(div);
+
+        div.attachShadow({ mode: "open" });
+        const shadowSpan = document.createElement("span");
+        shadowSpan.textContent = "Hello from shadow";
+        div.shadowRoot!.appendChild(shadowSpan);
+
+        const lightSpan = document.createElement("span");
+        lightSpan.textContent = "Hello from light";
+        div.appendChild(lightSpan);
+      });
+
+      expect(await page.$eval("div >> text=Hello", (element) => element.textContent)).toBe("Hello from light");
+    });
+  });
+
+  it("keeps quoted text selectors case sensitive like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div>yo</div><div>ya</div><div>\nye  </div>`);
+
+      expect(await page.$eval("text=yA", (element) => element.outerHTML)).toBe("<div>ya</div>");
+      expect(await page.$(`text="yA"`)).toBe(null);
+      expect(await page.$(`text= "ya"`)).toBe(null);
+    });
+  });
+
+  it("searches for substrings only without quotes like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div>textwithsubstring</div>");
+
+      expect(await page.$eval("text=with", (element) => element.outerHTML)).toBe("<div>textwithsubstring</div>");
+      expect(await page.$(`text="with"`)).toBe(null);
+    });
+  });
+
+  it("matches text selectors with leading and trailing spaces like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<button> Add widget </button>");
+
+      expect(await page.$("text=Add widget")).toBeTruthy();
+      expect(await page.$("text= Add widget ")).toBeTruthy();
+    });
+  });
+
+  it("supports unpaired quotes when not at the start like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div>hello"world<span>yay</span></div>
+        <div>hello'world<span>nay</span></div>
+        <div>hello\`world<span>oh</span></div>
+        <div>hello\`world<span>oh2</span></div>
+      `);
+
+      expect(await page.$eval(`text=lo" >> span`, (element) => element.outerHTML)).toBe("<span>yay</span>");
+      expect(await page.$eval(`  text=lo" >> span`, (element) => element.outerHTML)).toBe("<span>yay</span>");
+      expect(await page.$eval(`text  =lo" >> span`, (element) => element.outerHTML)).toBe("<span>yay</span>");
+      expect(await page.$eval(`text=  lo" >> span`, (element) => element.outerHTML)).toBe("<span>yay</span>");
+      expect(await page.$eval(` text = lo" >> span`, (element) => element.outerHTML)).toBe("<span>yay</span>");
+      expect(await page.$eval(`text=o"wor >> span`, (element) => element.outerHTML)).toBe("<span>yay</span>");
+
+      expect(await page.$eval(`text=lo'wor >> span`, (element) => element.outerHTML)).toBe("<span>nay</span>");
+      expect(await page.$eval(`text=o' >> span`, (element) => element.outerHTML)).toBe("<span>nay</span>");
+
+      expect(await page.$eval("text=ello`wor >> span", (element) => element.outerHTML)).toBe("<span>oh</span>");
+      expect(await page.locator("text=ello`wor").locator("span").first().textContent()).toBe("oh");
+      expect(await page.locator("text=ello`wor").locator("span").nth(1).textContent()).toBe("oh2");
+    });
+  });
 });
