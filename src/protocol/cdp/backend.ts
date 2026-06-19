@@ -1818,6 +1818,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client.Page.navigatedWithinDocument((event) => {
       this.currentUrl = event.url ?? this.currentUrl;
       void this.syncCurrentUrlFromDocument();
+      this.emit("framenavigated", {
+        frameId: event.frameId,
+        ...(event.frameId === this.mainFrameId ? { parentFrameId: null } : {}),
+        url: event.url
+      });
       this.sameDocumentNavigation = true;
       this.domContentLoaded = true;
       this.loadFired = true;

@@ -3253,12 +3253,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async gotoInFrame(frame: RoxyFrameSnapshot, url: string, options: PageGotoOptions = {}): Promise<Response | null> {
     if (frame.parentId === null) {
+      const previousUrl = this.mainFrame().url();
       const response = await this.adapter.goto(url, {
         ...options,
         timeout: options.timeout ?? this.defaultNavigationTimeoutMs
       });
       await this.reinstallExposedBindings();
       await this.refreshFrameSnapshots();
+      const currentUrl = this.adapter.url();
+      const mainFrame = this.mainFrame();
+      if (currentUrl !== previousUrl && mainFrame instanceof RoxyFrame && mainFrame.url() !== currentUrl) {
+        mainFrame.setSnapshot({
+          ...mainFrame.snapshotState(),
+          url: currentUrl
+        });
+        this.emit("framenavigated", mainFrame);
+      }
       return this.toPublicResponse(response);
     }
 
