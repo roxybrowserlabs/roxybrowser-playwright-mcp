@@ -128,4 +128,80 @@ describe("page CSS selector contract e2e", () => {
       expect(await page.$eval(`css=div[attr="hello,world!"],span`, (element) => element.outerHTML)).toBe("<span></span>");
     });
   });
+
+  it("supports sibling combinators and :scope like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div id=div1></div>
+        <div id=div2></div>
+        <div id=div3></div>
+        <div id=div4></div>
+        <div id=div5></div>
+        <div id=div6></div>
+      `);
+
+      expect(await page.$$eval(`#div3 >> :scope ~ div`, (elements) => elements.map((element) => element.id))).toEqual(["div4", "div5", "div6"]);
+      expect(await page.$$eval(`#div3 >> :scope ~ *`, (elements) => elements.map((element) => element.id))).toEqual(["div4", "div5", "div6"]);
+      expect(await page.$$eval(`#div3 >> ~ div`, (elements) => elements.map((element) => element.id))).toEqual(["div4", "div5", "div6"]);
+      expect(await page.$$eval(`#div3 >> ~ *`, (elements) => elements.map((element) => element.id))).toEqual(["div4", "div5", "div6"]);
+      expect(await page.$$eval(`#div3 >> #div1 ~ :scope`, (elements) => elements.map((element) => element.id))).toEqual(["div3"]);
+      expect(await page.$$eval(`#div3 >> #div4 ~ :scope`, (elements) => elements.map((element) => element.id))).toEqual([]);
+    });
+  });
+
+  it("supports adjacent sibling combinators and relative selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <section>
+          <div id=div1></div>
+          <div id=div2></div>
+          <div id=div3></div>
+          <div id=div4></div>
+          <div id=div5></div>
+          <div id=div6></div>
+        </section>
+      `);
+
+      expect(await page.$$eval(`#div1 >> :scope+div`, (elements) => elements.map((element) => element.id))).toEqual(["div2"]);
+      expect(await page.$$eval(`#div1 >> :scope+*`, (elements) => elements.map((element) => element.id))).toEqual(["div2"]);
+      expect(await page.$$eval(`#div1 >> + div`, (elements) => elements.map((element) => element.id))).toEqual(["div2"]);
+      expect(await page.$$eval(`#div1 >> + *`, (elements) => elements.map((element) => element.id))).toEqual(["div2"]);
+      expect(await page.$$eval(`#div3 >> div + :scope`, (elements) => elements.map((element) => element.id))).toEqual(["div3"]);
+      expect(await page.$$eval(`#div3 >> #div1 + :scope`, (elements) => elements.map((element) => element.id))).toEqual([]);
+    });
+  });
+
+  it("supports :scope and handle-relative CSS selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<article><div class=target>hello<span></span></div></article>`);
+
+      expect(await page.$eval(`div >> :scope.target`, (element) => element.textContent)).toBe("hello");
+      expect(await page.$eval(`div >> :scope:nth-child(1)`, (element) => element.textContent)).toBe("hello");
+      expect(await page.$eval(`div >> :scope.target:has(span)`, (element) => element.textContent)).toBe("hello");
+      expect(await page.$eval(`html:scope`, (element) => element.nodeName)).toBe("HTML");
+
+      await page.setContent(`
+        <span class="find-me" id=target1>1</span>
+        <div>
+          <span class="find-me" id=target2>2</span>
+        </div>
+      `);
+      expect(await page.$eval(`.find-me`, (element) => element.id)).toBe("target1");
+
+      const div = await page.$("div");
+      expect(await div!.$eval(`.find-me`, (element) => element.id)).toBe("target2");
+      expect(await page.$eval(`div >> .find-me`, (element) => element.id)).toBe("target2");
+    });
+  });
+
+  it("absolutizes relative selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div><span>Hi</span></div>`);
+
+      expect(await page.$eval("div >> >span", (element) => element.textContent)).toBe("Hi");
+      expect(await page.locator("div").locator(">span").textContent()).toBe("Hi");
+      expect(await page.$eval("div:has(> span)", (element) => element.outerHTML)).toBe("<div><span>Hi</span></div>");
+      expect(await page.$("div:has(> div)")).toBe(null);
+    });
+  });
 });

@@ -183,6 +183,54 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return matches;
   };
 
+  const relativeCssSelector = (selector: string): string =>
+    /^[>+~]/.test(selector.trim()) ? `:scope ${selector}` : selector;
+
+  const queryCss = (root: ParentNode | Element, selector: string, includeRoot: boolean): Element[] => {
+    const normalizedSelector = relativeCssSelector(selector);
+    const matches: Element[] = [];
+
+    if (includeRoot && isElementNode(root) && root.matches(normalizedSelector)) {
+      matches.push(root);
+    }
+
+    if (!isElementNode(root)) {
+      for (const element of querySelectorAllPierce(root, normalizedSelector)) {
+        pushUnique(matches, element);
+      }
+      return matches;
+    }
+
+    if (!/^[>+~]/.test(selector.trim()) && !selector.includes(":scope")) {
+      for (const element of querySelectorAllPierce(root, normalizedSelector)) {
+        pushUnique(matches, element);
+      }
+      return matches;
+    }
+
+    const scopeAttribute = `data-roxy-scope-${Date.now().toString(36)}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
+    const hadScopeAttribute = root.hasAttribute(scopeAttribute);
+    const previousScopeAttribute = root.getAttribute(scopeAttribute);
+    root.setAttribute(scopeAttribute, "");
+    try {
+      const scopedSelector = normalizedSelector.replace(/:scope\b/g, `[${scopeAttribute}]`);
+      const queryRoot = root.parentElement ?? root.getRootNode();
+      const candidates = queryRoot instanceof Document || queryRoot instanceof ShadowRoot || isElementNode(queryRoot)
+        ? querySelectorAllPierce(queryRoot, scopedSelector)
+        : [];
+      for (const element of candidates) {
+        pushUnique(matches, element);
+      }
+      return matches;
+    } finally {
+      if (hadScopeAttribute && previousScopeAttribute !== null) {
+        root.setAttribute(scopeAttribute, previousScopeAttribute);
+      } else {
+        root.removeAttribute(scopeAttribute);
+      }
+    }
+  };
+
   const compilePattern = (selector: LocatorSelector, kind: "value" | "name" | "label") => {
     const value =
       kind === "value" ? selector.value : kind === "name" ? selector.name ?? "" : selector.label ?? "";
@@ -423,14 +471,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           return value !== null && matchesPattern(value, selector, "value");
         });
       }
-      const matches: Element[] = [];
-      if (includeRoot && isElementNode(root) && root.matches(selector.value)) {
-        matches.push(root);
-      }
-      for (const element of querySelectorAllPierce(root, selector.value)) {
-        pushUnique(matches, element);
-      }
-      return matches;
+      return queryCss(root, selector.value, includeRoot);
     }
 
     if (selector.strategy === "xpath") {
