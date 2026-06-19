@@ -26,6 +26,7 @@ const ROXYBROWSER_CORE_VERSION = process.env.ROXYBROWSER_CORE_VERSION ?? "146";
 const ROXYBROWSER_DEBUG = process.env.ROXYBROWSER_DEBUG === "1";
 const KEEP_BIDI_BROWSER_OPEN =
   process.env.ROXY_BIDI_KEEP_BROWSER_OPEN === "1" && Boolean(BIDI_WS_ENDPOINT);
+const REUSE_EXTERNAL_BIDI_BROWSER = process.env.ROXY_BIDI_REUSE_BROWSER !== "0";
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
 
 let usesExternalBidiEndpoint = false;
@@ -51,11 +52,15 @@ export async function openBidiBrowser(): Promise<Browser> {
     usesExternalBidiEndpoint = true;
 
     const browserKey = `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`;
-    if (KEEP_BIDI_BROWSER_OPEN && externalBidiBrowser && externalBidiBrowserKey === browserKey) {
+    if (
+      REUSE_EXTERNAL_BIDI_BROWSER
+      && externalBidiBrowser
+      && externalBidiBrowserKey === browserKey
+    ) {
       return externalBidiBrowser;
     }
 
-    if (KEEP_BIDI_BROWSER_OPEN) {
+    if (REUSE_EXTERNAL_BIDI_BROWSER) {
       await closeExternalBidiBrowser();
     }
     externalBidiBrowserKey = browserKey;
@@ -110,7 +115,8 @@ export async function withBidiPage<T>(
   run: (page: Page, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
   let browser = await openBidiBrowser();
-  const keepBrowserOpen = usesExternalBidiEndpoint && KEEP_BIDI_BROWSER_OPEN;
+  const keepBrowserOpen =
+    usesExternalBidiEndpoint && (KEEP_BIDI_BROWSER_OPEN || REUSE_EXTERNAL_BIDI_BROWSER);
   let context: BrowserContext | undefined;
 
   try {
