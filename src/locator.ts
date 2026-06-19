@@ -541,15 +541,15 @@ export class RoxyLocator implements Locator {
   describe(description: string): Locator {
     return this.cloneWith(this.adapter, [
       ...(this.selectorChain ?? []),
-      { strategy: "control", value: `describe=${description}` }
+      { strategy: "control", value: "describe", description }
     ]);
   }
 
   description(): null | string {
-    const descriptionSelector = [...(this.selectorChain ?? [])].reverse().find(
-      (selector: LocatorSelector) => selector.strategy === "control" && selector.value.startsWith("describe=")
-    );
-    return descriptionSelector ? descriptionSelector.value.slice("describe=".length) : null;
+    const lastSelector = this.selectorChain?.[this.selectorChain.length - 1];
+    return lastSelector?.strategy === "control" && lastSelector.value === "describe"
+      ? lastSelector.description ?? null
+      : null;
   }
 
   async all(): Promise<Array<Locator>> {
@@ -1007,7 +1007,7 @@ export class RoxyLocator implements Locator {
   }
 
   toString(): string {
-    return `locator('${formatLocatorChain(this.selectorChain ?? [])}')`;
+    return this.description() ?? formatLocatorChain(this.selectorChain ?? []);
   }
 
   private extendSelectorChain(
@@ -1129,9 +1129,105 @@ function looksLikeTimeoutOptions(value: unknown): value is TimeoutOptions {
 }
 
 function formatLocatorChain(chain: LocatorSelector[]): string {
-  return chain.map((selector) => {
-    if (selector.strategy === "css") return selector.value;
-    if (selector.strategy === "control") return `internal:control=${selector.value}`;
-    return `${selector.strategy}=${selector.value}`;
-  }).join(" >> ");
+  const formatted = chain
+    .map(formatLocatorSelector)
+    .filter((part): part is string => Boolean(part));
+
+  return formatted.length ? formatted.join(".") : "locator('')";
+}
+
+function formatLocatorSelector(selector: LocatorSelector): string | null {
+  if (selector.strategy === "control" && selector.value === "describe") {
+    return null;
+  }
+
+  if (selector.strategy === "css") {
+    switch (selector.label) {
+      case "alt":
+        return formatTextLocatorCall("getByAltText", selector);
+      case "label":
+        return formatTextLocatorCall("getByLabel", selector);
+      case "placeholder":
+        return formatTextLocatorCall("getByPlaceholder", selector);
+      case "testId":
+        return formatTextLocatorCall("getByTestId", selector);
+      case "title":
+        return formatTextLocatorCall("getByTitle", selector);
+      default:
+        return `locator(${quote(selector.value)})`;
+    }
+  }
+
+  if (selector.strategy === "text") {
+    return formatTextLocatorCall("getByText", selector);
+  }
+
+  if (selector.strategy === "role") {
+    const options = formatLocatorOptions([
+      formatMaybeRegexOption("name", selector.name, selector.nameIsRegex, selector.nameRegexFlags),
+      typeof selector.name === "string" && selector.exact ? "exact: true" : null
+    ]);
+    return `getByRole(${quote(selector.value)}${options})`;
+  }
+
+  if (selector.strategy === "control") {
+    if (selector.value === "enter-frame") {
+      return "contentFrame()";
+    }
+    if (selector.value === "chain" && selector.hasChain) {
+      return `locator(${formatLocatorChain(selector.hasChain)})`;
+    }
+    if (selector.value === "and" && selector.hasChain) {
+      return `and(${formatLocatorChain(selector.hasChain)})`;
+    }
+    if (selector.value === "or" && selector.hasChain) {
+      return `or(${formatLocatorChain(selector.hasChain)})`;
+    }
+    if (selector.value === "has" && selector.hasChain) {
+      return `filter({ has: ${formatLocatorChain(selector.hasChain)} })`;
+    }
+    if (selector.value === "has-not" && selector.hasChain) {
+      return `filter({ hasNot: ${formatLocatorChain(selector.hasChain)} })`;
+    }
+    return `locator(${quote(`internal:control=${selector.value}`)})`;
+  }
+
+  return `locator(${quote(`${selector.strategy}=${selector.value}`)})`;
+}
+
+function formatTextLocatorCall(method: string, selector: LocatorSelector): string {
+  const value = formatMaybeRegexValue(selector.value, selector.isRegex, selector.regexFlags);
+  const options = typeof selector.value === "string" && selector.exact
+    ? ", { exact: true }"
+    : "";
+  return `${method}(${value}${options})`;
+}
+
+function formatMaybeRegexOption(
+  name: string,
+  value: string | undefined,
+  isRegex: boolean | undefined,
+  flags: string | undefined
+): string | null {
+  if (value === undefined) {
+    return null;
+  }
+  return `${name}: ${formatMaybeRegexValue(value, isRegex, flags)}`;
+}
+
+function formatMaybeRegexValue(
+  value: string,
+  isRegex: boolean | undefined,
+  flags: string | undefined
+): string {
+  return isRegex ? `/${value.replace(/\//g, "\\/")}/${flags ?? ""}` : quote(value);
+}
+
+function formatLocatorOptions(options: Array<null | string>): string {
+  const filtered = options.filter((option): option is string => Boolean(option));
+  return filtered.length ? `, { ${filtered.join(", ")} }` : "";
+}
+
+function quote(value: string): string {
+  return `'${JSON.stringify(value).slice(1, -1).replace(/'/g, "\\'")}'`;
 }

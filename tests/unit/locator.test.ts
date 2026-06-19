@@ -52,6 +52,58 @@ describe("RoxyLocator", () => {
     expect(nested).toBeInstanceOf(RoxyLocator);
   });
 
+  it("matches Playwright locator description semantics", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => rootAdapter);
+    rootAdapter.getByRole = vi.fn(() => rootAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller);
+
+    expect(locator.locator("button").description()).toBe(null);
+    expect(locator.locator("button").describe("Submit button").description()).toBe("Submit button");
+
+    const described = locator.locator("foo").describe("First description");
+    expect(described.description()).toBe("First description");
+    const nested = described.locator("button").describe("Second description");
+    expect(nested.description()).toBe("Second description");
+    expect(nested.locator("button").description()).toBe(null);
+  });
+
+  it("formats locator.toString like Playwright for css and role locators", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => rootAdapter);
+    rootAdapter.getByRole = vi.fn(() => rootAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller);
+
+    expect(locator.locator("button").toString()).toBe("locator('button')");
+    expect(locator.locator("form").locator("input").toString()).toBe("locator('form').locator('input')");
+    expect(locator.getByRole("button", { name: "Submit" }).toString()).toBe(
+      "getByRole('button', { name: 'Submit' })"
+    );
+    expect(locator.getByRole("button", { name: "Submit", exact: true }).toString()).toBe(
+      "getByRole('button', { name: 'Submit', exact: true })"
+    );
+    expect(locator.getByRole("button", { name: /send/i }).toString()).toBe(
+      "getByRole('button', { name: /send/i })"
+    );
+    expect(locator.getByRole("button", { name: "Submit" }).describe("Submit button").toString()).toBe(
+      "Submit button"
+    );
+  });
+
   it("applies Playwright locator filter options when nesting locators", () => {
     const rootAdapter = createLocatorAdapterStub();
     const childAdapter = createLocatorAdapterStub();

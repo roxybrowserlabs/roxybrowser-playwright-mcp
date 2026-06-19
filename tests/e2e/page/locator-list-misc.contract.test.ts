@@ -93,4 +93,55 @@ describe("locator list and misc contract e2e", () => {
       expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("some value");
     });
   });
+
+  it("allTextContents and allInnerTexts should work like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div>A</div><div>B</div><div>C</div>");
+
+      expect(await page.locator("div").allTextContents()).toEqual(["A", "B", "C"]);
+      expect(await page.locator("div").allInnerTexts()).toEqual(["A", "B", "C"]);
+    });
+  });
+
+  it("locator.page should return page like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(`${fixture.server.PREFIX}/frames/two-frames.html`);
+      const outer = page.locator("#outer");
+      expect(outer.page()).toBe(page);
+
+      const inner = outer.locator("#inner");
+      expect(inner.page()).toBe(page);
+
+      const inFrame = page.frames()[1]!.locator("div");
+      expect(inFrame.page()).toBe(page);
+    });
+  });
+
+  it("locator description should work like Playwright", async () => {
+    await withPage(async (page) => {
+      expect(page.locator("button").description()).toBe(null);
+      expect(page.locator("button").describe("Submit button").description()).toBe("Submit button");
+      expect(page.locator("div").describe(`Button with "quotes" and 'apostrophes'`).description()).toBe(`Button with "quotes" and 'apostrophes'`);
+      expect(page.locator("form").locator("input").describe("Form input field").description()).toBe("Form input field");
+
+      const locator1 = page.locator("foo").describe("First description");
+      expect(locator1.description()).toBe("First description");
+      const locator2 = locator1.locator("button").describe("Second description");
+      expect(locator2.description()).toBe("Second description");
+      const locator3 = locator2.locator("button");
+      expect(locator3.description()).toBe(null);
+    });
+  });
+
+  it("locator.toString should work like Playwright", async () => {
+    await withPage(async (page) => {
+      const locator = page.getByRole("button", { name: "Submit" });
+      expect(locator.toString()).toBe("getByRole('button', { name: 'Submit' })");
+      expect(locator.description()).toBe(null);
+
+      const described = page.getByRole("button", { name: "Submit" }).describe("Submit button");
+      expect(described.toString()).toBe("Submit button");
+      expect(described.toString()).toBe(described.description());
+    });
+  });
 });
