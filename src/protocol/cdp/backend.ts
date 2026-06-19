@@ -24,6 +24,16 @@ import {
   parseSerializedEvaluationResult,
   wrapWithSerializedEvaluationResult
 } from "../evaluationSerializer.js";
+import {
+  isKeyboardModifier,
+  isUsKeyboardLayoutKey,
+  keyboardModifierMask,
+  keyDescriptionForString,
+  keypadLocation,
+  resolveSmartModifierString,
+  splitKeyboardShortcut,
+  type KeyDescription
+} from "../keyboardInput.js";
 import type { Disposable, ResolvedAriaRef } from "../../types/api.js";
 import type { PageFunction, SmartHandle, Worker } from "../../types/api.js";
 import {
@@ -3850,29 +3860,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async keyboardDown(key: string): Promise<void> {
     await this.bringToFront();
-    const normalizedKey = normalizeShortcutKey(key);
-    const keyDefinition = resolveKeyDefinition(normalizedKey);
+    const keyDefinition = keyDescriptionForString(key, this.pressedKeyboardModifiers);
     const autoRepeat = this.pressedKeyboardCodes.has(keyDefinition.code);
     const nextModifiers = new Set(this.pressedKeyboardModifiers);
-    if (isKeyboardModifier(normalizedKey)) {
-      nextModifiers.add(normalizedKey);
+    if (isKeyboardModifier(keyDefinition.key)) {
+      nextModifiers.add(keyDefinition.key);
     }
     this.pressedKeyboardCodes.add(keyDefinition.code);
-    await this.options.client.Input.dispatchKeyEvent({
-      type: "keyDown",
-      key: keyDefinition.key,
-      code: keyDefinition.code,
-      autoRepeat,
-      ...(keyDefinition.text !== undefined
-        ? {
-            text: keyDefinition.text,
-            unmodifiedText: keyDefinition.text
-          }
-        : {}),
-      windowsVirtualKeyCode: keyDefinition.keyCode,
-      nativeVirtualKeyCode: keyDefinition.keyCode,
-      modifiers: keyboardModifierMask(nextModifiers)
-    });
+    await this.dispatchKeyboardDown(keyDefinition, nextModifiers, autoRepeat);
     this.pressedKeyboardModifiers.clear();
     for (const modifier of nextModifiers) {
       this.pressedKeyboardModifiers.add(modifier);
@@ -3892,24 +3887,20 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       delay?: number;
     }
   ): Promise<void> {
-    const parsed = parseKeyboardShortcut(key);
-    const temporaryModifiers: string[] = [];
-
-    for (const modifier of parsed.modifiers) {
-      if (!this.pressedKeyboardModifiers.has(modifier)) {
-        await this.keyboardDown(modifier);
-        temporaryModifiers.push(modifier);
-      }
+    const tokens = splitKeyboardShortcut(key);
+    const keyName = tokens[tokens.length - 1] ?? "";
+    for (let index = 0; index < tokens.length - 1; index += 1) {
+      await this.keyboardDown(tokens[index] ?? "");
     }
 
-    await this.keyboardDown(parsed.key);
+    await this.keyboardDown(keyName);
     if (options?.delay) {
       await delay(options.delay);
     }
-    await this.keyboardUp(parsed.key);
+    await this.keyboardUp(keyName);
 
-    for (const modifier of temporaryModifiers.reverse()) {
-      await this.keyboardUp(modifier);
+    for (let index = tokens.length - 2; index >= 0; index -= 1) {
+      await this.keyboardUp(tokens[index] ?? "");
     }
   }
 
@@ -3921,31 +3912,59 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     await this.bringToFront();
     for (const character of text) {
-      await this.options.client.Input.dispatchKeyEvent({
-        type: "char",
-        text: character
-      });
-      await delay(options?.delay ?? 0);
+      if (isUsKeyboardLayoutKey(character)) {
+        await this.keyboardPress(
+          character,
+          options?.delay === undefined ? undefined : { delay: options.delay }
+        );
+        continue;
+      }
+      if (options?.delay) {
+        await delay(options.delay);
+      }
+      await this.keyboardInsertText(character);
     }
   }
 
-  async keyboardUp(key: string): Promise<void> {
-    await this.bringToFront();
-    const normalizedKey = normalizeShortcutKey(key);
-    const keyDefinition = resolveKeyDefinition(normalizedKey);
-    const nextModifiers = new Set(this.pressedKeyboardModifiers);
-    if (isKeyboardModifier(normalizedKey)) {
-      nextModifiers.delete(normalizedKey);
-    }
-    this.pressedKeyboardCodes.delete(keyDefinition.code);
+  private async dispatchKeyboardDown(
+    keyDefinition: KeyDescription,
+    modifiers: Set<string>,
+    autoRepeat: boolean
+  ): Promise<void> {
+    await this.options.client.Input.dispatchKeyEvent({
+      type: keyDefinition.text ? "keyDown" : "rawKeyDown",
+      key: keyDefinition.key,
+      code: keyDefinition.code,
+      text: keyDefinition.text,
+      unmodifiedText: keyDefinition.text,
+      autoRepeat,
+      windowsVirtualKeyCode: keyDefinition.keyCodeWithoutLocation,
+      modifiers: keyboardModifierMask(modifiers),
+      location: keyDefinition.location,
+      isKeypad: keyDefinition.location === keypadLocation
+    });
+  }
+
+  private async dispatchKeyboardUp(keyDefinition: KeyDescription, modifiers: Set<string>): Promise<void> {
     await this.options.client.Input.dispatchKeyEvent({
       type: "keyUp",
       key: keyDefinition.key,
       code: keyDefinition.code,
-      windowsVirtualKeyCode: keyDefinition.keyCode,
-      nativeVirtualKeyCode: keyDefinition.keyCode,
-      modifiers: keyboardModifierMask(nextModifiers)
+      windowsVirtualKeyCode: keyDefinition.keyCodeWithoutLocation,
+      modifiers: keyboardModifierMask(modifiers),
+      location: keyDefinition.location
     });
+  }
+
+  async keyboardUp(key: string): Promise<void> {
+    await this.bringToFront();
+    const keyDefinition = keyDescriptionForString(key, this.pressedKeyboardModifiers);
+    const nextModifiers = new Set(this.pressedKeyboardModifiers);
+    if (isKeyboardModifier(keyDefinition.key)) {
+      nextModifiers.delete(keyDefinition.key);
+    }
+    this.pressedKeyboardCodes.delete(keyDefinition.code);
+    await this.dispatchKeyboardUp(keyDefinition, nextModifiers);
     this.pressedKeyboardModifiers.clear();
     for (const modifier of nextModifiers) {
       this.pressedKeyboardModifiers.add(modifier);
@@ -4190,13 +4209,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       resetSelectionIfNotFocused: true
     });
 
-    for (const character of value) {
-      await this.options.client.Input.dispatchKeyEvent({
-        type: "char",
-        text: character
-      });
-      await delay(options?.delay ?? 0);
-    }
+    await this.keyboardType(value, options);
   }
 
   async pressLocator(
@@ -4209,32 +4222,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       resetSelectionIfNotFocused: true
     });
 
-    const keyDefinition = resolveKeyDefinition(key);
-    await this.options.client.Input.dispatchKeyEvent({
-      type: "keyDown",
-      key: keyDefinition.key,
-      code: keyDefinition.code,
-      ...(keyDefinition.text !== undefined
-        ? {
-            text: keyDefinition.text,
-            unmodifiedText: keyDefinition.text
-          }
-        : {}),
-      windowsVirtualKeyCode: keyDefinition.keyCode,
-      nativeVirtualKeyCode: keyDefinition.keyCode
-    });
-
-    if (options?.delay) {
-      await delay(options.delay);
-    }
-
-    await this.options.client.Input.dispatchKeyEvent({
-      type: "keyUp",
-      key: keyDefinition.key,
-      code: keyDefinition.code,
-      windowsVirtualKeyCode: keyDefinition.keyCode,
-      nativeVirtualKeyCode: keyDefinition.keyCode
-    });
+    await this.keyboardPress(key, options);
   }
 
   async dblclickLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
@@ -4547,7 +4535,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const previous = this.pointerActionModifiers;
     const actionModifiers = new Set(this.pressedKeyboardModifiers);
     for (const modifier of modifiers ?? []) {
-      const normalized = normalizeShortcutKey(modifier);
+      const normalized = resolveSmartModifierString(modifier);
       if (isKeyboardModifier(normalized)) {
         actionModifiers.add(normalized);
       }
@@ -4995,13 +4983,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       resetSelectionIfNotFocused: true
     });
 
-    for (const character of value) {
-      await this.options.client.Input.dispatchKeyEvent({
-        type: "char",
-        text: character
-      });
-      await delay(options?.delay ?? 0);
-    }
+    await this.keyboardType(value, options);
   }
 
   async pressReference(
@@ -5015,32 +4997,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       resetSelectionIfNotFocused: true
     });
 
-    const keyDefinition = resolveKeyDefinition(key);
-    await this.options.client.Input.dispatchKeyEvent({
-      type: "keyDown",
-      key: keyDefinition.key,
-      code: keyDefinition.code,
-      ...(keyDefinition.text !== undefined
-        ? {
-            text: keyDefinition.text,
-            unmodifiedText: keyDefinition.text
-          }
-        : {}),
-      windowsVirtualKeyCode: keyDefinition.keyCode,
-      nativeVirtualKeyCode: keyDefinition.keyCode
-    });
-
-    if (options?.delay) {
-      await delay(options.delay);
-    }
-
-    await this.options.client.Input.dispatchKeyEvent({
-      type: "keyUp",
-      key: keyDefinition.key,
-      code: keyDefinition.code,
-      windowsVirtualKeyCode: keyDefinition.keyCode,
-      nativeVirtualKeyCode: keyDefinition.keyCode
-    });
+    await this.keyboardPress(key, options);
   }
 
   private async runSelectorOperation<TResult>(payload: SelectorRuntimePayload): Promise<TResult> {
@@ -8495,106 +8452,6 @@ function parseCdpPreviewPrimitive(value: string): unknown {
     return Number(value);
   }
   return value.replace(/^["']|["']$/g, "");
-}
-
-function resolveKeyDefinition(key: string): {
-  code: string;
-  key: string;
-  keyCode: number;
-  text?: string;
-} {
-  const definitions: Record<string, { code: string; key: string; keyCode: number; text?: string }> =
-    {
-      Alt: { code: "AltLeft", key: "Alt", keyCode: 18 },
-      Control: { code: "ControlLeft", key: "Control", keyCode: 17 },
-      Meta: { code: "MetaLeft", key: "Meta", keyCode: 91 },
-      Shift: { code: "ShiftLeft", key: "Shift", keyCode: 16 },
-      ShiftLeft: { code: "ShiftLeft", key: "Shift", keyCode: 16 },
-      Enter: { code: "Enter", key: "Enter", keyCode: 13, text: "\r" },
-      Tab: { code: "Tab", key: "Tab", keyCode: 9 },
-      Escape: { code: "Escape", key: "Escape", keyCode: 27 },
-      Backspace: { code: "Backspace", key: "Backspace", keyCode: 8 },
-      Delete: { code: "Delete", key: "Delete", keyCode: 46 },
-      ArrowLeft: { code: "ArrowLeft", key: "ArrowLeft", keyCode: 37 },
-      ArrowUp: { code: "ArrowUp", key: "ArrowUp", keyCode: 38 },
-      ArrowRight: { code: "ArrowRight", key: "ArrowRight", keyCode: 39 },
-      ArrowDown: { code: "ArrowDown", key: "ArrowDown", keyCode: 40 },
-      Space: { code: "Space", key: " ", keyCode: 32, text: " " }
-    };
-
-  if (definitions[key]) {
-    return definitions[key];
-  }
-
-  if (key.length === 1) {
-    if (!/^[\x20-\x7E]$/.test(key)) {
-      throw new Error(`Unknown key: "${key}"`);
-    }
-    const upper = key.toUpperCase();
-    return {
-      code: `Key${upper}`,
-      key,
-      keyCode: upper.charCodeAt(0),
-      text: key
-    };
-  }
-
-  throw new Error(`Unknown key: "${key}"`);
-}
-
-function parseKeyboardShortcut(shortcut: string): {
-  modifiers: string[];
-  key: string;
-} {
-  if (!shortcut.includes("+")) {
-    return {
-      modifiers: [],
-      key: normalizeShortcutKey(shortcut)
-    };
-  }
-
-  const segments = shortcut.split("+");
-  let key = segments.pop() ?? "";
-  if (key === "") {
-    key = "+";
-  }
-
-  return {
-    modifiers: segments.filter(Boolean).map(normalizeShortcutKey).filter(isKeyboardModifier),
-    key: normalizeShortcutKey(key)
-  };
-}
-
-function normalizeShortcutKey(key: string): string {
-  if (key === "ControlOrMeta") {
-    return process.platform === "darwin" ? "Meta" : "Control";
-  }
-  return key;
-}
-
-function isKeyboardModifier(key: string): key is "Alt" | "Control" | "Meta" | "Shift" {
-  return key === "Alt" || key === "Control" || key === "Meta" || key === "Shift";
-}
-
-function keyboardModifierMask(modifiers: Iterable<string>): number {
-  let mask = 0;
-  for (const modifier of modifiers) {
-    switch (modifier) {
-      case "Alt":
-        mask |= 1;
-        break;
-      case "Control":
-        mask |= 2;
-        break;
-      case "Meta":
-        mask |= 4;
-        break;
-      case "Shift":
-        mask |= 8;
-        break;
-    }
-  }
-  return mask;
 }
 
 function mouseButtonsMask(buttons: Iterable<MouseButton>): number {
