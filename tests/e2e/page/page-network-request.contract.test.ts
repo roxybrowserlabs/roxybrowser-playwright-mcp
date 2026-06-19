@@ -121,6 +121,31 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("gets the same headers as the server for CORS requests like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/empty.html");
+      let serverRequestHeaders: Record<string, string | string[] | undefined> | null = null;
+      fixture.server.setRoute("/something", (request, response) => {
+        serverRequestHeaders = request.headers;
+        response.writeHead(200, { "Access-Control-Allow-Origin": "*" });
+        response.end("done");
+      });
+
+      const responsePromise = page.waitForEvent("response", (response) =>
+        response.url() === fixture.server.CROSS_PROCESS_PREFIX + "/something"
+      );
+      const text = await page.evaluate(async (url) => {
+        const response = await fetch(url);
+        return response.text();
+      }, fixture.server.CROSS_PROCESS_PREFIX + "/something");
+      expect(text).toBe("done");
+
+      const response = await responsePromise;
+      const headers = await response.request().allHeaders();
+      expect(headers).toEqual(serverRequestHeaders);
+    });
+  });
+
   it("does not return allHeaders until they are available", async () => {
     await withPage(async (page) => {
       let requestHeadersPromise: Promise<Record<string, string>> | undefined;
