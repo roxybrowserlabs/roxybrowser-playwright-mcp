@@ -12,6 +12,13 @@ import {
   parseSerializedEvaluationResult,
   wrapWithSerializedEvaluationResult
 } from "../evaluationSerializer.js";
+import {
+  isKeyboardModifier,
+  isUsKeyboardLayoutKey,
+  keyDescriptionForString,
+  resolveSmartModifierString,
+  splitKeyboardShortcut
+} from "../keyboardInput.js";
 import type { Disposable, ResolvedAriaRef } from "../../types/api.js";
 import {
   SCROLL_INTO_VIEW_IF_NEEDED_SOURCE,
@@ -1348,19 +1355,19 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async keyboardDown(key: string): Promise<void> {
-    const normalizedKey = normalizeShortcutKey(key);
+    const keyDefinition = keyDescriptionForString(key, this.pressedKeyboardModifiers);
     await this.client.inputPerformActions({
       context: this.contextId,
       actions: [
         {
           type: "key",
           id: "keyboard",
-          actions: [{ type: "keyDown", value: toBiDiKeyValue(normalizedKey) }]
+          actions: [{ type: "keyDown", value: toBiDiKeyValue(resolveSmartModifierString(key)) }]
         }
       ]
     });
-    if (isKeyboardModifier(normalizedKey)) {
-      this.pressedKeyboardModifiers.add(normalizedKey);
+    if (isKeyboardModifier(keyDefinition.key)) {
+      this.pressedKeyboardModifiers.add(keyDefinition.key);
     }
   }
 
@@ -1397,37 +1404,20 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       delay?: number;
     }
   ): Promise<void> {
-    const parsed = parseKeyboardShortcut(key);
-    const temporaryModifiers: string[] = [];
-
-    for (const modifier of parsed.modifiers) {
-      if (!this.pressedKeyboardModifiers.has(modifier)) {
-        await this.keyboardDown(modifier);
-        temporaryModifiers.push(modifier);
-      }
+    const tokens = splitKeyboardShortcut(key);
+    const keyName = tokens[tokens.length - 1] ?? "";
+    for (let index = 0; index < tokens.length - 1; index += 1) {
+      await this.keyboardDown(tokens[index] ?? "");
     }
 
-    const actions: Array<{ type: "keyDown" | "keyUp" | "pause"; value?: string; duration?: number }> = [
-      { type: "keyDown", value: toBiDiKeyValue(parsed.key) }
-    ];
+    await this.keyboardDown(keyName);
     if (options?.delay) {
-      actions.push({ type: "pause", duration: options.delay });
+      await new Promise((resolve) => setTimeout(resolve, options.delay));
     }
-    actions.push({ type: "keyUp", value: toBiDiKeyValue(parsed.key) });
+    await this.keyboardUp(keyName);
 
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "key",
-          id: "keyboard",
-          actions
-        }
-      ]
-    });
-
-    for (const modifier of temporaryModifiers.reverse()) {
-      await this.keyboardUp(modifier);
+    for (let index = tokens.length - 2; index >= 0; index -= 1) {
+      await this.keyboardUp(tokens[index] ?? "");
     }
   }
 
@@ -1437,38 +1427,35 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       delay?: number;
     }
   ): Promise<void> {
-    const actions = text.split("").flatMap((character) => [
-      { type: "keyDown" as const, value: character },
-      ...(options?.delay ? [{ type: "pause" as const, duration: options.delay }] : []),
-      { type: "keyUp" as const, value: character }
-    ]);
-
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "key",
-          id: "keyboard",
-          actions
-        }
-      ]
-    });
+    for (const character of text) {
+      if (isUsKeyboardLayoutKey(character)) {
+        await this.keyboardPress(
+          character,
+          options?.delay === undefined ? undefined : { delay: options.delay }
+        );
+        continue;
+      }
+      if (options?.delay) {
+        await new Promise((resolve) => setTimeout(resolve, options.delay));
+      }
+      await this.keyboardInsertText(character);
+    }
   }
 
   async keyboardUp(key: string): Promise<void> {
-    const normalizedKey = normalizeShortcutKey(key);
+    const keyDefinition = keyDescriptionForString(key, this.pressedKeyboardModifiers);
     await this.client.inputPerformActions({
       context: this.contextId,
       actions: [
         {
           type: "key",
           id: "keyboard",
-          actions: [{ type: "keyUp", value: toBiDiKeyValue(normalizedKey) }]
+          actions: [{ type: "keyUp", value: toBiDiKeyValue(resolveSmartModifierString(key)) }]
         }
       ]
     });
-    if (isKeyboardModifier(normalizedKey)) {
-      this.pressedKeyboardModifiers.delete(normalizedKey);
+    if (isKeyboardModifier(keyDefinition.key)) {
+      this.pressedKeyboardModifiers.delete(keyDefinition.key);
     }
   }
 
@@ -1974,22 +1961,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       resetSelectionIfNotFocused: true
     });
 
-    const actions = value.split("").flatMap((character) => [
-      { type: "keyDown" as const, value: character },
-      ...(options?.delay ? [{ type: "pause" as const, duration: options.delay }] : []),
-      { type: "keyUp" as const, value: character }
-    ]);
-
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "key",
-          id: "keyboard",
-          actions
-        }
-      ]
-    });
+    await this.keyboardType(value, options);
   }
 
   async pressLocator(locator: BidiLocatorState, key: string, options?: PressOptions): Promise<void> {
@@ -1998,21 +1970,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       resetSelectionIfNotFocused: true
     });
 
-    const bidiKey = toBiDiKeyValue(key);
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "key",
-          id: "keyboard",
-          actions: [
-            { type: "keyDown", value: bidiKey },
-            ...(options?.delay ? [{ type: "pause" as const, duration: options.delay }] : []),
-            { type: "keyUp", value: bidiKey }
-          ]
-        }
-      ]
-    });
+    await this.keyboardPress(key, options);
   }
 
   async dblclickLocator(locator: BidiLocatorState, options?: ClickOptions): Promise<void> {
@@ -2391,22 +2349,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       resetSelectionIfNotFocused: true
     });
 
-    const actions = value.split("").flatMap((character) => [
-      { type: "keyDown" as const, value: character },
-      ...(options?.delay ? [{ type: "pause" as const, duration: options.delay }] : []),
-      { type: "keyUp" as const, value: character }
-    ]);
-
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "key",
-          id: "keyboard",
-          actions
-        }
-      ]
-    });
+    await this.keyboardType(value, options);
   }
 
   async pressReference(
@@ -2420,21 +2363,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       resetSelectionIfNotFocused: true
     });
 
-    const bidiKey = toBiDiKeyValue(key);
-    await this.client.inputPerformActions({
-      context: this.contextId,
-      actions: [
-        {
-          type: "key",
-          id: "keyboard",
-          actions: [
-            { type: "keyDown", value: bidiKey },
-            ...(options?.delay ? [{ type: "pause" as const, duration: options.delay }] : []),
-            { type: "keyUp", value: bidiKey }
-          ]
-        }
-      ]
-    });
+    await this.keyboardPress(key, options);
   }
 
   private async runSelectorOperation<TResult>(payload: SelectorRuntimePayload): Promise<TResult> {
@@ -3673,25 +3602,225 @@ function toBiDiOutgoingHeaders(headers: Record<string, string>): Array<{
 
 function toBiDiKeyValue(key: string): string {
   switch (key) {
-    case "Alt":
-      return "\uE00A";
-    case "Control":
-      return "\uE009";
+    case "\r":
+    case "\n":
+      key = "Enter";
+      break;
+  }
+  if ([...key].length === 1) {
+    return key;
+  }
+  switch (key) {
+    case "Cancel":
+      return "\uE001";
+    case "Help":
+      return "\uE002";
+    case "Backspace":
+      return "\uE003";
+    case "Tab":
+      return "\uE004";
+    case "Clear":
+      return "\uE005";
     case "Enter":
       return "\uE007";
-    case "Meta":
-      return "\uE03D";
     case "Shift":
     case "ShiftLeft":
       return "\uE008";
-    case "Tab":
-      return "\uE004";
-    case "Backspace":
-      return "\uE003";
+    case "Control":
+    case "ControlLeft":
+      return "\uE009";
+    case "Alt":
+    case "AltLeft":
+      return "\uE00A";
+    case "Pause":
+      return "\uE00B";
     case "Escape":
       return "\uE00C";
+    case "PageUp":
+      return "\uE00E";
+    case "PageDown":
+      return "\uE00F";
+    case "End":
+      return "\uE010";
+    case "Home":
+      return "\uE011";
+    case "ArrowLeft":
+      return "\uE012";
+    case "ArrowUp":
+      return "\uE013";
+    case "ArrowRight":
+      return "\uE014";
+    case "ArrowDown":
+      return "\uE015";
+    case "Insert":
+      return "\uE016";
+    case "Delete":
+      return "\uE017";
+    case "NumpadEqual":
+      return "\uE019";
+    case "Numpad0":
+      return "\uE01A";
+    case "Numpad1":
+      return "\uE01B";
+    case "Numpad2":
+      return "\uE01C";
+    case "Numpad3":
+      return "\uE01D";
+    case "Numpad4":
+      return "\uE01E";
+    case "Numpad5":
+      return "\uE01F";
+    case "Numpad6":
+      return "\uE020";
+    case "Numpad7":
+      return "\uE021";
+    case "Numpad8":
+      return "\uE022";
+    case "Numpad9":
+      return "\uE023";
+    case "NumpadMultiply":
+      return "\uE024";
+    case "NumpadAdd":
+      return "\uE025";
+    case "NumpadSubtract":
+      return "\uE027";
+    case "NumpadDecimal":
+      return "\uE028";
+    case "NumpadDivide":
+      return "\uE029";
+    case "F1":
+      return "\uE031";
+    case "F2":
+      return "\uE032";
+    case "F3":
+      return "\uE033";
+    case "F4":
+      return "\uE034";
+    case "F5":
+      return "\uE035";
+    case "F6":
+      return "\uE036";
+    case "F7":
+      return "\uE037";
+    case "F8":
+      return "\uE038";
+    case "F9":
+      return "\uE039";
+    case "F10":
+      return "\uE03A";
+    case "F11":
+      return "\uE03B";
+    case "F12":
+      return "\uE03C";
+    case "Meta":
+    case "MetaLeft":
+      return "\uE03D";
+    case "ShiftRight":
+      return "\uE050";
+    case "ControlRight":
+      return "\uE051";
+    case "AltRight":
+      return "\uE052";
+    case "MetaRight":
+      return "\uE053";
+    case "Space":
+      return " ";
+    case "Digit0":
+      return "0";
+    case "Digit1":
+      return "1";
+    case "Digit2":
+      return "2";
+    case "Digit3":
+      return "3";
+    case "Digit4":
+      return "4";
+    case "Digit5":
+      return "5";
+    case "Digit6":
+      return "6";
+    case "Digit7":
+      return "7";
+    case "Digit8":
+      return "8";
+    case "Digit9":
+      return "9";
+    case "KeyA":
+      return "a";
+    case "KeyB":
+      return "b";
+    case "KeyC":
+      return "c";
+    case "KeyD":
+      return "d";
+    case "KeyE":
+      return "e";
+    case "KeyF":
+      return "f";
+    case "KeyG":
+      return "g";
+    case "KeyH":
+      return "h";
+    case "KeyI":
+      return "i";
+    case "KeyJ":
+      return "j";
+    case "KeyK":
+      return "k";
+    case "KeyL":
+      return "l";
+    case "KeyM":
+      return "m";
+    case "KeyN":
+      return "n";
+    case "KeyO":
+      return "o";
+    case "KeyP":
+      return "p";
+    case "KeyQ":
+      return "q";
+    case "KeyR":
+      return "r";
+    case "KeyS":
+      return "s";
+    case "KeyT":
+      return "t";
+    case "KeyU":
+      return "u";
+    case "KeyV":
+      return "v";
+    case "KeyW":
+      return "w";
+    case "KeyX":
+      return "x";
+    case "KeyY":
+      return "y";
+    case "KeyZ":
+      return "z";
+    case "Semicolon":
+      return ";";
+    case "Equal":
+      return "=";
+    case "Comma":
+      return ",";
+    case "Minus":
+      return "-";
+    case "Period":
+      return ".";
+    case "Slash":
+      return "/";
+    case "Backquote":
+      return "`";
+    case "BracketLeft":
+      return "[";
+    case "Backslash":
+      return "\\";
+    case "BracketRight":
+      return "]";
+    case "Quote":
+      return "\"";
     default:
-      return key;
+      throw new Error(`Unknown key: "${key}"`);
   }
 }
 
@@ -3727,40 +3856,6 @@ async function waitForAbortableTimeout(duration: number, signal: AbortSignal): P
     }, duration);
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-function parseKeyboardShortcut(shortcut: string): {
-  modifiers: string[];
-  key: string;
-} {
-  if (!shortcut.includes("+")) {
-    return {
-      modifiers: [],
-      key: normalizeShortcutKey(shortcut)
-    };
-  }
-
-  const segments = shortcut.split("+");
-  let key = segments.pop() ?? "";
-  if (key === "") {
-    key = "+";
-  }
-
-  return {
-    modifiers: segments.filter(Boolean).map(normalizeShortcutKey).filter(isKeyboardModifier),
-    key: normalizeShortcutKey(key)
-  };
-}
-
-function normalizeShortcutKey(key: string): string {
-  if (key === "ControlOrMeta") {
-    return process.platform === "darwin" ? "Meta" : "Control";
-  }
-  return key;
-}
-
-function isKeyboardModifier(key: string): key is "Alt" | "Control" | "Meta" | "Shift" {
-  return key === "Alt" || key === "Control" || key === "Meta" || key === "Shift";
 }
 
 function keyboardModifierState(modifiers: ReadonlySet<string>): {

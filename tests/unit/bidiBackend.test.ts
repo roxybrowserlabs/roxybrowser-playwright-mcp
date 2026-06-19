@@ -24,6 +24,22 @@ function createBidiClientStub(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function keyActions(
+  context: string,
+  actions: Array<{ type: "keyDown" | "keyUp"; value: string }>
+) {
+  return {
+    context,
+    actions: [
+      {
+        type: "key",
+        id: "keyboard",
+        actions
+      }
+    ]
+  };
+}
+
 describe("buildFirefoxLaunchArgs", () => {
   it("launches Firefox with a temporary profile and BiDi debugging port", () => {
     expect(buildFirefoxLaunchArgs({ headless: true }, "/tmp/roxy-firefox", 9222)).toEqual([
@@ -255,6 +271,79 @@ describe("BidiBrowserAdapterFactory", () => {
     expect(expression).toContain('\\"deltaY\\":100');
     expect(expression).toContain('\\"shiftKey\\":true');
     expect(expression).toContain('\\"ctrlKey\\":false');
+  });
+
+  it("uses Playwright keyboard layout semantics for BiDi key actions", async () => {
+    const inputPerformActions = vi.fn(async () => ({}));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      inputPerformActions,
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await page.keyboardPress("Shift+Digit3");
+    await page.keyboardPress("Shift++");
+    await page.keyboardType("!");
+
+    expect(inputPerformActions.mock.calls.map((call) => call[0])).toEqual([
+      keyActions("ctx-1", [{ type: "keyDown", value: "\uE008" }]),
+      keyActions("ctx-1", [{ type: "keyDown", value: "3" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "3" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "\uE008" }]),
+      keyActions("ctx-1", [{ type: "keyDown", value: "\uE008" }]),
+      keyActions("ctx-1", [{ type: "keyDown", value: "+" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "+" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "\uE008" }]),
+      keyActions("ctx-1", [{ type: "keyDown", value: "!" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "!" }])
+    ]);
+  });
+
+  it("throws on unknown BiDi keyboard keys like Playwright", async () => {
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      inputPerformActions: vi.fn(async () => ({})),
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await expect(page.keyboardPress("NotARealKey")).rejects.toThrow('Unknown key: "NotARealKey"');
+    await expect(page.keyboardPress("ё")).rejects.toThrow('Unknown key: "ё"');
   });
 
   it("preserves BiDi mouse source state across multiple pressed buttons", async () => {
