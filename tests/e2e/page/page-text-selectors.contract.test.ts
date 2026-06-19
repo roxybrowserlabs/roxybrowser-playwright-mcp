@@ -327,4 +327,55 @@ describe("page text selector contract e2e", () => {
       expect(await page.locator("div").filter({ hasNotText: "foo" }).count()).toBe(2);
     });
   });
+
+  it("supports has locator option like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div><span>hello</span></div><div><span>world</span></div>`);
+
+      expect(await page.locator("div", {
+        has: page.locator("text=world")
+      }).count()).toBe(1);
+      expect(await page.locator("div", {
+        has: page.locator("text=world")
+      }).evaluate((element) => element.outerHTML)).toBe(`<div><span>world</span></div>`);
+      expect(await page.locator("div", {
+        has: page.locator('text="hello"')
+      }).count()).toBe(1);
+      expect(await page.locator("div", {
+        has: page.locator('text="hello"')
+      }).evaluate((element) => element.outerHTML)).toBe(`<div><span>hello</span></div>`);
+      expect(await page.locator("div", {
+        has: page.locator("xpath=./span")
+      }).count()).toBe(2);
+      expect(await page.locator("div", {
+        has: page.locator("span")
+      }).count()).toBe(2);
+      expect(await page.locator("div", {
+        has: page.locator("span", { hasText: "wor" })
+      }).count()).toBe(1);
+      expect(await page.locator("div", {
+        has: page.locator("span", { hasText: "wor" })
+      }).evaluate((element) => element.outerHTML)).toBe(`<div><span>world</span></div>`);
+      expect(await page.locator("div", {
+        has: page.locator("span"),
+        hasText: "wor"
+      }).count()).toBe(1);
+    });
+  });
+
+  it("supports locator filter has and hasNot like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<section><div><span>hello</span></div><div><span>world</span></div></section>`);
+
+      expect(await page.locator("div").filter({ has: page.locator("span", { hasText: "world" }) }).count()).toBe(1);
+      expect(await page.locator("div").filter({ has: page.locator("span") }).count()).toBe(2);
+      expect(await page.locator("div").filter({
+        has: page.locator("span"),
+        hasText: "world"
+      }).count()).toBe(1);
+      expect(await page.locator("div").filter({ hasNot: page.locator("span", { hasText: "world" }) }).count()).toBe(1);
+      expect(await page.locator("div").filter({ hasNot: page.locator("section") }).count()).toBe(2);
+      expect(await page.locator("div").filter({ hasNot: page.locator("span") }).count()).toBe(0);
+    });
+  });
 });

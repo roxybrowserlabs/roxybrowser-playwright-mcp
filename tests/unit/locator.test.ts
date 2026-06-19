@@ -116,6 +116,85 @@ describe("RoxyLocator", () => {
     expect(nested).toBeInstanceOf(RoxyLocator);
   });
 
+  it("applies Playwright has locator filters when nesting locators", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    const childAdapter = createLocatorAdapterStub();
+    const filteredAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => childAdapter);
+    childAdapter.locator = vi.fn(() => filteredAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller);
+    const inner = new RoxyLocator(rootAdapter, controller).locator("span", { hasText: "world" });
+
+    const nested = locator.locator("div", { has: inner });
+
+    expect(rootAdapter.locator).toHaveBeenNthCalledWith(1, {
+      strategy: "css",
+      value: "span"
+    });
+    expect(rootAdapter.locator).toHaveBeenNthCalledWith(2, {
+      strategy: "css",
+      value: "div"
+    });
+    expect(childAdapter.locator).toHaveBeenCalledWith({
+      strategy: "control",
+      value: "has",
+      filter: true,
+      hasChain: [
+        {
+          strategy: "css",
+          value: "span"
+        },
+        {
+          strategy: "text",
+          value: "world",
+          internal: true,
+          filter: true
+        }
+      ]
+    });
+    expect(nested).toBeInstanceOf(RoxyLocator);
+  });
+
+  it("applies Playwright hasNot locator filters when nesting locators", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    const childAdapter = createLocatorAdapterStub();
+    const filteredAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => childAdapter);
+    childAdapter.locator = vi.fn(() => filteredAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller);
+    const inner = new RoxyLocator(rootAdapter, controller).locator("span");
+
+    const nested = locator.locator("div", { hasNot: inner });
+
+    expect(childAdapter.locator).toHaveBeenCalledWith({
+      strategy: "control",
+      value: "has-not",
+      filter: true,
+      negate: true,
+      hasChain: [
+        {
+          strategy: "css",
+          value: "span"
+        }
+      ]
+    });
+    expect(nested).toBeInstanceOf(RoxyLocator);
+  });
+
   it("builds frame locators by inserting an enter-frame control step", () => {
     const rootAdapter = createLocatorAdapterStub();
     const frameAdapter = createLocatorAdapterStub();

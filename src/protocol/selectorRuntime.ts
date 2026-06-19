@@ -1018,21 +1018,16 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     capture: Element | null;
   };
 
-  const resolveReference = (reference: ProtocolElementHandleReference): Node[] => {
-    if (reference.handleId) {
-      const node = globalState.__roxyHandleStore?.[reference.handleId] ?? null;
-      return node ? [node] : [];
-    }
-
-    const roots: Array<ParentNode | Element> = reference.scope
-      ? resolveReference(reference.scope)
-        .filter((node): node is ParentNode | Element => isElementNode(node) || isDocumentNode(node))
-      : [document];
-
-    if (!reference.chain.length) {
+  const resolveSelectorChain = (
+    roots: Array<ParentNode | Element>,
+    chain: LocatorSelector[],
+    pick: LocatorPick | undefined,
+    hasScope: boolean
+  ): Element[] => {
+    if (!chain.length) {
       return applyPick(
         roots.filter((node): node is Element => node instanceof Element),
-        reference.pick
+        pick
       );
     }
 
@@ -1040,8 +1035,8 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       node: root,
       capture: null
     }));
-    for (let index = 0; index < reference.chain.length; index += 1) {
-      const selector = reference.chain[index]!;
+    for (let index = 0; index < chain.length; index += 1) {
+      const selector = chain[index]!;
       if (selector.strategy === "control" && selector.value === "enter-frame") {
         const next: SelectorMatch[] = [];
         for (const match of current) {
@@ -1060,7 +1055,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         continue;
       }
 
-      const includeRoot = (!reference.scope && index === 0) || selector.strategy === "text";
+      const includeRoot = (!hasScope && index === 0) || selector.strategy === "text";
       const next: SelectorMatch[] = [];
       for (const match of current) {
         if (selector.filter) {
@@ -1090,10 +1085,27 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         pushUnique(resolved, node);
       }
     }
-    return applyPick(resolved, reference.pick);
+    return applyPick(resolved, pick);
+  };
+
+  const resolveReference = (reference: ProtocolElementHandleReference): Node[] => {
+    if (reference.handleId) {
+      const node = globalState.__roxyHandleStore?.[reference.handleId] ?? null;
+      return node ? [node] : [];
+    }
+
+    const roots: Array<ParentNode | Element> = reference.scope
+      ? resolveReference(reference.scope)
+        .filter((node): node is ParentNode | Element => isElementNode(node) || isDocumentNode(node))
+      : [document];
+
+    return resolveSelectorChain(roots, reference.chain, reference.pick, Boolean(reference.scope));
   };
 
   const matchesFilterSelector = (element: Element, selector: LocatorSelector): boolean => {
+    if (selector.hasChain) {
+      return resolveSelectorChain([element], selector.hasChain, undefined, true).length > 0;
+    }
     if (selector.strategy === "text") {
       return !shouldSkipTextSelectorElement(element) && matchesTextSelector(element, selector);
     }

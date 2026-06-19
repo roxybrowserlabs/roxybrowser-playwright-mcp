@@ -98,6 +98,26 @@ type LocatorActionPointOptions = {
   position?: { x: number; y: number };
   timeout?: number;
 };
+
+function cloneLocatorSelector(selector: LocatorSelector): LocatorSelector {
+  return {
+    ...selector,
+    ...(selector.hasChain ? { hasChain: selector.hasChain.map(cloneLocatorSelector) } : {})
+  };
+}
+
+function cloneLocatorSelectorChain(chain: LocatorSelector[]): LocatorSelector[] {
+  return chain.map(cloneLocatorSelector);
+}
+
+function selectorChainForLocator(locator: Locator, optionName: "has" | "hasNot"): LocatorSelector[] {
+  const chain = locator._roxySelectorChain?.();
+  if (!chain) {
+    throw new Error(`Inner "${optionName}" locator must belong to the same frame.`);
+  }
+  return cloneLocatorSelectorChain(chain);
+}
+
 class DisposableStub implements Disposable {
   constructor(private readonly callback: () => Promise<void> | void) {}
 
@@ -209,11 +229,11 @@ export class RoxyLocator implements Locator {
     private readonly frameResolver?: ElementHandleFrameResolver,
     private readonly ownerPage?: Page
   ) {
-    this.selectorChain = selectorChain ? selectorChain.map((part) => ({ ...part })) : null;
+    this.selectorChain = selectorChain ? cloneLocatorSelectorChain(selectorChain) : null;
   }
 
   _roxySelectorChain(): LocatorSelector[] | null {
-    return this.selectorChain ? this.selectorChain.map((part) => ({ ...part })) : null;
+    return this.selectorChain ? cloneLocatorSelectorChain(this.selectorChain) : null;
   }
 
   page(): Page {
@@ -374,6 +394,27 @@ export class RoxyLocator implements Locator {
   filter(options?: LocatorFilterOptions): Locator {
     let adapter = this.adapter;
     const chain = [...(this.selectorChain ?? [])];
+    if (options?.has !== undefined) {
+      const selector: LocatorSelector = {
+        strategy: "control",
+        value: "has",
+        filter: true,
+        hasChain: selectorChainForLocator(options.has, "has")
+      };
+      adapter = adapter.locator(selector);
+      chain.push(selector);
+    }
+    if (options?.hasNot !== undefined) {
+      const selector: LocatorSelector = {
+        strategy: "control",
+        value: "has-not",
+        filter: true,
+        negate: true,
+        hasChain: selectorChainForLocator(options.hasNot, "hasNot")
+      };
+      adapter = adapter.locator(selector);
+      chain.push(selector);
+    }
     if (options?.hasText !== undefined) {
       const selector: LocatorSelector = {
         ...createInternalTextLocatorSelector(options.hasText),
