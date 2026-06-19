@@ -22,6 +22,7 @@ export default defineConfig({
       "tests/helpers/browser-process-cleanup.global-setup.ts",
       "tests/helpers/bidi.global-setup.ts"
     ],
+    setupFiles: ["tests/helpers/browser-process-cleanup.setup.ts"],
     environment: "node",
     testTimeout: 60_000,
     hookTimeout: 30_000

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 
 const TEST_BROWSER_PROFILE_MARKERS = [
   "roxybrowser-bidi-",
@@ -18,7 +18,61 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
   }
 
   const stdout = await execFileText("ps", ["-eo", "pid=,ppid=,command="]).catch(() => "");
-  const currentPid = process.pid;
+  const pids = collectLocalTestBrowserProcessTreePids(stdout, process.pid);
+  await terminateLocalTestBrowserProcessPids(pids);
+}
+
+export function cleanupLocalTestBrowserProcessesSync(): void {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const result = spawnSync("ps", ["-eo", "pid=,ppid=,command="], {
+    encoding: "utf8"
+  });
+  const stdout = typeof result?.stdout === "string" ? result.stdout : "";
+  const pids = collectLocalTestBrowserProcessTreePids(stdout, process.pid);
+
+  for (const pid of pids) {
+    killPid(pid, "SIGTERM");
+  }
+  for (const pid of pids) {
+    killPid(pid, "SIGKILL");
+  }
+}
+
+export function installLocalTestBrowserProcessCleanupHooks(): void {
+  const state = globalThis as typeof globalThis & {
+    __roxyBrowserProcessCleanupHooksInstalled?: boolean;
+  };
+  if (state.__roxyBrowserProcessCleanupHooksInstalled) {
+    return;
+  }
+  state.__roxyBrowserProcessCleanupHooksInstalled = true;
+
+  process.once("exit", () => {
+    cleanupLocalTestBrowserProcessesSync();
+  });
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      cleanupLocalTestBrowserProcessesSync();
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    });
+  }
+
+  process.once("uncaughtException", (error) => {
+    cleanupLocalTestBrowserProcessesSync();
+    throw error;
+  });
+
+  process.once("unhandledRejection", (reason) => {
+    cleanupLocalTestBrowserProcessesSync();
+    throw reason;
+  });
+}
+
+function collectLocalTestBrowserProcessTreePids(stdout: string, currentPid: number): number[] {
   const processes = stdout
     .split("\n")
     .map((line) => {
@@ -49,12 +103,12 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
   const pids = [...collectProcessTreePids(rootPids, childrenByParentPid)]
     .filter((pid) => pid !== currentPid);
 
+  return pids;
+}
+
+async function terminateLocalTestBrowserProcessPids(pids: number[]): Promise<void> {
   for (const pid of pids) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // The process may have exited between listing and cleanup.
-    }
+    killPid(pid, "SIGTERM");
   }
 
   if (!pids.length) {
@@ -63,11 +117,7 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
 
   await delay(500);
   for (const pid of pids) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Already gone, which is the desired state.
-    }
+    killPid(pid, "SIGKILL");
   }
 }
 
@@ -110,6 +160,14 @@ function collectProcessTreePids(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function killPid(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // The process may have exited between listing and cleanup.
+  }
 }
 
 function execFileText(file: string, args: string[]): Promise<string> {

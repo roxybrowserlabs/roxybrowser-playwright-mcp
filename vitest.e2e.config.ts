@@ -5,6 +5,7 @@ export default defineConfig({
     include: ["tests/e2e/**/*.test.ts"],
     exclude: ["tests/e2e/bidi/**/*.test.ts"],
     globalSetup: ["tests/helpers/browser-process-cleanup.global-setup.ts"],
+    setupFiles: ["tests/helpers/browser-process-cleanup.setup.ts"],
     environment: "node",
     testTimeout: 30_000,
     hookTimeout: 30_000
