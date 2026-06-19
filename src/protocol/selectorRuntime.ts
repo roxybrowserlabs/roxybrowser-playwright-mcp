@@ -865,6 +865,36 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   const resolveSingleElement = (): Element | null =>
     resolveSingleElementFrom(resolveReference(payload.reference).filter((node): node is Element => isElementNode(node)));
   const resolveSingleNode = (): Node | null => resolveReference(payload.reference)[0] ?? null;
+  const retargetElement = (node: Node | null, behavior: "none" | "follow-label" | "no-follow-label" | "button-link"): Element | null => {
+    let element = node ? nodeToActionElement(node) : null;
+    if (!element) {
+      return null;
+    }
+    if (behavior === "none") {
+      return element;
+    }
+    if (!element.matches("input, textarea, select") && !(element instanceof HTMLElement && element.isContentEditable)) {
+      if (behavior === "button-link") {
+        element = element.closest("button, [role=button], a, [role=link]") ?? element;
+      } else {
+        element = element.closest("button, [role=button], [role=checkbox], [role=radio]") ?? element;
+      }
+    }
+    if (behavior === "follow-label") {
+      if (
+        !element.matches("a, input, textarea, button, select, [role=link], [role=button], [role=checkbox], [role=radio]") &&
+        !(element instanceof HTMLElement && element.isContentEditable)
+      ) {
+        const enclosingLabel = element.closest("label");
+        if (enclosingLabel instanceof HTMLLabelElement && enclosingLabel.control) {
+          element = enclosingLabel.control;
+        }
+      }
+    }
+    return element;
+  };
+  const resolveRetargetedElement = (behavior: "none" | "follow-label" | "no-follow-label" | "button-link"): Element | null =>
+    retargetElement(resolveSingleNode(), behavior);
   const callUserFunction = (subject: unknown) => {
     const expression = payload.expression ?? "undefined";
     let result = payload.isFunction === true
@@ -1097,12 +1127,12 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
     case "isChecked":
       {
-        const firstElement = resolveSingleElement();
+        const firstElement = resolveRetargetedElement("follow-label");
         return firstElement ? checkedState(firstElement) : false;
       }
     case "checkedState":
       {
-        const firstElement = resolveSingleElement();
+        const firstElement = resolveRetargetedElement("follow-label");
         if (!firstElement) {
           throw new Error(payload.missingMessage ?? "No element found.");
         }
@@ -1139,7 +1169,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
     case "check":
       {
-        const firstElement = resolveSingleElement();
+        const firstElement = resolveRetargetedElement("follow-label");
         if (!firstElement) {
           throw new Error(payload.missingMessage ?? "No element found.");
         }

@@ -310,6 +310,23 @@ describe("page form action contract e2e", () => {
     });
   });
 
+  it("does not click when check state already matches", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <input id="checked" type="checkbox" checked onclick="window.checkedClicks = (window.checkedClicks || 0) + 1">
+        <input id="unchecked" type="checkbox" onclick="window.uncheckedClicks = (window.uncheckedClicks || 0) + 1">
+      `);
+
+      await page.check("#checked");
+      expect(await page.evaluate(() => checked.checked)).toBe(true);
+      expect(await page.evaluate(() => window.checkedClicks || 0)).toBe(0);
+
+      await page.uncheck("#unchecked");
+      expect(await page.evaluate(() => unchecked.checked)).toBe(false);
+      expect(await page.evaluate(() => window.uncheckedClicks || 0)).toBe(0);
+    });
+  });
+
   it("checks radio input", async () => {
     await withPage(async (page) => {
       await page.setContent(`
@@ -321,6 +338,77 @@ describe("page form action contract e2e", () => {
       await page.check("#two");
 
       expect(await page.evaluate(() => two.checked)).toBe(true);
+    });
+  });
+
+  it("checks label with explicit position", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <input id="checkbox" type="checkbox" style="width: 5px; height: 5px;">
+        <label for="checkbox">
+          <a href="/should-not-navigate">I am a long link that goes away so that nothing good will happen if you click on me</a>
+          Click me
+        </label>
+      `);
+
+      const box = await (await page.$("text=Click me"))!.boundingBox();
+      await page.check("text=Click me", { position: { x: box!.width - 10, y: 2 } });
+
+      expect(await page.evaluate(() => checkbox.checked)).toBe(true);
+      expect(page.url()).not.toContain("should-not-navigate");
+    });
+  });
+
+  it("checks through Playwright-style label retargeting", async () => {
+    await withPage(async (page) => {
+      for (const { dom, selector } of [
+        {
+          dom: `<label><input id="target" type="checkbox">Click me</label>`,
+          selector: "label"
+        },
+        {
+          dom: `<input id="target" type="checkbox"><label for="target">Click me</label>`,
+          selector: "label"
+        },
+        {
+          dom: `<button><input id="target" type="checkbox">Click me</button>`,
+          selector: "input"
+        },
+        {
+          dom: `<a href="#"><input id="target" type="checkbox">Click me</a>`,
+          selector: "input"
+        }
+      ]) {
+        await page.setContent(dom);
+        const target = page.locator(selector);
+
+        expect(await target.isChecked()).toBe(false);
+        await page.$eval("input", (input: HTMLInputElement) => {
+          input.checked = true;
+        });
+        expect(await target.isChecked()).toBe(true);
+
+        await target.uncheck();
+        expect(await page.$eval("input", (input: HTMLInputElement) => input.checked)).toBe(false);
+
+        await target.check();
+        expect(await page.$eval("input", (input: HTMLInputElement) => input.checked)).toBe(true);
+
+        await target.setChecked(false);
+        expect(await page.$eval("input", (input: HTMLInputElement) => input.checked)).toBe(false);
+      }
+    });
+  });
+
+  it("does not retarget anchors inside labels for checking", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <input type="checkbox" id="target">
+        <label for="target">Text<a href="#" id="link">Target</a></label>
+      `);
+
+      await expect(page.locator("a").isChecked()).rejects.toThrow("Not a checkbox or radio button");
+      await expect(page.check("a")).rejects.toThrow("Not a checkbox or radio button");
     });
   });
 
