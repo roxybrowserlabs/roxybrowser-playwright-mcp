@@ -388,7 +388,7 @@ export interface ProtocolElementHandleAdapter {
     isFunction?: boolean,
     arg?: unknown
   ): Promise<TResult>;
-  evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult>;
+  evaluate<TResult>(expression: string, arg?: unknown, isFunction?: boolean): Promise<TResult>;
   evaluateHandle?<TResult>(
     expression: string,
     arg?: unknown,

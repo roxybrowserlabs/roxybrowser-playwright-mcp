@@ -169,4 +169,19 @@ describe("page selectors contract e2e", () => {
       ).toContain("ye");
     });
   });
+
+  it("page.$$ works with bogus Array.from like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div>hello</div><div></div>");
+      const divHandle = await page.evaluateHandle(() => {
+        Array.from = () => [];
+        return document.querySelector("div");
+      });
+
+      const elements = await page.$$("div");
+
+      expect(elements).toHaveLength(2);
+      expect(await elements[0]!.evaluate((div, firstDiv) => div === firstDiv, divHandle)).toBe(true);
+    });
+  });
 });

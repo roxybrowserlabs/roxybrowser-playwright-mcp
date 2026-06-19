@@ -80,6 +80,17 @@ describe("page evaluateHandle contract e2e", () => {
     });
   });
 
+  it("should accept same nested object multiple times", async () => {
+    await withPage(async (page) => {
+      const foo = { x: 1 };
+      expect(await page.evaluate((x) => x, { foo, bar: [foo], baz: { foo } })).toEqual({
+        foo: { x: 1 },
+        bar: [{ x: 1 }],
+        baz: { foo: { x: 1 } }
+      });
+    });
+  });
+
   it("should accept object handle to unserializable value", async () => {
     await withPage(async (page) => {
       const aHandle = await page.evaluateHandle(() => Infinity);

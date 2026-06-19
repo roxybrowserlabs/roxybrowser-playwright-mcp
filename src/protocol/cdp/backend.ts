@@ -7136,8 +7136,17 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
     );
   }
 
-  async evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult> {
-    return this.page.evaluateOnReference(this.reference(), expression, arg, "No element found.");
+  async evaluate<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction = looksLikeFunctionExpression(expression)
+  ): Promise<TResult> {
+    const handle = await this.page.resolveElementReferenceAsHandle(this.reference());
+    try {
+      return await handle.evaluate<TResult>(expression, arg, isFunction);
+    } finally {
+      await handle.dispose().catch(() => {});
+    }
   }
 
   async evaluateHandle<TResult>(

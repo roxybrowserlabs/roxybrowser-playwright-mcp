@@ -140,7 +140,8 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     assertMaxArguments(arguments.length, 2);
     return this.adapter.evaluate(
       serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-      serializeEvaluationArgument(arg)
+      arg,
+      typeof pageFunction === "function"
     );
   }
 
@@ -161,7 +162,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
       return await createRemoteJSHandle(
         await this.adapter.evaluateHandle<R>(
           serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-          serializeEvaluationArgument(arg),
+          arg,
           typeof pageFunction === "function"
         ),
         (reference) => this.frameResolver?.createElementHandleFromReference(reference)
@@ -170,7 +171,8 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     }
     const value = await this.adapter.evaluate<R>(
       serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-      serializeEvaluationArgument(arg)
+      arg,
+      typeof pageFunction === "function"
     );
     return createSmartHandle(value);
   }
