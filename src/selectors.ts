@@ -33,6 +33,12 @@ function splitSelectorChain(selector: string): string[] {
   let braceDepth = 0;
   let start = 0;
 
+  const shouldIgnoreTextSelectorQuote = (index: number): boolean => {
+    const prefix = selector.substring(start, index);
+    const match = prefix.match(/^\s*text\s*=(.*)$/s);
+    return !!match && !!match[1];
+  };
+
   for (let index = 0; index < selector.length; index += 1) {
     const char = selector[index]!;
 
@@ -50,7 +56,7 @@ function splitSelectorChain(selector: string): string[] {
       continue;
     }
 
-    if (char === '"' || char === "'") {
+    if ((char === '"' || char === "'") && !shouldIgnoreTextSelectorQuote(index)) {
       quote = char;
       continue;
     }
@@ -167,7 +173,17 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
     (bodyPart.startsWith('"') && bodyPart.endsWith('"')) ||
     (bodyPart.startsWith("'") && bodyPart.endsWith("'"))
   ) {
+    if (bodyPart.length === 1) {
+      throw new Error(`Invalid selector ${selectorText}`);
+    }
     return withCapture(parseTextSelector(bodyPart));
+  }
+
+  if (
+    bodyPart.length > 1 &&
+    (bodyPart.startsWith('"') || bodyPart.startsWith("'"))
+  ) {
+    throw new Error(`Invalid selector ${selectorText}`);
   }
 
   if (bodyPart.startsWith("//") || bodyPart.startsWith("(") || bodyPart.startsWith("..")) {
@@ -204,6 +220,13 @@ function parseTextSelector(body: string): LocatorSelector {
     };
   }
 
+  if (trimmed === `"` || trimmed === `'`) {
+    return {
+      strategy: "text",
+      value: trimmed
+    };
+  }
+
   if (
     (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
     (trimmed.startsWith("'") && trimmed.endsWith("'"))
@@ -225,7 +248,7 @@ function parseTextSelector(body: string): LocatorSelector {
 function unescapeQuotedText(text: string, quote: string): string {
   return text.replace(/\\(.)/g, (_match, escaped) => {
     if (escaped === quote || escaped === "\\" || escaped === "x") {
-      return escaped === "x" ? "" : escaped;
+      return escaped;
     }
     if (escaped === "n") {
       return "\n";

@@ -106,6 +106,30 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   const normalize = (value: string | null | undefined): string =>
     (value ?? "").replace(/\s+/g, " ").trim();
 
+  const textForSelector = (element: Element): string => {
+    if (
+      element instanceof HTMLInputElement &&
+      ["button", "submit", "reset"].includes(element.type)
+    ) {
+      return element.value;
+    }
+    return element.textContent ?? "";
+  };
+
+  const immediateTextNodesForSelector = (element: Element): string[] =>
+    Array.from(element.childNodes)
+      .filter((node): node is Text => isTextNode(node))
+      .map((node) => node.nodeValue ?? "");
+
+  const matchesTextSelector = (element: Element, selector: LocatorSelector): boolean => {
+    if (selector.exact && !selector.isRegex) {
+      return immediateTextNodesForSelector(element).some((text) =>
+        matchesPattern(text, selector, "value")
+      );
+    }
+    return matchesPattern(textForSelector(element), selector, "value");
+  };
+
   const isDocumentNode = (node: unknown): node is Document =>
     !!node && typeof node === "object" && "nodeType" in node && (node as Node).nodeType === 9;
 
@@ -171,10 +195,25 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     );
   };
 
-  const querySelectorAllPierce = (root: ParentNode | Element, selector: string): Element[] => {
+  const shouldSkipTextSelectorElement = (element: Element): boolean => {
+    const tagName = element.tagName.toLowerCase();
+    return (
+      tagName === "head" ||
+      tagName === "script" ||
+      tagName === "style" ||
+      isInternalOverlayElement(element)
+    );
+  };
+
+  const querySelectorAllPierce = (
+    root: ParentNode | Element,
+    selector: string,
+    shadowSelector = selector
+  ): Element[] => {
     const matches: Element[] = [];
-    const visitRoot = (currentRoot: ParentNode | Element): void => {
-      for (const element of toElements(currentRoot.querySelectorAll(selector))) {
+    const visitRoot = (currentRoot: ParentNode | Element, isInitialRoot: boolean): void => {
+      const currentSelector = isInitialRoot ? selector : shadowSelector;
+      for (const element of toElements(currentRoot.querySelectorAll(currentSelector))) {
         if (!isInternalOverlayElement(element)) {
           pushUnique(matches, element);
         }
@@ -182,17 +221,17 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       if (isElementNode(currentRoot)) {
         const shadowRoot = (currentRoot as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
         if (shadowRoot) {
-          visitRoot(shadowRoot);
+          visitRoot(shadowRoot, false);
         }
       }
       for (const element of toElements(currentRoot.querySelectorAll("*"))) {
         const shadowRoot = (element as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
         if (shadowRoot) {
-          visitRoot(shadowRoot);
+          visitRoot(shadowRoot, false);
         }
       }
     };
-    visitRoot(root);
+    visitRoot(root, true);
     return matches;
   };
 
@@ -281,7 +320,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       const querySelector = isElementNode(root) && root.tagName.toLowerCase() !== "html"
         ? scopeCssSelectorList(normalizedSelector)
         : normalizedSelector;
-      for (const element of querySelectorAllPierce(root, querySelector)) {
+      for (const element of querySelectorAllPierce(root, querySelector, normalizedSelector)) {
         pushUnique(matches, element);
       }
       return matches;
@@ -563,22 +602,18 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     const descendants = descendantsOf(root, includeRoot);
 
     if (selector.strategy === "text") {
-      const matching = descendants.filter((element) =>
-        matchesPattern(
-          (element as HTMLElement).innerText || element.textContent || "",
-          selector,
-          "value"
-        )
-      );
+      const matching = descendants.filter((element) => {
+        if (shouldSkipTextSelectorElement(element)) {
+          return false;
+        }
+        return matchesTextSelector(element, selector);
+      });
 
       return matching.filter((element) => {
         const childElements = descendantsOf(element, false);
         return !childElements.some((child) =>
-          matchesPattern(
-            (child as HTMLElement).innerText || child.textContent || "",
-            selector,
-            "value"
-          )
+          !shouldSkipTextSelectorElement(child) &&
+          matchesTextSelector(child, selector)
         );
       });
     }
