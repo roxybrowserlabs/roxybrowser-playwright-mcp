@@ -23,6 +23,7 @@ const ROXYBROWSER_PROFILE_NAME = process.env.ROXYBROWSER_PROFILE_NAME ?? "RoxyBr
 const ROXYBROWSER_PROFILE_MATCH = process.env.ROXYBROWSER_PROFILE_MATCH ?? "firefox";
 const ROXYBROWSER_CORE_VERSION = process.env.ROXYBROWSER_CORE_VERSION ?? "146";
 const ROXYBROWSER_DEBUG = process.env.ROXYBROWSER_DEBUG === "1";
+const KEEP_BIDI_BROWSER_OPEN = process.env.ROXY_BIDI_KEEP_BROWSER_OPEN === "1";
 
 let usesExternalBidiEndpoint = false;
 let externalBidiBrowser: Browser | undefined;
@@ -47,11 +48,13 @@ export async function openBidiBrowser(): Promise<Browser> {
     usesExternalBidiEndpoint = true;
 
     const browserKey = `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`;
-    if (externalBidiBrowser && externalBidiBrowserKey === browserKey) {
+    if (KEEP_BIDI_BROWSER_OPEN && externalBidiBrowser && externalBidiBrowserKey === browserKey) {
       return externalBidiBrowser;
     }
 
-    await closeExternalBidiBrowser();
+    if (KEEP_BIDI_BROWSER_OPEN) {
+      await closeExternalBidiBrowser();
+    }
     externalBidiBrowserKey = browserKey;
     externalBidiBrowser = await firefox.connect({
       browserName: "firefox",
@@ -104,7 +107,7 @@ export async function withBidiPage<T>(
   run: (page: Page, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
   let browser = await openBidiBrowser();
-  const keepBrowserOpen = usesExternalBidiEndpoint;
+  const keepBrowserOpen = usesExternalBidiEndpoint && KEEP_BIDI_BROWSER_OPEN;
   let context: BrowserContext | undefined;
 
   try {
@@ -134,6 +137,21 @@ export async function withBidiPage<T>(
   } finally {
     if (!keepBrowserOpen) {
       await browser.close();
+      if (usesExternalBidiEndpoint) {
+        externalBidiBrowser = undefined;
+        externalBidiBrowserKey = undefined;
+        cachedRoxyBrowserEndpoint = undefined;
+        await closeRoxyBrowserFirefoxBidiProfile({
+          apiPort: ROXYBROWSER_API_PORT,
+          apiToken: ROXYBROWSER_API_TOKEN,
+          workspaceId: ROXYBROWSER_WORKSPACE_ID,
+          projectId: ROXYBROWSER_PROJECT_ID,
+          profileId: ROXYBROWSER_PROFILE_ID,
+          coreType: "Firefox",
+          coreVersion: ROXYBROWSER_CORE_VERSION,
+          windowRemark: "firefox bidi e2e"
+        });
+      }
     }
   }
 }
