@@ -55,7 +55,9 @@ describe("RoxyLocator", () => {
   it("applies Playwright locator filter options when nesting locators", () => {
     const rootAdapter = createLocatorAdapterStub();
     const childAdapter = createLocatorAdapterStub();
+    const filteredAdapter = createLocatorAdapterStub();
     rootAdapter.locator = vi.fn(() => childAdapter);
+    childAdapter.locator = vi.fn(() => filteredAdapter);
     const controller = {
       click: vi.fn(),
       hover: vi.fn(),
@@ -79,6 +81,37 @@ describe("RoxyLocator", () => {
       regexFlags: "i",
       internal: true,
       filter: true
+    });
+    expect(nested).toBeInstanceOf(RoxyLocator);
+  });
+
+  it("applies Playwright hasNotText locator filters when nesting locators", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    const childAdapter = createLocatorAdapterStub();
+    const filteredAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => childAdapter);
+    childAdapter.locator = vi.fn(() => filteredAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller);
+
+    const nested = locator.locator(".child", { hasNotText: "hidden" });
+
+    expect(rootAdapter.locator).toHaveBeenNthCalledWith(1, {
+      strategy: "css",
+      value: ".child"
+    });
+    expect(childAdapter.locator).toHaveBeenCalledWith({
+      strategy: "text",
+      value: "hidden",
+      internal: true,
+      filter: true,
+      negate: true
     });
     expect(nested).toBeInstanceOf(RoxyLocator);
   });

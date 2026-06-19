@@ -50,6 +50,7 @@ export interface LocatorSelector {
   filter?: boolean;
   exact?: boolean;
   internal?: boolean;
+  negate?: boolean;
   name?: string;
   label?: string;
   isRegex?: boolean;

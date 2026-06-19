@@ -382,6 +382,15 @@ export class RoxyLocator implements Locator {
       adapter = adapter.locator(selector);
       chain.push(selector);
     }
+    if (options?.hasNotText !== undefined) {
+      const selector: LocatorSelector = {
+        ...createInternalTextLocatorSelector(options.hasNotText),
+        filter: true,
+        negate: true
+      };
+      adapter = adapter.locator(selector);
+      chain.push(selector);
+    }
     return this.cloneWith(adapter, chain);
   }
 

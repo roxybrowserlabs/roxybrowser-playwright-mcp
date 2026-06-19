@@ -313,4 +313,18 @@ describe("page text selector contract e2e", () => {
       expect(await page.locator("div", { hasText: /^hello$/ }).getAttribute("id")).toBe("div2");
     });
   });
+
+  it("supports locator filter hasText and hasNotText like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<section><div><span>hello</span></div><div><span>world</span></div></section>`);
+
+      expect(await page.locator("div").filter({ hasText: "hello" }).count()).toBe(1);
+      expect(await page.locator("div", { hasText: "hello" }).filter({ hasText: "hello" }).count()).toBe(1);
+      expect(await page.locator("div", { hasText: "hello" }).filter({ hasText: "world" }).count()).toBe(0);
+      expect(await page.locator("section", { hasText: "hello" }).filter({ hasText: "world" }).count()).toBe(1);
+      expect(await page.locator("div").filter({ hasText: "hello" }).locator("span").count()).toBe(1);
+      expect(await page.locator("div").filter({ hasNotText: "hello" }).count()).toBe(1);
+      expect(await page.locator("div").filter({ hasNotText: "foo" }).count()).toBe(2);
+    });
+  });
 });

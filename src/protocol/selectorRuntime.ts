@@ -1064,7 +1064,8 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       const next: SelectorMatch[] = [];
       for (const match of current) {
         if (selector.filter) {
-          if (isElementNode(match.node) && matchesFilterSelector(match.node, selector)) {
+          const matched = isElementNode(match.node) && matchesFilterSelector(match.node, selector);
+          if (selector.negate ? !matched : matched) {
             next.push(match);
           }
           continue;
