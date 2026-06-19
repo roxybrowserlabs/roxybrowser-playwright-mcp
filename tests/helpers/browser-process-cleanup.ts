@@ -1,4 +1,10 @@
 import { execFile, spawnSync } from "node:child_process";
+import {
+  cleanupRegisteredTestBrowserProcesses,
+  cleanupRegisteredTestBrowserProcessesSync
+} from "../../src/processCleanup.js";
+
+process.env.ROXY_TEST_BROWSER_CLEANUP = "1";
 
 const TEST_BROWSER_PROFILE_MARKERS = [
   "roxybrowser-bidi-",
@@ -17,6 +23,8 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
     return;
   }
 
+  await cleanupRegisteredTestBrowserProcesses();
+
   const stdout = await execFileText("ps", ["-eo", "pid=,ppid=,command="]).catch(() => "");
   const pids = collectLocalTestBrowserProcessTreePids(stdout, process.pid);
   await terminateLocalTestBrowserProcessPids(pids);
@@ -26,6 +34,8 @@ export function cleanupLocalTestBrowserProcessesSync(): void {
   if (process.platform === "win32") {
     return;
   }
+
+  cleanupRegisteredTestBrowserProcessesSync();
 
   const result = spawnSync("ps", ["-eo", "pid=,ppid=,command="], {
     encoding: "utf8"

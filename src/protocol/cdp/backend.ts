@@ -56,7 +56,10 @@ import {
   RENDER_SCREencast_OVERLAYS_SOURCE
 } from "../../screencastOverlay.js";
 import { RENDER_SCREENCAST_ACTIONS_SOURCE } from "../../screencastActions.js";
-import { terminateProcessTree } from "../../processCleanup.js";
+import {
+  registerTestBrowserProcessForCleanup,
+  terminateProcessTree
+} from "../../processCleanup.js";
 import type {
   AddScriptTagOptions,
   AddStyleTagOptions,
@@ -402,6 +405,7 @@ interface CdpConnectionDetails {
   port: number;
   spawnedProcess?: ChildProcess;
   userDataDir?: string;
+  unregisterTestBrowserProcess?: () => void;
 }
 
 interface StreamLike {
@@ -7709,6 +7713,10 @@ async function launchBrowser(options: LaunchOptions): Promise<CdpConnectionDetai
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"]
     });
+    const unregisterTestBrowserProcess = registerTestBrowserProcessForCleanup(
+      processRef,
+      userDataDir
+    );
 
     try {
       const browserWsEndpoint = await waitForDebuggerEndpoint(processRef, 15_000);
@@ -7716,9 +7724,11 @@ async function launchBrowser(options: LaunchOptions): Promise<CdpConnectionDetai
       return {
         ...connection,
         spawnedProcess: processRef,
-        userDataDir
+        userDataDir,
+        unregisterTestBrowserProcess
       };
     } catch (error) {
+      unregisterTestBrowserProcess();
       lastError = error;
       await terminateProcessTree(processRef, { timeoutMs: 500 });
     }
@@ -7737,10 +7747,14 @@ async function launchBrowser(options: LaunchOptions): Promise<CdpConnectionDetai
 }
 
 async function cleanupConnection(connection: CdpConnectionDetails): Promise<void> {
-  const { spawnedProcess, userDataDir } = connection;
+  const { spawnedProcess, unregisterTestBrowserProcess, userDataDir } = connection;
 
-  if (spawnedProcess) {
-    await terminateProcessTree(spawnedProcess, { timeoutMs: 3_000 });
+  try {
+    if (spawnedProcess) {
+      await terminateProcessTree(spawnedProcess, { timeoutMs: 3_000 });
+    }
+  } finally {
+    unregisterTestBrowserProcess?.();
   }
 
   if (userDataDir) {

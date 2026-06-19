@@ -87,7 +87,10 @@ import { spawn } from "node:child_process";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { terminateProcessTree } from "../../processCleanup.js";
+import {
+  registerTestBrowserProcessForCleanup,
+  terminateProcessTree
+} from "../../processCleanup.js";
 import type { BidiProtocolClient } from "./client.js";
 import { getBidiClientFactory } from "./client.js";
 
@@ -626,6 +629,7 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
   private client: BidiProtocolClient | undefined;
   private ownsSession = false;
   private spawnedProcess: ReturnType<typeof spawn> | undefined;
+  private unregisterTestBrowserProcess: (() => void) | undefined;
   private userDataDir: string | undefined;
 
   constructor(private readonly options: BrowserConnectOptions) {}
@@ -649,10 +653,17 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
       return;
     }
 
-    const { client, ownsSession, process: proc, userDataDir } = await launchFirefoxBidi(this.options);
+    const {
+      client,
+      ownsSession,
+      process: proc,
+      unregisterTestBrowserProcess,
+      userDataDir
+    } = await launchFirefoxBidi(this.options);
     this.client = client;
     this.ownsSession = ownsSession;
     this.spawnedProcess = proc;
+    this.unregisterTestBrowserProcess = unregisterTestBrowserProcess;
     this.userDataDir = userDataDir;
   }
 
@@ -677,10 +688,15 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
     }
 
     if (this.spawnedProcess) {
-      await cleanupFirefoxProcess(this.spawnedProcess, this.userDataDir);
-      this.spawnedProcess = undefined;
-      this.userDataDir = undefined;
+      await cleanupFirefoxProcess(
+        this.spawnedProcess,
+        this.userDataDir,
+        this.unregisterTestBrowserProcess
+      );
     }
+    this.spawnedProcess = undefined;
+    this.unregisterTestBrowserProcess = undefined;
+    this.userDataDir = undefined;
   }
 }
 
@@ -3976,6 +3992,7 @@ async function connectBidiFromWsEndpoint(
 interface FirefoxLaunchResult {
   client: BidiProtocolClient;
   process: ReturnType<typeof spawn> | undefined;
+  unregisterTestBrowserProcess?: () => void;
   ownsSession: boolean;
   userDataDir: string;
 }
@@ -3996,6 +4013,7 @@ async function launchFirefoxBidi(options: BrowserConnectOptions): Promise<Firefo
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"]
   });
+  const unregisterTestBrowserProcess = registerTestBrowserProcessForCleanup(proc, userDataDir);
 
   try {
     const wsEndpoint = await waitForFirefoxBiDiEndpoint(proc, host, port, 15_000);
@@ -4004,20 +4022,26 @@ async function launchFirefoxBidi(options: BrowserConnectOptions): Promise<Firefo
       client: connection.client,
       ownsSession: connection.ownsSession,
       process: proc,
+      unregisterTestBrowserProcess,
       userDataDir
     };
   } catch (error) {
-    await cleanupFirefoxProcess(proc, userDataDir);
+    await cleanupFirefoxProcess(proc, userDataDir, unregisterTestBrowserProcess);
     throw error;
   }
 }
 
 async function cleanupFirefoxProcess(
   proc: ReturnType<typeof spawn> | undefined,
-  userDataDir: string | undefined
+  userDataDir: string | undefined,
+  unregisterTestBrowserProcess?: () => void
 ): Promise<void> {
-  if (proc) {
-    await terminateProcessTree(proc, { timeoutMs: CLEANUP_FIREFOX_PROCESS_TIMEOUT_MS });
+  try {
+    if (proc) {
+      await terminateProcessTree(proc, { timeoutMs: CLEANUP_FIREFOX_PROCESS_TIMEOUT_MS });
+    }
+  } finally {
+    unregisterTestBrowserProcess?.();
   }
 
   if (userDataDir) {
