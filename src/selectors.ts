@@ -155,6 +155,18 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
           strategy: "control",
           value: body.trim()
         });
+      case "visible": {
+        const visible = body.trim();
+        if (visible !== "true" && visible !== "false") {
+          throw new Error(`Unknown visible selector value "${visible}" while parsing selector ${selectorText}`);
+        }
+        return withCapture({
+          strategy: "control",
+          value: "visible",
+          filter: true,
+          visible: visible === "true"
+        });
+      }
       case "css":
         return withCapture({
           strategy: "css",

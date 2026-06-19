@@ -106,9 +106,43 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   const normalize = (value: string | null | undefined): string =>
     (value ?? "").replace(/\s+/g, " ").trim();
 
+  const isDocumentNode = (node: unknown): node is Document =>
+    !!node && typeof node === "object" && "nodeType" in node && (node as Node).nodeType === 9;
+
+  const isElementNode = (node: unknown): node is Element =>
+    !!node && typeof node === "object" && "nodeType" in node && (node as Node).nodeType === 1;
+
+  const isNode = (node: unknown): node is Node =>
+    !!node && typeof node === "object" && "nodeType" in node;
+
+  const isTextNode = (node: unknown): node is Text =>
+    isNode(node) && node.nodeType === 3;
+
+  const isDocumentFragmentNode = (node: unknown): node is DocumentFragment =>
+    isNode(node) && node.nodeType === 11;
+
+  const tagNameOf = (node: unknown): string =>
+    isElementNode(node) ? node.tagName.toLowerCase() : "";
+  const isHtmlElementLike = (node: unknown): node is HTMLElement =>
+    isElementNode(node) && "style" in node && "innerText" in node;
+  const isInputElement = (element: Element): element is HTMLInputElement =>
+    tagNameOf(element) === "input";
+  const isTextAreaElement = (element: Element): element is HTMLTextAreaElement =>
+    tagNameOf(element) === "textarea";
+  const isSelectElement = (element: Element): element is HTMLSelectElement =>
+    tagNameOf(element) === "select";
+  const isOptionElement = (element: Element): element is HTMLOptionElement =>
+    tagNameOf(element) === "option";
+  const isOptGroupElement = (element: Element): element is HTMLOptGroupElement =>
+    tagNameOf(element) === "optgroup";
+  const isFormControlElement = (
+    element: Element
+  ): element is HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLOptGroupElement | HTMLOptionElement | HTMLFieldSetElement =>
+    ["button", "input", "select", "textarea", "optgroup", "option", "fieldset"].includes(tagNameOf(element));
+
   const textForSelector = (element: Element): string => {
     if (
-      element instanceof HTMLInputElement &&
+      isInputElement(element) &&
       ["button", "submit", "reset"].includes(element.type)
     ) {
       return element.value;
@@ -198,23 +232,13 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return regexp.test(elementFullTextForSelector(element));
   };
 
-  const isDocumentNode = (node: unknown): node is Document =>
-    !!node && typeof node === "object" && "nodeType" in node && (node as Node).nodeType === 9;
-
-  const isElementNode = (node: unknown): node is Element =>
-    !!node && typeof node === "object" && "nodeType" in node && (node as Node).nodeType === 1;
-
-  const isNode = (node: unknown): node is Node =>
-    !!node && typeof node === "object" && "nodeType" in node;
-
-  const isTextNode = (node: unknown): node is Text =>
-    isNode(node) && node.nodeType === 3;
-
-  const tagNameOf = (node: unknown): string =>
-    isElementNode(node) ? node.tagName.toLowerCase() : "";
   const activelyFocused = (node: Node): boolean => {
     const root = node.getRootNode();
-    const activeElement = root instanceof Document || root instanceof ShadowRoot ? root.activeElement : null;
+    const activeElement = isDocumentNode(root)
+      ? root.activeElement
+      : isDocumentFragmentNode(root) && "activeElement" in root
+        ? root.activeElement
+      : null;
     return activeElement === node && !!node.ownerDocument && node.ownerDocument.hasFocus();
   };
   const focusElement = (element: Element): void => {
@@ -223,7 +247,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       element.focus();
       element.focus();
     }
-    if (payload.resetSelectionIfNotFocused && !wasFocused && element instanceof HTMLInputElement) {
+    if (payload.resetSelectionIfNotFocused && !wasFocused && isInputElement(element)) {
       try {
         element.setSelectionRange(0, 0);
       } catch {}
@@ -405,7 +429,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     try {
       const scopedSelector = normalizedSelector.replace(/:scope\b/g, `[${scopeAttribute}]`);
       const queryRoot = root.parentElement ?? root.getRootNode();
-      const candidates = queryRoot instanceof Document || queryRoot instanceof ShadowRoot || isElementNode(queryRoot)
+      const candidates = isDocumentNode(queryRoot) || isDocumentFragmentNode(queryRoot) || isElementNode(queryRoot)
         ? querySelectorAllPierce(queryRoot, scopedSelector)
         : [];
       for (const element of candidates) {
@@ -824,10 +848,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       if (labelText) return normalize(labelText);
     }
 
-    if (
-      element instanceof HTMLInputElement &&
-      ["button", "submit", "reset"].includes(element.type)
-    ) {
+    if (isInputElement(element) && ["button", "submit", "reset"].includes(element.type)) {
       return normalize(element.value);
     }
 
@@ -931,10 +952,8 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     const elements: Element[] = [];
     for (let index = 0; index < result.snapshotLength; index += 1) {
       const node = result.snapshotItem(index);
-      if (!(node instanceof Element)) {
-        if (!isElementNode(node)) {
-          continue;
-        }
+      if (!isElementNode(node)) {
+        continue;
       }
       if (!includeRoot && isElementNode(root) && node === root) {
         continue;
@@ -1040,7 +1059,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   ): Element[] => {
     if (!chain.length) {
       return applyPick(
-        roots.filter((node): node is Element => node instanceof Element),
+        roots.filter((node): node is Element => isElementNode(node)),
         pick
       );
     }
@@ -1155,6 +1174,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
 
   const matchesFilterSelector = (element: Element, selector: LocatorSelector): boolean => {
+    if (selector.strategy === "control" && selector.value === "visible") {
+      return isHtmlElementLike(element) && isVisible(element) === selector.visible;
+    }
     if (selector.hasChain) {
       return resolveSelectorChain([element], selector.hasChain, undefined, true).length > 0;
     }
@@ -1207,18 +1229,10 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return true;
   };
   const isDisabled = (element: Element): boolean => {
-    if (element instanceof HTMLOptionElement && element.parentElement instanceof HTMLOptGroupElement && element.parentElement.disabled) {
+    if (isOptionElement(element) && element.parentElement && isOptGroupElement(element.parentElement) && element.parentElement.disabled) {
       return true;
     }
-    if (
-      element instanceof HTMLButtonElement ||
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLSelectElement ||
-      element instanceof HTMLTextAreaElement ||
-      element instanceof HTMLOptGroupElement ||
-      element instanceof HTMLOptionElement ||
-      element instanceof HTMLFieldSetElement
-    ) {
+    if (isFormControlElement(element)) {
       return element.disabled;
     }
     let current: Element | undefined = element;
@@ -1236,13 +1250,13 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
   const isEditable = (element: Element): boolean => {
     if (
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLTextAreaElement ||
-      element instanceof HTMLSelectElement
+      isInputElement(element) ||
+      isTextAreaElement(element) ||
+      isSelectElement(element)
     ) {
       return !element.hasAttribute("readonly") && !isDisabled(element);
     }
-    if (element instanceof HTMLElement && element.isContentEditable) {
+    if (isHtmlElementLike(element) && element.isContentEditable) {
       return !isDisabled(element);
     }
     const ariaReadonlyRoles = new Set([
@@ -1308,7 +1322,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     });
   };
   const isChecked = (element: Element): boolean => {
-    if (element instanceof HTMLInputElement) {
+    if (isInputElement(element)) {
       return element.checked;
     }
     const ariaChecked = element.getAttribute("aria-checked");
@@ -1324,7 +1338,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     "treeitem"
   ]);
   const checkedState = (element: Element): boolean => {
-    if (element instanceof HTMLInputElement) {
+    if (isInputElement(element)) {
       const type = element.type.toLowerCase();
       if (type !== "checkbox" && type !== "radio") {
         throw new Error("Not a checkbox or radio button");
@@ -1338,9 +1352,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
   const inputValue = (element: Element): string => {
     if (
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLTextAreaElement ||
-      element instanceof HTMLSelectElement
+      isInputElement(element) ||
+      isTextAreaElement(element) ||
+      isSelectElement(element)
     ) {
       return element.value;
     }
@@ -1372,13 +1386,13 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return value;
   };
   const innerTextValue = (element: Element): string => {
-    if (element instanceof HTMLElement) {
+    if (isHtmlElementLike(element)) {
       return element.innerText;
     }
     throw new Error("Node is not an HTMLElement.");
   };
   const innerHTMLValue = (element: Element): string => {
-    if (element instanceof HTMLElement || element instanceof SVGElement) {
+    if (isElementNode(element) && "innerHTML" in element) {
       return element.innerHTML;
     }
     throw new Error("Node does not expose innerHTML.");
@@ -1418,7 +1432,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         ? `.${element.className.trim().replace(/\s+/g, ".")}`
         : "";
     const text = normalize(
-      (element instanceof HTMLElement
+      (isHtmlElementLike(element)
         ? element.innerText || element.textContent || ""
         : element.textContent || "")
     );
@@ -1477,7 +1491,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     if (behavior === "none") {
       return element;
     }
-    if (!element.matches("input, textarea, select") && !(element instanceof HTMLElement && element.isContentEditable)) {
+    if (!element.matches("input, textarea, select") && !(isHtmlElementLike(element) && element.isContentEditable)) {
       if (behavior === "button-link") {
         element = element.closest("button, [role=button], a, [role=link]") ?? element;
       } else {
@@ -1487,10 +1501,10 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     if (behavior === "follow-label") {
       if (
         !element.matches("a, input, textarea, button, select, [role=link], [role=button], [role=checkbox], [role=radio]") &&
-        !(element instanceof HTMLElement && element.isContentEditable)
+        !(isHtmlElementLike(element) && element.isContentEditable)
       ) {
         const enclosingLabel = element.closest("label");
-        if (enclosingLabel instanceof HTMLLabelElement && enclosingLabel.control) {
+        if (enclosingLabel && tagNameOf(enclosingLabel) === "label" && "control" in enclosingLabel && enclosingLabel.control) {
           element = enclosingLabel.control;
         }
       }
@@ -1780,7 +1794,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           throw new Error(payload.missingMessage ?? "No element found.");
         }
         const desired = payload.checked ?? true;
-        if (firstElement instanceof HTMLInputElement && firstElement.type.toLowerCase() === "radio" && !desired) {
+        if (isInputElement(firstElement) && firstElement.type.toLowerCase() === "radio" && !desired) {
           throw new Error("Cannot uncheck radio button");
         }
         checkedState(firstElement);
@@ -1789,7 +1803,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     case "selectOption":
       {
         const firstElement = resolveSingleElement();
-        if (!(firstElement instanceof HTMLSelectElement)) {
+        if (!firstElement || !isSelectElement(firstElement)) {
           throw new Error("Element is not a <select> element.");
         }
         const requested = payload.values ?? [];
@@ -1818,7 +1832,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         const isOptionEnabled = (option: HTMLOptionElement): boolean => {
           let parent = option.parentElement;
           while (parent) {
-            if (parent instanceof HTMLOptGroupElement && parent.disabled) {
+            if (isElementNode(parent) && isOptGroupElement(parent) && parent.disabled) {
               return false;
             }
             parent = parent.parentElement;
@@ -1873,11 +1887,11 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
             firstElement.focus();
           }
 
-          if (firstElement instanceof HTMLInputElement) {
+          if (isInputElement(firstElement)) {
             firstElement.value = fillInputValue(firstElement, payload.value ?? "");
-          } else if (firstElement instanceof HTMLTextAreaElement) {
+          } else if (isTextAreaElement(firstElement)) {
             firstElement.value = payload.value ?? "";
-          } else if (firstElement instanceof HTMLElement && firstElement.isContentEditable) {
+          } else if (isHtmlElementLike(firstElement) && firstElement.isContentEditable) {
             const selection = window.getSelection();
             const range = document.createRange();
             range.selectNodeContents(firstElement);

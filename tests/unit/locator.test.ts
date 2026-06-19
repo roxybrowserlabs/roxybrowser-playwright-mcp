@@ -30,6 +30,29 @@ describe("RoxyLocator", () => {
     ]);
   });
 
+  it("parses Playwright visible selector engine", () => {
+    expect(parseSelectorChain(".item >> visible=true")).toEqual([
+      {
+        strategy: "css",
+        value: ".item"
+      },
+      {
+        strategy: "control",
+        value: "visible",
+        filter: true,
+        visible: true
+      }
+    ]);
+    expect(parseSelectorChain("visible=false")).toEqual([
+      {
+        strategy: "control",
+        value: "visible",
+        filter: true,
+        visible: false
+      }
+    ]);
+  });
+
   it("builds nested css locators from the adapter", () => {
     const rootAdapter = createLocatorAdapterStub();
     const childAdapter = createLocatorAdapterStub();
@@ -164,6 +187,36 @@ describe("RoxyLocator", () => {
       internal: true,
       filter: true,
       negate: true
+    });
+    expect(nested).toBeInstanceOf(RoxyLocator);
+  });
+
+  it("applies Playwright visible locator filters", () => {
+    const rootAdapter = createLocatorAdapterStub();
+    const childAdapter = createLocatorAdapterStub();
+    const filteredAdapter = createLocatorAdapterStub();
+    rootAdapter.locator = vi.fn(() => childAdapter);
+    childAdapter.locator = vi.fn(() => filteredAdapter);
+    const controller = {
+      click: vi.fn(),
+      hover: vi.fn(),
+      fill: vi.fn(),
+      type: vi.fn(),
+      press: vi.fn()
+    };
+    const locator = new RoxyLocator(rootAdapter, controller);
+
+    const nested = locator.locator(".child").filter({ visible: false });
+
+    expect(rootAdapter.locator).toHaveBeenCalledWith({
+      strategy: "css",
+      value: ".child"
+    });
+    expect(childAdapter.locator).toHaveBeenCalledWith({
+      strategy: "control",
+      value: "visible",
+      filter: true,
+      visible: false
     });
     expect(nested).toBeInstanceOf(RoxyLocator);
   });

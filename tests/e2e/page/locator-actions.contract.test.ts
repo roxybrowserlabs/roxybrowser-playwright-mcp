@@ -106,4 +106,97 @@ describe("locator action contract e2e", () => {
       expect(await page.evaluate(() => window.result)).toBe("Clicked");
     });
   });
+
+  it("locator press, type and pressSequentially should work like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<input type='text'>");
+
+      await page.locator("input").press("h");
+      expect(await page.$eval("input", (input) => input.value)).toBe("h");
+
+      await page.locator("input").type("ello");
+      expect(await page.$eval("input", (input) => input.value)).toBe("hello");
+
+      await page.locator("input").fill("");
+      await page.locator("input").pressSequentially("hello");
+      expect(await page.$eval("input", (input) => input.value)).toBe("hello");
+    });
+  });
+
+  it("locator.press should throw on unknown keys like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<input type='text' value='hello'>");
+      const locator = page.getByRole("textbox");
+
+      await expect(locator.press("NotARealKey")).rejects.toThrow('Unknown key: "NotARealKey"');
+      await expect(locator.press("ё")).rejects.toThrow('Unknown key: "ё"');
+      await expect(locator.press("😊")).rejects.toThrow('Unknown key: "😊"');
+    });
+  });
+
+  it("locator.boundingBox should work like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setViewportSize({ width: 500, height: 500 });
+      await page.setContent(`
+        <style>
+          body { margin: 0; }
+          .box {
+            position: absolute;
+            left: 100px;
+            top: 50px;
+            width: 50px;
+            height: 50px;
+          }
+        </style>
+        <div class="box"></div>
+      `);
+
+      expect(await page.locator(".box").boundingBox()).toEqual({
+        x: 100,
+        y: 50,
+        width: 50,
+        height: 50
+      });
+    });
+  });
+
+  it("locator visible selectors and filter({ visible }) should work like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div>
+          <div class="item" style="display: none">Hidden data0</div>
+          <div class="item">visible data1</div>
+          <div class="item" style="display: none">Hidden data1</div>
+          <div class="item">visible data2</div>
+          <div class="item" style="display: none">Hidden data2</div>
+          <div class="item">visible data3</div>
+        </div>
+      `);
+
+      expect(await page.locator(".item >> visible=true").nth(1).textContent()).toBe("visible data2");
+      expect(await page.locator(".item >> visible=true >> text=data3").textContent()).toBe("visible data3");
+      expect(await page.locator(".item").filter({ visible: true }).nth(1).textContent()).toBe("visible data2");
+      expect(await page.locator(".item").filter({ visible: true }).getByText("data3").textContent()).toBe("visible data3");
+      expect(await page.locator(".item").filter({ visible: false }).getByText("data1").textContent()).toBe("Hidden data1");
+    });
+  });
+
+  it("Locator.locator() and FrameLocator.locator() should accept locator like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div><input value=outer></div>
+        <iframe srcdoc="<div><input value=inner></div>"></iframe>
+      `);
+
+      const inputLocator = page.locator("input");
+      expect(await inputLocator.inputValue()).toBe("outer");
+      expect(await page.locator("div").locator(inputLocator).inputValue()).toBe("outer");
+      expect(await page.frameLocator("iframe").locator(inputLocator).inputValue()).toBe("inner");
+      expect(await page.frameLocator("iframe").locator("div").locator(inputLocator).inputValue()).toBe("inner");
+
+      const divLocator = page.locator("div");
+      expect(await divLocator.locator("input").inputValue()).toBe("outer");
+      expect(await page.frameLocator("iframe").locator(divLocator).locator("input").inputValue()).toBe("inner");
+    });
+  });
 });

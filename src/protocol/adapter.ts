@@ -62,6 +62,7 @@ export interface LocatorSelector {
   nameRegexFlags?: string;
   labelIsRegex?: boolean;
   labelRegexFlags?: string;
+  visible?: boolean;
 }
 
 export type LocatorPick =

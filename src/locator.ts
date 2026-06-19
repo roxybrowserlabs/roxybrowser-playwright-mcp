@@ -329,6 +329,18 @@ export class RoxyLocator implements Locator {
     return options ? locator.filter(options) : locator;
   }
 
+  _roxyLocatorFromChain(chain: LocatorSelector[], options?: LocatorFilterOptions): Locator {
+    let adapter = this.adapter;
+    for (const selector of chain) {
+      adapter = adapter.locator(selector);
+    }
+    const locator = this.cloneWith(
+      adapter,
+      [...(this.selectorChain ?? []), ...cloneLocatorSelectorChain(chain)]
+    );
+    return options ? locator.filter(options) : locator;
+  }
+
   frameLocator(selector: string): FrameLocator {
     return this.locator(selector).contentFrame();
   }
@@ -497,6 +509,16 @@ export class RoxyLocator implements Locator {
         ...createInternalTextLocatorSelector(options.hasNotText),
         filter: true,
         negate: true
+      };
+      adapter = adapter.locator(selector);
+      chain.push(selector);
+    }
+    if (options?.visible !== undefined) {
+      const selector: LocatorSelector = {
+        strategy: "control",
+        value: "visible",
+        filter: true,
+        visible: options.visible
       };
       adapter = adapter.locator(selector);
       chain.push(selector);
@@ -1082,8 +1104,16 @@ export class RoxyFrameLocator implements FrameLocator {
     return this.contentLocator.frameLocator(selector);
   }
 
-  locator(selectorOrLocator: string | Locator, options?: LocatorOptions): Locator {
-    return this.contentLocator.locator(selectorOrLocator, options);
+  locator(selectorOrLocator: string | Locator, options?: LocatorFilterOptions): Locator {
+    if (typeof selectorOrLocator !== "string") {
+      const chain = selectorOrLocator._roxySelectorChain?.();
+      if (!chain) {
+        throw new Error("Locators must belong to the same frame.");
+      }
+      return this.contentLocator._roxyLocatorFromChain(chain, options);
+    }
+    const locator = this.contentLocator.locator(selectorOrLocator);
+    return options ? locator.filter(options) : locator;
   }
 
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {
