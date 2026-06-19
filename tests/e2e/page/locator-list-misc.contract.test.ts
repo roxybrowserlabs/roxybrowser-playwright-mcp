@@ -144,4 +144,93 @@ describe("locator list and misc contract e2e", () => {
       expect(described.toString()).toBe(described.description());
     });
   });
+
+  it("locator getAttribute/inputValue/text convenience methods should work like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(`${fixture.server.PREFIX}/dom.html`);
+
+      const outer = page.locator("#outer");
+      expect(await outer.getAttribute("name")).toBe("value");
+      expect(await outer.getAttribute("foo")).toBe(null);
+      expect(await outer.innerHTML()).toBe('<div id="inner">Text,\nmore text</div>');
+
+      const inner = page.locator("#inner");
+      expect(await inner.innerText()).toBe("Text, more text");
+      expect(await inner.textContent()).toBe("Text,\nmore text");
+
+      await page.selectOption("#select", "foo");
+      expect(await page.locator("#select").inputValue()).toBe("foo");
+
+      await page.fill("#textarea", "text value");
+      expect(await page.locator("#textarea").inputValue()).toBe("text value");
+
+      await page.fill("#input", "input value");
+      expect(await page.locator("#input").inputValue()).toBe("input value");
+      await expect(page.locator("#inner").inputValue()).rejects.toThrow(
+        "Node is not an <input>, <textarea> or <select> element"
+      );
+    });
+  });
+
+  it("locator innerText should throw like Playwright for non-HTMLElement nodes", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<svg>text</svg>");
+
+      await expect(page.locator("svg").innerText()).rejects.toThrow("Node is not an HTMLElement");
+    });
+  });
+
+  it("locator enabled/disabled/editable/checked state methods should work like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <button disabled>button1</button>
+        <button>button2</button>
+        <div>div</div>
+      `);
+
+      const div = page.locator("div");
+      expect(await div.isEnabled()).toBe(true);
+      expect(await div.isDisabled()).toBe(false);
+
+      const button1 = page.getByText("button1");
+      expect(await button1.isEnabled()).toBe(false);
+      expect(await button1.isDisabled()).toBe(true);
+
+      const button2 = page.getByText("button2");
+      expect(await button2.isEnabled()).toBe(true);
+      expect(await button2.isDisabled()).toBe(false);
+
+      await page.setContent(`
+        <input id=input1 disabled>
+        <textarea></textarea>
+        <input id=input2>
+        <div contenteditable="true"></div>
+        <span id=span1 role=textbox aria-readonly=true></span>
+        <span id=span2 role=textbox></span>
+        <button>button</button>
+      `);
+      await page.$eval("textarea", (textarea) => {
+        (textarea as HTMLTextAreaElement).readOnly = true;
+      });
+
+      expect(await page.locator("#input1").isEditable()).toBe(false);
+      expect(await page.locator("#input2").isEditable()).toBe(true);
+      expect(await page.locator("textarea").isEditable()).toBe(false);
+      expect(await page.locator("div").isEditable()).toBe(true);
+      expect(await page.locator("#span1").isEditable()).toBe(false);
+      expect(await page.locator("#span2").isEditable()).toBe(true);
+      await expect(page.locator("button").isEditable()).rejects.toThrow(
+        "Element is not an <input>, <textarea>, <select> or [contenteditable] and does not have a role allowing [aria-readonly]"
+      );
+
+      await page.setContent("<input type='checkbox' checked><div>Not a checkbox</div>");
+      const checkbox = page.locator("input");
+      expect(await checkbox.isChecked()).toBe(true);
+      await checkbox.evaluate((input) => {
+        (input as HTMLInputElement).checked = false;
+      });
+      expect(await checkbox.isChecked()).toBe(false);
+      await expect(page.locator("div").isChecked()).rejects.toThrow("Not a checkbox or radio button");
+    });
+  });
 });
