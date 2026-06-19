@@ -122,6 +122,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       .map((node) => node.nodeValue ?? "");
 
   const matchesTextSelector = (element: Element, selector: LocatorSelector): boolean => {
+    if (selector.internal) {
+      return matchesPattern(textForSelector(element), selector, "value");
+    }
     if (selector.exact && !selector.isRegex) {
       const immediateTextNodes = immediateTextNodesForSelector(element);
       if (!normalize(selector.value) && !immediateTextNodes.length) {
@@ -1060,6 +1063,12 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       const includeRoot = (!reference.scope && index === 0) || selector.strategy === "text";
       const next: SelectorMatch[] = [];
       for (const match of current) {
+        if (selector.filter) {
+          if (isElementNode(match.node) && matchesFilterSelector(match.node, selector)) {
+            next.push(match);
+          }
+          continue;
+        }
         for (const candidate of candidatesFromRoot(match.node, selector, includeRoot)) {
           const capture = selector.capture ? candidate : match.capture;
           if (!next.some((entry) => entry.node === candidate && entry.capture === capture)) {
@@ -1081,6 +1090,13 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
     }
     return applyPick(resolved, reference.pick);
+  };
+
+  const matchesFilterSelector = (element: Element, selector: LocatorSelector): boolean => {
+    if (selector.strategy === "text") {
+      return !shouldSkipTextSelectorElement(element) && matchesTextSelector(element, selector);
+    }
+    return candidatesFromRoot(element, selector, true).includes(element);
   };
 
   const reviveArgument = (value: unknown): unknown => {

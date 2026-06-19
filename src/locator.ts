@@ -12,6 +12,7 @@ import { normalizeSelectOptionValues } from "./selectOptionValues.js";
 import { createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
 import {
   createAltTextLocatorSelector,
+  createInternalTextLocatorSelector,
   createLabelLocatorSelector,
   createPlaceholderLocatorSelector,
   createRoleLocatorSelector,
@@ -371,8 +372,17 @@ export class RoxyLocator implements Locator {
   }
 
   filter(options?: LocatorFilterOptions): Locator {
-    void options;
-    return this.cloneWith(this.adapter);
+    let adapter = this.adapter;
+    const chain = [...(this.selectorChain ?? [])];
+    if (options?.hasText !== undefined) {
+      const selector: LocatorSelector = {
+        ...createInternalTextLocatorSelector(options.hasText),
+        filter: true
+      };
+      adapter = adapter.locator(selector);
+      chain.push(selector);
+    }
+    return this.cloneWith(adapter, chain);
   }
 
   and(locator: Locator): Locator {

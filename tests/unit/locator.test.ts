@@ -65,17 +65,22 @@ describe("RoxyLocator", () => {
     };
     const locator = new RoxyLocator(rootAdapter, controller);
     const hasText = /submit/i;
-    const filterSpy = vi.spyOn(RoxyLocator.prototype, "filter");
 
     const nested = locator.locator(".child", { hasText });
 
-    expect(rootAdapter.locator).toHaveBeenCalledWith({
+    expect(rootAdapter.locator).toHaveBeenNthCalledWith(1, {
       strategy: "css",
       value: ".child"
     });
-    expect(filterSpy).toHaveBeenCalledWith({ hasText });
+    expect(childAdapter.locator).toHaveBeenCalledWith({
+      strategy: "text",
+      value: "submit",
+      isRegex: true,
+      regexFlags: "i",
+      internal: true,
+      filter: true
+    });
     expect(nested).toBeInstanceOf(RoxyLocator);
-    filterSpy.mockRestore();
   });
 
   it("builds frame locators by inserting an enter-frame control step", () => {

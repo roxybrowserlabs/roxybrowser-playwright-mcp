@@ -289,4 +289,28 @@ describe("page text selector contract e2e", () => {
       expect(await page.locator(`div >> text='pattern "^-?\\\\d+$"'`).isVisible()).toBe(true);
     });
   });
+
+  it("matches full node text in strict and hasText modes like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div id=div1>hello<span>world</span></div>
+        <div id=div2>hello</div>
+      `);
+
+      expect(await page.getByText("helloworld", { exact: true }).getAttribute("id")).toBe("div1");
+      expect(await page.getByText("hello", { exact: true }).getAttribute("id")).toBe("div2");
+      expect(await page.locator("div", { hasText: /^helloworld$/ }).getAttribute("id")).toBe("div1");
+      expect(await page.locator("div", { hasText: /^hello$/ }).getAttribute("id")).toBe("div2");
+
+      await page.setContent(`
+        <div id=div1><span id=span1>hello</span>world</div>
+        <div id=div2><span id=span2>hello</span></div>
+      `);
+
+      expect(await page.getByText("helloworld", { exact: true }).getAttribute("id")).toBe("div1");
+      expect(await page.getByText("hello", { exact: true }).evaluateAll((elements) => elements.map((element) => element.id))).toEqual(["span1", "span2"]);
+      expect(await page.locator("div", { hasText: /^helloworld$/ }).getAttribute("id")).toBe("div1");
+      expect(await page.locator("div", { hasText: /^hello$/ }).getAttribute("id")).toBe("div2");
+    });
+  });
 });

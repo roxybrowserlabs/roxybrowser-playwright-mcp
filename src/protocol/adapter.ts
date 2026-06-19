@@ -47,7 +47,9 @@ export interface LocatorSelector {
   strategy: LocatorStrategy;
   value: string;
   capture?: boolean;
+  filter?: boolean;
   exact?: boolean;
+  internal?: boolean;
   name?: string;
   label?: string;
   isRegex?: boolean;

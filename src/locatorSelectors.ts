@@ -37,7 +37,14 @@ export function createTextLocatorSelector(
   text: string | RegExp,
   options?: GetByTextOptions
 ): LocatorSelector {
-  return withPattern({ strategy: "text" }, text, options);
+  return createInternalTextLocatorSelector(text, options);
+}
+
+export function createInternalTextLocatorSelector(
+  text: string | RegExp,
+  options?: GetByTextOptions
+): LocatorSelector {
+  return withPattern({ strategy: "text", internal: true }, text, options);
 }
 
 export function createAltTextLocatorSelector(
