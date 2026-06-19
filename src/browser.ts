@@ -10,6 +10,8 @@ import type { Browser, BrowserContext } from "./types/api.js";
 import type { BrowserContextOptions } from "./types/options.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 
+const BROWSER_SESSION_CLOSE_TIMEOUT_MS = 5_000;
+
 export class RoxyBrowser implements Browser {
   constructor(
     private readonly session: ProtocolBrowserSession,
@@ -48,9 +50,27 @@ export class RoxyBrowser implements Browser {
 
   async close(): Promise<void> {
     try {
-      await this.session.close();
+      await withCloseTimeout(this.session.close(), BROWSER_SESSION_CLOSE_TIMEOUT_MS);
     } finally {
       await this.adapter.close();
+    }
+  }
+}
+
+async function withCloseTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`Timed out closing browser session after ${timeoutMs}ms.`));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
     }
   }
 }

@@ -100,6 +100,8 @@ const BIDI_CAPABILITIES: ProtocolCapabilities = {
   supportsTracing: false
 };
 
+const CLEANUP_FIREFOX_PROCESS_TIMEOUT_MS = 5_000;
+
 type BidiEvaluateResult =
   | {
       type: "success";
@@ -4019,7 +4021,7 @@ async function cleanupFirefoxProcess(
           // The process may have failed to spawn or already exited.
         }
         finish();
-      }, 5_000);
+      }, CLEANUP_FIREFOX_PROCESS_TIMEOUT_MS);
     });
   }
 

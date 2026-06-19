@@ -2674,7 +2674,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.browserContext?.detachPage(this);
   }
 
-  async maybeRunLocatorHandlers(locator: Locator, options?: { force?: boolean }): Promise<void> {
+  async maybeRunLocatorHandlers(locator: Locator, options?: { force?: boolean; timeout?: number }): Promise<void> {
     if (options?.force) {
       return;
     }
@@ -2702,7 +2702,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           }
         }
         if (!entry.noWaitAfter) {
-          await this.waitForLocatorToHide(entry.locator);
+          await this.waitForLocatorToHide(entry.locator, options?.timeout ?? this.defaultTimeoutMs);
         }
       } finally {
         entry.running = false;
@@ -5825,8 +5825,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return JSON.stringify(chain);
   }
 
-  private async waitForLocatorToHide(locator: Locator): Promise<void> {
-    const timeout = this.defaultTimeoutMs;
+  private async waitForLocatorToHide(locator: Locator, timeout: number): Promise<void> {
     const start = Date.now();
     while (timeout === 0 || Date.now() - start <= timeout) {
       if (await locator.isHidden().catch(() => true)) {
@@ -5834,7 +5833,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
+    throw new TimeoutError(
+      `Timeout ${timeout}ms exceeded.\n` +
+      `locator handler has finished, waiting for ${formatLocatorForMessage(locator)} to be hidden`
+    );
   }
 
   private routeMatcherKey(matcher: RouteMatcher): string {
@@ -7239,6 +7241,36 @@ function trimUrlForWaitLog(param: unknown): string | undefined {
     return `"${trimStringWithEllipsis(param, 50)}"`;
   }
   return undefined;
+}
+
+function formatLocatorForMessage(locator: Locator): string {
+  const chain = locator._roxySelectorChain?.();
+  if (!chain?.length) {
+    return "locator";
+  }
+  return chain.map(formatLocatorSelectorForMessage).join(".");
+}
+
+function formatLocatorSelectorForMessage(selector: LocatorSelector): string {
+  if (selector.strategy === "role") {
+    const options: string[] = [];
+    if (selector.name !== undefined) {
+      options.push(`name: ${JSON.stringify(selector.name)}`);
+    }
+    return options.length
+      ? `getByRole('${selector.value}', { ${options.join(", ")} })`
+      : `getByRole('${selector.value}')`;
+  }
+  if (selector.strategy === "text") {
+    return `getByText(${JSON.stringify(selector.value)})`;
+  }
+  if (selector.strategy === "css") {
+    return `locator(${JSON.stringify(selector.value)})`;
+  }
+  if (selector.strategy === "control") {
+    return `internal:control=${selector.value}`;
+  }
+  return `${selector.strategy}=${selector.value}`;
 }
 
 async function evaluationScript<Arg>(
