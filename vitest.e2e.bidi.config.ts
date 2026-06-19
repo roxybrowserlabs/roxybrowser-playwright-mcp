@@ -18,7 +18,10 @@ export default defineConfig({
     // Keep a single module graph across files so the shared RoxyBrowser BiDi
     // connection cache in tests/helpers/bidi.ts is actually reused.
     isolate: false,
-    globalSetup: ["tests/helpers/bidi.global-setup.ts"],
+    globalSetup: [
+      "tests/helpers/browser-process-cleanup.global-setup.ts",
+      "tests/helpers/bidi.global-setup.ts"
+    ],
     environment: "node",
     testTimeout: 60_000,
     hookTimeout: 30_000

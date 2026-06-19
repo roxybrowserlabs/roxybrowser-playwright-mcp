@@ -2679,6 +2679,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     locator: Locator,
     options?: { force?: boolean; timeout?: number; __roxyBeforeActionRetry?: () => Promise<boolean | void> }
   ): Promise<boolean> {
+    if (this.locatorHandlers.length === 0) {
+      delete options?.__roxyBeforeActionRetry;
+      await this.maybeResolvePickLocator(locator);
+      return false;
+    }
     if (options?.force || this.locatorHandlerRunningCounter > 0) {
       if (this.locatorHandlerRunningCounter > 0) {
         delete options?.__roxyBeforeActionRetry;
@@ -2700,7 +2705,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         continue;
       }
 
-      didRunHandler = true;
+      didRunHandler = didRunHandler || !entry.noWaitAfter;
       entry.running = true;
       const timeout = options?.timeout ?? this.defaultTimeoutMs;
       let timedOut = false;
