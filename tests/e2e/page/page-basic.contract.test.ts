@@ -26,6 +26,22 @@ describe("page basic contract e2e", () => {
     });
   });
 
+  it("preserves async stacks on navigation errors like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", (request, _response) => {
+        request.socket.end();
+      });
+
+      let error: Error | null = null;
+      await page.goto(fixture.server.EMPTY_PAGE).catch((caught) => {
+        error = caught;
+      });
+
+      expect(error).not.toBeNull();
+      expect(error!.stack).toContain("page-basic.contract.test.ts");
+    });
+  });
+
   it("fires domcontentloaded when expected", async () => {
     await withPage(async (page) => {
       const navigatedPromise = page.goto("about:blank");

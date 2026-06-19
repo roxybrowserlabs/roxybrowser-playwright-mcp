@@ -1021,7 +1021,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async goto(url: string, options?: PageGotoOptions): Promise<Response | null> {
-    return this.mainFrame().goto(url, options);
+    return withAsyncApiStack(() => this.mainFrame().goto(url, options));
   }
 
   url(): string {
@@ -6512,6 +6512,35 @@ function isProtocolOrObservedResponse(
   response: APIResponse | Response | PageResponse
 ): response is APIResponse | Response {
   return typeof (response as Response).status === "function";
+}
+
+async function withAsyncApiStack<T>(callback: () => Promise<T>): Promise<T> {
+  const apiStack = new Error().stack;
+  try {
+    return await callback();
+  } catch (error) {
+    appendAsyncApiStack(error, apiStack);
+    throw error;
+  }
+}
+
+function appendAsyncApiStack(error: unknown, apiStack: string | undefined): void {
+  if (!(error instanceof Error) || !apiStack) {
+    return;
+  }
+  const userStack = apiStack
+    .split("\n")
+    .slice(2)
+    .filter((line) => !line.includes("/src/page.ts:"))
+    .join("\n");
+  if (!userStack) {
+    return;
+  }
+  const currentStack = error.stack || `${error.name}: ${error.message}`;
+  if (currentStack.includes(userStack)) {
+    return;
+  }
+  error.stack = `${currentStack}\n${userStack}`;
 }
 
 async function observedRequestSizes(state: ObservedRequestState): Promise<{
