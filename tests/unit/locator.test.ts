@@ -17,6 +17,19 @@ describe("RoxyLocator", () => {
     ]);
   });
 
+  it("does not split selector separators inside CSS attribute values", () => {
+    expect(parseSelectorChain(`[attr2 = "hello-''>>foo=bar[]"] >> span`)).toEqual([
+      {
+        strategy: "css",
+        value: `[attr2 = "hello-''>>foo=bar[]"]`
+      },
+      {
+        strategy: "css",
+        value: "span"
+      }
+    ]);
+  });
+
   it("builds nested css locators from the adapter", () => {
     const rootAdapter = createLocatorAdapterStub();
     const childAdapter = createLocatorAdapterStub();

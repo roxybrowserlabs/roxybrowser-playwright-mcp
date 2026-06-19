@@ -5,10 +5,7 @@ export function parseSelectorChain(selector: string): LocatorSelector[] {
     throw new Error(`selector: expected string, got ${typeof selector}`);
   }
 
-  const parts = selector
-    .split(/\s*>>\s*/)
-    .map((part) => part.trim())
-    .filter(Boolean);
+  const parts = splitSelectorChain(selector);
 
   if (!parts.length) {
     throw new Error("Selector must not be empty.");
@@ -25,6 +22,85 @@ export function parseSelectorChain(selector: string): LocatorSelector[] {
     }
     return parsed;
   });
+}
+
+function splitSelectorChain(selector: string): string[] {
+  const parts: string[] = [];
+  let quote: string | undefined;
+  let escapeNext = false;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let start = 0;
+
+  for (let index = 0; index < selector.length; index += 1) {
+    const char = selector[index]!;
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (quote) {
+      if (char === "\\") {
+        escapeNext = true;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+    if (char === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (char === "(") {
+      parenDepth += 1;
+      continue;
+    }
+    if (char === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      continue;
+    }
+    if (char === "{") {
+      braceDepth += 1;
+      continue;
+    }
+    if (char === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      continue;
+    }
+
+    if (
+      char === ">" &&
+      selector[index + 1] === ">" &&
+      bracketDepth === 0 &&
+      parenDepth === 0 &&
+      braceDepth === 0
+    ) {
+      const part = selector.slice(start, index).trim();
+      if (part) {
+        parts.push(part);
+      }
+      index += 1;
+      start = index + 1;
+    }
+  }
+
+  const finalPart = selector.slice(start).trim();
+  if (finalPart) {
+    parts.push(finalPart);
+  }
+  return parts;
 }
 
 function parseSelectorPart(part: string, selectorText: string): LocatorSelector {
