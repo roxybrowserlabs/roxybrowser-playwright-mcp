@@ -3153,6 +3153,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         if (!this.shouldFallbackToOwnerElementFrameEvaluation(error, frame)) {
           throw error;
         }
+        await this.refreshFrameSnapshots().catch(() => {});
+        if (!frame.ownerElementChain.length) {
+          throw error;
+        }
       }
     }
 

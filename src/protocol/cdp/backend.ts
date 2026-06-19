@@ -1998,6 +1998,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const isDefault = event.context.auxData?.isDefault !== false &&
         event.context.auxData?.type !== "isolated";
       if (frameId && isDefault) {
+        if (sessionId) {
+          this.frameSessionIds.set(frameId, sessionId);
+        }
         this.defaultExecutionContextByFrameId.set(frameId, event.context.id);
         this.defaultExecutionContextSessionByFrameId.set(frameId, sessionId);
         const waiters = this.pendingDefaultExecutionContextWaiters.get(frameId);
@@ -4868,9 +4871,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async ownerFrameIdForReference(reference: ProtocolElementHandleReference): Promise<string | null> {
-    if (reference.protocolFrameId) {
-      return reference.protocolFrameId;
-    }
     if (reference.protocolObjectId) {
       let documentElementObjectId: string | undefined;
       try {
@@ -5452,8 +5452,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     args: unknown[],
     isFunction: boolean
   ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
-    const executionContextId = await this.defaultExecutionContextIdForFrame(frameId);
     const sessionId = this.defaultExecutionContextSessionByFrameId.get(frameId) ?? this.frameSessionIds.get(frameId);
+    const executionContextId = await this.defaultExecutionContextIdForFrame(frameId).catch((error) => {
+      if (sessionId) {
+        return undefined;
+      }
+      throw error;
+    });
     return this.evaluateWithArgumentsInContext<TResult>(
       executionContextId,
       sessionId,
