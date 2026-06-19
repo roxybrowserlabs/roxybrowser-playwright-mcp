@@ -148,6 +148,10 @@ export class RoxyFrame implements Frame {
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   async evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<R> {
+    await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
+    if (this.detached) {
+      throw new Error("frame.evaluate: Frame was detached");
+    }
     await this.roxyPage.prepareForPendingFileChooser();
     return this.roxyPage.evaluateInFrame(this.snapshot, pageFunction, arg);
   }
@@ -158,6 +162,10 @@ export class RoxyFrame implements Frame {
     pageFunction: PageFunction<Arg, R>,
     arg?: Arg
   ): Promise<SmartHandle<R>> {
+    await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
+    if (this.detached) {
+      throw new Error("frame.evaluateHandle: Frame was detached");
+    }
     return this.roxyPage.evaluateHandleInFrame(this.snapshot, pageFunction, arg);
   }
 

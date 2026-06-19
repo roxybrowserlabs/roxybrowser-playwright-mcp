@@ -300,6 +300,13 @@ type CdpPendingRequestEvent = {
   responseCallbacks: Array<() => void>;
 };
 
+interface CdpEvaluationTargetContext {
+  executionContextId?: number;
+  frameId?: string;
+  objectId?: string;
+  sessionId?: string;
+}
+
 interface CdpDomClient {
   send(
     method: "DOM.getBoxModel",
@@ -328,7 +335,8 @@ interface CdpDomClient {
   }>;
   send(
     method: "DOM.resolveNode",
-    params: { backendNodeId: number; executionContextId?: number }
+    params: { backendNodeId: number; executionContextId?: number },
+    sessionId?: string
   ): Promise<{
     object: CdpRemoteObject;
   }>;
@@ -5386,6 +5394,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     args: unknown[],
     isFunction: boolean
   ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
+    if (this.mainFrameId) {
+      return this.evaluateWithArgumentsInFrame<TResult>(
+        this.mainFrameId,
+        expression,
+        returnByValue,
+        args,
+        isFunction
+      );
+    }
     return this.evaluateWithArgumentsInContext<TResult>(
       undefined,
       undefined,
@@ -5451,6 +5468,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     returnByValue: boolean,
     args: unknown[],
     isFunction: boolean
+  ): Promise<TResult | ProtocolJSHandleAdapter<TResult>>;
+  private async evaluateWithArgumentsInFrame<TResult>(
+    frameId: string,
+    expression: string,
+    returnByValue: boolean,
+    args: unknown[],
+    isFunction: boolean
   ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
     const sessionId = this.defaultExecutionContextSessionByFrameId.get(frameId) ?? this.frameSessionIds.get(frameId);
     const executionContextId = await this.defaultExecutionContextIdForFrame(frameId).catch((error) => {
@@ -5480,10 +5504,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     frameId?: string
   ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
     const temporaryHandles: ProtocolJSHandleAdapter[] = [];
-    const { values, handles } = await serializeCdpEvaluationArguments(args, this, temporaryHandles);
     const globalHandle = executionContextId === undefined
       ? await this.rawEvaluateHandle("globalThis", sessionId)
       : null;
+    const targetObjectId = globalHandle?.remoteObjectId();
+    const targetContext: CdpEvaluationTargetContext = {
+      ...(executionContextId !== undefined ? { executionContextId } : {}),
+      ...(frameId !== undefined ? { frameId } : {}),
+      ...(targetObjectId !== undefined ? { objectId: targetObjectId } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {})
+    };
+    const { values, handles } = await serializeCdpEvaluationArguments(args, this, temporaryHandles, targetContext);
     const wrappedExpression = `(...argsAndHandles) => {
       ${PARSE_EVALUATION_RESULT_SOURCE}
       ${returnByValue ? SERIALIZE_EVALUATION_RESULT_SOURCE : ""}
@@ -5517,7 +5548,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         userGesture: true
       };
       if (globalHandle) {
-        callParameters.objectId = globalHandle.remoteObjectId()!;
+        callParameters.objectId = targetObjectId!;
       } else if (executionContextId !== undefined) {
         callParameters.executionContextId = executionContextId;
       }
@@ -5748,6 +5779,56 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       reference.protocolSessionId,
       reference.protocolFrameId
     );
+  }
+
+  async adoptElementHandleToContext<T = unknown>(
+    reference: ProtocolElementHandleReference,
+    target: CdpEvaluationTargetContext
+  ): Promise<CdpJSHandleAdapter<T>> {
+    const sourceHandle =
+      this.maybeCreateRemoteHandleFromReference(reference) ??
+      await this.resolveElementReferenceAsHandle(reference).catch((error) => {
+        if (isFrameExecutionContextUnavailableError(error)) {
+          throw new Error("Unable to adopt element handle from a different document");
+        }
+        throw error;
+      });
+    const objectId = sourceHandle.remoteObjectId();
+    if (!objectId) {
+      throw new Error("JSHandle is not an ElementHandle");
+    }
+
+    let backendNodeId: number | undefined;
+    try {
+      const nodeInfo = await (this.options.client as CdpDomClient).send(
+        "DOM.describeNode",
+        { objectId },
+        sourceHandle.sessionId()
+      );
+      backendNodeId = nodeInfo.node.backendNodeId;
+    } finally {
+      if (!reference.protocolObjectId) {
+        await sourceHandle.dispose().catch(() => {});
+      }
+    }
+    if (backendNodeId === undefined) {
+      throw new Error("Unable to adopt element handle from a different document");
+    }
+
+    const resolved = await (this.options.client as CdpDomClient).send(
+      "DOM.resolveNode",
+      {
+        backendNodeId,
+        ...(target.executionContextId !== undefined
+          ? { executionContextId: target.executionContextId }
+          : {})
+      },
+      target.sessionId
+    ).catch(() => null);
+    if (!resolved || resolved.object.subtype === "null") {
+      throw new Error("Unable to adopt element handle from a different document");
+    }
+    return new CdpJSHandleAdapter<T>(this, resolved.object, target.sessionId, target.frameId);
   }
 
   async storeRemoteElementHandle(
@@ -8339,7 +8420,8 @@ function createCdpConsoleHandle(arg: {
 async function serializeCdpEvaluationArguments(
   args: unknown[],
   page: CdpPageAdapter,
-  temporaryHandles: ProtocolJSHandleAdapter[]
+  temporaryHandles: ProtocolJSHandleAdapter[],
+  target: CdpEvaluationTargetContext
 ): Promise<{
   handles: RoxyJSHandle[];
   values: SerializedValue[];
@@ -8355,21 +8437,36 @@ async function serializeCdpEvaluationArguments(
       handle: RoxyElementHandle;
       marker: { __roxyElementEvaluationHandle: number };
     }> = [];
+    const jsHandleMarkers: Array<{
+      handle: RoxyJSHandle;
+      marker: { __roxyJsEvaluationHandle: number };
+    }> = [];
     const serialized = serializeAsCallArgument(arg, (value) => {
       if (value instanceof RoxyElementHandle) {
         const marker = { __roxyElementEvaluationHandle: elementHandles.length };
         elementHandles.push({ handle: value, marker });
         return { fallThrough: marker };
       }
-      return serializeCdpEvaluationValue(value, pushHandle);
-    });
-    for (const { handle, marker } of elementHandles) {
-      const remoteHandle =
-        page.maybeCreateRemoteHandleFromReference(handle.reference()) ??
-        await page.resolveElementReferenceAsHandle(handle.reference());
-      if (!handle.reference().protocolObjectId) {
-        temporaryHandles.push(remoteHandle);
+      if (value instanceof RoxyJSHandle && value._remoteObjectId() && !isRoxyHandleInTargetContext(value, target)) {
+        const marker = { __roxyJsEvaluationHandle: jsHandleMarkers.length };
+        jsHandleMarkers.push({ handle: value, marker });
+        return { fallThrough: marker };
       }
+      return serializeCdpEvaluationValue(value, pushHandle, target);
+    });
+    for (const { handle, marker } of jsHandleMarkers) {
+      const elementReference = await handle._asElementReference();
+      if (!elementReference) {
+        throw new Error("JSHandles can be evaluated only in the context they were created!");
+      }
+      const remoteHandle = await page.adoptElementHandleToContext(elementReference, target);
+      temporaryHandles.push(remoteHandle);
+      const roxyHandle = new RoxyJSHandle(undefined, null, undefined, remoteHandle);
+      replaceJsHandleMarker(serialized, marker, { h: pushHandle(roxyHandle) });
+    }
+    for (const { handle, marker } of elementHandles) {
+      const remoteHandle = await page.adoptElementHandleToContext(handle.reference(), target);
+      temporaryHandles.push(remoteHandle);
       const roxyHandle = new RoxyJSHandle(undefined, null, undefined, remoteHandle);
       replaceElementHandleMarker(serialized, marker, { h: pushHandle(roxyHandle) });
     }
@@ -8380,11 +8477,15 @@ async function serializeCdpEvaluationArguments(
 
 function serializeCdpEvaluationValue(
   value: unknown,
-  pushHandle: (handle: RoxyJSHandle) => number
+  pushHandle: (handle: RoxyJSHandle) => number,
+  target: CdpEvaluationTargetContext
 ) {
     if (value instanceof RoxyJSHandle) {
       const objectId = value._remoteObjectId();
       if (objectId) {
+        if (!isRoxyHandleInTargetContext(value, target)) {
+          throw new Error("JSHandles can be evaluated only in the context they were created!");
+        }
         return { h: pushHandle(value) };
       }
       const serializedValue = value._serializedValue();
@@ -8394,6 +8495,64 @@ function serializeCdpEvaluationValue(
       return { fallThrough: value.rawValue() };
     }
     return { fallThrough: value };
+}
+
+function isRoxyHandleInTargetContext(
+  handle: RoxyJSHandle,
+  target: CdpEvaluationTargetContext
+): boolean {
+  if (!handle._remoteObjectId()) {
+    return false;
+  }
+  const handleFrameId = handle._remoteFrameId();
+  if (handleFrameId || target.frameId) {
+    return handleFrameId === target.frameId;
+  }
+  return handle._remoteSessionId() === target.sessionId;
+}
+
+function isFrameExecutionContextUnavailableError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("Frame execution context is not available");
+}
+
+function replaceJsHandleMarker(
+  value: SerializedValue,
+  marker: { __roxyJsEvaluationHandle: number },
+  replacement: { h: number },
+  visited = new Set<object>()
+): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (visited.has(value)) {
+    return false;
+  }
+  visited.add(value);
+  if ("o" in value) {
+    if (
+      value.o.length === 1 &&
+      value.o[0]?.k === "__roxyJsEvaluationHandle" &&
+      value.o[0].v === marker.__roxyJsEvaluationHandle
+    ) {
+      Object.assign(value, replacement);
+      delete (value as { o?: unknown }).o;
+      delete (value as { id?: unknown }).id;
+      return true;
+    }
+    for (const entry of value.o) {
+      if (replaceJsHandleMarker(entry.v, marker, replacement, visited)) {
+        return true;
+      }
+    }
+  }
+  if ("a" in value) {
+    for (const entry of value.a) {
+      if (replaceJsHandleMarker(entry, marker, replacement, visited)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function replaceElementHandleMarker(

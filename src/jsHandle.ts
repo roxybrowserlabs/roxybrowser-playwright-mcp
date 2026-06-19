@@ -114,8 +114,20 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
     return this.remoteAdapter?.remoteObjectId();
   }
 
+  _remoteFrameId(): string | undefined {
+    return this.remoteAdapter?.frameId?.();
+  }
+
+  _remoteSessionId(): string | undefined {
+    return this.remoteAdapter?.sessionId?.();
+  }
+
   _serializedValue(): SerializedValue | undefined {
     return this.remoteAdapter?.serializedValue();
+  }
+
+  async _asElementReference(): Promise<ProtocolElementHandleReference | null> {
+    return this.remoteAdapter?.asElementReference?.() ?? null;
   }
 
   asElement(): T extends Node ? ElementHandle<T> : null {

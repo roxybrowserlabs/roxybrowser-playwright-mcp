@@ -366,6 +366,8 @@ export interface ProtocolJSHandleAdapter<T = unknown> extends Disposable {
   rawValue(): T | undefined;
   serializedValue(): SerializedValue | undefined;
   remoteObjectId(): string | undefined;
+  frameId?(): string | undefined;
+  sessionId?(): string | undefined;
   asElementReference?(): Promise<ProtocolElementHandleReference | null>;
 }
 
