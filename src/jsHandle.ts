@@ -184,11 +184,11 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
   }
 
   toString(): string {
-    if (this.asElementHandle) {
-      return "JSHandle@node";
-    }
     if (this.remoteAdapter) {
       return this.remoteAdapter.preview();
+    }
+    if (this.asElementHandle) {
+      return "JSHandle@node";
     }
     if (this.preview) {
       return this.preview;

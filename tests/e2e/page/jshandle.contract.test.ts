@@ -96,6 +96,45 @@ describe("JSHandle contract e2e", () => {
     });
   });
 
+  it("getProperties should return even non-own properties", async () => {
+    await withPage(async (page) => {
+      const handle = await page.evaluateHandle(() => {
+        class A {
+          a: string;
+          constructor() {
+            this.a = "1";
+          }
+        }
+        class B extends A {
+          b: string;
+          constructor() {
+            super();
+            this.b = "2";
+          }
+        }
+        return new B();
+      });
+      const properties = await handle.getProperties();
+
+      expect(await properties.get("a")!.jsonValue()).toBe("1");
+      expect(await properties.get("b")!.jsonValue()).toBe("2");
+      await handle.dispose();
+    });
+  });
+
+  it("getProperties should work with elements", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div>Hello</div>");
+      const handle = await page.evaluateHandle(() => ({ body: document.body }));
+      const properties = await handle.getProperties();
+      const body = properties.get("body")!.asElement();
+
+      expect(body).toBeTruthy();
+      expect(await body!.textContent()).toBe("Hello");
+      await handle.dispose();
+    });
+  });
+
   it("asElement should return ElementHandle for elements", async () => {
     await withPage(async (page) => {
       const handle = await page.evaluateHandle(() => document.body);
@@ -138,14 +177,34 @@ describe("JSHandle contract e2e", () => {
       expect((await page.evaluateHandle(() => 2)).toString()).toBe("2");
       expect((await page.evaluateHandle(() => "a")).toString()).toBe("a");
       expect((await page.evaluateHandle(() => window)).toString()).toBe("Window");
+      expect((await page.evaluateHandle("(function(){})")).toString()).toContain("function");
       expect((await page.evaluateHandle("12")).toString()).toBe("12");
       expect((await page.evaluateHandle("true")).toString()).toBe("true");
       expect((await page.evaluateHandle("undefined")).toString()).toBe("undefined");
       expect((await page.evaluateHandle('"foo"')).toString()).toBe("foo");
+      expect((await page.evaluateHandle("Symbol()")).toString()).toBe("Symbol()");
       expect((await page.evaluateHandle("null")).toString()).toBe("null");
       expect((await page.evaluateHandle("new Map()")).toString()).toContain("Map");
       expect((await page.evaluateHandle("new Set()")).toString()).toContain("Set");
       expect((await page.evaluateHandle("[]")).toString()).toContain("Array");
+      expect((await page.evaluateHandle("document.body")).toString()).toBe("JSHandle@<body></body>");
+      expect((await page.evaluateHandle("new WeakMap()")).toString()).toBe("WeakMap");
+      expect((await page.evaluateHandle("new WeakSet()")).toString()).toBe("WeakSet");
+      expect((await page.evaluateHandle("new Error()")).toString()).toContain("Error");
+      expect((await page.evaluateHandle("new Proxy({}, {})")).toString()).toBe("Proxy(Object)");
+    });
+  });
+
+  it("toString should match Playwright previews for promises and previewable subtypes", async () => {
+    await withPage(async (page) => {
+      const wrapperHandle = await page.evaluateHandle(() => ({ b: Promise.resolve(123) }));
+      const promiseHandle = await wrapperHandle.getProperty("b");
+
+      expect(promiseHandle.toString()).toBe("Promise");
+      expect((await page.evaluateHandle("/foo/")).toString()).toBe("/foo/");
+      expect((await page.evaluateHandle("new Date(0)")).toString()).toContain("GMT");
+      expect((await page.evaluateHandle("new Int32Array()")).toString()).toContain("Int32Array");
+      await wrapperHandle.dispose();
     });
   });
 });

@@ -8753,7 +8753,10 @@ function cdpRemoteObjectPreview(arg: {
     return "Document";
   }
   if (arg.subtype === "node") {
-    return "Node";
+    if (arg.description && /^[a-z][a-z0-9-]*$/i.test(arg.description)) {
+      return `JSHandle@<${arg.description}></${arg.description}>`;
+    }
+    return arg.description ? `JSHandle@${arg.description}` : "JSHandle@node";
   }
   if (arg.subtype === "array" && arg.description) {
     return arg.description.replace(/^\((\d+)\)\s*/, "");
