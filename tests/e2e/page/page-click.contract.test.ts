@@ -317,6 +317,61 @@ describe("page click contract e2e", () => {
     });
   });
 
+  it("waits for visible when parent is hidden", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div style="display: none">
+          <button onclick="window.__clicked = true">Click me</button>
+        </div>
+      `);
+
+      const clickPromise = page
+        .click("button", { timeout: 1_000 })
+        .then(
+          () => ({ ok: true as const }),
+          (error) => ({ ok: false as const, error })
+        );
+      await page.evaluate(() => {
+        setTimeout(() => {
+          document.querySelector<HTMLDivElement>("div")!.style.display = "block";
+        }, 100);
+      });
+      const result = await clickPromise;
+
+      expect(result.ok).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
+    });
+  });
+
+  it("waits for an element to become the hit target before clicking", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <button
+          style="border-width: 0; width: 200px; height: 20px"
+          onclick="window.__clicked = true">Click me</button>
+        <div
+          class="flyover"
+          style="position: absolute; width: 400px; height: 20px; left: 0; top: 0; background: red"></div>
+      `);
+
+      const clickPromise = page
+        .click("button", { timeout: 1_000 })
+        .then(
+          () => ({ ok: true as const }),
+          (error) => ({ ok: false as const, error })
+        );
+      await page.evaluate(() => {
+        setTimeout(() => {
+          document.querySelector<HTMLElement>(".flyover")!.style.left = "200px";
+        }, 100);
+      });
+      const result = await clickPromise;
+
+      expect(result.ok).toBe(true);
+      expect(await page.evaluate(() => window.__clicked)).toBe(true);
+    });
+  });
+
   it("waits for disabled buttons to become enabled before clicking", async () => {
     await withPage(async (page) => {
       await page.setContent(`
