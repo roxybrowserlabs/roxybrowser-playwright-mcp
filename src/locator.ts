@@ -92,6 +92,10 @@ type LocatorDropFilePayload = {
   mimeType: string;
   name: string;
 };
+type LocatorActionPointOptions = {
+  position?: { x: number; y: number };
+  timeout?: number;
+};
 class DisposableStub implements Disposable {
   constructor(private readonly callback: () => Promise<void> | void) {}
 
@@ -489,6 +493,21 @@ export class RoxyLocator implements Locator {
     return this.adapter.boundingBox();
   }
 
+  private async actionPoint(options: LocatorActionPointOptions = {}): Promise<{ x: number; y: number }> {
+    const box = await this.boundingBox(options.timeout === undefined ? undefined : { timeout: options.timeout });
+    if (!box) {
+      throw new Error("locator.dragTo: Element is not visible.");
+    }
+    const position = options.position ?? {
+      x: box.width / 2,
+      y: box.height / 2
+    };
+    return {
+      x: box.x + position.x,
+      y: box.y + position.y
+    };
+  }
+
   async dblclick(options?: ClickOptions): Promise<void> {
     await this.beforeAction?.(this, options);
     await this.adapter.dblclick(options);
@@ -551,44 +570,29 @@ export class RoxyLocator implements Locator {
   }
 
   async dragTo(target: Locator, options?: LocatorDragToOptions): Promise<void> {
-    const waitOptions = options?.timeout === undefined ? {} : { timeout: options.timeout };
-    const sourceHandle = await this.elementHandle(waitOptions);
-    if (!sourceHandle) {
-      throw new Error("locator.dragTo: Failed to find source element.");
+    const sourcePoint = await this.actionPoint({
+      ...(options?.sourcePosition === undefined ? {} : { position: options.sourcePosition }),
+      ...(options?.timeout === undefined ? {} : { timeout: options.timeout })
+    });
+    if (!(target instanceof RoxyLocator)) {
+      throw new Error("locator.dragTo: Target must be a Roxy locator.");
     }
-    const targetHandle = await target.elementHandle(waitOptions);
-    if (!targetHandle) {
-      throw new Error("locator.dragTo: Failed to find target element.");
-    }
+    const targetPoint = await target.actionPoint({
+      ...(options?.targetPosition === undefined ? {} : { position: options.targetPosition }),
+      ...(options?.timeout === undefined ? {} : { timeout: options.timeout })
+    });
     if (options?.trial) {
       return;
     }
-
-    await sourceHandle.evaluate(
-      (sourceElement, payload) => {
-        const sourceNode = sourceElement as Element | null;
-        const targetNode = payload.target as unknown as Element | null;
-        if (!sourceNode || !targetNode) {
-          throw new Error("Drag source or target is not available.");
-        }
-
-        const createEvent = (type: string, dataTransfer: DataTransfer) => {
-          return new DragEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            dataTransfer
-          });
-        };
-
-        const dataTransfer = new DataTransfer();
-        sourceNode.dispatchEvent(createEvent("dragstart", dataTransfer));
-        targetNode.dispatchEvent(createEvent("dragenter", dataTransfer));
-        targetNode.dispatchEvent(createEvent("dragover", dataTransfer));
-        targetNode.dispatchEvent(createEvent("drop", dataTransfer));
-        sourceNode.dispatchEvent(createEvent("dragend", dataTransfer));
-      },
-      { target: targetHandle }
+    const mouse = this.page().mouse;
+    await mouse.move(sourcePoint.x, sourcePoint.y);
+    await mouse.down();
+    await mouse.move(
+      targetPoint.x,
+      targetPoint.y,
+      options?.steps === undefined ? undefined : { steps: options.steps }
     );
+    await mouse.up();
   }
 
   async drop(payload: LocatorDropPayload, options?: LocatorDropOptions): Promise<void> {

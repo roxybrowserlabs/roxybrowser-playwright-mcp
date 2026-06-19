@@ -22,7 +22,6 @@ export default defineConfig({
         "src/protocol/adapter.ts",
         "src/protocol/capabilities.ts",
         "src/protocol/bidi/**",
-        "src/protocol/webdriver/**",
         "src/protocol/cdp/backend.ts"
       ]
     }
