@@ -1242,7 +1242,19 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
           } else if (firstElement instanceof HTMLTextAreaElement) {
             firstElement.value = payload.value ?? "";
           } else if (firstElement instanceof HTMLElement && firstElement.isContentEditable) {
-            firstElement.textContent = payload.value ?? "";
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(firstElement);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+            const value = payload.value ?? "";
+            const edited = value
+              ? document.execCommand("insertText", false, value)
+              : document.execCommand("delete");
+            if (!edited) {
+              firstElement.textContent = value;
+            }
+            return true;
           } else {
             throw new Error("Element is not an <input>, <textarea> or [contenteditable] element");
           }

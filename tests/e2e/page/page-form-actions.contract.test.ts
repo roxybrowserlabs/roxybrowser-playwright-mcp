@@ -193,6 +193,83 @@ describe("page form action contract e2e", () => {
     });
   });
 
+  it("fills contenteditable with new lines", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<div contenteditable="true"></div>');
+
+      await page.locator('div[contenteditable]').fill("John\nDoe");
+
+      expect(await page.locator('div[contenteditable]').innerText()).toBe("John\nDoe");
+    });
+  });
+
+  it("does not double-fill contenteditable with beforeinput handler", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <div id="editor" contenteditable="true"></div>
+        <script>
+          const editor = document.getElementById("editor");
+          editor.addEventListener("beforeinput", event => {
+            event.preventDefault();
+            editor.textContent = event.data;
+          });
+        </script>
+      `);
+
+      await page.locator("#editor").fill("Playwright");
+
+      expect(await page.locator("#editor").textContent()).toBe("Playwright");
+    });
+  });
+
+  it("fills elements with existing value and selection", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <input oninput="window.result = this.value">
+        <div contenteditable>initial</div>
+      `);
+
+      await page.$eval("input", (input) => {
+        input.value = "value one";
+      });
+      await page.fill("input", "another value");
+      expect(await page.evaluate(() => window.result)).toBe("another value");
+
+      await page.$eval("input", (input) => {
+        input.selectionStart = 1;
+        input.selectionEnd = 2;
+      });
+      await page.fill("input", "maybe this one");
+      expect(await page.evaluate(() => window.result)).toBe("maybe this one");
+
+      await page.$eval("div[contenteditable]", (div) => {
+        div.innerHTML = "some text <span>some more text<span> and even more text";
+        const range = document.createRange();
+        range.selectNodeContents(div.querySelector("span")!);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+      await page.fill("div[contenteditable]", "replace with this");
+      expect(await page.$eval("div[contenteditable]", (div) => div.textContent)).toBe("replace with this");
+    });
+  });
+
+  it("fills body, fixed position input, and clears using fill", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<body contenteditable="true"></body>');
+      await page.fill("body", "some value");
+      expect(await page.evaluate(() => document.body.textContent)).toBe("some value");
+
+      await page.setContent("<input style='position: fixed;'>");
+      await page.fill("input", "some value");
+      expect(await page.evaluate(() => document.querySelector("input")!.value)).toBe("some value");
+
+      await page.fill("input", "");
+      expect(await page.evaluate(() => document.querySelector("input")!.value)).toBe("");
+    });
+  });
+
   it("focuses element and emits blur/focus events", async () => {
     await withPage(async (page) => {
       await page.setContent(`
