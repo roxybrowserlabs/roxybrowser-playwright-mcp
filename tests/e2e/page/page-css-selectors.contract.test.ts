@@ -129,6 +129,70 @@ describe("page CSS selector contract e2e", () => {
     });
   });
 
+  it("does not match the root after selector chain like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<section><div>test</div></section>");
+
+      const element = await page.$("css=section >> css=section");
+      expect(element).toBe(null);
+    });
+  });
+
+  it("supports numerical and wrong-case ids like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<section id="123"></section>');
+      expect(await page.$("#\\31\\32\\33")).toBeTruthy();
+
+      await page.setContent('<section id="Hello"></section>');
+      expect(await page.$eval("#Hello", (element) => element.tagName)).toBe("SECTION");
+      expect(await page.$eval("#hello", (element) => element.tagName)).toBe("SECTION");
+      expect(await page.$eval("#HELLO", (element) => element.tagName)).toBe("SECTION");
+      expect(await page.$eval("#helLO", (element) => element.tagName)).toBe("SECTION");
+    });
+  });
+
+  it("supports star selectors and element-scoped star selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div id=div1></div><div id=div2><span><span></span></span></div>");
+
+      expect(await page.$$eval("*", (elements) => elements.map((element) => `${element.nodeName}${element.id ? `#${element.id}` : ""}`))).toEqual([
+        "HTML",
+        "HEAD",
+        "BODY",
+        "DIV#div1",
+        "DIV#div2",
+        "SPAN",
+        "SPAN"
+      ]);
+      expect(await page.$$eval("*#div1", (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval("*:not(#div1)", (elements) => elements.length)).toBe(6);
+      expect(await page.$$eval("*:not(div)", (elements) => elements.length)).toBe(5);
+      expect(await page.$$eval("*:not(span)", (elements) => elements.length)).toBe(5);
+      expect(await page.$$eval("*:not(*)", (elements) => elements.length)).toBe(0);
+      expect(await page.$$eval("*:is(*)", (elements) => elements.length)).toBe(7);
+      expect(await page.$$eval("* *", (elements) => elements.length)).toBe(6);
+      expect(await page.$$eval("* *:not(span)", (elements) => elements.length)).toBe(4);
+      expect(await page.$$eval("div > *", (elements) => elements.length)).toBe(1);
+      expect(await page.$$eval("div *", (elements) => elements.length)).toBe(2);
+      expect(await page.$$eval("* > *", (elements) => elements.length)).toBe(6);
+
+      const body = await page.$("body");
+      expect(await body!.$$eval("*", (elements) => elements.length)).toBe(4);
+      expect(await body!.$$eval("*#div1", (elements) => elements.length)).toBe(1);
+      expect(await body!.$$eval("*:not(#div1)", (elements) => elements.length)).toBe(3);
+      expect(await body!.$$eval("*:not(div)", (elements) => elements.length)).toBe(2);
+      expect(await body!.$$eval("*:not(span)", (elements) => elements.length)).toBe(2);
+      expect(await body!.$$eval("*:not(*)", (elements) => elements.length)).toBe(0);
+      expect(await body!.$$eval("*:is(*)", (elements) => elements.length)).toBe(4);
+      expect(await body!.$$eval("div > *", (elements) => elements.length)).toBe(1);
+      expect(await body!.$$eval("div *", (elements) => elements.length)).toBe(2);
+      expect(await body!.$$eval("* > *", (elements) => elements.length)).toBe(2);
+      expect(await body!.$$eval(":scope * > *", (elements) => elements.length)).toBe(2);
+      expect(await body!.$$eval("* *", (elements) => elements.length)).toBe(2);
+      expect(await body!.$$eval("* *:not(span)", (elements) => elements.length)).toBe(0);
+    });
+  });
+
   it("supports sibling combinators and :scope like Playwright", async () => {
     await withPage(async (page) => {
       await page.setContent(`

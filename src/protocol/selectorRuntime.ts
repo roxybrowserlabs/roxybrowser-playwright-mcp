@@ -160,11 +160,24 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return elements;
   };
 
+  const isInternalOverlayElement = (element: Element): boolean => {
+    const tagName = element.tagName.toLowerCase();
+    return (
+      element.id === "__roxy_screencast_actions_style__" ||
+      element.id === "__roxy_screencast_overlay_style__" ||
+      tagName === "x-pw-action-overlays" ||
+      tagName === "x-pw-user-overlays" ||
+      element.closest("x-pw-action-overlays,x-pw-user-overlays,[data-roxy-highlight-overlay]") !== null
+    );
+  };
+
   const querySelectorAllPierce = (root: ParentNode | Element, selector: string): Element[] => {
     const matches: Element[] = [];
     const visitRoot = (currentRoot: ParentNode | Element): void => {
       for (const element of toElements(currentRoot.querySelectorAll(selector))) {
-        pushUnique(matches, element);
+        if (!isInternalOverlayElement(element)) {
+          pushUnique(matches, element);
+        }
       }
       if (isElementNode(currentRoot)) {
         const shadowRoot = (currentRoot as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
@@ -186,6 +199,69 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   const relativeCssSelector = (selector: string): string =>
     /^[>+~]/.test(selector.trim()) ? `:scope ${selector}` : selector;
 
+  const scopeCssSelectorList = (selector: string): string =>
+    splitCssSelectorList(selector)
+      .map((part) => `:scope ${part}`)
+      .join(", ");
+
+  const splitCssSelectorList = (selector: string): string[] => {
+    const parts: string[] = [];
+    let quote: string | undefined;
+    let escapeNext = false;
+    let bracketDepth = 0;
+    let parenDepth = 0;
+    let start = 0;
+
+    for (let index = 0; index < selector.length; index += 1) {
+      const char = selector[index]!;
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (quote) {
+        if (char === "\\") {
+          escapeNext = true;
+        } else if (char === quote) {
+          quote = undefined;
+        }
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        quote = char;
+        continue;
+      }
+      if (char === "[") {
+        bracketDepth += 1;
+        continue;
+      }
+      if (char === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        continue;
+      }
+      if (char === "(") {
+        parenDepth += 1;
+        continue;
+      }
+      if (char === ")") {
+        parenDepth = Math.max(0, parenDepth - 1);
+        continue;
+      }
+      if (char === "," && bracketDepth === 0 && parenDepth === 0) {
+        const part = selector.slice(start, index).trim();
+        if (part) {
+          parts.push(part);
+        }
+        start = index + 1;
+      }
+    }
+
+    const finalPart = selector.slice(start).trim();
+    if (finalPart) {
+      parts.push(finalPart);
+    }
+    return parts.length ? parts : [selector];
+  };
+
   const queryCss = (root: ParentNode | Element, selector: string, includeRoot: boolean): Element[] => {
     const normalizedSelector = relativeCssSelector(selector);
     const matches: Element[] = [];
@@ -202,7 +278,10 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
 
     if (!/^[>+~]/.test(selector.trim()) && !selector.includes(":scope")) {
-      for (const element of querySelectorAllPierce(root, normalizedSelector)) {
+      const querySelector = isElementNode(root)
+        ? scopeCssSelectorList(normalizedSelector)
+        : normalizedSelector;
+      for (const element of querySelectorAllPierce(root, querySelector)) {
         pushUnique(matches, element);
       }
       return matches;
