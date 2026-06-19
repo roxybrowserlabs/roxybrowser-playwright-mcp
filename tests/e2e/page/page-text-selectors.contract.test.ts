@@ -449,4 +449,15 @@ describe("page text selector contract e2e", () => {
       );
     });
   });
+
+  it("supports locator alias methods like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div><button>Submit</button></div>`);
+
+      expect(await page.locator("button").count()).toBe(1);
+      expect(await page.locator("div").locator("button").count()).toBe(1);
+      expect(await page.locator("div").getByRole("button").count()).toBe(1);
+      expect(await page.mainFrame().locator("button").count()).toBe(1);
+    });
+  });
 });
