@@ -137,7 +137,7 @@ export async function withBidiPage<T>(
     }
   } finally {
     if (!keepBrowserOpen) {
-      await browser.close();
+      await browser.close().catch(() => {});
       if (usesExternalBidiEndpoint) {
         externalBidiBrowser = undefined;
         externalBidiBrowserKey = undefined;
@@ -153,6 +153,7 @@ export async function withBidiPage<T>(
           windowRemark: "firefox bidi e2e"
         });
       }
+      await cleanupLocalTestBrowserProcesses();
     }
   }
 }

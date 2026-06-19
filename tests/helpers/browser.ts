@@ -1,5 +1,6 @@
 import { chromium } from "../../src/index.js";
 import type { Browser, BrowserContext, Page, ResolvedAriaRef } from "../../src/types/api.js";
+import { cleanupLocalTestBrowserProcesses } from "./browser-process-cleanup.js";
 
 export type SnapshotPage = Page & {
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
@@ -30,6 +31,7 @@ export async function withPage<T>(
       await context.close();
     }
   } finally {
-    await browser.close();
+    await browser.close().catch(() => {});
+    await cleanupLocalTestBrowserProcesses();
   }
 }

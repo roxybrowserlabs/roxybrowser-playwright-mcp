@@ -17,34 +17,37 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
     return;
   }
 
-  const stdout = await execFileText("ps", ["-eo", "pid=,command="]).catch(() => "");
+  const stdout = await execFileText("ps", ["-eo", "pid=,ppid=,command="]).catch(() => "");
   const currentPid = process.pid;
-  const pids = stdout
+  const processes = stdout
     .split("\n")
     .map((line) => {
-      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
       if (!match) {
         return null;
       }
 
       const pid = Number(match[1]);
-      const command = match[2];
+      const ppid = Number(match[2]);
+      const command = match[3];
       if (pid === currentPid) {
         return null;
       }
 
-      if (!TEST_BROWSER_PROFILE_MARKERS.some((marker) => command.includes(marker))) {
-        return null;
-      }
-
-      const normalizedCommand = command.toLowerCase();
-      if (!TEST_BROWSER_COMMAND_MARKERS.some((marker) => normalizedCommand.includes(marker))) {
-        return null;
-      }
-
-      return pid;
+      return { pid, ppid, command };
     })
-    .filter((pid): pid is number => pid !== null);
+    .filter((process): process is ProcessInfo => process !== null);
+  const childrenByParentPid = new Map<number, ProcessInfo[]>();
+  for (const process of processes) {
+    const children = childrenByParentPid.get(process.ppid) ?? [];
+    children.push(process);
+    childrenByParentPid.set(process.ppid, children);
+  }
+  const rootPids = processes
+    .filter(isLocalTestBrowserProcess)
+    .map((process) => process.pid);
+  const pids = [...collectProcessTreePids(rootPids, childrenByParentPid)]
+    .filter((pid) => pid !== currentPid);
 
   for (const pid of pids) {
     try {
@@ -66,6 +69,43 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
       // Already gone, which is the desired state.
     }
   }
+}
+
+interface ProcessInfo {
+  pid: number;
+  ppid: number;
+  command: string;
+}
+
+function isLocalTestBrowserProcess(process: ProcessInfo): boolean {
+  if (!TEST_BROWSER_PROFILE_MARKERS.some((marker) => process.command.includes(marker))) {
+    return false;
+  }
+
+  const normalizedCommand = process.command.toLowerCase();
+  return TEST_BROWSER_COMMAND_MARKERS.some((marker) => normalizedCommand.includes(marker));
+}
+
+function collectProcessTreePids(
+  rootPids: number[],
+  childrenByParentPid: Map<number, ProcessInfo[]>
+): Set<number> {
+  const pids = new Set<number>();
+  const queue = [...rootPids];
+
+  while (queue.length) {
+    const pid = queue.shift()!;
+    if (pids.has(pid)) {
+      continue;
+    }
+
+    pids.add(pid);
+    for (const child of childrenByParentPid.get(pid) ?? []) {
+      queue.push(child.pid);
+    }
+  }
+
+  return pids;
 }
 
 function delay(ms: number): Promise<void> {
