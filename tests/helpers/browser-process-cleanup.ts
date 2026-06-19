@@ -17,13 +17,42 @@ const TEST_BROWSER_COMMAND_MARKERS = [
   "chromium",
   "chrome"
 ];
+const CLEANUP_TIMEOUT_MS = Number(process.env.ROXY_TEST_BROWSER_CLEANUP_TIMEOUT_MS ?? 5_000);
 const SIGNAL_EXIT_GRACE_MS = Number(process.env.ROXY_TEST_BROWSER_SIGNAL_EXIT_GRACE_MS ?? 20_000);
+let cleanupPromise: Promise<void> | undefined;
 
 export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
   if (process.platform === "win32") {
     return;
   }
 
+  cleanupPromise ??= cleanupLocalTestBrowserProcessesOnce().finally(() => {
+    cleanupPromise = undefined;
+  });
+  await cleanupPromise;
+}
+
+export async function cleanupLocalTestBrowserProcessesWithTimeout(): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      cleanupLocalTestBrowserProcesses(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`Local test browser cleanup timed out after ${CLEANUP_TIMEOUT_MS}ms.`));
+        }, CLEANUP_TIMEOUT_MS);
+      })
+    ]);
+  } catch {
+    cleanupLocalTestBrowserProcessesSync();
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+async function cleanupLocalTestBrowserProcessesOnce(): Promise<void> {
   await cleanupRegisteredTestBrowserProcesses();
 
   const stdout = await execFileText("ps", ["-eo", "pid=,ppid=,command="]).catch(() => "");

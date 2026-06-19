@@ -1,13 +1,15 @@
 import { afterAll, afterEach } from "vitest";
-import { installLocalTestBrowserProcessCleanupHooks } from "./browser-process-cleanup.js";
-import { cleanupLocalTestBrowserProcesses } from "./browser-process-cleanup.js";
+import {
+  cleanupLocalTestBrowserProcessesWithTimeout,
+  installLocalTestBrowserProcessCleanupHooks
+} from "./browser-process-cleanup.js";
 
 installLocalTestBrowserProcessCleanupHooks();
 
 afterEach(async () => {
-  await cleanupLocalTestBrowserProcesses();
+  await cleanupLocalTestBrowserProcessesWithTimeout();
 });
 
 afterAll(async () => {
-  await cleanupLocalTestBrowserProcesses();
+  await cleanupLocalTestBrowserProcessesWithTimeout();
 });

@@ -158,4 +158,29 @@ describe("browser process cleanup", () => {
     expect(killSpy).toHaveBeenCalledWith(501, "SIGKILL");
     expect(proc.kill).not.toHaveBeenCalled();
   });
+
+  it("falls back to synchronous cleanup when async cleanup times out", async () => {
+    vi.mocked(execFile).mockImplementation(() => undefined as never);
+    vi.mocked(spawnSync).mockReturnValue({
+      stdout: [
+        "901 1 /Applications/Firefox.app/Contents/MacOS/firefox -profile /tmp/roxybrowser-bidi-timeout --remote-debugging-port=7777",
+        "902 901 /Applications/Firefox.app/Contents/MacOS/plugin-container child"
+      ].join("\n")
+    } as ReturnType<typeof spawnSync>);
+
+    const { cleanupLocalTestBrowserProcessesWithTimeout } = await import(
+      "../helpers/browser-process-cleanup.js"
+    );
+    const cleanup = cleanupLocalTestBrowserProcessesWithTimeout();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await cleanup;
+
+    expect(killSpy).toHaveBeenCalledWith(901, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(-901, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(902, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(901, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(-901, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(902, "SIGKILL");
+  });
 });
