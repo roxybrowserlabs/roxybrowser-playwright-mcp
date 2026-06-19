@@ -1226,22 +1226,56 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
 
   const isVisible = (element: Element): boolean => {
+    const style = window.getComputedStyle(element);
+    if (style.display === "contents") {
+      for (let child = element.firstChild; child; child = child.nextSibling) {
+        if (isElementNode(child) && isVisible(child)) {
+          return true;
+        }
+        if (isTextNode(child) && isVisibleTextNode(child)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (!hasVisibleStyle(element, style)) {
+      return false;
+    }
     const rect = element.getBoundingClientRect();
-    return (
-      hasVisibleStyle(element) &&
-      rect.width > 0 &&
-      rect.height > 0
-    );
+    return rect.width > 0 && rect.height > 0;
   };
-  const hasVisibleStyle = (element: Element): boolean => {
-    let current: Element | null = element;
+  const isVisibleTextNode = (node: Text): boolean => {
+    const range = node.ownerDocument.createRange();
+    range.selectNode(node);
+    const rect = range.getBoundingClientRect();
+    range.detach();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const hasVisibleStyle = (element: Element, style = window.getComputedStyle(element)): boolean => {
+    if (
+      "checkVisibility" in element &&
+      typeof element.checkVisibility === "function" &&
+      !element.checkVisibility()
+    ) {
+      return false;
+    }
+    const detailsOrSummary = element.closest("details,summary");
+    if (
+      detailsOrSummary &&
+      detailsOrSummary !== element &&
+      tagNameOf(detailsOrSummary) === "details" &&
+      "open" in detailsOrSummary &&
+      !detailsOrSummary.open
+    ) {
+      return false;
+    }
+    if (style.visibility !== "visible") {
+      return false;
+    }
+    let current = element.parentElement;
     while (current) {
-      const style = window.getComputedStyle(current);
-      if (
-        style.visibility === "hidden" ||
-        style.display === "none" ||
-        Number.parseFloat(style.opacity || "1") === 0
-      ) {
+      const parentStyle = window.getComputedStyle(current);
+      if (parentStyle.visibility !== "visible" || parentStyle.display === "none") {
         return false;
       }
       current = current.parentElement;
