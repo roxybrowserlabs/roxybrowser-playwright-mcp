@@ -522,6 +522,23 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("<picture> resource should have type image like Playwright", async () => {
+    await withPage(async (page) => {
+      const [request] = await Promise.all([
+        page.waitForEvent("request"),
+        page.setContent(`
+          <picture>
+            <source>
+              <img src="https://www.wikipedia.org/portal/wikipedia.org/assets/img/Wikipedia-logo-v2@2x.png">
+            </source>
+          </picture>
+        `)
+      ]);
+
+      expect(request.resourceType()).toBe("image");
+    });
+  });
+
   it("reports raw headers", async () => {
     await withPage(async (page) => {
       let expectedHeaders: Array<{ name: string; value: string }> = [];
