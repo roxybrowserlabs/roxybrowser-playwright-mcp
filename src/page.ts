@@ -1430,6 +1430,19 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.refreshFrameSnapshots();
   }
 
+  async waitForFrameLoadState(
+    frame: RoxyFrameSnapshot,
+    state: LoadState,
+    options: { timeout?: number } = {}
+  ): Promise<void> {
+    await this.adapter.waitForLoadState(
+      state,
+      options.timeout ?? this.defaultNavigationTimeoutMs,
+      frame.parentId === null ? undefined : (frame.nativeFrameId ?? frame.id)
+    );
+    await this.refreshFrameSnapshots();
+  }
+
   async waitForSelector<K extends keyof HTMLElementTagNameMap>(
     selector: K,
     options?: WaitForSelectorOptions & { state?: "visible" | "attached" }

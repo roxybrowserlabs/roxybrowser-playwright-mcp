@@ -263,13 +263,7 @@ export class RoxyFrame implements Frame {
     if (state !== "load" && state !== "domcontentloaded" && state !== "networkidle") {
       throw new Error("state: expected one of (load|domcontentloaded|networkidle|commit)");
     }
-    const frameId = this.snapshot.nativeFrameId ?? this.snapshot.id;
-    await this.roxyPage.adapter.waitForLoadState(
-      state,
-      options.timeout ?? this.roxyPage.defaultNavigationTimeout(),
-      this.snapshot.parentId === null ? undefined : frameId
-    );
-    await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
+    await this.roxyPage.waitForFrameLoadState(this.snapshot, state, options);
     if (this.detached) {
       throw new Error("Navigating frame was detached!");
     }

@@ -1509,13 +1509,6 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
   private async handleTargetDetached(targetId: string): Promise<void> {
     this.markTargetDetached(targetId);
-    const frameSessionForTarget = this.frameSessionIds.get(targetId);
-    if (frameSessionForTarget) {
-      this.frameSessionIds.delete(targetId);
-      this.loadingFrameIds.delete(targetId);
-      this.frameLifecycleStates.delete(targetId);
-      return;
-    }
     const existing = this.pages.get(targetId);
     if (existing) {
       (existing as ProtocolPageAdapter & { didClose?: () => void }).didClose?.();
@@ -2349,6 +2342,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }) => {
       const targetId = event.targetId;
       if (!targetId) {
+        return;
+      }
+      if (this.frameSessionIds.get(targetId) === event.sessionId) {
+        this.frameSessionIds.delete(targetId);
+        this.loadingFrameIds.delete(targetId);
+        this.frameLifecycleStates.delete(targetId);
         return;
       }
       const worker = this.workersByTargetId.get(targetId);
