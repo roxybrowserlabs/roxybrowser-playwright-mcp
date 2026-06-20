@@ -87,6 +87,47 @@ describe("page workers contract e2e", () => {
     });
   });
 
+  it("reports console events on workers without page/context listeners like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const [worker] = await Promise.all([
+        page.waitForEvent("worker"),
+        page.evaluate(() => {
+          (window as typeof window & { worker?: Worker }).worker = new Worker(
+            URL.createObjectURL(new Blob(["42"], { type: "application/javascript" }))
+          );
+        })
+      ]);
+
+      const [workerMessage] = await Promise.all([
+        worker.waitForEvent("console"),
+        worker.evaluate(() => {
+          console.log("hello from worker");
+        })
+      ]);
+
+      expect(workerMessage.text()).toBe("hello from worker");
+    });
+  });
+
+  it("exposes JSHandles for worker console logs like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const logPromise = page.waitForEvent("console");
+
+      await page.evaluate(() => {
+        new Worker(URL.createObjectURL(new Blob([
+          "console.log(1, 2, 3, this)"
+        ], { type: "application/javascript" })));
+      });
+
+      const log = await logPromise;
+      expect(log.text()).toMatch(/^1 2 3 /);
+      expect(log.args()).toHaveLength(4);
+      expect(await (await log.args()[3]!.getProperty("origin")).jsonValue()).toEqual(expect.any(String));
+    });
+  });
+
   it("emits worker close and clears workers on navigation like Playwright", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);

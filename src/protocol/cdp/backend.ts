@@ -2296,7 +2296,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             timestamp?: number;
             type: RawPageEventMap["console"]["type"] extends () => infer T ? T : string;
           };
-          const args = consoleEvent.args.map((arg) => createCdpConsoleHandle(arg));
+          const args = consoleEvent.args.map((arg) =>
+            createCdpConsoleHandle(this, arg, event.sessionId)
+          );
           const message: RawPageEventMap["console"] = {
             args: () => args,
             location: () => consoleStackTraceLocation(consoleEvent.stackTrace, event.targetInfo.url ?? ""),
@@ -2469,7 +2471,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
 
     client.Runtime.consoleAPICalled((event) => {
-      const args = event.args.map((arg) => createCdpConsoleHandle(arg));
+      const args = event.args.map((arg) => createCdpConsoleHandle(this, arg));
       this.emit("console", {
         args: () => args,
         location: () => consoleStackTraceLocation(event.stackTrace),
@@ -8198,10 +8200,36 @@ class CdpJSHandleAdapter<T = unknown> implements ProtocolJSHandleAdapter<T> {
   }
 
   async getProperty(propertyName: string): Promise<ProtocolJSHandleAdapter> {
-    return (await this.getProperties()).get(propertyName) ?? new CdpJSHandleAdapter(this.page, {
-      type: "undefined",
-      value: undefined
-    }, this.runtimeSessionId, this.runtimeFrameId);
+    if (!this.remoteObject.objectId) {
+      if (!this.remoteObject || typeof cdpRemoteObjectValue(this.remoteObject) !== "object") {
+        return new CdpJSHandleAdapter(this.page, {
+          type: "undefined",
+          value: undefined
+        }, this.runtimeSessionId, this.runtimeFrameId);
+      }
+      return new CdpJSHandleAdapter(this.page, serializeLocalValueAsCdpRemoteObject(
+        (cdpRemoteObjectValue(this.remoteObject) as Record<string, unknown>)[propertyName]
+      ), this.runtimeSessionId, this.runtimeFrameId);
+    }
+
+    const response = await this.page.sendRuntimeCallFunctionOn({
+      objectId: this.remoteObject.objectId,
+      functionDeclaration: "function(name) { return this[name]; }",
+      arguments: [{ value: propertyName }],
+      returnByValue: false,
+      awaitPromise: true
+    }, this.runtimeSessionId);
+
+    if (response.exceptionDetails) {
+      throw new Error(formatCdpEvaluationError(response));
+    }
+
+    return new CdpJSHandleAdapter(
+      this.page,
+      response.result,
+      this.runtimeSessionId,
+      this.runtimeFrameId
+    );
   }
 
   preview(): string {
@@ -9106,16 +9134,62 @@ function formatConsoleText(
     .join(" ");
 }
 
-function createCdpConsoleHandle(arg: {
+function createCdpConsoleHandle(
+  page: CdpPageAdapter,
+  arg: {
   className?: string;
   description?: string;
   subtype?: string;
   type?: string;
+  objectId?: string;
   unserializableValue?: string;
   value?: unknown;
-}) {
-  const preview = cdpRemoteObjectPreview(arg);
-  return createJSHandle(cdpRemoteObjectValue(arg), preview);
+  },
+  runtimeSessionId?: string
+) {
+  return new RoxyJSHandle(
+    cdpRemoteObjectValue(arg),
+    null,
+    cdpRemoteObjectPreview(arg),
+    new CdpJSHandleAdapter(page, arg, runtimeSessionId)
+  );
+}
+
+function serializeLocalValueAsCdpRemoteObject(value: unknown): CdpRemoteObject {
+  if (value === undefined) {
+    return { type: "undefined", value: undefined };
+  }
+  if (value === null) {
+    return { type: "object", subtype: "null", value: null };
+  }
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) {
+      return { type: "number", unserializableValue: "NaN" };
+    }
+    if (value === Infinity) {
+      return { type: "number", unserializableValue: "Infinity" };
+    }
+    if (value === -Infinity) {
+      return { type: "number", unserializableValue: "-Infinity" };
+    }
+    if (Object.is(value, -0)) {
+      return { type: "number", unserializableValue: "-0" };
+    }
+    return { type: "number", value };
+  }
+  if (typeof value === "bigint") {
+    return { type: "bigint", unserializableValue: `${value}n` };
+  }
+  if (typeof value === "string") {
+    return { type: "string", value };
+  }
+  if (typeof value === "boolean") {
+    return { type: "boolean", value };
+  }
+  return {
+    type: "object",
+    value
+  };
 }
 
 async function serializeCdpEvaluationArguments(
