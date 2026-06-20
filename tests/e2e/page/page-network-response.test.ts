@@ -20,6 +20,25 @@ describe("page network response e2e", () => {
     await fixture.close();
   });
 
+  it("reports allHeaders() with lower-cased lookup semantics like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", (_request, response) => {
+        response.setHeader("foo", "bar");
+        response.setHeader("BaZ", "bAz");
+        response.end();
+      });
+
+      const response = await page.goto(fixture.server.EMPTY_PAGE, {
+        waitUntil: "load"
+      });
+
+      const headers = await response!.allHeaders();
+      expect(headers.foo).toBe("bar");
+      expect(headers.baz).toBe("bAz");
+      expect((headers as Record<string, string | undefined>).BaZ).toBe(undefined);
+    });
+  });
+
   it("should return text", async () => {
     await withPage(async (page) => {
       const response = await page.goto(fixture.server.PREFIX + "/simple.json", {
