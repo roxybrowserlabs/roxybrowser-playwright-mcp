@@ -171,60 +171,63 @@ export async function closeRoxyBrowserFirefoxBidiProfile(options = {}) {
   }
 
   const client = new RoxyClient(apiPort, apiToken);
-  const dirIds = [];
+  const dirIds = new Set();
 
-  if (profileId ?? cachedProfileDirId) {
-    dirIds.push(profileId ?? cachedProfileDirId);
-  } else {
-    const workspaceResponse = await client.workspace_project().catch(() => undefined);
-    const workspaceRows = extractRows(workspaceResponse?.data);
-    const workspace =
-      parseNumber(workspaceIdEnv)
-        ? { id: parseNumber(workspaceIdEnv) }
-        : workspaceRows.find((row) => row.id ?? row.workspaceId) ?? workspaceRows[0];
+  if (profileId) {
+    dirIds.add(profileId);
+  }
+  if (cachedProfileDirId) {
+    dirIds.add(cachedProfileDirId);
+  }
 
-    const workspaceId = workspace?.id ?? workspace?.workspaceId;
-    if (workspaceId) {
-      const projectId =
-        parseNumber(projectIdEnv)
-        ?? workspace.project_details?.find((project) => project.projectId)?.projectId;
-      const listResponse = await client.browser_list(
-        workspaceId,
-        {
-          ...(projectId ? { projectIds: String(projectId) } : {}),
-          page_size: 100
-        }
-      ).catch(() => undefined);
-      const profiles = extractRows(listResponse?.data);
-      const desiredRemark = String(windowRemark).trim();
-      const desiredCoreType = String(coreType).trim().toLowerCase();
-      const desiredCoreVersion = String(coreVersion).trim();
+  const workspaceResponse = await client.workspace_project().catch(() => undefined);
+  const workspaceRows = extractRows(workspaceResponse?.data);
+  const workspace =
+    parseNumber(workspaceIdEnv)
+      ? { id: parseNumber(workspaceIdEnv) }
+      : workspaceRows.find((row) => row.id ?? row.workspaceId) ?? workspaceRows[0];
 
-      for (const profile of profiles) {
-        if (!profile?.dirId) {
-          continue;
-        }
+  const workspaceId = workspace?.id ?? workspace?.workspaceId;
+  if (workspaceId) {
+    const projectId =
+      parseNumber(projectIdEnv)
+      ?? workspace.project_details?.find((project) => project.projectId)?.projectId;
+    const listResponse = await client.browser_list(
+      workspaceId,
+      {
+        ...(projectId ? { projectIds: String(projectId) } : {}),
+        page_size: 100
+      }
+    ).catch(() => undefined);
+    const profiles = extractRows(listResponse?.data);
+    const desiredRemark = String(windowRemark).trim();
+    const desiredCoreType = String(coreType).trim().toLowerCase();
+    const desiredCoreVersion = String(coreVersion).trim();
 
-        const detailResponse = await client.browser_detail(workspaceId, profile.dirId).catch(() => undefined);
-        const detail = firstRecord(detailResponse?.data) ?? profile;
-        const detailRemark = String(detail.windowRemark ?? "").trim();
-        const detailCoreType = String(detail.coreType ?? "").trim().toLowerCase();
-        const detailCoreVersion = String(detail.coreVersion ?? "").trim();
+    for (const profile of profiles) {
+      if (!profile?.dirId) {
+        continue;
+      }
 
-        if (
-          detailRemark === desiredRemark
-          && detailCoreType === desiredCoreType
-          && detailCoreVersion === desiredCoreVersion
-        ) {
-          dirIds.push(profile.dirId);
-        }
+      const detailResponse = await client.browser_detail(workspaceId, profile.dirId).catch(() => undefined);
+      const detail = firstRecord(detailResponse?.data) ?? profile;
+      const detailRemark = String(detail.windowRemark ?? "").trim();
+      const detailCoreType = String(detail.coreType ?? "").trim().toLowerCase();
+      const detailCoreVersion = String(detail.coreVersion ?? "").trim();
+
+      if (
+        detailRemark === desiredRemark
+        && detailCoreType === desiredCoreType
+        && detailCoreVersion === desiredCoreVersion
+      ) {
+        dirIds.add(profile.dirId);
       }
     }
   }
 
   cachedProfileDirId = undefined;
 
-  for (const dirId of new Set(dirIds.filter(Boolean))) {
+  for (const dirId of dirIds) {
     await withTimeout(
       client.browser_close(dirId),
       ROXYBROWSER_OPERATION_TIMEOUT_MS,
