@@ -358,6 +358,7 @@ interface CdpDomClient {
 
 interface CdpPageFramePayload {
   id: string;
+  loaderId?: string;
   name?: string;
   parentId?: string;
   url?: string;
@@ -370,6 +371,7 @@ interface CdpFrameTreePayload {
 
 interface CdpNativeFrameState {
   id: string;
+  loaderId?: string;
   name: string;
   parentId: string | null;
   url: string;
@@ -486,9 +488,15 @@ interface NavigationResponseCapture {
 }
 
 interface NavigationFailureCapture {
+  apiName: string;
+  committed?: boolean;
+  expectedLoaderId?: string;
+  resolveCommittedInterruption: () => void;
   targetUrl?: string;
   reject: (error: Error) => void;
 }
+
+const COMMITTED_NAVIGATION_INTERRUPTED = Symbol("committedNavigationInterrupted");
 
 interface CdpCoverageRange {
   count: number;
@@ -1312,9 +1320,15 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     this.pages.clear();
 
     if (this.browserContextId) {
-      await this.state.browserClient.Target.disposeBrowserContext({
-        browserContextId: this.browserContextId
-      });
+      try {
+        await this.state.browserClient.Target.disposeBrowserContext({
+          browserContextId: this.browserContextId
+        });
+      } catch (error) {
+        if (!isClosedCdpConnectionError(error)) {
+          throw error;
+        }
+      }
     }
   }
 
@@ -1724,6 +1738,17 @@ function isPageClosedInitializationError(error: unknown): boolean {
   );
 }
 
+function isClosedCdpConnectionError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return (
+    message.includes("target page, context or browser has been closed")
+    || message.includes("target closed")
+    || message.includes("session closed")
+    || message.includes("connection closed")
+    || message.includes("websocket is not open")
+  );
+}
+
 function createTransientClosedPageAdapter(url: string): ProtocolPageAdapter {
   const closedError = () => new Error("Target page, context or browser has been closed");
   const asyncClosed = async <T>(): Promise<T> => {
@@ -2114,6 +2139,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client.Page.frameNavigated((event) => {
       this.upsertNativeFrame(event.frame);
       if (!event.frame.parentId) {
+        this.rejectInterruptedNavigationFailureCapturesForCommittedNavigation(
+          event.frame.loaderId,
+          event.frame.url
+        );
         this.mainFrameId = event.frame.id;
         this.currentUrl = event.frame.url ?? this.currentUrl;
         void this.syncCurrentUrlFromDocument();
@@ -2807,12 +2836,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const targetUrl = resolveUrl(url, this.options.contextOptions.baseURL);
     const referer = this.resolveNavigationReferer(options, targetUrl);
+    await this.interruptPendingNavigations(targetUrl);
     const capture = this.beginNavigationResponseCapture();
-    const failureCapture = this.beginNavigationFailureCapture(targetUrl);
+    const failureCapture = this.beginNavigationFailureCapture(targetUrl, "page.goto");
     this.resetNavigationState();
 
     try {
-      await this.raceNavigationFailure(
+      const navigationResult = await this.raceNavigationFailure(
         withTimeout(
           this.options.client.Page.navigate({
             url: targetUrl,
@@ -2828,11 +2858,24 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             `navigating to "${targetUrl}", waiting until "${waitUntil}"`
         ),
         failureCapture
-      );
+      ) as {
+        errorText?: string;
+        loaderId?: string;
+      } | typeof COMMITTED_NAVIGATION_INTERRUPTED;
+      if (navigationResult === COMMITTED_NAVIGATION_INTERRUPTED) {
+        return capture.lastResponse;
+      }
+      if (navigationResult.errorText) {
+        throw new Error(formatNavigationFailureMessage(navigationResult.errorText, targetUrl));
+      }
+      if (navigationResult.loaderId) {
+        failureCapture.expectedLoaderId = navigationResult.loaderId;
+      }
       this.currentUrl = targetUrl;
+      failureCapture.committed = true;
 
       if (waitUntil !== "commit") {
-        await this.raceNavigationFailure(
+        const loadStateResult = await this.raceNavigationFailure(
           this.waitForLoadState(waitUntil, options.timeout).catch((error) => {
             if (error instanceof TimeoutError) {
               throw new TimeoutError(
@@ -2844,6 +2887,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           }),
           failureCapture
         );
+        if (loadStateResult === COMMITTED_NAVIGATION_INTERRUPTED) {
+          return capture.lastResponse;
+        }
       }
       await this.syncCurrentUrlFromDocument();
 
@@ -2868,8 +2914,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async reload(options: PageGotoOptions = {}): Promise<PageResponse | null> {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
+    await this.interruptPendingNavigations(this.currentUrl);
     const capture = this.beginNavigationResponseCapture();
-    const failureCapture = this.beginNavigationFailureCapture(this.currentUrl);
+    const failureCapture = this.beginNavigationFailureCapture(this.currentUrl, "page.reload");
     this.resetNavigationState();
 
     try {
@@ -6351,8 +6398,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
 
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
+    await this.interruptPendingNavigations(nextEntry.url);
     const capture = this.beginNavigationResponseCapture();
-    const failureCapture = this.beginNavigationFailureCapture(nextEntry.url);
+    const failureCapture = this.beginNavigationFailureCapture(
+      nextEntry.url,
+      delta < 0 ? "page.goBack" : "page.goForward"
+    );
     this.resetNavigationState();
     this.allowSameDocumentNavigationToResolveWaiters = true;
     try {
@@ -6788,12 +6839,23 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   }
 
-  private beginNavigationFailureCapture(targetUrl?: string): NavigationFailureCapture {
+  private beginNavigationFailureCapture(
+    targetUrl?: string,
+    apiName = "page.goto"
+  ): NavigationFailureCapture {
     let reject!: (error: Error) => void;
+    let resolveCommittedInterruption!: () => void;
     const failure = new Promise<never>((_resolve, rejectCallback) => {
       reject = rejectCallback;
     });
+    const committedInterruption = new Promise<typeof COMMITTED_NAVIGATION_INTERRUPTED>((resolve) => {
+      resolveCommittedInterruption = () => {
+        resolve(COMMITTED_NAVIGATION_INTERRUPTED);
+      };
+    });
     const capture: NavigationFailureCapture = {
+      apiName,
+      resolveCommittedInterruption,
       ...(targetUrl ? { targetUrl } : {}),
       reject
     };
@@ -6802,11 +6864,60 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     // cleanup after a successful navigation cannot leave a dangling rejection.
     void failure.catch(() => {});
     (capture as NavigationFailureCapture & { promise: Promise<never> }).promise = failure;
+    (capture as NavigationFailureCapture & {
+      committedPromise: Promise<typeof COMMITTED_NAVIGATION_INTERRUPTED>;
+    }).committedPromise = committedInterruption;
     return capture;
   }
 
   private endNavigationFailureCapture(capture: NavigationFailureCapture): void {
     this.navigationFailureCaptures.delete(capture);
+  }
+
+  private async interruptPendingNavigations(nextUrl: string): Promise<void> {
+    if (!this.rejectInterruptedNavigationFailureCaptures(nextUrl)) {
+      return;
+    }
+    await (this.options.client.Page as typeof this.options.client.Page & {
+      stopLoading?: () => Promise<unknown>;
+    }).stopLoading?.().catch(() => {});
+  }
+
+  private rejectInterruptedNavigationFailureCaptures(nextUrl: string): boolean {
+    let interrupted = false;
+    for (const capture of Array.from(this.navigationFailureCaptures)) {
+      if (!capture.targetUrl) {
+        continue;
+      }
+      if (stripHash(capture.targetUrl) === stripHash(nextUrl)) {
+        continue;
+      }
+      interrupted = true;
+      if (capture.committed) {
+        capture.resolveCommittedInterruption();
+        continue;
+      }
+      capture.reject(new Error(formatInterruptedNavigationMessage(capture, nextUrl)));
+    }
+    return interrupted;
+  }
+
+  private rejectInterruptedNavigationFailureCapturesForCommittedNavigation(
+    loaderId?: string,
+    committedUrl?: string
+  ): void {
+    if (!loaderId || !committedUrl) {
+      return;
+    }
+    for (const capture of Array.from(this.navigationFailureCaptures)) {
+      if (!capture.targetUrl || !capture.expectedLoaderId) {
+        continue;
+      }
+      if (capture.expectedLoaderId === loaderId) {
+        continue;
+      }
+      capture.reject(new Error(formatInterruptedNavigationMessage(capture, committedUrl)));
+    }
   }
 
   private rejectNavigationFailureCaptures(error: Error, failedUrl?: string): void {
@@ -6821,9 +6932,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private async raceNavigationFailure<T>(
     promise: Promise<T>,
     capture: NavigationFailureCapture
-  ): Promise<T> {
+  ): Promise<T | typeof COMMITTED_NAVIGATION_INTERRUPTED> {
     const failure = (capture as NavigationFailureCapture & { promise: Promise<never> }).promise;
-    return Promise.race([promise, failure]);
+    const committedPromise = (capture as NavigationFailureCapture & {
+      committedPromise: Promise<typeof COMMITTED_NAVIGATION_INTERRUPTED>;
+    }).committedPromise;
+    return Promise.race([promise, failure, committedPromise]);
   }
 
   private ensureResponseBodyState(requestId: string): ResponseBodyState {
@@ -9457,6 +9571,13 @@ function stripHash(url: string): string {
 
 function formatNavigationFailureMessage(message: string, url?: string): string {
   return url && !message.includes(url) ? `${message} at ${url}` : message;
+}
+
+function formatInterruptedNavigationMessage(
+  capture: NavigationFailureCapture,
+  nextUrl: string
+): string {
+  return `${capture.apiName}: Navigation to "${capture.targetUrl ?? "about:blank"}" is interrupted by another navigation to "${nextUrl}"`;
 }
 
 function matchesNavigationResponseUrl(

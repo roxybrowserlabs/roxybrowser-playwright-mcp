@@ -267,6 +267,26 @@ describe("page waitForNavigation contract e2e", () => {
     });
   });
 
+  it("should not leak listeners during 20 waitForNavigation calls like Playwright", async () => {
+    await withPage(async (page) => {
+      let warning: unknown = null;
+      const warningHandler = (value: unknown) => {
+        warning = value;
+      };
+
+      process.on("warning", warningHandler);
+      try {
+        const promises = Array.from({ length: 20 }, () => page.waitForNavigation());
+        await page.goto(fixture.server.EMPTY_PAGE);
+        await Promise.all(promises);
+      } finally {
+        process.off("warning", warningHandler);
+      }
+
+      expect(warning).toBe(null);
+    });
+  });
+
   it("works on frame", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.PREFIX + "/frames/one-frame.html");

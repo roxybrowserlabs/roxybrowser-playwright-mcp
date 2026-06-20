@@ -86,6 +86,46 @@ describe("page goto contract e2e", () => {
     });
   });
 
+  it("should not leak listeners during navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      let warning: unknown = null;
+      const warningHandler = (value: unknown) => {
+        warning = value;
+      };
+
+      process.on("warning", warningHandler);
+      try {
+        for (let index = 0; index < 20; index += 1) {
+          await page.goto(fixture.server.EMPTY_PAGE);
+        }
+      } finally {
+        process.off("warning", warningHandler);
+      }
+
+      expect(warning).toBe(null);
+    });
+  });
+
+  it("should not leak listeners during bad navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      let warning: unknown = null;
+      const warningHandler = (value: unknown) => {
+        warning = value;
+      };
+
+      process.on("warning", warningHandler);
+      try {
+        for (let index = 0; index < 20; index += 1) {
+          await page.goto("asdf").catch(() => {});
+        }
+      } finally {
+        process.off("warning", warningHandler);
+      }
+
+      expect(warning).toBe(null);
+    });
+  });
+
   it("should work with subframes return 204", async () => {
     await withPage(async (page) => {
       fixture.server.setRoute("/frames/frame.html", (_request, response) => {

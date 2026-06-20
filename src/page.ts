@@ -3317,7 +3317,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async gotoInFrame(frame: RoxyFrameSnapshot, url: string, options: PageGotoOptions = {}): Promise<Response | null> {
-    await this.refreshFrameSnapshots().catch(() => {});
     const currentFrame = this.frameById(frame.id);
     const currentSnapshot = currentFrame?.snapshotState() ?? frame;
     if (currentSnapshot.parentId === null) {
@@ -3340,14 +3339,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return this.toPublicResponse(response);
     }
 
-    if (!currentFrame) {
+    await this.refreshFrameSnapshots().catch(() => {});
+    const refreshedFrame = this.frameById(frame.id);
+    const refreshedSnapshot = refreshedFrame?.snapshotState() ?? frame;
+
+    if (refreshedSnapshot.parentId === null) {
+      return this.gotoInFrame(refreshedSnapshot, url, options);
+    }
+
+    if (!refreshedFrame) {
       throw new Error("Navigating frame was detached!");
     }
-    const navigationPromise = currentFrame.waitForNavigation({
+    const navigationPromise = refreshedFrame.waitForNavigation({
       url,
       ...options
     });
-    await this.evaluateInFrame(currentSnapshot, (targetUrl) => {
+    await this.evaluateInFrame(refreshedSnapshot, (targetUrl) => {
       window.location.href = targetUrl;
     }, url);
     return navigationPromise;
