@@ -1,6 +1,10 @@
-import { cleanupLocalTestBrowserProcessesWithTimeout } from "./browser-process-cleanup.js";
+import {
+  cleanupLocalTestBrowserProcessesWithTimeout,
+  installLocalTestBrowserProcessCleanupHooks
+} from "./browser-process-cleanup.js";
 
 export default async function globalSetup() {
+  installLocalTestBrowserProcessCleanupHooks();
   await cleanupLocalTestBrowserProcessesWithTimeout();
 
   return async () => {
