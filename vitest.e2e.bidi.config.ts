@@ -23,7 +23,6 @@ export default defineConfig({
       "tests/helpers/bidi.global-setup.ts"
     ],
     setupFiles: [
-      "tests/helpers/browser-process-cleanup.setup.ts",
       "tests/helpers/bidi-process-cleanup.setup.ts"
     ],
     environment: "node",

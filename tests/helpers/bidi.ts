@@ -147,45 +147,29 @@ export async function withBidiPage<T>(
 ): Promise<T> {
   let browser = await openBidiBrowser();
   let context: BrowserContext | undefined;
-  const usesReusableExternalBrowser = shouldKeepConfiguredExternalBidiBrowserOpen();
 
   try {
-    try {
-      context = await browser.newContext({});
-    } catch (error) {
-      if (!isRecoverableBidiBrowserError(error)) {
-        throw error;
-      }
-
-      await resetExternalBidiBrowserState();
-      browser = await openBidiBrowser();
-      context = await browser.newContext({});
+    context = await browser.newContext({});
+  } catch (error) {
+    if (!isRecoverableBidiBrowserError(error)) {
+      throw error;
     }
 
-    try {
-      const page = await context.newPage();
+    await resetExternalBidiBrowserState();
+    browser = await openBidiBrowser();
+    context = await browser.newContext({});
+  }
 
-      try {
-        return await run(page, context, browser);
-      } finally {
-        await closeForTest("page.close", () => page.close()).catch(() => {});
-      }
+  try {
+    const page = await context.newPage();
+
+    try {
+      return await run(page, context, browser);
     } finally {
-      await closeForTest("context.close", () => context.close()).catch(() => {});
+      await closeForTest("page.close", () => page.close()).catch(() => {});
     }
   } finally {
-    // BiDi tests should be self-contained even if suite-level cleanup hooks are
-    // skipped or the file is run in isolation.
-    if (!usesReusableExternalBrowser) {
-      const shouldCloseManagedRoxyBrowserProfile = usesManagedRoxyBrowserProfile;
-      await closeSharedBidiBrowser().catch(() => {});
-      await closeExternalBidiBrowser().catch(() => {});
-      if (shouldCloseManagedRoxyBrowserProfile) {
-        await cleanupStaleBidiTestArtifacts().catch(() => {});
-      } else {
-        await cleanupLocalTestBrowserProcessesWithTimeout().catch(() => {});
-      }
-    }
+    await closeForTest("context.close", () => context.close()).catch(() => {});
   }
 }
 
@@ -282,15 +266,10 @@ export async function cleanupBidiTestStateAfterTest(): Promise<void> {
     return;
   }
 
-  const shouldCloseManagedRoxyBrowserProfile = usesManagedRoxyBrowserProfile;
-  await closeSharedBidiBrowser();
-  await closeExternalBidiBrowser();
-  if (shouldCloseManagedRoxyBrowserProfile) {
-    await cleanupStaleBidiTestArtifacts();
-    return;
-  }
-
-  await cleanupLocalTestBrowserProcessesWithTimeout();
+  // Keep a single Firefox instance alive for the whole BiDi suite and only
+  // recycle it at suite teardown or fatal process exits. This prevents a new
+  // desktop Firefox window from being spawned for every individual test when a
+  // close handshake is delayed or flaky.
 }
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {
