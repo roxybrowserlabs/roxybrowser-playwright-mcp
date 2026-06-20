@@ -2034,6 +2034,51 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private requestInterceptor: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null = null;
   private requestInterceptionEnabled = false;
 
+  private scopedWorkerRequestId(sessionId: string, requestId: string): string {
+    return `${sessionId}:${requestId}`;
+  }
+
+  private adoptWorkerRequestMetadata(
+    sessionId: string,
+    requestId: string
+  ): {
+    scopedRequestId: string;
+    metadata: {
+      frameId?: string;
+      isFavicon?: boolean;
+      isNavigationRequest?: boolean;
+      isPreflight?: boolean;
+      method: string;
+      responseStatus?: number;
+      type?: string;
+      url: string;
+    } | undefined;
+  } {
+    const scopedRequestId = this.scopedWorkerRequestId(sessionId, requestId);
+    const existing = this.requestMetadata.get(scopedRequestId);
+    if (existing) {
+      return {
+        scopedRequestId,
+        metadata: existing
+      };
+    }
+
+    const unscoped = this.requestMetadata.get(requestId);
+    if (!unscoped) {
+      return {
+        scopedRequestId,
+        metadata: undefined
+      };
+    }
+
+    this.requestMetadata.set(scopedRequestId, unscoped);
+    this.requestMetadata.delete(requestId);
+    return {
+      scopedRequestId,
+      metadata: unscoped
+    };
+  }
+
   static async create(options: {
     browserClient: CdpClient;
     client: CdpClient;
@@ -2351,11 +2396,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             this.ignoredRequestIds.add(requestEvent.requestId);
             return;
           }
-          const previousRequest = this.requestMetadata.get(requestEvent.requestId);
+          const scopedRequestId = this.scopedWorkerRequestId(event.sessionId, requestEvent.requestId);
+          const previousRequest = this.requestMetadata.get(scopedRequestId);
           if (requestEvent.redirectResponse) {
             if (!previousRequest) {
               const redirectRequestId =
-                `${requestEvent.requestId}:redirect:${requestEvent.redirectResponse.url}`;
+                `${scopedRequestId}:redirect:${requestEvent.redirectResponse.url}`;
               this.queueRequestEvent(redirectRequestId, {
                 headers: mapCdpHeaders(requestEvent.request.headers),
                 ...(workerFrameId ? { frameId: workerFrameId } : {}),
@@ -2372,16 +2418,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
                 requestId: redirectRequestId
               }, requestEvent.redirectResponse);
             } else {
-              this.flushPendingRequestEvent(requestEvent.requestId);
+              this.flushPendingRequestEvent(scopedRequestId);
               this.emitRedirectResponse({
                 ...requestEvent,
                 ...(workerFrameId ? { frameId: workerFrameId } : {})
               }, requestEvent.redirectResponse);
             }
-            this.discardNextResponseExtraInfo(requestEvent.requestId);
+            this.discardNextResponseExtraInfo(scopedRequestId);
           }
           const continuedHeaders = requestEvent.redirectResponse
-            ? this.continuedRequestHeaders.get(requestEvent.requestId)
+            ? this.continuedRequestHeaders.get(scopedRequestId)
             : undefined;
           const requestHeaders = continuedHeaders
             ? applyCdpHeaderOverrides(normalizeHeaderRecord(requestEvent.request.headers), continuedHeaders)
@@ -2389,25 +2435,25 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           this.activeRequests += 1;
           this.networkIdleReached = false;
           this.clearNetworkIdleTimer();
-          this.requestMetadata.set(requestEvent.requestId, {
+          this.requestMetadata.set(scopedRequestId, {
             ...(workerFrameId ? { frameId: workerFrameId } : {}),
             isNavigationRequest: false,
             method: requestEvent.request.method,
             ...(requestEvent.type ? { type: requestEvent.type } : {}),
             url: requestEvent.request.url
           });
-          this.queueRequestEvent(requestEvent.requestId, {
+          this.queueRequestEvent(scopedRequestId, {
             headers: requestHeaders,
             ...(workerFrameId ? { frameId: workerFrameId } : {}),
             isNavigationRequest: false,
             method: requestEvent.request.method,
             ...(requestEvent.request.postData !== undefined ? { postData: requestEvent.request.postData } : {}),
             ...postDataBufferFieldsFromCdpEntries(requestEvent.request.postDataEntries),
-            requestId: requestEvent.requestId,
+            requestId: scopedRequestId,
             resourceType: toPlaywrightResourceType(requestEvent.type),
             url: requestEvent.request.url
           });
-          this.flushPendingRequestEvent(requestEvent.requestId);
+          this.flushPendingRequestEvent(scopedRequestId);
         });
         workerClient.on("Network.responseReceived", (params: unknown) => {
           const responseEvent = params as {
@@ -2424,18 +2470,23 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             };
             type?: string;
           };
-          const bodyState = this.ensureResponseBodyState(responseEvent.requestId);
+          const { scopedRequestId, metadata } = this.adoptWorkerRequestMetadata(
+            event.sessionId,
+            responseEvent.requestId
+          );
+          const bodyState = this.ensureResponseBodyState(scopedRequestId);
           bodyState.sessionId = event.sessionId;
           if (workerFrameId) {
             bodyState.frameId = workerFrameId;
           }
-          const request = this.requestMetadata.get(responseEvent.requestId);
+          const request = metadata ?? this.requestMetadata.get(scopedRequestId);
           if (request) {
             request.responseStatus = responseEvent.response.status;
           }
-          if (this.runAfterPendingRequestEvent(responseEvent.requestId, () => {
+          if (this.runAfterPendingRequestEvent(scopedRequestId, () => {
             this.handleNetworkResponseReceived({
               ...responseEvent,
+              requestId: scopedRequestId,
               ...(workerFrameId ? { frameId: workerFrameId } : {})
             }, Boolean(responseEvent.response.fromDiskCache || responseEvent.response.fromPrefetchCache));
           })) {
@@ -2443,55 +2494,64 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           }
           this.handleNetworkResponseReceived({
             ...responseEvent,
+            requestId: scopedRequestId,
             ...(workerFrameId ? { frameId: workerFrameId } : {})
           }, Boolean(responseEvent.response.fromDiskCache || responseEvent.response.fromPrefetchCache));
         });
         workerClient.on("Network.loadingFinished", (params: unknown) => {
           const loadingFinished = params as { requestId: string };
-          this.flushPendingResponseEvent(loadingFinished.requestId);
-          const bodyState = this.ensureResponseBodyState(loadingFinished.requestId);
+          const { scopedRequestId, metadata } = this.adoptWorkerRequestMetadata(
+            event.sessionId,
+            loadingFinished.requestId
+          );
+          this.flushPendingResponseEvent(scopedRequestId);
+          const bodyState = this.ensureResponseBodyState(scopedRequestId);
           bodyState.sessionId = event.sessionId;
           bodyState.resolveReady();
-          const request = this.requestMetadata.get(loadingFinished.requestId);
+          const request = metadata ?? this.requestMetadata.get(scopedRequestId);
           this.emit("requestfinished", {
             headers: [],
             ...(request?.frameId ? { frameId: request.frameId } : {}),
             isNavigationRequest: request?.isNavigationRequest ?? false,
             method: request?.method ?? "UNKNOWN",
-            requestId: loadingFinished.requestId,
+            requestId: scopedRequestId,
             resourceType: toPlaywrightResourceType(request?.type),
             url: request?.url ?? "unknown://request"
           });
           this.activeRequests = Math.max(0, this.activeRequests - 1);
-          this.flushPendingRequestEvent(loadingFinished.requestId);
-          this.requestExtraInfoHeaders.delete(loadingFinished.requestId);
-          this.responseExtraInfoDiscardCounts.delete(loadingFinished.requestId);
-          this.requestMetadata.delete(loadingFinished.requestId);
-          this.continuedRequestUrls.delete(loadingFinished.requestId);
+          this.flushPendingRequestEvent(scopedRequestId);
+          this.requestExtraInfoHeaders.delete(scopedRequestId);
+          this.responseExtraInfoDiscardCounts.delete(scopedRequestId);
+          this.requestMetadata.delete(scopedRequestId);
+          this.continuedRequestUrls.delete(scopedRequestId);
           this.maybeArmNetworkIdleTimer();
         });
         workerClient.on("Network.loadingFailed", (params: unknown) => {
           const loadingFailed = params as { errorText: string; requestId: string };
-          this.flushPendingResponseEvent(loadingFailed.requestId);
-          this.ensureResponseBodyState(loadingFailed.requestId).markFailed(
-            new Error(formatNavigationFailureMessage(loadingFailed.errorText || "Network loading failed.", this.requestMetadata.get(loadingFailed.requestId)?.url))
+          const { scopedRequestId, metadata } = this.adoptWorkerRequestMetadata(
+            event.sessionId,
+            loadingFailed.requestId
           );
-          const request = this.requestMetadata.get(loadingFailed.requestId);
+          this.flushPendingResponseEvent(scopedRequestId);
+          this.ensureResponseBodyState(scopedRequestId).markFailed(
+            new Error(formatNavigationFailureMessage(loadingFailed.errorText || "Network loading failed.", this.requestMetadata.get(scopedRequestId)?.url))
+          );
+          const request = metadata ?? this.requestMetadata.get(scopedRequestId);
           this.emit("requestfailed", {
             errorText: loadingFailed.errorText,
             ...(request?.frameId ? { frameId: request.frameId } : {}),
             isNavigationRequest: request?.isNavigationRequest ?? false,
             method: request?.method ?? "UNKNOWN",
-            requestId: loadingFailed.requestId,
+            requestId: scopedRequestId,
             resourceType: toPlaywrightResourceType(request?.type),
             url: request?.url ?? "unknown://request"
           });
           this.activeRequests = Math.max(0, this.activeRequests - 1);
-          this.flushPendingRequestEvent(loadingFailed.requestId);
-          this.requestExtraInfoHeaders.delete(loadingFailed.requestId);
-          this.responseExtraInfoDiscardCounts.delete(loadingFailed.requestId);
-          this.requestMetadata.delete(loadingFailed.requestId);
-          this.continuedRequestUrls.delete(loadingFailed.requestId);
+          this.flushPendingRequestEvent(scopedRequestId);
+          this.requestExtraInfoHeaders.delete(scopedRequestId);
+          this.responseExtraInfoDiscardCounts.delete(scopedRequestId);
+          this.requestMetadata.delete(scopedRequestId);
+          this.continuedRequestUrls.delete(scopedRequestId);
           this.maybeArmNetworkIdleTimer();
         });
         const sessionClient = this.options.client as typeof this.options.client & {
