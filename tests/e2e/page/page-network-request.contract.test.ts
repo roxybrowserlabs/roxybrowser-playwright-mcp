@@ -403,6 +403,24 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("reports main resource xhr with resource type xhr like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      const [request] = await Promise.all([
+        page.waitForEvent("request"),
+        page.evaluate(() => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", location.href, false);
+          xhr.send();
+        })
+      ]);
+
+      expect(request.isNavigationRequest()).toBe(false);
+      expect(request.resourceType()).toBe("xhr");
+    });
+  });
+
   it("reports raw headers", async () => {
     await withPage(async (page) => {
       let expectedHeaders: Array<{ name: string; value: string }> = [];
