@@ -78,6 +78,54 @@ export class RoxyBrowserContext implements BrowserContext {
     return this.registerPage(pageAdapter);
   }
 
+  async addCookies(cookies: ReadonlyArray<{
+    name: string;
+    value: string;
+    url?: string;
+    domain?: string;
+    path?: string;
+    expires?: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>): Promise<void> {
+    if (!this.adapter.addCookies) {
+      throw new Error("Browser context cookies are not supported by this protocol adapter.");
+    }
+    await this.adapter.addCookies(cookies);
+  }
+
+  async cookies(urls?: string | ReadonlyArray<string>): Promise<Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>> {
+    if (!this.adapter.cookies) {
+      throw new Error("Browser context cookies are not supported by this protocol adapter.");
+    }
+    const normalizedUrls =
+      urls === undefined ? undefined : Array.isArray(urls) ? [...urls] : [urls];
+    return this.adapter.cookies(normalizedUrls);
+  }
+
+  async clearCookies(options?: {
+    domain?: string | RegExp;
+    name?: string | RegExp;
+    path?: string | RegExp;
+  }): Promise<void> {
+    if (!this.adapter.clearCookies) {
+      throw new Error("Browser context cookies are not supported by this protocol adapter.");
+    }
+    await this.adapter.clearCookies(options);
+  }
+
   pages(): Page[] {
     return Array.from(this.pageSet);
   }

@@ -109,6 +109,34 @@ export interface ProtocolBrowserSession {
 
 export interface ProtocolBrowserContextAdapter {
   newPage(): Promise<ProtocolPageAdapter>;
+  addCookies?(cookies: ReadonlyArray<{
+    name: string;
+    value: string;
+    url?: string;
+    domain?: string;
+    path?: string;
+    expires?: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>): Promise<void>;
+  cookies?(urls?: string[]): Promise<Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>>;
+  clearCookies?(options?: {
+    domain?: string | RegExp;
+    name?: string | RegExp;
+    path?: string | RegExp;
+  }): Promise<void>;
   onPage?(
     listener: (
       page: ProtocolPageAdapter,

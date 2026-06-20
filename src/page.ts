@@ -916,6 +916,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       throw new Error("Page is not attached to a browser context.");
     },
     pages: () => [],
+    addCookies: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
+    cookies: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
+    clearCookies: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
     setExtraHTTPHeaders: async () => {
       throw new Error("Page is not attached to a browser context.");
     },
@@ -3959,8 +3968,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private observeAdapterResponse(payload: PageResponse): Response {
     const state = this.findObservedRequestForResponse(payload);
+    if (state && state.url !== payload.url) {
+      this.removeObservedRequestFromUrlIndex(state.url, state);
+      state.url = payload.url;
+      const queue = this.observedRequestsByUrl.get(payload.url) ?? [];
+      if (!queue.includes(state)) {
+        queue.push(state);
+      }
+      this.observedRequestsByUrl.set(payload.url, queue);
+    }
     const response = this.createObservedResponse(payload, state?.request ?? null);
-    if (state && !state.response && state.url === payload.url) {
+    if (state && !state.response) {
       state.response = response;
       state.responsePromiseResolve(response);
       const location = response.headers()["location"];
@@ -4049,7 +4067,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       payload.isNavigationRequest ?? false,
       payload.resourceType
     );
-    const responseUrl = linkedRequest ? linkedRequest.url() : payload.url;
+    const responseRequest =
+      linkedRequest && linkedRequest.url() !== payload.url
+        ? {
+            ...linkedRequest,
+            url: () => payload.url
+          }
+        : request;
+    const responseUrl = payload.url;
     const readBodyBuffer = createResponseBodyReader(
       payload.status,
       headerEntries,
@@ -4075,7 +4100,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       httpVersion: async () => "HTTP/1.1",
       json: async () => JSON.parse(await readBodyText()),
       ok: () => payload.status === 0 || (payload.status >= 200 && payload.status < 300),
-      request: () => request,
+      request: () => responseRequest,
       securityDetails: async () => null,
       serverAddr: async () => null,
       status: () => payload.status,
@@ -4245,7 +4270,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private findObservedRequestForResponse(payload: PageResponse): ObservedRequestState | null {
     if (payload.requestId) {
       const state = this.observedRequestsById.get(payload.requestId) ?? null;
-      if (state && !state.response && state.url === payload.url) {
+      if (state && !state.response) {
         return state;
       }
       const byUrl = this.observedRequestsByUrl.get(payload.url)?.find((entry) => entry.response === null) ?? null;
@@ -5360,7 +5385,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       () => routedFailure,
       () =>
         observedRouteRequest ??
-        this.findObservedRequestState(call.url, call.method, call.requestId ?? call.id)
+        this.findObservedRequestState(requestState.url, requestState.method) ??
+        this.findObservedRequestState(
+          requestState.url,
+          requestState.method,
+          requestState.requestId ?? requestState.id
+        )
     );
     const handlers = [...this.routeHandlers];
 
@@ -5541,13 +5571,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     original: RoutedRequestCall,
     routed: RoutedRequestCall
   ): void {
-    const observed = this.findObservedRequestState(
-      original.url,
-      original.method,
-      original.requestId ?? original.id
-    );
+    const requestId = original.requestId ?? original.id;
+    const observed =
+      this.findObservedRequestState(
+        original.url,
+        original.method,
+        requestId
+      ) ??
+      this.findObservedRequestState(
+        original.url,
+        original.method
+      );
     if (!observed) {
-      this.pendingRoutedRequestStates.set(original.requestId ?? original.id, routed);
+      if (requestId) {
+        this.pendingRoutedRequestStates.set(requestId, routed);
+      }
+      this.pendingRoutedRequestStates.set(original.url, routed);
       return;
     }
     this.applyRoutedRequestStateToObservedRequestState(observed, routed);
@@ -5579,12 +5618,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private consumePendingRoutedRequestState(payload: PageRequest): RoutedRequestCall | null {
-    const key = payload.requestId ?? payload.url;
-    const routed = this.pendingRoutedRequestStates.get(key);
+    const routed =
+      (payload.requestId ? this.pendingRoutedRequestStates.get(payload.requestId) : null) ??
+      this.pendingRoutedRequestStates.get(payload.url);
     if (!routed) {
       return null;
     }
-    this.pendingRoutedRequestStates.delete(key);
+    if (payload.requestId) {
+      this.pendingRoutedRequestStates.delete(payload.requestId);
+    }
+    this.pendingRoutedRequestStates.delete(payload.url);
     return routed;
   }
 

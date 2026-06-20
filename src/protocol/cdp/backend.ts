@@ -1121,6 +1121,127 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     return this.getOrCreatePage(response.targetId);
   }
 
+  async addCookies(cookies: ReadonlyArray<{
+    name: string;
+    value: string;
+    url?: string;
+    domain?: string;
+    path?: string;
+    expires?: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>): Promise<void> {
+    const storageClient = this.state.browserClient as CdpClient & {
+      send(
+        method: "Storage.setCookies",
+        params: {
+          browserContextId?: string;
+          cookies: Array<Record<string, unknown>>;
+        }
+      ): Promise<unknown>;
+    };
+    await storageClient.send("Storage.setCookies", {
+      cookies: rewriteCdpCookies(cookies).map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        ...(cookie.url !== undefined ? { url: cookie.url } : {}),
+        ...(cookie.domain !== undefined ? { domain: cookie.domain } : {}),
+        ...(cookie.path !== undefined ? { path: cookie.path } : {}),
+        ...(cookie.expires !== undefined ? { expires: cookie.expires } : {}),
+        ...(cookie.httpOnly !== undefined ? { httpOnly: cookie.httpOnly } : {}),
+        ...(cookie.secure !== undefined ? { secure: cookie.secure } : {}),
+        ...(cookie.sameSite !== undefined ? { sameSite: cookie.sameSite } : {}),
+        ...(cookie.partitionKey !== undefined
+          ? {
+              partitionKey: {
+                hasCrossSiteAncestor: true,
+                topLevelSite: cookie.partitionKey
+              }
+            }
+          : {})
+      })),
+      ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
+    });
+  }
+
+  async cookies(urls?: string[]): Promise<Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>> {
+    const storageClient = this.state.browserClient as CdpClient & {
+      send(
+        method: "Storage.getCookies",
+        params: { browserContextId?: string }
+      ): Promise<{
+        cookies: Array<{
+          name: string;
+          value: string;
+          domain: string;
+          path: string;
+          expires: number;
+          httpOnly: boolean;
+          secure: boolean;
+          sameSite?: "Strict" | "Lax" | "None";
+          partitionKey?: { topLevelSite?: string };
+        }>;
+      }>;
+    };
+    const { cookies } = await storageClient.send("Storage.getCookies", {
+      ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
+    });
+    return filterCdpCookies(
+      cookies.map((cookie) => ({
+        domain: cookie.domain,
+        expires: cookie.expires,
+        httpOnly: cookie.httpOnly,
+        name: cookie.name,
+        path: cookie.path,
+        ...(cookie.partitionKey?.topLevelSite ? { partitionKey: cookie.partitionKey.topLevelSite } : {}),
+        sameSite: cookie.sameSite ?? "Lax",
+        secure: cookie.secure,
+        value: cookie.value
+      })),
+      urls ?? []
+    );
+  }
+
+  async clearCookies(options?: {
+    domain?: string | RegExp;
+    name?: string | RegExp;
+    path?: string | RegExp;
+  }): Promise<void> {
+    const storageClient = this.state.browserClient as CdpClient & {
+      send(
+        method: "Storage.clearCookies",
+        params: { browserContextId?: string }
+      ): Promise<unknown>;
+    };
+    if (!options?.domain && !options?.name && !options?.path) {
+      await storageClient.send("Storage.clearCookies", {
+        ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
+      });
+      return;
+    }
+
+    const cookies = await this.cookies();
+    const retained = cookies.filter((cookie) => !matchesCookieFilter(cookie, options));
+    await storageClient.send("Storage.clearCookies", {
+      ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
+    });
+    if (retained.length) {
+      await this.addCookies(retained);
+    }
+  }
+
   onPage(
     listener: (
       page: ProtocolPageAdapter,
@@ -1838,6 +1959,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly fulfilledRequestIds = new Set<string>();
   private readonly ignoredRequestIds = new Set<string>();
   private readonly continuedRequestHeaders = new Map<string, Array<{ name: string; value: string }>>();
+  private readonly continuedRequestUrls = new Map<string, string>();
   private readonly responseBodies = new Map<string, ResponseBodyState>();
   private readonly navigationResponseCaptures = new Set<NavigationResponseCapture>();
   private readonly navigationFailureCaptures = new Set<NavigationFailureCapture>();
@@ -2396,6 +2518,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.requestExtraInfoHeaders.delete(requestId);
         this.responseExtraInfoDiscardCounts.delete(requestId);
         this.requestMetadata.delete(requestId);
+        this.continuedRequestUrls.delete(requestId);
       }
       this.maybeArmNetworkIdleTimer();
     };
@@ -6289,8 +6412,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     if (event.frameId !== undefined) {
       responseBodyState.frameId = event.frameId;
     }
-    if (event.response.url !== undefined) {
-      responseBodyState.url = event.response.url;
+    const responseUrl = this.continuedRequestUrls.get(event.requestId) ?? event.response.url;
+    if (responseUrl !== undefined) {
+      responseBodyState.url = responseUrl;
     }
     const contentLengthHeader = headerEntries.find(
       (header) => header.name.toLowerCase() === "content-length"
@@ -6305,7 +6429,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const request = this.requestMetadata.get(event.requestId);
     const isNavigationRequest = request?.isNavigationRequest ?? false;
     const frameId = event.frameId ?? request?.frameId;
-
     const response = createPageResponse({
       fromCache: Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache),
       ...(event.response.fromServiceWorker !== undefined
@@ -6321,7 +6444,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       statusText: event.response.statusText,
       body: () => this.getResponseBodyBuffer(event.requestId),
       text: () => this.getResponseText(event.requestId),
-      url: event.response.url
+      url: responseUrl
     });
 
     this.emit("response", response);
@@ -6457,6 +6580,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const headers = cdpContinueRequestHeaders(decision.headers);
       if (event.networkId) {
         this.continuedRequestHeaders.set(event.networkId, headers);
+        if (decision.url !== event.request.url) {
+          this.continuedRequestUrls.set(event.networkId, decision.url);
+        } else {
+          this.continuedRequestUrls.delete(event.networkId);
+        }
+        const metadata = this.requestMetadata.get(event.networkId);
+        if (metadata) {
+          metadata.url = decision.url;
+        }
       }
       await this.sendFetchCommandMayFail(() =>
         this.options.client.Fetch.continueRequest({
@@ -8379,9 +8511,6 @@ async function safelyCloseClient(client: CdpClient): Promise<void> {
 }
 
 function resolveUrl(url: string, baseURL?: string): string {
-  if (/\s/.test(url)) {
-    throw new Error(`Cannot navigate to invalid URL: ${url}`);
-  }
   const resolved = baseURL ? new URL(url, baseURL).toString() : url;
   if (resolved.startsWith("localhost") || resolved.startsWith("127.0.0.1")) {
     return `http://${resolved}`;
@@ -9056,6 +9185,110 @@ function parseCdpPreviewPrimitive(value: string): unknown {
     return Number(value);
   }
   return value.replace(/^["']|["']$/g, "");
+}
+
+function rewriteCdpCookies(cookies: ReadonlyArray<{
+  name: string;
+  value: string;
+  url?: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+  partitionKey?: string;
+}>): Array<{
+  name: string;
+  value: string;
+  url?: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+  partitionKey?: string;
+}> {
+  return cookies.map((cookie) => {
+    if ((!cookie.url && (!cookie.domain || !cookie.path)) || (cookie.url && (cookie.domain || cookie.path))) {
+      throw new Error("Cookie should have either url or domain/path pair");
+    }
+    const rewritten = { ...cookie };
+    if (rewritten.url) {
+      if (rewritten.url === "about:blank") {
+        throw new Error(`Blank page can not have cookie "${cookie.name}"`);
+      }
+      if (rewritten.url.startsWith("data:")) {
+        throw new Error(`Data URL page can not have cookie "${cookie.name}"`);
+      }
+      const parsed = new URL(rewritten.url);
+      rewritten.domain = parsed.hostname;
+      rewritten.path = parsed.pathname.substring(0, parsed.pathname.lastIndexOf("/") + 1);
+      rewritten.secure = parsed.protocol === "https:";
+    }
+    return rewritten;
+  });
+}
+
+function filterCdpCookies<T extends {
+  domain: string;
+  path: string;
+  secure: boolean;
+}>(cookies: T[], urls: string[]): T[] {
+  if (!urls.length) {
+    return cookies;
+  }
+  const parsedUrls = urls.map((url) => new URL(url));
+  return cookies.filter((cookie) => {
+    return parsedUrls.some((parsedUrl) => {
+      let domain = cookie.domain;
+      if (!domain.startsWith(".")) {
+        domain = "." + domain;
+      }
+      if (!("." + parsedUrl.hostname).endsWith(domain)) {
+        return false;
+      }
+      if (!parsedUrl.pathname.startsWith(cookie.path)) {
+        return false;
+      }
+      if (parsedUrl.protocol !== "https:" && !isLocalHostname(parsedUrl.hostname) && cookie.secure) {
+        return false;
+      }
+      return true;
+    });
+  });
+}
+
+function matchesCookieFilter(
+  cookie: {
+    domain: string;
+    name: string;
+    path: string;
+  },
+  options: {
+    domain?: string | RegExp;
+    name?: string | RegExp;
+    path?: string | RegExp;
+  }
+): boolean {
+  return matchesStringFilter(cookie.name, options.name)
+    && matchesStringFilter(cookie.domain, options.domain)
+    && matchesStringFilter(cookie.path, options.path);
+}
+
+function matchesStringFilter(value: string, matcher: string | RegExp | undefined): boolean {
+  if (matcher === undefined) {
+    return true;
+  }
+  if (typeof matcher === "string") {
+    return value === matcher;
+  }
+  return matcher.test(value);
+}
+
+function isLocalHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname.endsWith(".localhost");
 }
 
 function mouseButtonsMask(buttons: Iterable<MouseButton>): number {

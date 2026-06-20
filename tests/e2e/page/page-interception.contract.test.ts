@@ -1201,6 +1201,48 @@ describe("page interception contract e2e", () => {
     });
   });
 
+  it("returns navigation response when URL has cookies like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.context().addCookies([{
+        name: "foo",
+        url: fixture.server.EMPTY_PAGE,
+        value: "bar"
+      }]);
+
+      await page.route("**/*", (route) => route.continue());
+      const response = await page.reload();
+
+      expect(response).not.toBe(null);
+      expect(response!.status()).toBe(200);
+    });
+  });
+
+  it("does not override cookie header like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.evaluate(() => {
+        document.cookie = "original=value";
+      });
+
+      let cookieValueInRoute: string | undefined;
+      await page.route("**", async (route) => {
+        const headers = await route.request().allHeaders();
+        cookieValueInRoute = headers.cookie;
+        headers.cookie = "overridden=value";
+        void route.continue({ headers });
+      });
+
+      const [serverRequest] = await Promise.all([
+        fixture.server.waitForRequest("/empty.html"),
+        page.goto(fixture.server.EMPTY_PAGE)
+      ]);
+
+      expect(cookieValueInRoute).toBe("original=value");
+      expect(serverRequest.headers.cookie).toBe("original=value");
+    });
+  });
+
   it("continues and deletes headers with undefined value like Playwright", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);
@@ -1260,6 +1302,30 @@ describe("page interception contract e2e", () => {
     });
   });
 
+  it("does not allow changing protocol when overriding url like Playwright", async () => {
+    await withPage(async (page) => {
+      let resolveError!: (error: Error | null) => void;
+      const errorPromise = new Promise<Error | null>((resolve) => {
+        resolveError = resolve;
+      });
+
+      await page.route("**/*", async (route) => {
+        try {
+          await route.continue({ url: "file:///tmp/foo" });
+          resolveError(null);
+        } catch (error) {
+          resolveError(error as Error);
+        }
+      });
+
+      void page.goto(fixture.server.EMPTY_PAGE).catch(() => {});
+
+      const error = await errorPromise;
+      expect(error).toBeTruthy();
+      expect(error!.message).toContain("New URL must have same protocol as overridden URL");
+    });
+  });
+
   it("continues and overrides method along with url like Playwright", async () => {
     await withPage(async (page) => {
       await page.route("**/foo", (route) => {
@@ -1275,6 +1341,34 @@ describe("page interception contract e2e", () => {
       ]);
 
       expect(request.method).toBe("POST");
+    });
+  });
+
+  it("does not throw when continuing a request cancelled by the page like Playwright", async () => {
+    await withPage(async (page) => {
+      let resolveRoute!: (route: any) => void;
+      const routePromise = new Promise<any>((resolve) => {
+        resolveRoute = resolve;
+      });
+
+      await page.route("**/data.json", (route) => resolveRoute(route));
+      await page.goto(fixture.server.EMPTY_PAGE);
+      void page.evaluate((url) => {
+        (globalThis as typeof globalThis & { controller: AbortController }).controller = new AbortController();
+        return fetch(url, {
+          signal: (globalThis as typeof globalThis & { controller: AbortController }).controller.signal
+        });
+      }, fixture.server.PREFIX + "/data.json").catch(() => {});
+
+      const route = await routePromise;
+      const failurePromise = page.waitForEvent("requestfailed");
+      await page.evaluate(() => {
+        (globalThis as typeof globalThis & { controller: AbortController }).controller.abort();
+      });
+      const cancelledRequest = await failurePromise;
+
+      expect(cancelledRequest.failure()!.errorText).toMatch(/cancelled|aborted/i);
+      await expect(route.continue()).resolves.toBeUndefined();
     });
   });
 
