@@ -296,4 +296,154 @@ describe("browser context route contract e2e", () => {
       await browser.close();
     }
   });
+
+  it("overwrites post body with empty string through context.route like Playwright", async () => {
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        try {
+          await context.route("**/empty.html", async (route) => {
+            await route.continue({
+              postData: ""
+            });
+          });
+
+          const [request] = await Promise.all([
+            fixture.server.waitForRequest("/empty.html"),
+            page.setContent(`
+              <script>
+                (async () => {
+                  await fetch(${JSON.stringify(fixture.server.EMPTY_PAGE)}, {
+                    method: "POST",
+                    body: "original",
+                  });
+                })();
+              </script>
+            `)
+          ]);
+
+          const body = (await request.postBody).toString();
+          expect(body).toBe("");
+        } finally {
+          await page.close();
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("does not chain fulfill after context fallback like Playwright", async () => {
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        try {
+          let failed = false;
+          await context.route("**/empty.html", async () => {
+            failed = true;
+          });
+          await context.route("**/empty.html", async (route) => {
+            await route.fulfill({ status: 200, body: "fulfilled" });
+          });
+          await context.route("**/empty.html", async (route) => {
+            await route.fallback();
+          });
+
+          const response = await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+          expect(await response?.text()).toBe("fulfilled");
+          expect(failed).toBe(false);
+        } finally {
+          await page.close();
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("does not chain abort after context fallback like Playwright", async () => {
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        try {
+          let failed = false;
+          await context.route("**/empty.html", async () => {
+            failed = true;
+          });
+          await context.route("**/empty.html", async (route) => {
+            await route.abort();
+          });
+          await context.route("**/empty.html", async (route) => {
+            await route.fallback();
+          });
+
+          const error = await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" }).catch((caught) => caught);
+          expect(error).toBeTruthy();
+          expect(failed).toBe(false);
+        } finally {
+          await page.close();
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("chains context fallback into page routes like Playwright", async () => {
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        try {
+          const intercepted: number[] = [];
+          await context.route("**/empty.html", async (route) => {
+            intercepted.push(1);
+            await route.fallback();
+          });
+          await context.route("**/empty.html", async (route) => {
+            intercepted.push(2);
+            await route.fallback();
+          });
+          await context.route("**/empty.html", async (route) => {
+            intercepted.push(3);
+            await route.fallback();
+          });
+          await page.route("**/empty.html", async (route) => {
+            intercepted.push(4);
+            await route.fallback();
+          });
+          await page.route("**/empty.html", async (route) => {
+            intercepted.push(5);
+            await route.fallback();
+          });
+          await page.route("**/empty.html", async (route) => {
+            intercepted.push(6);
+            await route.fallback();
+          });
+
+          await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+          expect(intercepted).toEqual([6, 5, 4, 3, 2, 1]);
+        } finally {
+          await page.close();
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await browser.close();
+    }
+  });
 });
