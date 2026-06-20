@@ -758,7 +758,7 @@ export interface Page {
   screencast: Screencast;
   sessionStorage: WebStorage;
   touchscreen: Touchscreen;
-  addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
+  addInitScript<Arg>(script: string|PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
   addLocatorHandler(locator: Locator, handler: ((locator: Locator) => Promise<any>), options?: { noWaitAfter?: boolean; times?: number; }): Promise<void>;
   exposeBinding(name: string, playwrightBinding: (source: BindingSource, ...args: any[]) => any): Promise<Disposable>;
   exposeFunction(name: string, callback: Function): Promise<Disposable>;

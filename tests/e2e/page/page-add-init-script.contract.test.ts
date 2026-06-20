@@ -43,6 +43,14 @@ describe("page addInitScript contract e2e", () => {
     });
   });
 
+  it("should work with a raw string script", async () => {
+    await withPage(async (page) => {
+      await page.addInitScript('window["injected"] = 123');
+      await page.goto(fixture.server.PREFIX + "/tamperable.html");
+      expect(await page.evaluate(() => (window as typeof window & { result?: number }).result)).toBe(123);
+    });
+  });
+
   it("should throw without path and content", async () => {
     await withPage(async (page) => {
       const error = await page.addInitScript({ foo: "bar" } as never).catch((caught) => caught);

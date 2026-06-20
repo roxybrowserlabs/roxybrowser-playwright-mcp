@@ -999,8 +999,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.internalDisposers.set("close", disposeClose);
   }
 
-  async addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
-  async addInitScript<Arg>(script: PageFunction<Arg, any> | { path?: string; content?: string }, arg?: Arg): Promise<Disposable> {
+  async addInitScript<Arg>(script: string|PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
+  async addInitScript<Arg>(script: string | PageFunction<Arg, any> | { path?: string; content?: string }, arg?: Arg): Promise<Disposable> {
     const source = await evaluationScript(script, arg as any);
     return this.adapter.addInitScript(source);
   }
