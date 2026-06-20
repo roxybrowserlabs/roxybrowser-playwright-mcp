@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { accessSync, constants as fsConstants } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9075,7 +9076,8 @@ function currentPlatform(): string {
 
 export function resolveExecutableCandidates(
   options: Pick<LaunchOptions, "channel" | "executablePath">,
-  platform = currentPlatform()
+  platform = currentPlatform(),
+  fileExistsFn = fileExists
 ): string[] {
   if (options.executablePath) {
     return [options.executablePath];
@@ -9085,7 +9087,7 @@ export function resolveExecutableCandidates(
     return executableCandidatesForChannel(options.channel, platform);
   }
 
-  return defaultExecutableCandidates(platform);
+  return filterExistingExecutableCandidates(defaultExecutableCandidates(platform), platform, fileExistsFn);
 }
 
 export function buildChromiumLaunchArgs(
@@ -9118,6 +9120,27 @@ function executableCandidatesForChannel(
   }
 
   return candidates;
+}
+
+function filterExistingExecutableCandidates(
+  candidates: string[],
+  platform: string,
+  fileExistsFn: (path: string) => boolean
+): string[] {
+  if (platform === "linux") {
+    return candidates;
+  }
+  const existing = candidates.filter(fileExistsFn);
+  return existing.length > 0 ? existing : candidates;
+}
+
+function fileExists(path: string): boolean {
+  try {
+    accessSync(path, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const CHANNEL_EXECUTABLE_CANDIDATES: Record<

@@ -30,10 +30,19 @@ describe("resolveExecutableCandidates", () => {
   });
 
   it("falls back to the default Chromium-family candidates when no override is provided", () => {
-    expect(resolveExecutableCandidates({}, "darwin")).toEqual([
+    expect(resolveExecutableCandidates({}, "darwin", () => true)).toEqual([
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       "/Applications/Chromium.app/Contents/MacOS/Chromium",
       "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+    ]);
+  });
+
+  it("filters missing default macOS browser paths when at least one installed candidate exists", () => {
+    const fileExists = new Set([
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    ]);
+    expect(resolveExecutableCandidates({}, "darwin", (path) => fileExists.has(path))).toEqual([
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     ]);
   });
 
