@@ -463,6 +463,7 @@ interface ResponseBodyState {
   expectedLength?: number;
   frameId?: string;
   fulfilledBody?: Buffer;
+  sessionId?: string;
   url?: string;
 }
 
@@ -2276,20 +2277,20 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       };
     }) => {
       if (event.targetInfo.type === "worker") {
-        const delegate = new CdpWorkerDelegate(this, this.options.client, event.sessionId, event.targetInfo.url ?? "");
+        const workerClient = createSessionTargetClient(this.options.browserClient, event.sessionId);
+        const delegate = new CdpWorkerDelegate(this, workerClient, event.sessionId, event.targetInfo.url ?? "");
         const worker = new RoxyWorker(
           event.targetInfo.url ?? "",
           delegate
         );
+        const workerFrameId = event.targetInfo.parentFrameId ?? this.mainFrameId ?? undefined;
         this.workersByTargetId.set(event.targetInfo.targetId, {
           delegate,
           sessionId: event.sessionId,
           worker
         });
         this.emit("worker", worker);
-        (this.options.browserClient as CdpClient & {
-          on(event: string, listener: (params: unknown) => void): unknown;
-        }).on?.(`Runtime.consoleAPICalled.${event.sessionId}`, (params: unknown) => {
+        workerClient.on("Runtime.consoleAPICalled", (params: unknown) => {
           const consoleEvent = params as {
             args: CdpRemoteObject[];
             stackTrace?: {
@@ -2316,17 +2317,141 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           };
           this.emit("console", message);
         });
-        (this.options.browserClient as CdpClient & {
-          on(event: string, listener: (params: unknown) => void): unknown;
-        }).on?.(`Runtime.exceptionThrown.${event.sessionId}`, (params: unknown) => {
+        workerClient.on("Runtime.exceptionThrown", (params: unknown) => {
           const exceptionEvent = params as {
             exceptionDetails: CdpExceptionDetails;
           };
           this.emit("pageerror", exceptionToError(exceptionEvent.exceptionDetails));
         });
+        workerClient.on("Network.requestWillBeSent", (params: unknown) => {
+          const requestEvent = params as {
+            initiator?: { type?: string };
+            loaderId?: string;
+            request: {
+              headers: Record<string, string | number | boolean>;
+              method: string;
+              postData?: string;
+              postDataEntries?: Array<{ bytes?: string }>;
+              url: string;
+            };
+            requestId: string;
+            type?: string;
+          };
+          if (requestEvent.request.url.startsWith("data:")) {
+            this.ignoredRequestIds.add(requestEvent.requestId);
+            return;
+          }
+          this.activeRequests += 1;
+          this.networkIdleReached = false;
+          this.clearNetworkIdleTimer();
+          this.requestMetadata.set(requestEvent.requestId, {
+            ...(workerFrameId ? { frameId: workerFrameId } : {}),
+            isNavigationRequest: false,
+            method: requestEvent.request.method,
+            ...(requestEvent.type ? { type: requestEvent.type } : {}),
+            url: requestEvent.request.url
+          });
+          this.queueRequestEvent(requestEvent.requestId, {
+            headers: mapCdpHeaders(requestEvent.request.headers),
+            ...(workerFrameId ? { frameId: workerFrameId } : {}),
+            isNavigationRequest: false,
+            method: requestEvent.request.method,
+            ...(requestEvent.request.postData !== undefined ? { postData: requestEvent.request.postData } : {}),
+            ...postDataBufferFieldsFromCdpEntries(requestEvent.request.postDataEntries),
+            requestId: requestEvent.requestId,
+            resourceType: toPlaywrightResourceType(requestEvent.type),
+            url: requestEvent.request.url
+          });
+        });
+        workerClient.on("Network.responseReceived", (params: unknown) => {
+          const responseEvent = params as {
+            requestId: string;
+            response: {
+              fromDiskCache?: boolean;
+              fromPrefetchCache?: boolean;
+              fromServiceWorker?: boolean;
+              headers: Record<string, string | number | boolean>;
+              mimeType: string;
+              status: number;
+              statusText: string;
+              url: string;
+            };
+            type?: string;
+          };
+          const bodyState = this.ensureResponseBodyState(responseEvent.requestId);
+          bodyState.sessionId = event.sessionId;
+          if (workerFrameId) {
+            bodyState.frameId = workerFrameId;
+          }
+          const request = this.requestMetadata.get(responseEvent.requestId);
+          if (request) {
+            request.responseStatus = responseEvent.response.status;
+          }
+          if (this.runAfterPendingRequestEvent(responseEvent.requestId, () => {
+            this.handleNetworkResponseReceived({
+              ...responseEvent,
+              ...(workerFrameId ? { frameId: workerFrameId } : {})
+            }, Boolean(responseEvent.response.fromDiskCache || responseEvent.response.fromPrefetchCache));
+          })) {
+            return;
+          }
+          this.handleNetworkResponseReceived({
+            ...responseEvent,
+            ...(workerFrameId ? { frameId: workerFrameId } : {})
+          }, Boolean(responseEvent.response.fromDiskCache || responseEvent.response.fromPrefetchCache));
+        });
+        workerClient.on("Network.loadingFinished", (params: unknown) => {
+          const loadingFinished = params as { requestId: string };
+          this.flushPendingResponseEvent(loadingFinished.requestId);
+          const bodyState = this.ensureResponseBodyState(loadingFinished.requestId);
+          bodyState.sessionId = event.sessionId;
+          bodyState.resolveReady();
+          const request = this.requestMetadata.get(loadingFinished.requestId);
+          this.emit("requestfinished", {
+            headers: [],
+            ...(request?.frameId ? { frameId: request.frameId } : {}),
+            isNavigationRequest: request?.isNavigationRequest ?? false,
+            method: request?.method ?? "UNKNOWN",
+            requestId: loadingFinished.requestId,
+            resourceType: toPlaywrightResourceType(request?.type),
+            url: request?.url ?? "unknown://request"
+          });
+          this.activeRequests = Math.max(0, this.activeRequests - 1);
+          this.flushPendingRequestEvent(loadingFinished.requestId);
+          this.requestExtraInfoHeaders.delete(loadingFinished.requestId);
+          this.responseExtraInfoDiscardCounts.delete(loadingFinished.requestId);
+          this.requestMetadata.delete(loadingFinished.requestId);
+          this.continuedRequestUrls.delete(loadingFinished.requestId);
+          this.maybeArmNetworkIdleTimer();
+        });
+        workerClient.on("Network.loadingFailed", (params: unknown) => {
+          const loadingFailed = params as { errorText: string; requestId: string };
+          this.flushPendingResponseEvent(loadingFailed.requestId);
+          this.ensureResponseBodyState(loadingFailed.requestId).markFailed(
+            new Error(formatNavigationFailureMessage(loadingFailed.errorText || "Network loading failed.", this.requestMetadata.get(loadingFailed.requestId)?.url))
+          );
+          const request = this.requestMetadata.get(loadingFailed.requestId);
+          this.emit("requestfailed", {
+            errorText: loadingFailed.errorText,
+            ...(request?.frameId ? { frameId: request.frameId } : {}),
+            isNavigationRequest: request?.isNavigationRequest ?? false,
+            method: request?.method ?? "UNKNOWN",
+            requestId: loadingFailed.requestId,
+            resourceType: toPlaywrightResourceType(request?.type),
+            url: request?.url ?? "unknown://request"
+          });
+          this.activeRequests = Math.max(0, this.activeRequests - 1);
+          this.flushPendingRequestEvent(loadingFailed.requestId);
+          this.requestExtraInfoHeaders.delete(loadingFailed.requestId);
+          this.responseExtraInfoDiscardCounts.delete(loadingFailed.requestId);
+          this.requestMetadata.delete(loadingFailed.requestId);
+          this.continuedRequestUrls.delete(loadingFailed.requestId);
+          this.maybeArmNetworkIdleTimer();
+        });
         const sessionClient = this.options.client as typeof this.options.client & {
           send(method: string, params?: Record<string, never>, sessionId?: string): Promise<unknown>;
         };
+        void sessionClient.send("Network.enable", {}, event.sessionId).catch(() => {});
         void sessionClient.send("Runtime.enable", {}, event.sessionId).catch(() => {});
         void sessionClient.send("Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
         return;
@@ -7218,11 +7343,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           this.options.client.Network as typeof this.options.client.Network & {
             getResponseBody(options: {
               requestId: string;
-            }): Promise<{ base64Encoded: boolean; body: string }>;
+            }, sessionId?: string): Promise<{ base64Encoded: boolean; body: string }>;
           }
         ).getResponseBody({
           requestId
-        });
+        }, state.sessionId);
         const body = response.base64Encoded
           ? Buffer.from(response.body, "base64")
           : Buffer.from(response.body, "utf8");
@@ -8338,7 +8463,7 @@ function createSessionTargetClient(browserClient: CdpClient, sessionId: string):
     removeListener(event: string, listener: (...args: unknown[]) => void): CdpClient;
   };
   const browserEventName = (event: string) => {
-    if (!event.includes(".") || event === "disconnect" || event === "ready" || event === "error" || event === "connect") {
+    if (!event.includes(".") || event === "ready" || event === "error" || event === "connect") {
       return event;
     }
     return event.endsWith(`.${sessionId}`) ? event : `${event}.${sessionId}`;
@@ -8350,9 +8475,17 @@ function createSessionTargetClient(browserClient: CdpClient, sessionId: string):
     await browserClient.Target.detachFromTarget?.({ sessionId }).catch(() => {});
   };
   sessionClient.on = ((event: string, listener: (...args: unknown[]) => void) =>
-    browserClient.on(browserEventName(event), listener)) as typeof sessionClient.on;
+    event === "disconnect"
+      ? browserClient.Target?.detachedFromTarget?.((payload: { sessionId?: string }) => {
+          if (payload.sessionId === sessionId) {
+            listener();
+          }
+        }) as unknown as CdpClient
+      : browserClient.on(browserEventName(event), listener)) as typeof sessionClient.on;
   sessionClient.once = ((event: string, listener: (...args: unknown[]) => void) =>
-    browserEventClient.once(browserEventName(event), listener)) as typeof sessionClient.once;
+    event === "disconnect"
+      ? browserEventClient.once(`Target.detachedFromTarget.${sessionId}`, () => listener()) as unknown as CdpClient
+      : browserEventClient.once(browserEventName(event), listener)) as typeof sessionClient.once;
   sessionClient.removeListener = ((event: string, listener: (...args: unknown[]) => void) =>
     browserEventClient.removeListener(browserEventName(event), listener)) as typeof sessionClient.removeListener;
 

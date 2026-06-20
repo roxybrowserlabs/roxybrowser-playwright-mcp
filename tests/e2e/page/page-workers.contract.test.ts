@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { withPage } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
 
@@ -199,6 +200,52 @@ describe("page workers contract e2e", () => {
       await page.goto(fixture.server.PREFIX + "/one-style.html");
       expect(closed).toBe(true);
       expect(page.workers()).toHaveLength(0);
+    });
+  });
+
+  it("clears workers on cross-process navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const workerCreatedPromise = page.waitForEvent("worker");
+      await page.evaluate(() => {
+        new Worker(URL.createObjectURL(new Blob(["console.log(1)"], { type: "application/javascript" })));
+      });
+      const worker = await workerCreatedPromise;
+      expect(page.workers()).toHaveLength(1);
+
+      let destroyed = false;
+      worker.once("close", () => {
+        destroyed = true;
+      });
+
+      await page.goto(fixture.server.CROSS_PROCESS_PREFIX + "/empty.html");
+      expect(destroyed).toBe(true);
+      expect(page.workers()).toHaveLength(0);
+    });
+  });
+
+  it("reports worker network activity like Playwright", async () => {
+    await withPage(async (page) => {
+      const [worker] = await Promise.all([
+        page.waitForEvent("worker"),
+        page.goto(fixture.server.PREFIX + "/worker/worker.html")
+      ]);
+      const url = fixture.server.PREFIX + "/one-style.css";
+      const requestPromise = page.waitForRequest(url);
+      const responsePromise = page.waitForResponse(url);
+
+      await worker.evaluate((targetUrl) => {
+        return fetch(targetUrl).then((response) => response.text()).then(console.log);
+      }, url);
+
+      const observedRequests = await page.requests();
+      expect(observedRequests.some((request) => request.url() === url)).toBe(true);
+      const request = await requestPromise;
+      const response = await responsePromise;
+      expect(request.url()).toBe(url);
+      expect(response.request()).toBe(request);
+      expect(response.ok()).toBe(true);
+      expect(await response.text()).toBe(readFileSync(fixture.asset("one-style.css"), "utf8"));
     });
   });
 });
