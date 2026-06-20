@@ -471,6 +471,57 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("fires requestfailed when intercepting race like Playwright", async () => {
+    await withPage(async (page) => {
+      const promise = new Promise<void>((resolve) => {
+        let counter = 0;
+        const failures = new Set();
+        const alive = new Set();
+        page.on("request", (request) => {
+          expect(alive.has(request)).toBe(false);
+          expect(failures.has(request)).toBe(false);
+          alive.add(request);
+        });
+        page.on("requestfailed", (request) => {
+          expect(failures.has(request)).toBe(false);
+          expect(alive.has(request)).toBe(true);
+          alive.delete(request);
+          failures.add(request);
+          if (++counter === 10) {
+            resolve();
+          }
+        });
+      });
+
+      // Stall requests to make sure we don't get requestfinished.
+      await page.route("**", () => {});
+
+      await page.setContent(`
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <iframe src="${fixture.server.EMPTY_PAGE}"></iframe>
+        <script>
+          function abortAll() {
+            const frames = document.querySelectorAll("iframe");
+            for (const frame of frames) {
+              frame.src = "about:blank";
+            }
+          }
+          abortAll();
+        </script>
+      `);
+
+      await promise;
+    });
+  });
+
   it("reports raw headers", async () => {
     await withPage(async (page) => {
       let expectedHeaders: Array<{ name: string; value: string }> = [];
