@@ -2079,6 +2079,49 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     };
   }
 
+  private synthesizeWorkerRedirectRequest(
+    sessionId: string,
+    workerFrameId: string | undefined,
+    requestId: string,
+    request: {
+      headers?: Record<string, string | number | boolean>;
+      method: string;
+      postData?: string;
+      postDataEntries?: Array<{ bytes?: string }>;
+      url: string;
+    },
+    type: string | undefined,
+    previousUrl: string
+  ): string {
+    const redirectedRequestId =
+      `${this.scopedWorkerRequestId(sessionId, requestId)}:redirect-target:${request.url}`;
+    this.requestMetadata.set(redirectedRequestId, {
+      ...(workerFrameId ? { frameId: workerFrameId } : {}),
+      isNavigationRequest: false,
+      method: request.method,
+      ...(type ? { type } : {}),
+      url: request.url
+    });
+    this.queueRequestEvent(redirectedRequestId, {
+      headers: request.headers ? mapCdpHeaders(request.headers) : [],
+      ...(workerFrameId ? { frameId: workerFrameId } : {}),
+      isNavigationRequest: false,
+      method: request.method,
+      ...(request.postData !== undefined ? { postData: request.postData } : {}),
+      ...postDataBufferFieldsFromCdpEntries(request.postDataEntries),
+      requestId: redirectedRequestId,
+      resourceType: toPlaywrightResourceType(type),
+      url: request.url
+    });
+    this.flushPendingRequestEvent(redirectedRequestId);
+    this.continuedRequestUrls.set(redirectedRequestId, request.url);
+    this.continuedRequestUrls.set(
+      `${this.scopedWorkerRequestId(sessionId, requestId)}:redirect:${previousUrl}`,
+      previousUrl
+    );
+    return redirectedRequestId;
+  }
+
   static async create(options: {
     browserClient: CdpClient;
     client: CdpClient;
@@ -2396,6 +2439,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             this.ignoredRequestIds.add(requestEvent.requestId);
             return;
           }
+          const pageOwnedRequest = this.requestMetadata.get(requestEvent.requestId);
+          if (
+            pageOwnedRequest
+            && !requestEvent.redirectResponse
+            && pageOwnedRequest.url === requestEvent.request.url
+          ) {
+            return;
+          }
           const scopedRequestId = this.scopedWorkerRequestId(event.sessionId, requestEvent.requestId);
           const previousRequest = this.requestMetadata.get(scopedRequestId);
           if (requestEvent.redirectResponse) {
@@ -2457,6 +2508,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         });
         workerClient.on("Network.responseReceived", (params: unknown) => {
           const responseEvent = params as {
+            request?: {
+              headers: Record<string, string | number | boolean>;
+              method: string;
+              postData?: string;
+              postDataEntries?: Array<{ bytes?: string }>;
+              url: string;
+            };
             requestId: string;
             response: {
               fromDiskCache?: boolean;
@@ -2470,23 +2528,64 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             };
             type?: string;
           };
-          const { scopedRequestId, metadata } = this.adoptWorkerRequestMetadata(
-            event.sessionId,
-            responseEvent.requestId
-          );
-          const bodyState = this.ensureResponseBodyState(scopedRequestId);
+          const scopedRequestId = this.scopedWorkerRequestId(event.sessionId, responseEvent.requestId);
+          let metadata = this.requestMetadata.get(scopedRequestId);
+          const pageOwnedRequest = this.requestMetadata.get(responseEvent.requestId);
+          let activeRequestId = scopedRequestId;
+          if (!metadata && pageOwnedRequest && pageOwnedRequest.url !== responseEvent.response.url) {
+            this.emitRedirectResponse({
+              request: {
+                method: pageOwnedRequest.method
+              },
+              requestId: responseEvent.requestId,
+              ...(pageOwnedRequest.frameId ? { frameId: pageOwnedRequest.frameId } : {}),
+              ...(pageOwnedRequest.type ? { type: pageOwnedRequest.type } : {})
+            }, {
+              headers: {
+                location: responseEvent.response.url
+              },
+              mimeType: responseEvent.response.mimeType,
+              status: 302,
+              statusText: "Found",
+              url: pageOwnedRequest.url,
+              ...(responseEvent.response.fromDiskCache !== undefined
+                ? { fromDiskCache: responseEvent.response.fromDiskCache }
+                : {}),
+              ...(responseEvent.response.fromPrefetchCache !== undefined
+                ? { fromPrefetchCache: responseEvent.response.fromPrefetchCache }
+                : {})
+            });
+            activeRequestId = this.synthesizeWorkerRedirectRequest(
+              event.sessionId,
+              workerFrameId,
+              responseEvent.requestId,
+              {
+                method: pageOwnedRequest.method,
+                url: responseEvent.response.url
+              },
+              pageOwnedRequest.type,
+              pageOwnedRequest.url
+            );
+            this.requestMetadata.delete(responseEvent.requestId);
+            metadata = this.requestMetadata.get(activeRequestId);
+          } else if (!metadata && pageOwnedRequest) {
+            this.requestMetadata.set(scopedRequestId, pageOwnedRequest);
+            this.requestMetadata.delete(responseEvent.requestId);
+            metadata = pageOwnedRequest;
+          }
+          const bodyState = this.ensureResponseBodyState(activeRequestId);
           bodyState.sessionId = event.sessionId;
           if (workerFrameId) {
             bodyState.frameId = workerFrameId;
           }
-          const request = metadata ?? this.requestMetadata.get(scopedRequestId);
+          const request = this.requestMetadata.get(activeRequestId) ?? metadata ?? this.requestMetadata.get(scopedRequestId);
           if (request) {
             request.responseStatus = responseEvent.response.status;
           }
-          if (this.runAfterPendingRequestEvent(scopedRequestId, () => {
+          if (this.runAfterPendingRequestEvent(activeRequestId, () => {
             this.handleNetworkResponseReceived({
               ...responseEvent,
-              requestId: scopedRequestId,
+              requestId: activeRequestId,
               ...(workerFrameId ? { frameId: workerFrameId } : {})
             }, Boolean(responseEvent.response.fromDiskCache || responseEvent.response.fromPrefetchCache));
           })) {
@@ -2494,7 +2593,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           }
           this.handleNetworkResponseReceived({
             ...responseEvent,
-            requestId: scopedRequestId,
+            requestId: activeRequestId,
             ...(workerFrameId ? { frameId: workerFrameId } : {})
           }, Boolean(responseEvent.response.fromDiskCache || responseEvent.response.fromPrefetchCache));
         });
