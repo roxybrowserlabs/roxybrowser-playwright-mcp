@@ -46,6 +46,10 @@ function bidiHumanOptions() {
 }
 
 export async function openBidiBrowser(): Promise<Browser> {
+  if (!shouldKeepConfiguredExternalBidiBrowserOpen()) {
+    await cleanupExternalBidiTestState();
+  }
+
   const roxyBrowserEndpoint = BIDI_WS_ENDPOINT
     ? toBidiWsEndpoint(BIDI_WS_ENDPOINT)
     : await resolveRoxyBrowserBidiEndpoint();
@@ -172,11 +176,16 @@ function shouldKeepExternalBidiBrowserOpen(): boolean {
     return false;
   }
 
+  return shouldKeepConfiguredExternalBidiBrowserOpen();
+}
+
+function shouldKeepConfiguredExternalBidiBrowserOpen(): boolean {
   return Boolean(BIDI_WS_ENDPOINT) && (KEEP_BIDI_BROWSER_OPEN || REUSE_EXTERNAL_BIDI_BROWSER);
 }
 
 async function closeExternalBidiBrowser(): Promise<void> {
   const browser = externalBidiBrowser;
+  usesExternalBidiEndpoint = false;
   externalBidiBrowser = undefined;
   externalBidiBrowserKey = undefined;
 
@@ -204,6 +213,7 @@ function isClosedBidiConnectionError(error: unknown): boolean {
 }
 
 export async function cleanupExternalBidiTestState(): Promise<void> {
+  usesExternalBidiEndpoint = false;
   await closeExternalBidiBrowser();
   cachedRoxyBrowserEndpoint = undefined;
   await closeRoxyBrowserFirefoxBidiProfile({
