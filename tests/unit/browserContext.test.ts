@@ -219,6 +219,84 @@ describe("RoxyBrowserContext", () => {
     expect(seen).toEqual(["page:request"]);
   });
 
+  it("falls back to context websocket routes after page routes are cleared", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+    const seen: string[] = [];
+
+    await context.routeWebSocket(/ws1/, (ws) => {
+      ws.onMessage((message) => {
+        seen.push(`context:${String(message)}`);
+        ws.send("context-mock");
+      });
+    });
+    await page.routeWebSocket(/ws1/, (ws) => {
+      ws.onMessage((message) => {
+        seen.push(`page:${String(message)}`);
+        ws.send("page-mock");
+      });
+    });
+
+    await page.unrouteAll();
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:context-after-page-unroute",
+      url: "wss://example.com/ws1",
+      protocols: []
+    });
+    await (page as any).dispatchWebSocketEvent({
+      id: "websocket:context-after-page-unroute",
+      kind: "message",
+      message: "request"
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    expect(seen).toEqual(["context:request"]);
+  });
+
+  it("clears browser-context websocket routes when unrouteAll is called", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+
+    await context.routeWebSocket(/ws2/, (ws) => {
+      ws.onMessage(() => {
+        ws.send("context-mock");
+      });
+    });
+
+    await context.unrouteAll({ behavior: "wait" });
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:context-unroute-all",
+      url: "wss://example.com/ws2",
+      protocols: []
+    });
+
+    expect(decision).toEqual({ action: "passthrough" });
+  });
+
   it("validates extra http header values before delegating to the context adapter", async () => {
     const adapter = createBrowserContextAdapterStub();
     const context = new RoxyBrowserContext(adapter, {

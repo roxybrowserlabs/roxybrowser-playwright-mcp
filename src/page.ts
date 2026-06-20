@@ -2529,6 +2529,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }): Promise<void> {
     const removed = [...this.routeHandlers];
     this.routeHandlers.length = 0;
+    this.websocketRouteHandlers.length = 0;
     this.harRoutes.length = 0;
     await this.stopRouteHandlers(removed, options?.behavior ?? "default");
     await this.syncRouteInterception();
@@ -6401,8 +6402,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         url: call.url
       };
       this.hostedWebSocketRoutes.set(call.id, state);
-      await this.browserContext._onWebSocketRoute(this.createHostedWebSocketRoute(state, "original"));
-      return { action: "mock" };
+      const handled = await this.browserContext._onWebSocketRoute(
+        this.createHostedWebSocketRoute(state, "original")
+      );
+      if (handled) {
+        return { action: "mock" };
+      }
+      this.hostedWebSocketRoutes.delete(call.id);
     }
 
     return { action: "passthrough" };

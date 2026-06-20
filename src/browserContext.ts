@@ -562,7 +562,7 @@ export class RoxyBrowserContext implements BrowserContext {
     this.pageEventDisposers.set(page, disposers);
   }
 
-  async _onWebSocketRoute(websocketroute: import("./types/api.js").WebSocketRoute): Promise<void> {
+  async _onWebSocketRoute(websocketroute: import("./types/api.js").WebSocketRoute): Promise<boolean> {
     for (let index = this.websocketRouteHandlers.length - 1; index >= 0; index -= 1) {
       const entry = this.websocketRouteHandlers[index];
       if (!entry || !this.matchesWebSocketRoute(websocketroute.url(), entry.matcher)) {
@@ -570,10 +570,10 @@ export class RoxyBrowserContext implements BrowserContext {
       }
 
       await entry.handler(websocketroute);
-      return;
+      return true;
     }
 
-    websocketroute.connectToServer();
+    return false;
   }
 
   private matchesWebSocketRoute(
