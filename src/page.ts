@@ -25,7 +25,6 @@ import { RoxyWorker } from "./worker.js";
 import { RoxyClock, createUnsupportedClockDelegate } from "./clock.js";
 import {
   parseEvaluationResultValue,
-  serializeAsCallArgumentNoHandles,
   type SerializedValue
 } from "./utilityScriptSerializers.js";
 import type { RoxyBrowserContext } from "./browserContext.js";
@@ -4769,7 +4768,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
             : await entry.callback(...call.serializedArgs.map((arg) => parseEvaluationResultValue(arg)));
         await this.resolveBindingCall(call.targetFrame, call.id, {
           ok: true,
-          value: serializeAsCallArgumentNoHandles(result)
+          value: result
         });
       } catch (error) {
         await this.resolveBindingCall(call.targetFrame, call.id, {
@@ -5164,6 +5163,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         const serializedArgs = [];
         for (let index = 0; index < args.length; index += 1) {
           serializedArgs[index] = serializeBindingArgument(args[index]);
+        }
+        const serializedArgsProbe = JSON.parse(JSON.stringify({ serializedArgs })).serializedArgs;
+        if (!Array.isArray(serializedArgsProbe)) {
+          throw new Error(
+            "serializedArgs is not an array. This can happen when Array.prototype.toJSON is defined incorrectly"
+          );
         }
         store.__roxyBindingCalls![store.__roxyBindingCalls!.length] = {
           id: callId,

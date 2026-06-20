@@ -51,6 +51,24 @@ describe("page exposeFunction/exposeBinding contract e2e", () => {
     });
   });
 
+  it("exposeFunction should work with handles and complex objects", async () => {
+    await withPage(async (page) => {
+      const fooHandle = await page.evaluateHandle(() => {
+        window["fooValue"] = { bar: 2 };
+        return window["fooValue"];
+      });
+      await page.exposeFunction("handle", () => {
+        return [{ foo: fooHandle }];
+      });
+      const equals = await page.evaluate(async () => {
+        const value = await window["handle"]();
+        const [{ foo }] = value;
+        return foo === window["fooValue"];
+      });
+      expect(equals).toBe(true);
+    });
+  });
+
   it("exposeFunction should throw exception in page context", async () => {
     await withPage(async (page) => {
       await page.exposeFunction("woof", () => {
@@ -207,6 +225,23 @@ describe("page exposeFunction/exposeBinding contract e2e", () => {
       await page.goto(fixture.server.PREFIX + "/test");
       await page.exposeFunction("add", (a: number, b: number) => a + b);
       expect(await page.evaluate("add(5, 6)")).toBe(11);
+    });
+  });
+
+  it("exposeFunction should fail with busted Array.prototype.toJSON", async () => {
+    await withPage(async (page) => {
+      await page.evaluateHandle(() => {
+        (Array.prototype as Array<unknown> & { toJSON?: () => string }).toJSON = () => '"[]"';
+      });
+
+      await page.exposeFunction("add", (a: number, b: number) => a + b);
+      await expect(() => page.evaluate("add(5, 6)")).rejects.toThrow(
+        "serializedArgs is not an array. This can happen when Array.prototype.toJSON is defined incorrectly"
+      );
+
+      expect.soft(
+        await page.evaluate(() => (Array.prototype as Array<unknown> & { toJSON?: () => string }).toJSON?.())
+      ).toBe('"[]"');
     });
   });
 
