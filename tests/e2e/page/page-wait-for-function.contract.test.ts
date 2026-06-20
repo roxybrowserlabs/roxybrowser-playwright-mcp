@@ -1,8 +1,38 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TimeoutError } from "../../../src/errors.js";
-import { withPage } from "../../helpers/browser.js";
+import { withPage, type SnapshotPage } from "../../helpers/browser.js";
+import { createHistoryPageFixture } from "../../helpers/server.js";
+import type { Frame } from "../../../src/types/api.js";
+
+async function attachFrame(page: SnapshotPage, frameId: string, url: string): Promise<Frame> {
+  await page.evaluate(async ({ frameId, url }) => {
+    const frame = document.createElement("iframe");
+    frame.src = url;
+    frame.id = frameId;
+    document.body.appendChild(frame);
+    await new Promise((resolve) => {
+      frame.onload = resolve;
+    });
+  }, { frameId, url });
+  await expect.poll(() => page.frames().find((frame) => frame.name() === frameId)?.url()).toBe(url);
+  return page.frames().find((frame) => frame.name() === frameId)!;
+}
+
+async function detachFrame(page: SnapshotPage, frameId: string): Promise<void> {
+  await page.evaluate((id) => document.getElementById(id)?.remove(), frameId);
+}
 
 describe("page.waitForFunction contract e2e", () => {
+  let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;
+
+  beforeAll(async () => {
+    fixture = await createHistoryPageFixture();
+  });
+
+  afterAll(async () => {
+    await fixture.close();
+  });
+
   it("should accept a string expression", async () => {
     await withPage(async (page) => {
       const watchdog = page.waitForFunction("window.__FOO === 1");
@@ -202,6 +232,19 @@ describe("page.waitForFunction contract e2e", () => {
       }).catch(() => null);
 
       expect(messages.join("|")).toBe("waitForFunction1|waitForFunction2|waitForFunction3");
+    });
+  });
+
+  it("should throw when frame is detached like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const frame = await attachFrame(page, "frame1", fixture.server.EMPTY_PAGE);
+      const promise = frame.waitForFunction(() => false, undefined, { polling: 10 }).catch((error) => error);
+      await detachFrame(page, "frame1");
+
+      const error = await promise;
+      expect(error).toBeTruthy();
+      expect(error.message).toMatch(/frame.waitForFunction: (Frame was detached|Execution context was destroyed)/);
     });
   });
 });

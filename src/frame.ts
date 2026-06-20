@@ -195,15 +195,20 @@ export class RoxyFrame implements Frame {
 
     const start = Date.now();
     const isFunction = typeof pageFunction === "function" || looksLikeFunctionExpression(String(pageFunction));
+    const apiName = this.snapshot.parentId === null ? "page.waitForFunction" : "frame.waitForFunction";
     while (timeout === 0 || Date.now() - start <= timeout) {
-      const result = await this.roxyPage.evaluateInFrameWithFunctionFlag(this.snapshot, pageFunction, arg, isFunction);
+      const result = await this.roxyPage.evaluateInFrameWithFunctionFlag(this.snapshot, pageFunction, arg, isFunction).catch((error) => {
+        if (isWaitForFunctionExecutionContextDestroyedError(error)) {
+          throw new Error(`${apiName}: Execution context was destroyed`);
+        }
+        throw error;
+      });
       if (result) {
         return createSmartHandle(result);
       }
       await new Promise((resolve) => setTimeout(resolve, polling === "raf" ? 16 : polling));
     }
 
-    const apiName = this.snapshot.parentId === null ? "page.waitForFunction" : "frame.waitForFunction";
     throw new TimeoutError(`${apiName}: Timeout ${timeout}ms exceeded.`);
   }
 
@@ -576,4 +581,14 @@ export class RoxyFrame implements Frame {
     }
     return handle;
   }
+}
+
+function isWaitForFunctionExecutionContextDestroyedError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  return (
+    message.includes("Cannot find context with specified id")
+    || message.includes("Execution context was destroyed")
+    || message.includes("Frame was detached")
+    || message.includes("Frame is not available")
+  );
 }
