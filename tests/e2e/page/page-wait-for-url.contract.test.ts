@@ -111,6 +111,21 @@ describe("page waitForURL contract e2e", () => {
     });
   });
 
+  it("supports history.pushState() with glob URL matching like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent(`
+        <a onclick='javascript:pushState()'>SPA</a>
+        <script>
+          function pushState() { history.pushState({}, '', 'wow.html') }
+        </script>
+      `);
+      await page.click("a");
+      await page.waitForURL("**/wow.html");
+      expect(page.url()).toBe(fixture.server.PREFIX + "/wow.html");
+    });
+  });
+
   it("supports history.replaceState()", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);
