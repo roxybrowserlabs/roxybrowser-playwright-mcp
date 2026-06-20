@@ -237,9 +237,16 @@ interface ExposedBindingCall {
 
 type RouteMatcher = URLMatch;
 
+interface RouteHandlerInvocation {
+  complete: Promise<void>;
+  resolve: () => void;
+}
+
 interface RouteHandlerEntry {
   matcher: RouteMatcher;
   handler: (route: Route, request: Request) => Promise<any> | any;
+  activeInvocations: Set<RouteHandlerInvocation>;
+  ignoreExceptions: boolean;
   remainingTimes: number | null;
 }
 
@@ -2280,6 +2287,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const entry: RouteHandlerEntry = {
       matcher: url,
       handler,
+      activeInvocations: new Set(),
+      ignoreExceptions: false,
       remainingTimes: options.times ?? null
     };
     this.routeHandlers.push(entry);
@@ -2359,6 +2368,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     url: string | RegExp | URLPattern | ((url: URL) => boolean),
     handler?: (route: Route, request: Request) => Promise<any> | any
   ): Promise<void> {
+    const removed: RouteHandlerEntry[] = [];
     for (let index = this.routeHandlers.length - 1; index >= 0; index -= 1) {
       const entry = this.routeHandlers[index];
       if (!entry) {
@@ -2370,16 +2380,20 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       if (handler && entry.handler !== handler) {
         continue;
       }
+      removed.push(entry);
       this.routeHandlers.splice(index, 1);
     }
+    await this.stopRouteHandlers(removed, "default");
     await this.syncRouteInterception();
   }
 
-  async unrouteAll(_options?: {
+  async unrouteAll(options?: {
     behavior?: "wait" | "ignoreErrors" | "default";
   }): Promise<void> {
+    const removed = [...this.routeHandlers];
     this.routeHandlers.length = 0;
     this.harRoutes.length = 0;
+    await this.stopRouteHandlers(removed, options?.behavior ?? "default");
     await this.syncRouteInterception();
   }
 
@@ -5409,20 +5423,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         entry.remainingTimes -= 1;
       }
 
-      let routeOutcome:
+      type RouteOutcome =
         | { kind: "fallback" }
-        | { kind: "finish"; decision: RoutedRequestDecision }
-        | null = null;
+        | { kind: "finish"; decision: RoutedRequestDecision };
+      let routeOutcome: RouteOutcome | null = null;
       let routeHandled = false;
-      let resolveRouteHandled!: (
-        value:
-          | { kind: "fallback" }
-          | { kind: "finish"; decision: RoutedRequestDecision }
-      ) => void;
-      const routeHandledPromise = new Promise<
-        | { kind: "fallback" }
-        | { kind: "finish"; decision: RoutedRequestDecision }
-      >((resolve) => {
+      let resolveRouteHandled!: (value: RouteOutcome) => void;
+      const routeHandledPromise = new Promise<RouteOutcome>((resolve) => {
         resolveRouteHandled = resolve;
       });
 
@@ -5432,11 +5439,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
       };
 
-      const reportRouteHandled = (
-        outcome:
-          | { kind: "fallback" }
-          | { kind: "finish"; decision: RoutedRequestDecision }
-      ) => {
+      const reportRouteHandled = (outcome: RouteOutcome) => {
         routeOutcome ??= outcome;
         resolveRouteHandled(routeOutcome);
       };
@@ -5513,12 +5516,36 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         request: () => request
       };
 
-      await Promise.all([
-        routeHandledPromise,
-        entry.handler(route, request)
-      ]);
+      let resolveInvocation!: () => void;
+      const invocation: RouteHandlerInvocation = {
+        complete: new Promise<void>((resolve) => {
+          resolveInvocation = resolve;
+        }),
+        resolve: () => {
+          resolveInvocation();
+        }
+      };
+      entry.activeInvocations.add(invocation);
+      let resolvedOutcome: RouteOutcome | null = null;
+      try {
+        const [handledOutcome] = await Promise.all([
+          routeHandledPromise,
+          Promise.resolve().then(() => entry.handler(route, request))
+        ]);
+        resolvedOutcome = handledOutcome;
+      } catch (error) {
+        if (!entry.ignoreExceptions) {
+          throw error;
+        }
+        resolvedOutcome = routeOutcome;
+      } finally {
+        invocation.resolve();
+        entry.activeInvocations.delete(invocation);
+      }
 
-      const resolvedOutcome = routeOutcome!;
+      if (!resolvedOutcome) {
+        continue;
+      }
       if (resolvedOutcome.kind === "fallback") {
         continue;
       }
@@ -5953,6 +5980,24 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       if (index >= 0) {
         this.routeHandlers.splice(index, 1);
       }
+    }
+  }
+
+  private async stopRouteHandlers(
+    entries: RouteHandlerEntry[],
+    behavior: "wait" | "ignoreErrors" | "default"
+  ): Promise<void> {
+    if (behavior === "ignoreErrors") {
+      for (const entry of entries) {
+        entry.ignoreExceptions = true;
+      }
+      return;
+    }
+
+    if (behavior === "wait") {
+      await Promise.all(
+        entries.flatMap((entry) => Array.from(entry.activeInvocations, (invocation) => invocation.complete))
+      );
     }
   }
 

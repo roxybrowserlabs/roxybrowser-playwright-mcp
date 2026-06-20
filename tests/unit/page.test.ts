@@ -957,6 +957,130 @@ describe("RoxyPage", () => {
     expect(calls).toEqual([]);
   });
 
+  it("waits for pending route handlers during page.unrouteAll like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    let secondHandlerCalled = false;
+    await page.route(/.*/, async (route) => {
+      secondHandlerCalled = true;
+      await route.abort();
+    });
+
+    let routeCallback!: () => void;
+    const routePromise = new Promise<void>((resolve) => {
+      routeCallback = resolve;
+    });
+    let continueRouteCallback!: () => void;
+    const routeBarrier = new Promise<void>((resolve) => {
+      continueRouteCallback = resolve;
+    });
+
+    await page.route(/.*/, async (route) => {
+      routeCallback();
+      await routeBarrier;
+      await route.fallback();
+    });
+
+    const dispatchPromise = (page as any).dispatchRoutedRequest({
+      id: "request:unroute-wait",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+
+    await routePromise;
+
+    let didUnroute = false;
+    const unroutePromise = page.unrouteAll({ behavior: "wait" }).then(() => {
+      didUnroute = true;
+    });
+
+    await Promise.resolve();
+    expect(didUnroute).toBe(false);
+
+    continueRouteCallback();
+    await unroutePromise;
+    expect(didUnroute).toBe(true);
+    expect(await dispatchPromise).toEqual({
+      action: "continue",
+      headers: {},
+      method: "GET",
+      postData: null,
+      url: "https://example.com/empty.html"
+    });
+    expect(secondHandlerCalled).toBe(false);
+  });
+
+  it("ignores pending route handler errors during page.unrouteAll like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    let secondHandlerCalled = false;
+    await page.route(/.*/, async (route) => {
+      secondHandlerCalled = true;
+      await route.abort();
+    });
+
+    let routeCallback!: () => void;
+    const routePromise = new Promise<void>((resolve) => {
+      routeCallback = resolve;
+    });
+    let continueRouteCallback!: () => void;
+    const routeBarrier = new Promise<void>((resolve) => {
+      continueRouteCallback = resolve;
+    });
+
+    await page.route(/.*/, async () => {
+      routeCallback();
+      await routeBarrier;
+      throw new Error("Handler error");
+    });
+
+    const dispatchPromise = (page as any).dispatchRoutedRequest({
+      id: "request:unroute-ignore-errors",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+
+    await routePromise;
+
+    let didUnroute = false;
+    await page.unrouteAll({ behavior: "ignoreErrors" }).then(() => {
+      didUnroute = true;
+    });
+    expect(didUnroute).toBe(true);
+
+    continueRouteCallback();
+    expect(await dispatchPromise).toEqual({
+      action: "continue",
+      headers: {},
+      method: "GET",
+      postData: null,
+      url: "https://example.com/empty.html"
+    });
+    expect(secondHandlerCalled).toBe(false);
+  });
+
   it("deletes headers with undefined values and preserves non-overridden headers", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
