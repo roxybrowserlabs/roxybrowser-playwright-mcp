@@ -144,6 +144,29 @@ describe("bidi helper cleanup", () => {
     expect(events.filter((event) => event === "browser.close")).toHaveLength(1);
   });
 
+  it("reuses the same local Firefox browser across module reloads", async () => {
+    const firstModule = await import("../helpers/bidi.js");
+
+    await firstModule.withBidiPage(async () => {
+      events.push("run:first");
+    });
+
+    vi.resetModules();
+
+    const secondModule = await import("../helpers/bidi.js");
+    await secondModule.withBidiPage(async () => {
+      events.push("run:second");
+    });
+
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(0);
+
+    await secondModule.cleanupExternalBidiTestState();
+
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(1);
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
+  });
+
   it("closes a non-reused external Firefox browser after each bidi test", async () => {
     process.env.ROXY_BIDI_WS_ENDPOINT = "ws://127.0.0.1:9222";
 
