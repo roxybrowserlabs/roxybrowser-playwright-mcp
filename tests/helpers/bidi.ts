@@ -261,8 +261,13 @@ export async function cleanupExternalBidiTestState(): Promise<void> {
 }
 
 export async function cleanupBidiTestStateAfterTest(): Promise<void> {
-  // `withBidiPage()` owns page/context cleanup per test. Keep the browser alive
-  // across tests and let global teardown/exit hooks close it once per suite.
+  if (shouldKeepConfiguredExternalBidiBrowserOpen()) {
+    return;
+  }
+
+  await closeSharedBidiBrowser();
+  await closeExternalBidiBrowser();
+  await cleanupLocalTestBrowserProcessesWithTimeout();
 }
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {
