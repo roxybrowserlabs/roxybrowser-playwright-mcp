@@ -73,31 +73,46 @@ function bidiHumanOptions() {
 export async function openBidiBrowser(): Promise<Browser> {
   const state = bidiTestState();
   const usesConfiguredBidiEndpoint = Boolean(BIDI_WS_ENDPOINT);
-  const roxyBrowserEndpoint = usesConfiguredBidiEndpoint
-    ? toBidiWsEndpoint(BIDI_WS_ENDPOINT)
-    : await resolveRoxyBrowserBidiEndpoint();
+  const usingManagedRoxyBrowserProfile = !usesConfiguredBidiEndpoint && USE_ROXYBROWSER_API && Boolean(ROXYBROWSER_API_TOKEN);
+  const configuredExternalBrowserKey = usesConfiguredBidiEndpoint
+    ? `${toBidiWsEndpoint(BIDI_WS_ENDPOINT)}#${BIDI_SESSION_ID ?? ""}`
+    : undefined;
 
-  if (roxyBrowserEndpoint) {
+  if (state.sharedBidiBrowser && state.sharedBidiBrowserKind === "external") {
     if (
-      state.sharedBidiBrowser
-      && state.sharedBidiBrowserKind === "external"
-      && state.sharedBidiBrowserKey === `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`
+      configuredExternalBrowserKey
+      && state.sharedBidiBrowserKey === configuredExternalBrowserKey
     ) {
       state.usesExternalBidiEndpoint = true;
+      state.usesManagedRoxyBrowserProfile = false;
       return state.sharedBidiBrowser;
     }
 
-    if (!state.sharedBidiBrowser && !shouldKeepConfiguredExternalBidiBrowserOpen()) {
+    if (usingManagedRoxyBrowserProfile && state.usesManagedRoxyBrowserProfile) {
+      state.usesExternalBidiEndpoint = true;
+      return state.sharedBidiBrowser;
+    }
+  }
+
+  if (state.sharedBidiBrowser && state.sharedBidiBrowserKind === "local") {
+    state.usesExternalBidiEndpoint = false;
+    state.usesManagedRoxyBrowserProfile = false;
+    return state.sharedBidiBrowser;
+  }
+
+  if (state.sharedBidiBrowser) {
+    await closeSharedBidiBrowser();
+  }
+
+  if (usesConfiguredBidiEndpoint) {
+    if (!shouldKeepConfiguredExternalBidiBrowserOpen()) {
       await cleanupStaleBidiTestArtifacts();
     }
 
-    state.usesExternalBidiEndpoint = true;
-    state.usesManagedRoxyBrowserProfile = !usesConfiguredBidiEndpoint;
-
+    const roxyBrowserEndpoint = toBidiWsEndpoint(BIDI_WS_ENDPOINT);
     const browserKey = `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`;
-    if (state.sharedBidiBrowser) {
-      await closeSharedBidiBrowser();
-    }
+    state.usesExternalBidiEndpoint = true;
+    state.usesManagedRoxyBrowserProfile = false;
     state.externalBidiBrowserKey = browserKey;
     state.externalBidiBrowser = await firefox.connect({
       browserName: "firefox",
@@ -112,25 +127,39 @@ export async function openBidiBrowser(): Promise<Browser> {
     return state.sharedBidiBrowser;
   }
 
-  if (state.sharedBidiBrowser && state.sharedBidiBrowserKind === "local") {
-    state.usesExternalBidiEndpoint = false;
+  if (usingManagedRoxyBrowserProfile) {
+    await cleanupStaleBidiTestArtifacts();
+    const roxyBrowserEndpoint = await resolveRoxyBrowserBidiEndpoint();
+    if (!roxyBrowserEndpoint) {
+      throw new Error("Unable to resolve a managed RoxyBrowser Firefox BiDi endpoint.");
+    }
+
+    const browserKey = `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`;
+    state.usesExternalBidiEndpoint = true;
+    state.usesManagedRoxyBrowserProfile = true;
+    state.externalBidiBrowserKey = browserKey;
+    state.externalBidiBrowser = await firefox.connect({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: roxyBrowserEndpoint,
+      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
+      human: bidiHumanOptions()
+    });
+    state.sharedBidiBrowser = state.externalBidiBrowser;
+    state.sharedBidiBrowserKind = "external";
+    state.sharedBidiBrowserKey = browserKey;
     return state.sharedBidiBrowser;
   }
 
-  if (!state.sharedBidiBrowser) {
-    await cleanupStaleBidiTestArtifacts();
-  } else {
-    await closeSharedBidiBrowser();
-  }
-
-  state.usesExternalBidiEndpoint = false;
-  state.usesManagedRoxyBrowserProfile = false;
+  await cleanupStaleBidiTestArtifacts();
 
   state.sharedBidiBrowser = await firefox.launch({
     headless: true,
     executablePath: FIREFOX_EXECUTABLE,
     human: bidiHumanOptions()
   });
+  state.usesExternalBidiEndpoint = false;
+  state.usesManagedRoxyBrowserProfile = false;
   state.sharedBidiBrowserKind = "local";
   state.sharedBidiBrowserKey = undefined;
   return state.sharedBidiBrowser;
@@ -193,7 +222,6 @@ export async function withBidiPage<T>(
     }
   } finally {
     await closeForTest("context.close", () => context.close()).catch(() => {});
-    await cleanupBidiTestStateAfterTest().catch(() => {});
   }
 }
 
@@ -290,11 +318,9 @@ export async function cleanupExternalBidiTestState(): Promise<void> {
 }
 
 export async function cleanupBidiTestStateAfterTest(): Promise<void> {
-  if (shouldKeepConfiguredExternalBidiBrowserOpen()) {
-    return;
+  if (!shouldKeepConfiguredExternalBidiBrowserOpen()) {
+    await delay(0);
   }
-
-  await cleanupExternalBidiTestState();
 }
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {
