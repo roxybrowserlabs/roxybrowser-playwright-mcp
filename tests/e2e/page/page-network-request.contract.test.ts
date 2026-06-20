@@ -1,3 +1,4 @@
+import type { ServerResponse } from "node:http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withPage } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
@@ -748,6 +749,29 @@ describe("page network request contract e2e", () => {
       expect(redirectedFrom!.url()).toContain("/foo.html");
       expect(redirectedFrom!.redirectedFrom()).toBe(null);
       expect(redirectedFrom!.redirectedTo()).toBe(response!.request());
+    });
+  });
+
+  it("resolves request.response() to null after navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      const responseFromServerPromise = new Promise<ServerResponse>((resolve) => {
+        fixture.server.setRoute("/foo", (_request, response) => {
+          resolve(response);
+        });
+      });
+
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const requestPromise = page.waitForRequest(() => true);
+      await page.evaluate((url) => void fetch(url), fixture.server.PREFIX + "/foo");
+
+      const responseFromServer = await responseFromServerPromise;
+      const request = await requestPromise;
+      const responsePromise = request.response();
+
+      await page.goto(fixture.server.CROSS_PROCESS_PREFIX);
+      responseFromServer.end("done");
+
+      expect(await responsePromise).toBe(null);
     });
   });
 
