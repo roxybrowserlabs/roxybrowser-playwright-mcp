@@ -1,5 +1,5 @@
 import type { ServerResponse } from "node:http";
-import { gzipSync } from "node:zlib";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withPage } from "../../helpers/browser.js";
@@ -121,6 +121,27 @@ describe("page network response e2e", () => {
       });
 
       expect(response!.headers()["content-encoding"]).toBe("gzip");
+      expect(await response!.text()).toBe(text);
+    });
+  });
+
+  it("returns uncompressed text for brotli responses like Playwright", async () => {
+    await withPage(async (page) => {
+      const text = '{"foo": "bar"}\n';
+      const compressed = brotliCompressSync(Buffer.from(text, "utf8"));
+      fixture.server.setRoute("/brotli.json", (_request, response) => {
+        response.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Encoding": "br"
+        });
+        response.end(compressed);
+      });
+
+      const response = await page.goto(fixture.server.PREFIX + "/brotli.json", {
+        waitUntil: "load"
+      });
+
+      expect(response!.headers()["content-encoding"]).toBe("br");
       expect(await response!.text()).toBe(text);
     });
   });
@@ -391,6 +412,7 @@ describe("page network response e2e", () => {
       expect(response).toBeTruthy();
       expect(response!.status()).toBe(200);
       expect(response!.ok()).toBe(true);
+      expect(response!.url()).toBe(fileUrl);
     });
   });
 

@@ -6990,6 +6990,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     if (!shouldCaptureNavigationResponseUrl(response.url)) {
       return;
     }
+    if (response.frameId && !this.isMainFrameId(response.frameId)) {
+      return;
+    }
+    if (!response.isNavigationRequest && response.resourceType !== "document") {
+      return;
+    }
     for (const capture of Array.from(this.navigationResponseCaptures)) {
       if (capture.predicate && !capture.predicate(response)) {
         continue;
