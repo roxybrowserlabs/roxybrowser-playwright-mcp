@@ -294,10 +294,7 @@ export async function cleanupBidiTestStateAfterTest(): Promise<void> {
     return;
   }
 
-  // Keep a single Firefox instance alive for the whole BiDi suite and only
-  // recycle it at suite teardown or fatal process exits. This prevents a new
-  // desktop Firefox window from being spawned for every individual test when a
-  // close handshake is delayed or flaky.
+  await cleanupExternalBidiTestState();
 }
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {
