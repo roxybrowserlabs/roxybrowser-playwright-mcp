@@ -4146,7 +4146,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private observeAdapterResponse(payload: PageResponse): Response {
     const state = this.findObservedRequestForResponse(payload);
-    if (state && state.url !== payload.url) {
+    if (state && state.url !== payload.url && !this.isRedirectResponsePayload(payload)) {
       this.removeObservedRequestFromUrlIndex(state.url, state);
       state.url = payload.url;
       const queue = this.observedRequestsByUrl.get(payload.url) ?? [];
@@ -4168,6 +4168,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
     }
     return response;
+  }
+
+  private isRedirectResponsePayload(payload: PageResponse): boolean {
+    const status = payload.status;
+    return status >= 300 && status < 400;
   }
 
   private observeRequestCompletion(payload: PageRequest): Request {

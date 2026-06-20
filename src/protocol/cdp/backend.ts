@@ -2325,6 +2325,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         });
         workerClient.on("Network.requestWillBeSent", (params: unknown) => {
           const requestEvent = params as {
+            redirectResponse?: {
+              fromDiskCache?: boolean;
+              fromPrefetchCache?: boolean;
+              fromServiceWorker?: boolean;
+              headers: Record<string, string | number | boolean>;
+              mimeType: string;
+              status: number;
+              statusText: string;
+              url: string;
+            };
             initiator?: { type?: string };
             loaderId?: string;
             request: {
@@ -2341,6 +2351,41 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             this.ignoredRequestIds.add(requestEvent.requestId);
             return;
           }
+          const previousRequest = this.requestMetadata.get(requestEvent.requestId);
+          if (requestEvent.redirectResponse) {
+            if (!previousRequest) {
+              const redirectRequestId =
+                `${requestEvent.requestId}:redirect:${requestEvent.redirectResponse.url}`;
+              this.queueRequestEvent(redirectRequestId, {
+                headers: mapCdpHeaders(requestEvent.request.headers),
+                ...(workerFrameId ? { frameId: workerFrameId } : {}),
+                isNavigationRequest: false,
+                method: requestEvent.request.method,
+                requestId: redirectRequestId,
+                resourceType: toPlaywrightResourceType(requestEvent.type),
+                url: requestEvent.redirectResponse.url
+              });
+              this.flushPendingRequestEvent(redirectRequestId);
+              this.emitRedirectResponse({
+                ...requestEvent,
+                ...(workerFrameId ? { frameId: workerFrameId } : {}),
+                requestId: redirectRequestId
+              }, requestEvent.redirectResponse);
+            } else {
+              this.flushPendingRequestEvent(requestEvent.requestId);
+              this.emitRedirectResponse({
+                ...requestEvent,
+                ...(workerFrameId ? { frameId: workerFrameId } : {})
+              }, requestEvent.redirectResponse);
+            }
+            this.discardNextResponseExtraInfo(requestEvent.requestId);
+          }
+          const continuedHeaders = requestEvent.redirectResponse
+            ? this.continuedRequestHeaders.get(requestEvent.requestId)
+            : undefined;
+          const requestHeaders = continuedHeaders
+            ? applyCdpHeaderOverrides(normalizeHeaderRecord(requestEvent.request.headers), continuedHeaders)
+            : mapCdpHeaders(requestEvent.request.headers);
           this.activeRequests += 1;
           this.networkIdleReached = false;
           this.clearNetworkIdleTimer();
@@ -2352,7 +2397,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             url: requestEvent.request.url
           });
           this.queueRequestEvent(requestEvent.requestId, {
-            headers: mapCdpHeaders(requestEvent.request.headers),
+            headers: requestHeaders,
             ...(workerFrameId ? { frameId: workerFrameId } : {}),
             isNavigationRequest: false,
             method: requestEvent.request.method,
@@ -2362,6 +2407,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             resourceType: toPlaywrightResourceType(requestEvent.type),
             url: requestEvent.request.url
           });
+          this.flushPendingRequestEvent(requestEvent.requestId);
         });
         workerClient.on("Network.responseReceived", (params: unknown) => {
           const responseEvent = params as {

@@ -1,7 +1,22 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { withPage } from "../../helpers/browser.js";
+import { withPage, type SnapshotPage } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
+import type { Frame } from "../../../src/types/api.js";
+
+async function attachFrame(page: SnapshotPage, frameId: string, url: string): Promise<Frame> {
+  const handle = await page.evaluateHandle(async ({ frameId, url }) => {
+    const frame = document.createElement("iframe");
+    frame.src = url;
+    frame.id = frameId;
+    document.body.appendChild(frame);
+    await new Promise((resolve) => {
+      frame.onload = resolve;
+    });
+    return frame;
+  }, { frameId, url });
+  return (await handle.asElement()!.contentFrame())!;
+}
 
 describe("page workers contract e2e", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;
@@ -246,6 +261,119 @@ describe("page workers contract e2e", () => {
       expect(response.request()).toBe(request);
       expect(response.ok()).toBe(true);
       expect(await response.text()).toBe(readFileSync(fixture.asset("one-style.css"), "utf8"));
+    });
+  });
+
+  it("reports network activity on worker creation like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const url = fixture.server.PREFIX + "/one-style.css";
+      const requestPromise = page.waitForRequest(url);
+      const responsePromise = page.waitForResponse(url);
+
+      await page.evaluate((targetUrl) => {
+        new Worker(URL.createObjectURL(new Blob([`
+          fetch("${targetUrl}").then(response => response.text()).then(console.log);
+        `], { type: "application/javascript" })));
+      }, url);
+
+      const request = await requestPromise;
+      const response = await responsePromise;
+      expect(request.url()).toBe(url);
+      expect(response.request()).toBe(request);
+      expect(response.ok()).toBe(true);
+    });
+  });
+
+  it("reports worker script as network request like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      const [requestStarted, requestFinished] = await Promise.all([
+        page.waitForEvent("request", (request) => request.url().includes("/worker/worker.js")),
+        page.waitForEvent("requestfinished", (request) => request.url().includes("/worker/worker.js")),
+        page.evaluate(() => {
+          (window as typeof window & { worker?: Worker }).worker = new Worker("/worker/worker.js");
+        })
+      ]);
+
+      expect(requestStarted.url()).toBe(fixture.server.PREFIX + "/worker/worker.js");
+      expect(requestFinished).toBe(requestStarted);
+      const response = await requestStarted.response();
+      expect(response).not.toBeNull();
+      expect(await response!.text()).toContain("hello from the worker");
+    });
+  });
+
+  it("dispatches page console messages when page has workers like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      await Promise.all([
+        page.waitForEvent("worker"),
+        page.evaluate(() => {
+          new Worker(URL.createObjectURL(new Blob(["const x = 1;"], { type: "application/javascript" })));
+        })
+      ]);
+
+      const [message] = await Promise.all([
+        page.waitForEvent("console"),
+        page.evaluate(() => {
+          console.log("foo");
+        })
+      ]);
+
+      expect(message.text()).toBe("foo");
+    });
+  });
+
+  it("attributes network activity for worker inside iframe to the iframe like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const [worker, frame] = await Promise.all([
+        page.waitForEvent("worker"),
+        attachFrame(page, "frame1", fixture.server.PREFIX + "/worker/worker.html")
+      ]);
+      const url = fixture.server.PREFIX + "/one-style.css";
+
+      const [request] = await Promise.all([
+        page.waitForRequest(url),
+        worker.evaluate((targetUrl) => {
+          return fetch(targetUrl).then((response) => response.text()).then(console.log);
+        }, url)
+      ]);
+
+      expect(request.url()).toBe(url);
+      expect(request.frame()).toBe(frame);
+    });
+  });
+
+  it("reports worker script as network request after redirect like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      fixture.server.setRedirect("/worker.js", "/worker2.js");
+      fixture.server.setRoute("/worker2.js", (_request, response) => {
+        response.setHeader("Content-Type", "text/javascript");
+        response.end("console.log('hello from the worker');");
+      });
+      const [request] = await Promise.all([
+        page.waitForEvent("request", (candidate) => candidate.url().includes("/worker.js")),
+        page.waitForEvent("console", (message) => message.text().includes("hello from the worker")),
+        page.evaluate(() => {
+          (window as typeof window & { worker?: Worker }).worker = new Worker("/worker.js");
+        })
+      ]);
+
+      expect(request.url()).toBe(fixture.server.PREFIX + "/worker.js");
+      await expect.poll(() => request.redirectedTo()?.url() ?? null).toBe(
+        fixture.server.PREFIX + "/worker2.js"
+      );
+      const redirect = request.redirectedTo();
+      expect(redirect).toBeTruthy();
+      expect(redirect!.url()).toBe(fixture.server.PREFIX + "/worker2.js");
+      const response = await redirect!.response();
+      expect(response).not.toBeNull();
+      expect(await response!.text()).toContain("hello from the worker");
     });
   });
 });
