@@ -946,6 +946,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     clearCookies: async () => {
       throw new Error("Page is not attached to a browser context.");
     },
+    routeWebSocket: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
     setExtraHTTPHeaders: async () => {
       throw new Error("Page is not attached to a browser context.");
     },
@@ -6382,6 +6385,23 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       };
       this.hostedWebSocketRoutes.set(call.id, state);
       await entry.handler(this.createHostedWebSocketRoute(state, "original"));
+      return { action: "mock" };
+    }
+
+    if (this.browserContext?._onWebSocketRoute) {
+      const state: HostedWebSocketRouteState = {
+        commands: [],
+        originalCloseHandler: null,
+        id: call.id,
+        originalMessageHandler: null,
+        protocols: [...call.protocols],
+        serverCloseHandler: null,
+        serverConnected: false,
+        serverMessageHandler: null,
+        url: call.url
+      };
+      this.hostedWebSocketRoutes.set(call.id, state);
+      await this.browserContext._onWebSocketRoute(this.createHostedWebSocketRoute(state, "original"));
       return { action: "mock" };
     }
 

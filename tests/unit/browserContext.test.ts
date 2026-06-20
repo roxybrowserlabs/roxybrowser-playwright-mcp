@@ -137,6 +137,88 @@ describe("RoxyBrowserContext", () => {
     });
   });
 
+  it("routes websockets through the browser context like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+    const seen: string[] = [];
+
+    await context.routeWebSocket(/ws2/, (ws) => {
+      ws.onMessage((message) => {
+        seen.push(`context:${String(message)}`);
+        ws.send("context-mock-2");
+      });
+    });
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:context-route",
+      url: "wss://example.com/ws2",
+      protocols: []
+    });
+    await (page as any).dispatchWebSocketEvent({
+      id: "websocket:context-route",
+      kind: "message",
+      message: "request"
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    expect(seen).toEqual(["context:request"]);
+  });
+
+  it("prefers page websocket routes over context websocket routes like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+    const seen: string[] = [];
+
+    await context.routeWebSocket(/ws1/, (ws) => {
+      ws.onMessage((message) => {
+        seen.push(`context:${String(message)}`);
+        ws.send("context-mock");
+      });
+    });
+    await page.routeWebSocket(/ws1/, (ws) => {
+      ws.onMessage((message) => {
+        seen.push(`page:${String(message)}`);
+        ws.send("page-mock");
+      });
+    });
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:page-over-context",
+      url: "wss://example.com/ws1",
+      protocols: []
+    });
+    await (page as any).dispatchWebSocketEvent({
+      id: "websocket:page-over-context",
+      kind: "message",
+      message: "request"
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    expect(seen).toEqual(["page:request"]);
+  });
+
   it("validates extra http header values before delegating to the context adapter", async () => {
     const adapter = createBrowserContextAdapterStub();
     const context = new RoxyBrowserContext(adapter, {

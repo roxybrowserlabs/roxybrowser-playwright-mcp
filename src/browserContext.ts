@@ -7,6 +7,7 @@ import { RoxyBrowserContextClockDelegate } from "./browserContextClock.js";
 import { RoxyClock } from "./clock.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import { RoxyPage } from "./page.js";
+import { urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
@@ -44,6 +45,11 @@ interface InternalPageAdapterMetadata {
   __roxyTargetId?: string;
 }
 
+interface WebSocketRouteHandlerEntry {
+  matcher: string | RegExp | URLPattern | ((url: URL) => boolean);
+  handler: (websocketroute: import("./types/api.js").WebSocketRoute) => Promise<any> | any;
+}
+
 export class RoxyBrowserContext implements BrowserContext {
   private readonly pageSet = new Set<RoxyPage>();
   private readonly pageByAdapter = new Map<ProtocolPageAdapter, RoxyPage>();
@@ -53,6 +59,7 @@ export class RoxyBrowserContext implements BrowserContext {
   private readonly clockDelegate = new RoxyBrowserContextClockDelegate();
   private readonly listeners = new Map<BrowserContextEventName, Set<ContextListenerEntry<BrowserContextEventName>>>();
   private readonly pageEventDisposers = new WeakMap<RoxyPage, Array<() => void>>();
+  private readonly websocketRouteHandlers: WebSocketRouteHandlerEntry[] = [];
   private readonly disposeAdapterPageListener: (() => void) | null;
   private closed = false;
   private videoOutputDirPromise: Promise<string> | null = null;
@@ -154,6 +161,22 @@ export class RoxyBrowserContext implements BrowserContext {
 
   async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
     await this.adapter.setExtraHTTPHeaders(normalizeExtraHTTPHeaders(headers));
+  }
+
+  async routeWebSocket(
+    url: string | RegExp | URLPattern | ((url: URL) => boolean),
+    handler: (websocketroute: import("./types/api.js").WebSocketRoute) => Promise<any> | any
+  ): Promise<void> {
+    this.websocketRouteHandlers.push({
+      matcher: url,
+      handler
+    });
+  }
+
+  async unrouteAll(_options?: {
+    behavior?: "wait" | "ignoreErrors" | "default";
+  }): Promise<void> {
+    this.websocketRouteHandlers.length = 0;
   }
 
   async storageState(options?: {
@@ -537,6 +560,36 @@ export class RoxyBrowserContext implements BrowserContext {
       );
     }
     this.pageEventDisposers.set(page, disposers);
+  }
+
+  async _onWebSocketRoute(websocketroute: import("./types/api.js").WebSocketRoute): Promise<void> {
+    for (let index = this.websocketRouteHandlers.length - 1; index >= 0; index -= 1) {
+      const entry = this.websocketRouteHandlers[index];
+      if (!entry || !this.matchesWebSocketRoute(websocketroute.url(), entry.matcher)) {
+        continue;
+      }
+
+      await entry.handler(websocketroute);
+      return;
+    }
+
+    websocketroute.connectToServer();
+  }
+
+  private matchesWebSocketRoute(
+    url: string,
+    matcher: string | RegExp | URLPattern | ((url: URL) => boolean)
+  ): boolean {
+    const normalizedUrl = tryParseUrl(url)?.toString() ?? url;
+    return urlMatches(this.options.baseURL, normalizedUrl, matcher, true);
+  }
+}
+
+function tryParseUrl(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
   }
 }
 

@@ -234,6 +234,10 @@ export interface BrowserContext {
   }): Promise<void>;
   newPage(): Promise<Page>;
   pages(): Page[];
+  routeWebSocket(
+    url: string | RegExp | URLPattern | ((url: URL) => boolean),
+    handler: ((websocketroute: WebSocketRoute) => Promise<any> | any)
+  ): Promise<void>;
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
   storageState(options?: {
     indexedDB?: boolean;
