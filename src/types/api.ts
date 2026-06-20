@@ -234,10 +234,22 @@ export interface BrowserContext {
   }): Promise<void>;
   newPage(): Promise<Page>;
   pages(): Page[];
+  route(
+    url: string | RegExp | URLPattern | ((url: URL) => boolean),
+    handler: ((route: Route, request: Request) => Promise<any> | any),
+    options?: { times?: number; }
+  ): Promise<Disposable>;
   routeWebSocket(
     url: string | RegExp | URLPattern | ((url: URL) => boolean),
     handler: ((websocketroute: WebSocketRoute) => Promise<any> | any)
   ): Promise<void>;
+  unroute(
+    url: string | RegExp | URLPattern | ((url: URL) => boolean),
+    handler?: ((route: Route, request: Request) => Promise<any> | any)
+  ): Promise<void>;
+  unrouteAll(options?: {
+    behavior?: "wait" | "ignoreErrors" | "default";
+  }): Promise<void>;
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
   storageState(options?: {
     indexedDB?: boolean;
@@ -762,7 +774,7 @@ export interface Page {
   screencast: Screencast;
   sessionStorage: WebStorage;
   touchscreen: Touchscreen;
-  addInitScript<Arg>(script: string|PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
+  addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
   addLocatorHandler(locator: Locator, handler: ((locator: Locator) => Promise<any>), options?: { noWaitAfter?: boolean; times?: number; }): Promise<void>;
   exposeBinding(name: string, playwrightBinding: (source: BindingSource, ...args: any[]) => any): Promise<Disposable>;
   exposeFunction(name: string, callback: Function): Promise<Disposable>;

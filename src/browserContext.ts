@@ -7,6 +7,7 @@ import { RoxyBrowserContextClockDelegate } from "./browserContextClock.js";
 import { RoxyClock } from "./clock.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import { RoxyPage } from "./page.js";
+import type { RouteHandlerEntry, RouteMatcher } from "./routeHandler.js";
 import { urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
 import type { ResolvedHumanizationOptions } from "./human/types.js";
@@ -59,9 +60,12 @@ export class RoxyBrowserContext implements BrowserContext {
   private readonly clockDelegate = new RoxyBrowserContextClockDelegate();
   private readonly listeners = new Map<BrowserContextEventName, Set<ContextListenerEntry<BrowserContextEventName>>>();
   private readonly pageEventDisposers = new WeakMap<RoxyPage, Array<() => void>>();
+  private readonly routeHandlers: RouteHandlerEntry[] = [];
   private readonly websocketRouteHandlers: WebSocketRouteHandlerEntry[] = [];
+  private readonly routeMatcherIds = new WeakMap<object, string>();
   private readonly disposeAdapterPageListener: (() => void) | null;
   private closed = false;
+  private nextRouteMatcherId = 0;
   private videoOutputDirPromise: Promise<string> | null = null;
   readonly clock: Clock = new RoxyClock(this.clockDelegate);
   readonly request = new RoxyAPIRequestContext();
@@ -163,6 +167,30 @@ export class RoxyBrowserContext implements BrowserContext {
     await this.adapter.setExtraHTTPHeaders(normalizeExtraHTTPHeaders(headers));
   }
 
+  async route(
+    url: RouteMatcher,
+    handler: (route: import("./types/api.js").Route, request: Request) => Promise<any> | any,
+    options: { times?: number } = {}
+  ): Promise<import("./types/api.js").Disposable> {
+    this.routeHandlers.push({
+      matcher: url,
+      handler,
+      activeInvocations: new Set(),
+      ignoreExceptions: false,
+      remainingTimes: options.times ?? null
+    });
+    await this.installRouteInterceptorsOnPages();
+    return {
+      dispose: async () => {
+        const index = this.routeHandlers.findIndex((entry) => entry.matcher === url && entry.handler === handler);
+        if (index >= 0) {
+          this.routeHandlers.splice(index, 1);
+        }
+        await this.syncRouteInterceptionOnPages();
+      }
+    };
+  }
+
   async routeWebSocket(
     url: string | RegExp | URLPattern | ((url: URL) => boolean),
     handler: (websocketroute: import("./types/api.js").WebSocketRoute) => Promise<any> | any
@@ -171,12 +199,39 @@ export class RoxyBrowserContext implements BrowserContext {
       matcher: url,
       handler
     });
+    await this.installRouteInterceptorsOnPages();
   }
 
-  async unrouteAll(_options?: {
+  async unroute(
+    url: RouteMatcher,
+    handler?: (route: import("./types/api.js").Route, request: Request) => Promise<any> | any
+  ): Promise<void> {
+    const removed: RouteHandlerEntry[] = [];
+    for (let index = this.routeHandlers.length - 1; index >= 0; index -= 1) {
+      const entry = this.routeHandlers[index];
+      if (!entry) {
+        continue;
+      }
+      if (this.routeMatcherKey(entry.matcher) !== this.routeMatcherKey(url)) {
+        continue;
+      }
+      if (handler && entry.handler !== handler) {
+        continue;
+      }
+      removed.push(entry);
+      this.routeHandlers.splice(index, 1);
+    }
+    await this.stopRouteHandlers(removed, "default");
+    await this.syncRouteInterceptionOnPages();
+  }
+
+  async unrouteAll(options?: {
     behavior?: "wait" | "ignoreErrors" | "default";
   }): Promise<void> {
-    return;
+    const removed = [...this.routeHandlers];
+    this.routeHandlers.length = 0;
+    await this.stopRouteHandlers(removed, options?.behavior ?? "default");
+    await this.syncRouteInterceptionOnPages();
   }
 
   async storageState(options?: {
@@ -400,6 +455,9 @@ export class RoxyBrowserContext implements BrowserContext {
       if (this.options.recordVideo) {
         await this.enableRecordVideo(page, this.options.recordVideo);
       }
+      if (this._hasRouteInterception()) {
+        await page._ensureRouteInterceptorsInstalled();
+      }
       return page;
     } catch (error) {
       if (isClosedPageRegistrationError(error)) {
@@ -576,12 +634,88 @@ export class RoxyBrowserContext implements BrowserContext {
     return false;
   }
 
+  _hasRequestRoutes(): boolean {
+    return this.routeHandlers.length > 0;
+  }
+
+  _hasRouteInterception(): boolean {
+    return this.routeHandlers.length > 0 || this.websocketRouteHandlers.length > 0;
+  }
+
+  _contextRouteHandlers(): RouteHandlerEntry[] {
+    return [...this.routeHandlers];
+  }
+
+  _findLiveContextRouteHandlerIndex(entry: RouteHandlerEntry): number {
+    return this.routeHandlers.indexOf(entry);
+  }
+
+  _consumeContextRouteHandler(entry: RouteHandlerEntry, liveIndex: number): void {
+    if (entry.remainingTimes !== null && entry.remainingTimes <= 1) {
+      this.routeHandlers.splice(liveIndex, 1);
+    } else if (entry.remainingTimes !== null) {
+      entry.remainingTimes -= 1;
+    }
+  }
+
+  _matchesRouteMatcher(url: string, matcher: RouteMatcher): boolean {
+    if (url.startsWith("data:")) {
+      return false;
+    }
+    const normalizedUrl = tryParseUrl(url)?.toString() ?? url;
+    return urlMatches(this.options.baseURL, normalizedUrl, matcher, true);
+  }
+
   private matchesWebSocketRoute(
     url: string,
     matcher: string | RegExp | URLPattern | ((url: URL) => boolean)
   ): boolean {
     const normalizedUrl = tryParseUrl(url)?.toString() ?? url;
     return urlMatches(this.options.baseURL, normalizedUrl, matcher, true);
+  }
+
+  private async installRouteInterceptorsOnPages(): Promise<void> {
+    await Promise.all(Array.from(this.pageSet, async (page) => page._ensureRouteInterceptorsInstalled()));
+  }
+
+  private async syncRouteInterceptionOnPages(): Promise<void> {
+    await Promise.all(Array.from(this.pageSet, async (page) => page._syncRouteInterceptionForContext()));
+  }
+
+  private async stopRouteHandlers(
+    entries: RouteHandlerEntry[],
+    behavior: "wait" | "ignoreErrors" | "default"
+  ): Promise<void> {
+    if (behavior === "ignoreErrors") {
+      for (const entry of entries) {
+        entry.ignoreExceptions = true;
+      }
+      return;
+    }
+
+    if (behavior === "wait") {
+      await Promise.all(
+        entries.flatMap((entry) => Array.from(entry.activeInvocations, (invocation) => invocation.complete))
+      );
+    }
+  }
+
+  private routeMatcherKey(matcher: RouteMatcher): string {
+    if (typeof matcher === "string") {
+      return `string:${matcher}`;
+    }
+    if (matcher instanceof RegExp) {
+      return `regexp:${matcher.source}/${matcher.flags}`;
+    }
+
+    const existing = this.routeMatcherIds.get(matcher as object);
+    if (existing) {
+      return existing;
+    }
+
+    const id = `matcher:${++this.nextRouteMatcherId}`;
+    this.routeMatcherIds.set(matcher as object, id);
+    return id;
   }
 }
 

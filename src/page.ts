@@ -23,6 +23,7 @@ import { determineScreenshotType, normalizePageScreenshotOptions, validateScreen
 import { isRegExp, isURLPattern, resolveGlobToRegexPattern, type URLMatch, urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
 import { RoxyWorker } from "./worker.js";
+import type { RouteHandlerInvocation, RouteHandlerEntry, RouteMatcher } from "./routeHandler.js";
 import { RoxyClock, createUnsupportedClockDelegate } from "./clock.js";
 import {
   parseEvaluationResultValue,
@@ -239,21 +240,6 @@ interface ExposedBindingCall {
   name: string;
   serializedArgs: SerializedValue[];
   targetFrame: RoxyFrame | null;
-}
-
-type RouteMatcher = URLMatch;
-
-interface RouteHandlerInvocation {
-  complete: Promise<void>;
-  resolve: () => void;
-}
-
-interface RouteHandlerEntry {
-  matcher: RouteMatcher;
-  handler: (route: Route, request: Request) => Promise<any> | any;
-  activeInvocations: Set<RouteHandlerInvocation>;
-  ignoreExceptions: boolean;
-  remainingTimes: number | null;
 }
 
 interface WebSocketRouteHandlerEntry {
@@ -946,7 +932,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     clearCookies: async () => {
       throw new Error("Page is not attached to a browser context.");
     },
+    route: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
     routeWebSocket: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
+    unroute: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
+    unrouteAll: async () => {
       throw new Error("Page is not attached to a browser context.");
     },
     setExtraHTTPHeaders: async () => {
@@ -1002,8 +997,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.internalDisposers.set("close", disposeClose);
   }
 
-  async addInitScript<Arg>(script: string|PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
-  async addInitScript<Arg>(script: string | PageFunction<Arg, any> | { path?: string; content?: string }, arg?: Arg): Promise<Disposable> {
+  async addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
+  async addInitScript<Arg>(script: PageFunction<Arg, any> | { path?: string; content?: string }, arg?: Arg): Promise<Disposable> {
     const source = await evaluationScript(script, arg as any);
     return this.adapter.addInitScript(source);
   }
@@ -5622,10 +5617,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (!this.adapter.setRequestInterceptor) {
       return;
     }
-    const needsInterception = this.routeHandlers.length > 0 || this.harRoutes.length > 0;
+    const needsInterception =
+      this.routeHandlers.length > 0
+      || this.harRoutes.length > 0
+      || this.browserContext?._hasRequestRoutes()
+      || false;
     await this.adapter.setRequestInterceptor(
       needsInterception ? (call) => this.dispatchRoutedRequest(call) : null
     );
+  }
+
+  async _ensureRouteInterceptorsInstalled(): Promise<void> {
+    await this.installRouteInterceptors();
+  }
+
+  async _syncRouteInterceptionForContext(): Promise<void> {
+    if (!this.routeInterceptorsInstalled) {
+      return;
+    }
+    await this.syncRouteInterception();
   }
 
   private startRoutePump(): void {
@@ -5784,6 +5794,151 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
       const route: Route = {
         abort: async (errorCode?: string) => {
+          ensureRouteIsUnhandled();
+          routeHandled = true;
+          routedFailure = { errorText: errorCode ?? "failed" };
+          reportRouteHandled({
+            kind: "finish",
+            decision: {
+              action: "abort",
+              ...(errorCode !== undefined ? { errorCode } : {})
+            }
+          });
+        },
+        continue: async (options) => {
+          ensureRouteIsUnhandled();
+          routeHandled = true;
+          requestState = applyRouteOverrides(requestState, options);
+          reportRouteHandled({
+            kind: "finish",
+            decision: {
+              action: "continue",
+              headers: { ...requestState.headers },
+              method: requestState.method,
+              ...serializePostDataFields(
+                requestState.postData,
+                deserializeSerializedPostData(
+                  requestState.postData,
+                  requestState.postDataBufferBase64 ?? null
+                ).buffer
+              ),
+              url: requestState.url
+            }
+          });
+        },
+        fallback: async (options) => {
+          ensureRouteIsUnhandled();
+          routeHandled = true;
+          requestState = applyRouteOverrides(requestState, options);
+          reportRouteHandled({ kind: "fallback" });
+        },
+        fetch: async (options) => {
+          ensureRouteIsUnhandled();
+          const fetchedRequest = applyRouteOverrides(requestState, options);
+          const response = await this.fetchRouteRequest(fetchedRequest, options);
+          routedResponse = createRoutedResponse(await responseDataFromResponse(response), request);
+          return response;
+        },
+        fulfill: async (options = {}) => {
+          ensureRouteIsUnhandled();
+          const decision = await this.buildFulfillDecision(requestState, options);
+          routeHandled = true;
+          routedResponse = createRoutedResponse(
+            {
+              body: decision.body,
+              ...(decision.bodyBufferBase64 !== undefined
+                ? { bodyBufferBase64: decision.bodyBufferBase64 }
+                : {}),
+              headers: { ...decision.headers },
+              status: decision.status,
+              statusText: decision.statusText,
+              url: decision.url
+            },
+            request
+          );
+          reportRouteHandled({
+            kind: "finish",
+            decision
+          });
+        },
+        request: () => request
+      };
+
+      let resolveInvocation!: () => void;
+      const invocation: RouteHandlerInvocation = {
+        complete: new Promise<void>((resolve) => {
+          resolveInvocation = resolve;
+        }),
+        resolve: () => {
+          resolveInvocation();
+        }
+      };
+      entry.activeInvocations.add(invocation);
+      let resolvedOutcome: RouteOutcome | null = null;
+      try {
+        const [handledOutcome] = await Promise.all([
+          routeHandledPromise,
+          Promise.resolve().then(() => entry.handler(route, request))
+        ]);
+        resolvedOutcome = handledOutcome;
+      } catch (error) {
+        if (!entry.ignoreExceptions) {
+          throw error;
+        }
+        resolvedOutcome = routeOutcome;
+      } finally {
+        invocation.resolve();
+        entry.activeInvocations.delete(invocation);
+      }
+
+      if (!resolvedOutcome) {
+        continue;
+      }
+      if (resolvedOutcome.kind === "fallback") {
+        continue;
+      }
+
+      if (resolvedOutcome.decision.action === "continue") {
+        this.applyRoutedRequestStateToObservedRequest(call, requestState);
+      }
+      return resolvedOutcome.decision;
+    }
+
+    const contextHandlers = this.browserContext?._contextRouteHandlers() ?? [];
+    for (let index = contextHandlers.length - 1; index >= 0; index -= 1) {
+      const entry = contextHandlers[index];
+      if (!entry || !this.browserContext?._matchesRouteMatcher(requestState.url, entry.matcher)) {
+        continue;
+      }
+      const liveIndex = this.browserContext._findLiveContextRouteHandlerIndex(entry);
+      if (liveIndex === -1) {
+        continue;
+      }
+      this.browserContext._consumeContextRouteHandler(entry, liveIndex);
+
+      type RouteOutcome =
+        | { kind: "fallback" }
+        | { kind: "finish"; decision: RoutedRequestDecision };
+      let routeOutcome: RouteOutcome | null = null;
+      let routeHandled = false;
+      let resolveRouteHandled!: (value: RouteOutcome) => void;
+      const routeHandledPromise = new Promise<RouteOutcome>((resolve) => {
+        resolveRouteHandled = resolve;
+      });
+
+      const ensureRouteIsUnhandled = () => {
+        if (routeHandled) {
+          throw new Error("Route is already handled!");
+        }
+      };
+
+      const reportRouteHandled = (outcome: RouteOutcome) => {
+        routeOutcome = outcome;
+        resolveRouteHandled(outcome);
+      };
+
+      const route: Route = {
+        abort: async (errorCode) => {
           ensureRouteIsUnhandled();
           routeHandled = true;
           routedFailure = { errorText: errorCode ?? "failed" };

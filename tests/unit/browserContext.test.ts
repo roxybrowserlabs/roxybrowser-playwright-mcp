@@ -175,6 +175,225 @@ describe("RoxyBrowserContext", () => {
     expect(seen).toEqual(["context:request"]);
   });
 
+  it("falls back to browser-context request routes like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+
+    await context.route("**/empty.html", async (route) => {
+      await route.fulfill({
+        body: "context",
+        contentType: "text/plain",
+        status: 200
+      });
+    });
+    await page.route("**/non-empty.html", async (route) => {
+      await route.fulfill({
+        body: "page",
+        contentType: "text/plain",
+        status: 200
+      });
+    });
+
+    const decision = await (page as any).dispatchRoutedRequest({
+      id: "request:context-fallback",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+
+    expect(decision).toMatchObject({
+      action: "fulfill",
+      body: "context",
+      status: 200,
+      url: "https://example.com/empty.html"
+    });
+  });
+
+  it("prefers page request routes over browser-context routes like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+
+    await context.route("**/empty.html", async (route) => {
+      await route.fulfill({
+        body: "context",
+        contentType: "text/plain",
+        status: 200
+      });
+    });
+    await page.route("**/empty.html", async (route) => {
+      await route.fulfill({
+        body: "page",
+        contentType: "text/plain",
+        status: 200
+      });
+    });
+
+    const decision = await (page as any).dispatchRoutedRequest({
+      id: "request:page-over-context",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+
+    expect(decision).toMatchObject({
+      action: "fulfill",
+      body: "page",
+      status: 200,
+      url: "https://example.com/empty.html"
+    });
+  });
+
+  it("supports browser-context route disposal, unroute and times lifecycle like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+    const calls: string[] = [];
+
+    const firstHandler = vi.fn(async (route: any) => {
+      calls.push("first");
+      await route.fallback();
+    });
+    const secondHandler = vi.fn(async (route: any) => {
+      calls.push("second");
+      await route.fallback();
+    });
+
+    const disposable = await context.route("**/empty.html", firstHandler, { times: 1 });
+    await context.route(/empty\.html$/, secondHandler);
+
+    await (page as any).dispatchRoutedRequest({
+      id: "request:ctx-1",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+    expect(calls).toEqual(["second", "first"]);
+
+    calls.length = 0;
+    await (page as any).dispatchRoutedRequest({
+      id: "request:ctx-2",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+    expect(calls).toEqual(["second"]);
+
+    calls.length = 0;
+    await context.unroute(/empty\.html$/, secondHandler);
+    await disposable.dispose();
+    await (page as any).dispatchRoutedRequest({
+      id: "request:ctx-3",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("waits for pending browser-context route handlers during context.unrouteAll like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+    let secondHandlerCalled = false;
+
+    await context.route(/.*/, async (route) => {
+      secondHandlerCalled = true;
+      await route.abort();
+    });
+
+    let routeCallback!: () => void;
+    const routePromise = new Promise<void>((resolve) => {
+      routeCallback = resolve;
+    });
+    let continueRouteCallback!: () => void;
+    const routeBarrier = new Promise<void>((resolve) => {
+      continueRouteCallback = resolve;
+    });
+
+    await context.route(/.*/, async (route) => {
+      routeCallback();
+      await routeBarrier;
+      await route.fallback();
+    });
+
+    const dispatchPromise = (page as any).dispatchRoutedRequest({
+      id: "request:context-unroute-wait",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+
+    await routePromise;
+
+    let didUnroute = false;
+    const unroutePromise = context.unrouteAll({ behavior: "wait" }).then(() => {
+      didUnroute = true;
+    });
+
+    await Promise.resolve();
+    expect(didUnroute).toBe(false);
+
+    continueRouteCallback();
+    await unroutePromise;
+    expect(didUnroute).toBe(true);
+    expect(await dispatchPromise).toEqual({
+      action: "continue",
+      headers: {},
+      method: "GET",
+      postData: null,
+      url: "https://example.com/empty.html"
+    });
+    expect(secondHandlerCalled).toBe(false);
+  });
+
   it("prefers page websocket routes over context websocket routes like Playwright", async () => {
     const adapter = createBrowserContextAdapterStub();
     adapter.newPage = async () => createPageAdapterStub();
