@@ -1955,6 +1955,84 @@ describe("RoxyPage", () => {
     expect(capturedError?.message).toContain("Already connected to the server");
   });
 
+  it("matches websocket routes without a trailing slash like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(
+      adapter,
+      {
+        enabled: true,
+        profile: "balanced",
+        moveJitterMs: 16,
+        clickHoldMs: 60,
+        scrollStepPx: 280,
+        typingDelayMs: 95,
+        typingVarianceMs: 35,
+        hoverBeforeClickMs: 110
+      }
+    );
+    const seen: string[] = [];
+
+    await page.routeWebSocket("ws://example.com", (ws) => {
+      ws.onMessage((message) => {
+        seen.push(String(message));
+      });
+    });
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:no-trailing-slash",
+      url: "ws://example.com",
+      protocols: []
+    });
+    await (page as any).dispatchWebSocketEvent({
+      id: "websocket:no-trailing-slash",
+      kind: "message",
+      message: "query"
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    expect(seen).toEqual(["query"]);
+  });
+
+  it("matches websocket routes against baseURL like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(
+      adapter,
+      {
+        enabled: true,
+        profile: "balanced",
+        moveJitterMs: 16,
+        clickHoldMs: 60,
+        scrollStepPx: 280,
+        typingDelayMs: 95,
+        typingVarianceMs: 35,
+        hoverBeforeClickMs: 110
+      },
+      undefined,
+      { baseURL: "http://example.com" }
+    );
+    const seen: string[] = [];
+
+    await page.routeWebSocket("/ws", (ws) => {
+      ws.onMessage((message) => {
+        seen.push(String(message));
+      });
+    });
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:base-url",
+      url: "ws://example.com/ws",
+      protocols: []
+    });
+    await (page as any).dispatchWebSocketEvent({
+      id: "websocket:base-url",
+      kind: "message",
+      message: "echo"
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    expect(seen).toEqual(["echo"]);
+  });
+
   it("stops default forwarding once the original websocket route handles messages", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {

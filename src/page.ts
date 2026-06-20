@@ -6521,7 +6521,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (url.startsWith("data:")) {
       return false;
     }
-    return urlMatches(this.baseURL(), url, matcher);
+    const normalizedUrl = this.tryParseUrl(url)?.toString() ?? url;
+    return urlMatches(this.baseURL(), normalizedUrl, matcher, true);
   }
 
   private matchesHarRouteMatcher(url: string, matcher: string | RegExp): boolean {
@@ -6537,8 +6538,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private baseURL(): string | undefined {
-    return (this.browserContext as (RoxyBrowserContext & { _options?: { baseURL?: string } }) | undefined)
-      ?._options?.baseURL;
+    return (
+      (this.browserContext as (RoxyBrowserContext & { _options?: { baseURL?: string } }) | undefined)
+        ?._options?.baseURL
+      ?? this.contextOptions.baseURL
+    );
   }
 
   private remainingTimeout(startTime: number, timeout: number): number {
