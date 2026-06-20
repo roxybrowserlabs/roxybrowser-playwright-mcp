@@ -5137,6 +5137,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     try {
       await this.options.browserClient.Target.closeTarget({
         targetId: this.options.targetId
+      }).catch((error) => {
+        if (String(error).includes("No target with given id found") || isClosedCdpConnectionError(error)) {
+          return;
+        }
+        throw error;
       });
     } finally {
       await safelyCloseClient(this.options.client);
