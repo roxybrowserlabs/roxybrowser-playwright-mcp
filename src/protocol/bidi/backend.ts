@@ -336,7 +336,7 @@ function locatorOperation(payload: LocatorPayload) {
 
   const shouldSkipTextSelectorElement = (element: Element): boolean => {
     const tagName = element.tagName.toLowerCase();
-    return tagName === "head" || tagName === "script" || tagName === "style";
+    return tagName === "head" || tagName === "title" || tagName === "script" || tagName === "style";
   };
 
   const candidatesFromRoot = (root: ParentNode | Element, selector: LocatorSelector): Element[] => {

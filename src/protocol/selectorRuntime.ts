@@ -297,6 +297,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     const tagName = element.tagName.toLowerCase();
     return (
       tagName === "head" ||
+      tagName === "title" ||
       tagName === "script" ||
       tagName === "style" ||
       isInternalOverlayElement(element)

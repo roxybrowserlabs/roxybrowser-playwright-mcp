@@ -184,6 +184,67 @@ describe("page text selector contract e2e", () => {
     });
   });
 
+  it("does not match head, title, script or style contents via text selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <head>
+          <title>title</title>
+        </head>
+        <body>
+          <script>var script</script>
+          <style>.style {}</style>
+          <div>title script style</div>
+        </body>
+      `);
+
+      const head = await page.$("head");
+      const title = await page.$("title");
+      const script = await page.$("body script");
+      const style = await page.$("body style");
+
+      for (const text of ["title", "script", "style"]) {
+        expect(await page.$eval(`text=${text}`, (element) => element.nodeName)).toBe("DIV");
+        expect(
+          await page.$$eval(`text=${text}`, (elements) => elements.map((element) => element.nodeName).join("|"))
+        ).toBe("DIV");
+
+        for (const root of [head, title, script, style]) {
+          expect(await root!.$(`text=${text}`)).toBe(null);
+          expect(await root!.$$eval(`text=${text}`, (elements) => elements.length)).toBe(0);
+        }
+      }
+    });
+  });
+
+  it("matches input[type=button|submit|reset] values via text selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`
+        <input type="submit" value="hello">
+        <input type="button" value="world">
+        <input type="reset" value="again">
+      `);
+
+      expect(await page.$eval("text=hello", (element) => element.outerHTML)).toBe(
+        '<input type="submit" value="hello">'
+      );
+      expect(await page.$eval("text=world", (element) => element.outerHTML)).toBe(
+        '<input type="button" value="world">'
+      );
+      expect(await page.$eval("text=again", (element) => element.outerHTML)).toBe(
+        '<input type="reset" value="again">'
+      );
+      expect(await page.getByText("hello", { exact: true }).evaluate((element) => element.outerHTML)).toBe(
+        '<input type="submit" value="hello">'
+      );
+      expect(await page.getByText("world", { exact: true }).evaluate((element) => element.outerHTML)).toBe(
+        '<input type="button" value="world">'
+      );
+      expect(await page.getByText("again", { exact: true }).evaluate((element) => element.outerHTML)).toBe(
+        '<input type="reset" value="again">'
+      );
+    });
+  });
+
   it("matches text selector root after chained selector like Playwright", async () => {
     await withPage(async (page) => {
       await page.setContent("<section>test</section>");
