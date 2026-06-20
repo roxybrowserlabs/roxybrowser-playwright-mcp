@@ -147,6 +147,7 @@ export async function withBidiPage<T>(
 ): Promise<T> {
   let browser = await openBidiBrowser();
   let context: BrowserContext | undefined;
+  const usesReusableExternalBrowser = shouldKeepConfiguredExternalBidiBrowserOpen();
 
   try {
     try {
@@ -173,11 +174,17 @@ export async function withBidiPage<T>(
       await closeForTest("context.close", () => context.close()).catch(() => {});
     }
   } finally {
-    // Local Firefox runs should be self-contained even if suite-level cleanup
-    // hooks are skipped or a test file is run in isolation.
-    if (!usesExternalBidiEndpoint) {
+    // BiDi tests should be self-contained even if suite-level cleanup hooks are
+    // skipped or the file is run in isolation.
+    if (!usesReusableExternalBrowser) {
+      const shouldCloseManagedRoxyBrowserProfile = usesManagedRoxyBrowserProfile;
       await closeSharedBidiBrowser().catch(() => {});
-      await cleanupLocalTestBrowserProcessesWithTimeout().catch(() => {});
+      await closeExternalBidiBrowser().catch(() => {});
+      if (shouldCloseManagedRoxyBrowserProfile) {
+        await cleanupStaleBidiTestArtifacts().catch(() => {});
+      } else {
+        await cleanupLocalTestBrowserProcessesWithTimeout().catch(() => {});
+      }
     }
   }
 }

@@ -76,6 +76,7 @@ describe("BidiBrowserAdapterFactory", () => {
   afterEach(() => {
     createClient.mockReset();
     resetBidiClientFactoryForTests();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -179,6 +180,49 @@ describe("BidiBrowserAdapterFactory", () => {
     expect(sessionEnd).toHaveBeenCalledWith({});
     await adapter.close();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("still closes a spawned Firefox process when the BiDi client is already gone", async () => {
+    const close = vi.fn();
+    const client = createBidiClientStub({ close });
+    createClient.mockResolvedValue(client);
+
+    const once = vi.fn((event: string, callback: () => void) => {
+      if (event === "exit") {
+        setTimeout(callback, 0);
+      }
+      return proc;
+    });
+    const processKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const proc = {
+      pid: 1234,
+      kill: vi.fn(),
+      once
+    };
+    const unregisterTestBrowserProcess = vi.fn();
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    }) as {
+      client?: typeof client;
+      spawnedProcess?: typeof proc;
+      unregisterTestBrowserProcess?: typeof unregisterTestBrowserProcess;
+      userDataDir?: string;
+      close(): Promise<void>;
+    };
+
+    adapter.client = undefined;
+    adapter.spawnedProcess = proc;
+    adapter.unregisterTestBrowserProcess = unregisterTestBrowserProcess;
+    adapter.userDataDir = undefined;
+
+    await adapter.close();
+
+    expect(processKill).toHaveBeenCalledWith(-1234, "SIGTERM");
+    expect(unregisterTestBrowserProcess).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
   });
 
   it("dispatches wheel events through script evaluation with pointer position and modifiers", async () => {

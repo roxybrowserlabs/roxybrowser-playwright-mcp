@@ -707,27 +707,26 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
   }
 
   async close(): Promise<void> {
-    if (!this.client) {
-      return;
-    }
+    const client = this.client;
+    this.client = undefined;
+    this.ownsSession = false;
 
     try {
-      this.client.close();
+      if (client) {
+        client.close();
+      }
     } finally {
-      this.client = undefined;
-      this.ownsSession = false;
+      if (this.spawnedProcess) {
+        await cleanupFirefoxProcess(
+          this.spawnedProcess,
+          this.userDataDir,
+          this.unregisterTestBrowserProcess
+        );
+      }
+      this.spawnedProcess = undefined;
+      this.unregisterTestBrowserProcess = undefined;
+      this.userDataDir = undefined;
     }
-
-    if (this.spawnedProcess) {
-      await cleanupFirefoxProcess(
-        this.spawnedProcess,
-        this.userDataDir,
-        this.unregisterTestBrowserProcess
-      );
-    }
-    this.spawnedProcess = undefined;
-    this.unregisterTestBrowserProcess = undefined;
-    this.userDataDir = undefined;
   }
 }
 
