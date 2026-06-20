@@ -156,39 +156,6 @@ describe("page events contract e2e", () => {
     });
   });
 
-  it("supports prependOnceListener and listener inspection like Playwright", async () => {
-    await withPage(async (page) => {
-      const calls: string[] = [];
-      const persistent = () => {
-        calls.push("persistent");
-      };
-      const prepended = () => {
-        calls.push("prepended");
-      };
-
-      page.on("console", persistent);
-      page.prependOnceListener("console", prepended);
-
-      expect(page.eventNames()).toEqual(["console"]);
-      expect(page.listenerCount("console")).toBe(2);
-      expect(page.listeners("console")).toEqual([prepended, persistent]);
-      expect(page.rawListeners("console")).toHaveLength(2);
-      expect(page.rawListeners("console")[0]).not.toBe(prepended);
-      expect(page.rawListeners("console")[1]).toBe(persistent);
-
-      await page.evaluate(() => {
-        console.log("hello");
-      });
-      await page.evaluate(() => {
-        console.log("again");
-      });
-
-      expect(calls).toEqual(["prepended", "persistent", "persistent"]);
-      expect(page.listenerCount("console")).toBe(1);
-      expect(page.listeners("console")).toEqual([persistent]);
-    });
-  });
-
   it("emits the same console log twice", async () => {
     await withPage(async (page) => {
       const messages: string[] = [];

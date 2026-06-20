@@ -4212,55 +4212,6 @@ describe("RoxyPage", () => {
     expect(adapter.onFileChooserOpened).toHaveBeenCalledTimes(1);
   });
 
-  it("exposes EventEmitter-style listener inspection APIs", async () => {
-    const adapter = createPageAdapterStub();
-    const page = new RoxyPage(adapter, {
-      enabled: true,
-      profile: "balanced",
-      moveJitterMs: 16,
-      clickHoldMs: 60,
-      scrollStepPx: 280,
-      typingDelayMs: 95,
-      typingVarianceMs: 35,
-      hoverBeforeClickMs: 110
-    });
-    const onListener = vi.fn();
-    const prependOnceListener = vi.fn();
-
-    page.on("console", onListener);
-    page.prependOnceListener("console", prependOnceListener);
-
-    expect(page.getMaxListeners()).toBe(10);
-    expect(page.setMaxListeners(23)).toBe(page);
-    expect(page.getMaxListeners()).toBe(23);
-    expect(page.listenerCount("console")).toBe(2);
-    expect(page.eventNames()).toEqual(["console"]);
-    expect(page.listeners("console")).toEqual([prependOnceListener, onListener]);
-    expect(page.rawListeners("console")).toHaveLength(2);
-    expect(page.rawListeners("console")[0]).not.toBe(prependOnceListener);
-    expect(page.rawListeners("console")[1]).toBe(onListener);
-
-    adapter.emit("console", {
-      args: () => [],
-      location: () => ({
-        column: 0,
-        columnNumber: 0,
-        line: 0,
-        lineNumber: 0,
-        url: ""
-      }),
-      page: () => null,
-      text: () => "hello",
-      timestamp: () => 1,
-      type: () => "log",
-      worker: () => null
-    });
-
-    expect(prependOnceListener).toHaveBeenCalledTimes(1);
-    expect(onListener).toHaveBeenCalledTimes(1);
-    expect(page.listenerCount("console")).toBe(1);
-    expect(page.listeners("console")).toEqual([onListener]);
-  });
 });
 
 async function createFakeFfmpeg(directory: string): Promise<string> {

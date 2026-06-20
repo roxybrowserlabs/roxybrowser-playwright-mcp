@@ -520,7 +520,6 @@ interface HarRouteEntry {
 
 const DEFAULT_EVENT_TIMEOUT_MS = 30_000;
 const MAX_CONSOLE_MESSAGE_HISTORY = 1_000;
-const DEFAULT_MAX_LISTENERS = 10;
 const INTERNAL_RECORDED_EVENTS = [
   "console",
   "domcontentloaded",
@@ -904,7 +903,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private fileChooserBridgeInstalled = false;
   private fileChooserInterceptionPromise: Promise<void> | null = null;
   private readonly pendingFileChoosers: PendingFileChooserState[] = [];
-  private maxListeners = DEFAULT_MAX_LISTENERS;
   private routeInterceptorsInstalled = false;
   private routePumpStarted = false;
   private readonly routeHandlers: RouteHandlerEntry[] = [];
@@ -1774,78 +1772,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.ensureObservation(event).listeners = reordered;
     this.ensureAdapterObservation(event);
     return this;
-  }
-
-  prependOnceListener(event: 'close', listener: (page: Page) => any): this;
-  prependOnceListener(event: 'console', listener: (consoleMessage: ConsoleMessage) => any): this;
-  prependOnceListener(event: 'crash', listener: (page: Page) => any): this;
-  prependOnceListener(event: 'dialog', listener: (dialog: Dialog) => any): this;
-  prependOnceListener(event: 'domcontentloaded', listener: (page: Page) => any): this;
-  prependOnceListener(event: 'download', listener: (download: Download) => any): this;
-  prependOnceListener(event: 'filechooser', listener: (fileChooser: FileChooser) => any): this;
-  prependOnceListener(event: 'frameattached', listener: (frame: Frame) => any): this;
-  prependOnceListener(event: 'framedetached', listener: (frame: Frame) => any): this;
-  prependOnceListener(event: 'framenavigated', listener: (frame: Frame) => any): this;
-  prependOnceListener(event: 'load', listener: (page: Page) => any): this;
-  prependOnceListener(event: 'pageerror', listener: (error: Error) => any): this;
-  prependOnceListener(event: 'popup', listener: (page: Page) => any): this;
-  prependOnceListener(event: 'request', listener: (request: Request) => any): this;
-  prependOnceListener(event: 'requestfailed', listener: (request: Request) => any): this;
-  prependOnceListener(event: 'requestfinished', listener: (request: Request) => any): this;
-  prependOnceListener(event: 'response', listener: (response: Response) => any): this;
-  prependOnceListener(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
-  prependOnceListener(event: 'worker', listener: (worker: Worker) => any): this;
-  prependOnceListener(event: PageEventName, listener: (...args: any[]) => any): this {
-    this.maybeStartFileChooserInterception(event);
-    const wrapped = ((payload?: PageEventMap[PageEventName]) => {
-      (this.removeListener as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
-      if (payload === undefined) {
-        (listener as () => void)();
-        return;
-      }
-
-      (listener as (eventPayload: PageEventMap[PageEventName]) => void)(payload);
-    }) as PageEventListener<PageEventName>;
-
-    const entries = this.ensurePublicListenerSet(event);
-    const entry = {
-      original: listener as PageEventListener<PageEventName>,
-      wrapped
-    };
-    const reordered = new Set<ListenerEntry<PageEventName>>([entry, ...entries]);
-    this.ensureObservation(event).listeners = reordered;
-    this.ensureAdapterObservation(event);
-    return this;
-  }
-
-  eventNames(): Array<string | symbol> {
-    return Array.from(this.eventObservations.entries())
-      .filter(([, observation]) => observation.listeners.size > 0)
-      .map(([event]) => event);
-  }
-
-  listenerCount(type: string | symbol): number {
-    return this.eventObservations.get(type as PageEventName)?.listeners.size ?? 0;
-  }
-
-  listeners(type: string | symbol): Function[] {
-    return Array.from(this.eventObservations.get(type as PageEventName)?.listeners ?? []).map((entry) => entry.original as Function);
-  }
-
-  rawListeners(type: string | symbol): Function[] {
-    return Array.from(this.eventObservations.get(type as PageEventName)?.listeners ?? []).map((entry) => entry.wrapped as Function);
-  }
-
-  setMaxListeners(n: number): this {
-    if (typeof n !== "number" || n < 0 || Number.isNaN(n)) {
-      throw new RangeError(`The value of "n" is out of range. It must be a non-negative number. Received ${n}.`);
-    }
-    this.maxListeners = n;
-    return this;
-  }
-
-  getMaxListeners(): number {
-    return this.maxListeners;
   }
 
   removeAllListeners(type?: string): this;
