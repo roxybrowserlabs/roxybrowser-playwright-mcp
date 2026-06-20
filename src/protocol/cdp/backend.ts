@@ -1909,6 +1909,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   >();
   private readonly frameSessionIds = new Map<string, string>();
   private readonly nativeFrames = new Map<string, CdpNativeFrameState>();
+  private readonly loadingFrameIds = new Set<string>();
   private currentUrl = "about:blank";
   private domContentLoaded = false;
   private loadFired = false;
@@ -2138,6 +2139,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
     client.Page.frameNavigated((event) => {
       this.upsertNativeFrame(event.frame);
+      this.loadingFrameIds.add(event.frame.id);
+      this.loadFired = false;
       if (!event.frame.parentId) {
         this.rejectInterruptedNavigationFailureCapturesForCommittedNavigation(
           event.frame.loaderId,
@@ -2161,6 +2164,21 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
     });
 
+    client.Page.lifecycleEvent?.((event: {
+      frameId: string;
+      name: string;
+    }) => {
+      if (event.name === "DOMContentLoaded" && this.isMainFrameId(event.frameId)) {
+        this.domContentLoaded = true;
+      }
+      if (event.name === "load") {
+        this.loadingFrameIds.delete(event.frameId);
+        this.loadFired = this.loadingFrameIds.size === 0;
+        this.maybeArmNetworkIdleTimer();
+      }
+      this.flushWaiters();
+    });
+
     client.Page.frameAttached?.((event: {
       frameId: string;
       parentFrameId?: string;
@@ -2174,14 +2192,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.emit("frameattached", undefined);
     });
 
+    client.Page.frameStartedLoading?.((event: { frameId: string }) => {
+      this.loadingFrameIds.add(event.frameId);
+      this.networkIdleReached = false;
+      this.clearNetworkIdleTimer();
+    });
+
     client.Page.frameDetached?.((event: { frameId: string; reason?: "remove" | "swap" }) => {
       if (event.reason === "swap") {
         return;
       }
+      this.loadingFrameIds.delete(event.frameId);
       this.settleRequestsForDetachedFrame(event.frameId);
       this.frameSessionIds.delete(event.frameId);
       this.removeNativeFrame(event.frameId);
       this.emit("framedetached", undefined);
+      this.flushWaiters();
     });
 
     client.Target?.attachedToTarget?.((event: {
@@ -2350,12 +2376,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
 
     client.Page.frameStoppedLoading((event) => {
-      if (!this.isMainFrameId(event.frameId)) {
-        return;
+      this.loadingFrameIds.delete(event.frameId);
+      if (this.isMainFrameId(event.frameId)) {
+        this.domContentLoaded = true;
       }
-
-      this.domContentLoaded = true;
-      this.loadFired = true;
+      this.loadFired = this.loadingFrameIds.size === 0;
       this.maybeArmNetworkIdleTimer();
       this.flushWaiters();
     });
@@ -6356,6 +6381,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   private resetNavigationState(): void {
+    this.loadingFrameIds.clear();
     this.domContentLoaded = false;
     this.loadFired = false;
     this.networkIdleReached = false;

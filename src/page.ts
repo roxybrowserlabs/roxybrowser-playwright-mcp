@@ -1190,6 +1190,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const timeout = options.timeout ?? this.defaultNavigationTimeoutMs;
     const waitUntil = options.waitUntil ?? "load";
     const navigationTargetDescription = options.url ? ` to "${String(options.url)}"` : "";
+    const formatFrameDetachError = () =>
+      new Error(
+        `frame.waitForNavigation: Navigating frame was detached!\n` +
+          `=========================== logs ===========================\n` +
+          `waiting for navigation${navigationTargetDescription} until "${waitUntil}"\n` +
+          `============================================================`
+      );
     const navigationResponseAbortController = new AbortController();
     const adapterNavigationResponsePromise = this.adapter.waitForNavigationResponse?.({
       initialUrl,
@@ -1274,7 +1281,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       const frameDetachedListener = ((detachedFrame: Frame) => {
         if (frameObject && detachedFrame === frameObject) {
           cleanup();
-          reject(new Error("Navigating frame was detached!"));
+          reject(formatFrameDetachError());
         }
       }) as PageEventListener<"framedetached">;
 
@@ -4625,6 +4632,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const currentIds = new Set(normalizedSnapshots.map((snapshot) => snapshot.id));
     const attachedFrames: RoxyFrame[] = [];
     const navigatedFrames: RoxyFrame[] = [];
+    const attachedFrameIds = new Set<string>();
     const detachedFrames: RoxyFrame[] = [];
 
     this.frameOrder.length = 0;
@@ -4666,6 +4674,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         this.frameMap.set(snapshot.id, frame);
         if (snapshot.id !== "main") {
           attachedFrames.push(frame);
+          attachedFrameIds.add(snapshot.id);
         }
         navigatedFrames.push(frame);
       }
@@ -4685,8 +4694,19 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     for (const frame of attachedFrames) {
       this.emit("frameattached", frame);
     }
-    for (const frame of navigatedFrames) {
+    const immediateNavigatedFrames = navigatedFrames.filter((frame) => !attachedFrameIds.has(frame.snapshotState().id));
+    const deferredNavigatedFrames = navigatedFrames.filter((frame) => attachedFrameIds.has(frame.snapshotState().id));
+    for (const frame of immediateNavigatedFrames) {
       this.emit("framenavigated", frame);
+    }
+    if (deferredNavigatedFrames.length) {
+      queueMicrotask(() => {
+        for (const frame of deferredNavigatedFrames) {
+          if (this.frameById(frame.snapshotState().id) === frame) {
+            this.emit("framenavigated", frame);
+          }
+        }
+      });
     }
     for (const frame of detachedFrames) {
       this.emit("framedetached", frame);

@@ -167,6 +167,31 @@ describe("page waitForNavigation contract e2e", () => {
     });
   });
 
+  it("works when subframe issues window.stop like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/frames/style.css", () => {});
+      let done = false;
+      void page.goto(fixture.server.PREFIX + "/frames/one-frame.html")
+        .then(() => {
+          done = true;
+        })
+        .catch(() => {});
+
+      const frame = await new Promise<ReturnType<typeof page.frames>[number]>((resolve) => {
+        page.once("frameattached", resolve);
+      });
+      await new Promise<void>((resolve) => {
+        page.on("framenavigated", (navigatedFrame) => {
+          if (navigatedFrame === frame) {
+            resolve();
+          }
+        });
+      });
+      await frame.evaluate(() => window.stop());
+      await expect.poll(() => done).toBe(true);
+    });
+  });
+
   it("supports URLPattern matching", async () => {
     await withPage(async (page) => {
       const responsePromise = page.waitForNavigation({
@@ -301,6 +326,28 @@ describe("page waitForNavigation contract e2e", () => {
       expect(response?.url()).toContain("grid.html");
       expect(response?.frame()).toBe(frame);
       expect(page.url()).toContain("/frames/one-frame.html");
+    });
+  });
+
+  it("fails when frame detaches like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/frames/one-frame.html");
+      const frame = page.frames()[1]!;
+      fixture.server.setRoute("/empty.html", () => {});
+      fixture.server.setRoute("/one-style.css", () => {});
+
+      const [error] = await Promise.all([
+        frame.waitForNavigation().catch((caught) => caught),
+        page.$eval("iframe", (iframe) => {
+          (iframe as HTMLIFrameElement).contentWindow!.location.href = "/one-style.html";
+        }),
+        fixture.server.waitForRequest("/one-style.css").then(() => page.$eval("iframe", (iframe) => {
+          setTimeout(() => iframe.remove(), 0);
+        }))
+      ]);
+
+      expect(error.message).toContain('waiting for navigation until "load"');
+      expect(error.message.toLowerCase()).toContain("frame was detached");
     });
   });
 });
