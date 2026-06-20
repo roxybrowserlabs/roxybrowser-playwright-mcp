@@ -2033,6 +2033,162 @@ describe("RoxyPage", () => {
     expect(seen).toEqual(["echo"]);
   });
 
+  it("does not throw after page closure when websocket route sends like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    let routeRef: import("../../src/types/api.js").WebSocketRoute | null = null;
+    await page.routeWebSocket("**/ws", async (ws) => {
+      ws.connectToServer();
+      routeRef = ws;
+    });
+
+    await (page as any).dispatchWebSocketOpen({
+      id: "websocket:after-close",
+      url: "wss://example.com/ws",
+      protocols: []
+    });
+
+    await page.close();
+
+    expect(() => {
+      routeRef!.send("hello");
+    }).not.toThrow();
+  });
+
+  it("keeps websocket routes open with an empty handler like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await page.routeWebSocket("**/ws", () => {});
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:empty-handler",
+      url: "wss://example.com/ws",
+      protocols: []
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    await expect(
+      (page as any).dispatchWebSocketEvent({
+        id: "websocket:empty-handler",
+        kind: "message",
+        message: "hi"
+      })
+    ).resolves.toBeUndefined();
+    await expect(
+      (page as any).dispatchWebSocketEvent({
+        id: "websocket:empty-handler",
+        kind: "message",
+        message: "hi2"
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("exposes websocket protocols to page and server routes like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    let pageProtocols: string[] | null = null;
+    let serverProtocols: string[] | null = null;
+
+    await page.routeWebSocket("**/ws", (ws) => {
+      pageProtocols = ws.protocols();
+      serverProtocols = ws.connectToServer().protocols();
+    });
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:protocols",
+      url: "wss://example.com/ws",
+      protocols: ["chat.v2", "chat.v1"]
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    expect(pageProtocols).toEqual(["chat.v2", "chat.v1"]);
+    expect(serverProtocols).toEqual(["chat.v2", "chat.v1"]);
+  });
+
+  it("prefers the most recently registered page websocket route like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const seen: string[] = [];
+
+    await page.routeWebSocket(/ws1/, (ws) => {
+      ws.onMessage(() => {
+        seen.push("page-mock-1");
+        ws.send("page-mock-1");
+      });
+    });
+    await page.routeWebSocket(/ws1/, (ws) => {
+      ws.onMessage(() => {
+        seen.push("page-mock-2");
+        ws.send("page-mock-2");
+      });
+    });
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:route-order",
+      url: "wss://example.com/ws1",
+      protocols: []
+    });
+    await (page as any).dispatchWebSocketEvent({
+      id: "websocket:route-order",
+      kind: "message",
+      message: "request"
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    expect(seen).toEqual(["page-mock-2"]);
+    expect(adapter.evaluate).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        socketId: "websocket:route-order",
+        value: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "message",
+            message: "page-mock-2"
+          })
+        ])
+      }),
+      true
+    );
+  });
+
   it("stops default forwarding once the original websocket route handles messages", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
