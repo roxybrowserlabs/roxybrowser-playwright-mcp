@@ -2564,10 +2564,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
               pageOwnedRequest.type,
               pageOwnedRequest.url
             );
-            this.responseBodyRequestIds.set(activeRequestId, scopedRequestId);
+            this.responseBodyRequestIds.set(activeRequestId, responseEvent.requestId);
             this.requestMetadata.delete(responseEvent.requestId);
             metadata = this.requestMetadata.get(activeRequestId);
-            activeBodySourceRequestId = scopedRequestId;
           } else if (!metadata && pageOwnedRequest) {
             this.requestMetadata.set(scopedRequestId, pageOwnedRequest);
             this.requestMetadata.delete(responseEvent.requestId);
@@ -2578,17 +2577,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           if (workerFrameId) {
             bodyState.frameId = workerFrameId;
           }
-          if (activeBodySourceRequestId !== activeRequestId) {
-            const sourceBodyState = this.ensureResponseBodyState(activeBodySourceRequestId);
-            bodyState.ready = sourceBodyState.ready;
-            bodyState.resolveReady = sourceBodyState.resolveReady;
-            bodyState.markFailed = sourceBodyState.markFailed;
-            bodyState.url = responseEvent.response.url;
-            bodyState.sessionId = event.sessionId;
-            if (workerFrameId) {
-              bodyState.frameId = workerFrameId;
-            }
-          }
+          bodyState.url = responseEvent.response.url;
           const request = this.requestMetadata.get(activeRequestId) ?? metadata ?? this.requestMetadata.get(scopedRequestId);
           if (request) {
             request.responseStatus = responseEvent.response.status;
