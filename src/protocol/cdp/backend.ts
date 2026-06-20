@@ -15,7 +15,7 @@ import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOUR
 import { LocatorError, NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
 import { mergeExtraHTTPHeaders } from "../../httpHeaders.js";
 import { RoxyElementHandle } from "../../elementHandle.js";
-import { RoxyJSHandle, createJSHandle } from "../../jsHandle.js";
+import { RoxyJSHandle, createJSHandle, createRemoteJSHandle } from "../../jsHandle.js";
 import { RoxyWorker, type WorkerDelegate } from "../../worker.js";
 import { createPageResponse } from "../../pageResponse.js";
 import {
@@ -1899,7 +1899,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private mainFrameId: string | undefined;
   private readonly defaultExecutionContextByFrameId = new Map<string, number>();
   private readonly defaultExecutionContextSessionByFrameId = new Map<string, string | undefined>();
-  private readonly workersByTargetId = new Map<string, { sessionId: string; worker: RoxyWorker }>();
+  private readonly workersByTargetId = new Map<string, {
+    delegate: CdpWorkerDelegate;
+    sessionId: string;
+    worker: RoxyWorker;
+  }>();
   private readonly pendingDefaultExecutionContextWaiters = new Map<
     string,
     Set<{
@@ -2272,11 +2276,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       };
     }) => {
       if (event.targetInfo.type === "worker") {
+        const delegate = new CdpWorkerDelegate(this, this.options.client, event.sessionId, event.targetInfo.url ?? "");
         const worker = new RoxyWorker(
           event.targetInfo.url ?? "",
-          new CdpWorkerDelegate(this.options.client, event.sessionId, event.targetInfo.url ?? "")
+          delegate
         );
         this.workersByTargetId.set(event.targetInfo.targetId, {
+          delegate,
           sessionId: event.sessionId,
           worker
         });
@@ -2309,6 +2315,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             worker: () => worker
           };
           this.emit("console", message);
+        });
+        (this.options.browserClient as CdpClient & {
+          on(event: string, listener: (params: unknown) => void): unknown;
+        }).on?.(`Runtime.exceptionThrown.${event.sessionId}`, (params: unknown) => {
+          const exceptionEvent = params as {
+            exceptionDetails: CdpExceptionDetails;
+          };
+          this.emit("pageerror", exceptionToError(exceptionEvent.exceptionDetails));
         });
         const sessionClient = this.options.client as typeof this.options.client & {
           send(method: string, params?: Record<string, never>, sessionId?: string): Promise<unknown>;
@@ -2376,6 +2390,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         return;
       }
       this.workersByTargetId.delete(targetId);
+      worker.delegate.markClosed();
       worker.worker.emitClose();
     });
 
@@ -8024,7 +8039,10 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
 }
 
 class CdpWorkerDelegate implements WorkerDelegate {
+  private closed = false;
+
   constructor(
+    private readonly page: CdpPageAdapter,
     private readonly client: CdpClient,
     private readonly sessionId: string,
     private readonly workerUrl: string
@@ -8034,14 +8052,27 @@ class CdpWorkerDelegate implements WorkerDelegate {
     return this.workerUrl;
   }
 
+  markClosed(): void {
+    this.closed = true;
+  }
+
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<R> {
     const response = await this.evaluateInWorker(pageFunction, arg, true);
     return parseEvaluationResultValue(response.result.value as SerializedValue) as R;
   }
 
   async evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<SmartHandle<R>> {
-    const response = await this.evaluateInWorker(pageFunction, arg, true);
-    return createJSHandle(parseEvaluationResultValue(response.result.value as SerializedValue) as R) as SmartHandle<R>;
+    const expression = serializePageFunctionForWorker(pageFunction);
+    const isFunction = typeof pageFunction === "function";
+    const remoteHandle = await this.page.evaluateWithArgumentsInSession<R>(
+      this.sessionId,
+      undefined,
+      expression,
+      false,
+      arg === undefined ? [] : [arg],
+      isFunction
+    );
+    return await createRemoteJSHandle(remoteHandle) as SmartHandle<R>;
   }
 
   private async evaluateInWorker<R, Arg>(
@@ -8049,6 +8080,9 @@ class CdpWorkerDelegate implements WorkerDelegate {
     arg: Arg | undefined,
     returnByValue: boolean
   ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }> {
+    if (this.closed) {
+      throw new Error("Target page, context or browser has been closed");
+    }
     const expression = serializePageFunctionForWorker(pageFunction);
     const serializedArg = serializeAsCallArgumentNoHandles(arg);
     const functionDeclaration = `async (serializedArg) => {
@@ -8090,7 +8124,7 @@ class CdpWorkerDelegate implements WorkerDelegate {
       returnByValue: false
     }, this.sessionId);
     if (globalHandle.exceptionDetails) {
-      throw new Error(formatCdpEvaluationError(globalHandle));
+      throw normalizeWorkerEvaluationError(formatCdpEvaluationError(globalHandle));
     }
     const objectId = globalHandle.result.objectId;
     if (!objectId) {
@@ -8106,13 +8140,20 @@ class CdpWorkerDelegate implements WorkerDelegate {
         userGesture: true
       }, this.sessionId);
       if (response.exceptionDetails) {
-        throw new Error(formatCdpEvaluationError(response));
+        throw normalizeWorkerEvaluationError(formatCdpEvaluationError(response));
       }
       return response;
     } finally {
       await runtimeClient.send("Runtime.releaseObject", { objectId }, this.sessionId).catch(() => {});
     }
   }
+}
+
+function normalizeWorkerEvaluationError(message: string): Error {
+  if (message.includes("Session with given id not found.") || isClosedCdpConnectionError(message)) {
+    return new Error("Target page, context or browser has been closed");
+  }
+  return new Error(message);
 }
 
 class CdpJSHandleAdapter<T = unknown> implements ProtocolJSHandleAdapter<T> {
@@ -8218,7 +8259,13 @@ class CdpJSHandleAdapter<T = unknown> implements ProtocolJSHandleAdapter<T> {
       arguments: [{ value: propertyName }],
       returnByValue: false,
       awaitPromise: true
-    }, this.runtimeSessionId);
+    }, this.runtimeSessionId).catch((error) => {
+      const message = String(error instanceof Error ? error.message : error);
+      if (message.includes("Session with given id not found.") || isClosedCdpConnectionError(error)) {
+        throw new Error("Target page, context or browser has been closed");
+      }
+      throw error;
+    });
 
     if (response.exceptionDetails) {
       throw new Error(formatCdpEvaluationError(response));

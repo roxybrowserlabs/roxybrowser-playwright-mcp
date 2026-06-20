@@ -128,6 +128,47 @@ describe("page workers contract e2e", () => {
     });
   });
 
+  it("emits created and destroyed worker events like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      const workerCreatedPromise = page.waitForEvent("worker");
+      const workerHandle = await page.evaluateHandle(() => {
+        return new Worker(URL.createObjectURL(new Blob(["1"], { type: "application/javascript" })));
+      });
+      const worker = await workerCreatedPromise;
+      const workerThisHandle = await worker.evaluateHandle("this");
+      const workerDestroyedPromise = new Promise((resolve) => worker.once("close", resolve));
+
+      await page.evaluate((handle) => {
+        handle.terminate();
+      }, workerHandle);
+
+      expect(await workerDestroyedPromise).toBe(worker);
+      const error = await workerThisHandle.getProperty("self").catch((caught: Error) => caught);
+      expect(error.message).toContain("Target page, context or browser has been closed");
+    });
+  });
+
+  it("reports worker exceptions through pageerror like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const errorPromise = new Promise<Error>((resolve) => page.on("pageerror", resolve));
+
+      await page.evaluate(() => {
+        new Worker(URL.createObjectURL(new Blob([`
+          setTimeout(() => {
+            console.log("hey");
+            throw new Error("this is my error");
+          });
+        `], { type: "application/javascript" })));
+      });
+
+      const error = await errorPromise;
+      expect(error.message).toContain("this is my error");
+    });
+  });
+
   it("emits worker close and clears workers on navigation like Playwright", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);
