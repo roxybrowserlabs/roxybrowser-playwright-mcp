@@ -150,10 +150,27 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return element.textContent ?? "";
   };
 
-  const immediateTextNodesForSelector = (element: Element): string[] =>
-    Array.from(element.childNodes)
-      .filter((node): node is Text => isTextNode(node))
-      .map((node) => node.nodeValue ?? "");
+  const immediateTextNodesForSelector = (element: Element): string[] => {
+    const immediateTextNodes: string[] = [];
+    let currentImmediate = "";
+    for (const node of Array.from(element.childNodes)) {
+      if (isTextNode(node)) {
+        currentImmediate += node.nodeValue ?? "";
+        continue;
+      }
+      if (node.nodeType === Node.COMMENT_NODE) {
+        continue;
+      }
+      if (currentImmediate) {
+        immediateTextNodes.push(currentImmediate);
+      }
+      currentImmediate = "";
+    }
+    if (currentImmediate) {
+      immediateTextNodes.push(currentImmediate);
+    }
+    return immediateTextNodes;
+  };
 
   const matchesTextSelector = (element: Element, selector: LocatorSelector): boolean => {
     if (selector.internal) {
@@ -294,12 +311,12 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   };
 
   const shouldSkipTextSelectorElement = (element: Element): boolean => {
-    const tagName = element.tagName.toLowerCase();
+    const document = element.ownerDocument;
     return (
-      tagName === "head" ||
-      tagName === "title" ||
-      tagName === "script" ||
-      tagName === "style" ||
+      element.nodeName === "SCRIPT" ||
+      element.nodeName === "NOSCRIPT" ||
+      element.nodeName === "STYLE" ||
+      !!document.head?.contains(element) ||
       isInternalOverlayElement(element)
     );
   };

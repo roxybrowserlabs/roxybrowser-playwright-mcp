@@ -149,6 +149,96 @@ describe("page text selector contract e2e", () => {
     });
   });
 
+  it("matches text across sibling nodes like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div id=target1>Hello<i>,</i> <span id=target2>world</span><b>!</b></div>`);
+
+      expect(await page.$eval(`:text("Hello, world!")`, (element) => element.id)).toBe("target1");
+      expect(await page.$eval(`:text("Hello")`, (element) => element.id)).toBe("target1");
+      expect(await page.$eval(`:text("world")`, (element) => element.id)).toBe("target2");
+      expect(await page.$$eval(`:text("world")`, (elements) => elements.length)).toBe(1);
+      expect(await page.$(`:text("hello world")`)).toBe(null);
+      expect(await page.$(`div:text("world")`)).toBe(null);
+      expect(await page.$eval(`text=Hello, world!`, (element) => element.id)).toBe("target1");
+      expect(await page.$eval(`text=Hello`, (element) => element.id)).toBe("target1");
+      expect(await page.$eval(`text=world`, (element) => element.id)).toBe("target2");
+      expect(await page.$$eval(`text=world`, (elements) => elements.length)).toBe(1);
+      expect(await page.$(`text=hello world`)).toBe(null);
+
+      expect(await page.$(`:text-is("Hello, world!")`)).toBe(null);
+      expect(await page.$eval(`:text-is("Hello")`, (element) => element.id)).toBe("target1");
+      expect(await page.$eval(`:text-is("world")`, (element) => element.id)).toBe("target2");
+      expect(await page.$$eval(`:text-is("world")`, (elements) => elements.length)).toBe(1);
+      expect(await page.$(`text="Hello, world!"`)).toBe(null);
+      expect(await page.$eval(`text="Hello"`, (element) => element.id)).toBe("target1");
+      expect(await page.$eval(`text="world"`, (element) => element.id)).toBe("target2");
+      expect(await page.$$eval(`text="world"`, (elements) => elements.length)).toBe(1);
+
+      expect(await page.$eval(`:text-matches(".*")`, (element) => element.nodeName)).toBe("I");
+      expect(await page.$eval(`:text-matches("world?")`, (element) => element.id)).toBe("target2");
+      expect(await page.$$eval(`:text-matches("world")`, (elements) => elements.length)).toBe(1);
+      expect(await page.$(`div:text(".*")`)).toBe(null);
+      expect(await page.$eval(`text=/.*/`, (element) => element.nodeName)).toBe("I");
+      expect(await page.$eval(`text=/world?/`, (element) => element.id)).toBe("target2");
+      expect(await page.$$eval(`text=/world/`, (elements) => elements.length)).toBe(1);
+    });
+  });
+
+  it("ignores comments for exact text selectors like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div id=me>hel<!-- comment -->lo
+      <!-- comment -->
+      world</div>`);
+
+      expect(await page.$eval(`:text-is("hello world")`, (element) => element.id)).toBe("me");
+      expect(await page.locator("div", { hasText: "hello world" }).getAttribute("id")).toBe("me");
+      expect(await page.getByText("hello world", { exact: true }).getAttribute("id")).toBe("me");
+    });
+  });
+
+  it("clears text selector caches after DOM mutations like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<div id=target1>text</div><div id=target2>text</div>`);
+      const div = await page.$("#target1");
+
+      await div!.evaluate((element) => {
+        element.textContent = "text";
+      });
+      expect(await page.$eval(`text=text`, (element) => element.id)).toBe("target1");
+      await div!.evaluate((element) => {
+        element.textContent = "foo";
+      });
+      expect(await page.$eval(`text=text`, (element) => element.id)).toBe("target2");
+
+      await div!.evaluate((element) => {
+        element.textContent = "text";
+      });
+      expect(await page.$eval(`:text("text")`, (element) => element.id)).toBe("target1");
+      await div!.evaluate((element) => {
+        element.textContent = "foo";
+      });
+      expect(await page.$eval(`:text("text")`, (element) => element.id)).toBe("target2");
+
+      await div!.evaluate((element) => {
+        element.textContent = "text";
+      });
+      expect(await page.$$eval(`text=text`, (elements) => elements.length)).toBe(2);
+      await div!.evaluate((element) => {
+        element.textContent = "foo";
+      });
+      expect(await page.$$eval(`text=text`, (elements) => elements.length)).toBe(1);
+
+      await div!.evaluate((element) => {
+        element.textContent = "text";
+      });
+      expect(await page.$$eval(`:text("text")`, (elements) => elements.length)).toBe(2);
+      await div!.evaluate((element) => {
+        element.textContent = "foo";
+      });
+      expect(await page.$$eval(`:text("text")`, (elements) => elements.length)).toBe(1);
+    });
+  });
+
   it("supports CSS has-text pseudo selectors like Playwright", async () => {
     await withPage(async (page) => {
       await page.setContent(`
