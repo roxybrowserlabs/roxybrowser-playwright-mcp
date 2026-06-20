@@ -2527,6 +2527,29 @@ describe("RoxyPage", () => {
     expect(firstFrame).toContain("page.test.ts");
   });
 
+  it("surfaces waitForRequest timeout stacks from the api call site", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    page.setDefaultTimeout(1);
+    const error = await page.waitForRequest(() => false).catch((caught) => caught as Error);
+    const firstFrame = String(error.stack)
+      .split("\n")
+      .find((line) => line.startsWith("    at "));
+
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect(firstFrame).toContain("page.test.ts");
+  });
+
   it("waits for request and response by url matcher", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {

@@ -56,6 +56,10 @@ describe("page waitForRequest contract e2e", () => {
         .catch((caught) => caught);
       expect(error).toBeInstanceOf(TimeoutError);
       expect(error.message).toContain('Timeout 1ms exceeded while waiting for event "request"');
+      const firstFrame = String(error.stack)
+        .split("\n")
+        .find((line) => line.startsWith("    at "));
+      expect(firstFrame).toContain("page-wait-for-request.contract.test.ts");
     });
   });
 
