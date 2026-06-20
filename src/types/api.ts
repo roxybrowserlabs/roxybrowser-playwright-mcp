@@ -21,6 +21,7 @@ import type {
   GetByTitleOptions,
   HoverOptions,
   LaunchOptions,
+  LocatorScreenshotOptions,
   PageCloseOptions,
   PageGotoOptions,
   PageScreenshotOptions,
@@ -1050,17 +1051,17 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   contentFrame(): Promise<null|Frame>;
   ownerFrame(): Promise<null|Frame>;
   boundingBox(): Promise<null|{ x: number; y: number; width: number; height: number; }>;
-  dispatchEvent(type: string, eventInit?: unknown): Promise<void>;
-  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  dispatchEvent(type: string, eventInit?: EvaluationArgument): Promise<void>;
+  screenshot(options?: LocatorScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(options?: { timeout?: number; }): Promise<void>;
   selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
-  tap(options?: TapOptions): Promise<void>;
+  tap(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   waitForElementState(state: "visible"|"hidden"|"stable"|"enabled"|"disabled"|"editable", options?: { timeout?: number; }): Promise<void>;
-  click(options?: ClickOptions): Promise<void>;
-  hover(options?: HoverOptions): Promise<void>;
-  fill(value: string, options?: FillOptions): Promise<void>;
-  type(value: string, options?: TypeOptions): Promise<void>;
-  press(key: string, options?: PressOptions): Promise<void>;
+  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  hover(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  fill(text: string, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+  type(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+  press(key: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   textContent(): Promise<null|string>;
   innerText(): Promise<string>;
   innerHTML(): Promise<string>;
@@ -1073,25 +1074,18 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   isHidden(): Promise<boolean>;
   isVisible(): Promise<boolean>;
   focus(): Promise<void>;
-  check(options?: ClickOptions): Promise<void>;
-  setChecked(checked: boolean, options?: ClickOptions): Promise<void>;
-  uncheck(options?: ClickOptions): Promise<void>;
+  check(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  setChecked(checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  uncheck(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   selectOption(
-    values:
-      | null
-      | string
-      | ElementHandle
-      | ReadonlyArray<string>
-      | SelectOptionValue
-      | ReadonlyArray<ElementHandle>
-      | ReadonlyArray<SelectOptionValue>,
+    values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>,
     options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number }
   ): Promise<Array<string>>;
   setInputFiles(
-    files: string | FilePayload | string[] | FilePayload[],
-    options?: SetInputFilesOptions
+    files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>,
+    options?: { noWaitAfter?: boolean; timeout?: number; }
   ): Promise<void>;
-  dblclick(options?: ClickOptions): Promise<void>;
+  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
 }
 
 export interface JSHandle<T = unknown> extends Disposable {
@@ -1119,13 +1113,13 @@ export interface Locator {
   }): Locator;
   frameLocator(selector: string): FrameLocator;
   contentFrame(): FrameLocator;
-  getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
-  getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator;
-  getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator;
-  getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): Locator;
+  getByText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByAltText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByLabel(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByPlaceholder(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByTestId(testId: string | RegExp): Locator;
-  getByRole(role: string, options?: GetByRoleOptions): Locator;
-  getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator;
+  getByRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: { checked?: boolean; description?: string|RegExp; disabled?: boolean; exact?: boolean; expanded?: boolean; includeHidden?: boolean; level?: number; name?: string|RegExp; pressed?: boolean; selected?: boolean; }): Locator;
+  getByTitle(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   filter(options?: {
     has?: Locator;
     hasNot?: Locator;
@@ -1144,77 +1138,56 @@ export interface Locator {
   allInnerTexts(): Promise<Array<string>>;
   allTextContents(): Promise<Array<string>>;
   count(): Promise<number>;
-  evaluate<R, Arg>(
-    pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
-    arg: Arg,
-    options?: TimeoutOptions
-  ): Promise<R>;
-  evaluate<R>(
-    pageFunction: PageFunctionOn<SVGElement | HTMLElement, void, R>,
-    options?: TimeoutOptions
-  ): Promise<R>;
+  evaluate<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg, options?: { timeout?: number; }): Promise<R>;
+  evaluate<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, void, R>, options?: { timeout?: number; }): Promise<R>;
   evaluateAll<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
   evaluateAll<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E[], void, R>): Promise<R>;
-  evaluateHandle<R, Arg>(
-    pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
-    arg: Arg,
-    options?: TimeoutOptions
-  ): Promise<SmartHandle<R>>;
-  evaluateHandle<R>(
-    pageFunction: PageFunctionOn<SVGElement | HTMLElement, void, R>,
-    options?: TimeoutOptions
-  ): Promise<SmartHandle<R>>;
-  boundingBox(options?: TimeoutOptions): Promise<Rect | null>;
-  dblclick(options?: ClickOptions): Promise<void>;
-  check(options?: ClickOptions): Promise<void>;
+  evaluateHandle<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
+  evaluateHandle<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, void, R>): Promise<SmartHandle<R>>;
+  boundingBox(options?: { timeout?: number; }): Promise<Rect | null>;
+  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  check(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   clear(options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  click(options?: ClickOptions): Promise<void>;
-  dispatchEvent(type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void>;
+  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  dispatchEvent(type: string, eventInit?: EvaluationArgument, options?: { timeout?: number; }): Promise<void>;
   dragTo(target: Locator, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   drop(payload: { files?: string|Array<string>|{ name: string; mimeType: string; buffer: Buffer; }|Array<{ name: string; mimeType: string; buffer: Buffer; }>; data?: { [key: string]: string; }; }, options?: { position?: { x: number; y: number; }; timeout?: number; }): Promise<void>;
-  hover(options?: HoverOptions): Promise<void>;
-  fill(value: string, options?: FillOptions): Promise<void>;
-  type(value: string, options?: TypeOptions): Promise<void>;
+  hover(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  fill(value: string, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+  type(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   pressSequentially(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  press(key: string, options?: PressOptions): Promise<void>;
-  focus(options?: TimeoutOptions): Promise<void>;
+  press(key: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+  focus(options?: { timeout?: number; }): Promise<void>;
   blur(options?: { timeout?: number; }): Promise<void>;
-  getAttribute(name: string, options?: TimeoutOptions): Promise<string | null>;
+  getAttribute(name: string, options?: { timeout?: number; }): Promise<string | null>;
   highlight(options?: { style?: string | { [key: string]: string|number }; }): Promise<Disposable>;
   hideHighlight(): Promise<void>;
-  innerHTML(options?: TimeoutOptions): Promise<string>;
-  innerText(options?: TimeoutOptions): Promise<string>;
-  inputValue(options?: TimeoutOptions): Promise<string>;
-  isChecked(options?: TimeoutOptions): Promise<boolean>;
-  isDisabled(options?: TimeoutOptions): Promise<boolean>;
-  isEditable(options?: TimeoutOptions): Promise<boolean>;
-  isEnabled(options?: TimeoutOptions): Promise<boolean>;
-  isHidden(options?: TimeoutOptions): Promise<boolean>;
-  ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
+  innerHTML(options?: { timeout?: number; }): Promise<string>;
+  innerText(options?: { timeout?: number; }): Promise<string>;
+  inputValue(options?: { timeout?: number; }): Promise<string>;
+  isChecked(options?: { timeout?: number; }): Promise<boolean>;
+  isDisabled(options?: { timeout?: number; }): Promise<boolean>;
+  isEditable(options?: { timeout?: number; }): Promise<boolean>;
+  isEnabled(options?: { timeout?: number; }): Promise<boolean>;
+  isHidden(options?: { timeout?: number; }): Promise<boolean>;
+  ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; timeout?: number; }): Promise<string>;
   normalize(): Promise<Locator>;
-  screenshot(options?: ScreenshotOptions): Promise<Buffer>;
+  screenshot(options?: LocatorScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(options?: { timeout?: number; }): Promise<void>;
   selectOption(
-    values:
-      | null
-      | string
-      | ElementHandle
-      | ReadonlyArray<string>
-      | SelectOptionValue
-      | ReadonlyArray<ElementHandle>
-      | ReadonlyArray<SelectOptionValue>,
+    values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>,
     options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number }
   ): Promise<Array<string>>;
   selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
-  setChecked(checked: boolean, options?: ClickOptions): Promise<void>;
+  setChecked(checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   setInputFiles(
-    files: string | FilePayload | string[] | FilePayload[],
-    options?: SetInputFilesOptions
+    files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>,
+    options?: { noWaitAfter?: boolean; timeout?: number; }
   ): Promise<void>;
-  tap(options?: TapOptions): Promise<void>;
-  textContent(options?: TimeoutOptions): Promise<string | null>;
-  uncheck(options?: ClickOptions): Promise<void>;
-  isVisible(options?: TimeoutOptions): Promise<boolean>;
+  tap(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  textContent(options?: { timeout?: number; }): Promise<string | null>;
+  uncheck(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  isVisible(options?: { timeout?: number; }): Promise<boolean>;
   waitFor(options?: { state?: "attached"|"detached"|"visible"|"hidden"; timeout?: number; }): Promise<void>;
   elementHandle(options?: { timeout?: number; }): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
   elementHandles(): Promise<Array<ElementHandle>>;
@@ -1232,13 +1205,13 @@ export interface FrameLocator {
     hasNotText?: string|RegExp;
     hasText?: string|RegExp;
   }): Locator;
-  getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
-  getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator;
-  getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator;
-  getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): Locator;
+  getByText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByAltText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByLabel(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByPlaceholder(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByTestId(testId: string | RegExp): Locator;
-  getByRole(role: string, options?: GetByRoleOptions): Locator;
-  getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator;
+  getByRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: { checked?: boolean; description?: string|RegExp; disabled?: boolean; exact?: boolean; expanded?: boolean; includeHidden?: boolean; level?: number; name?: string|RegExp; pressed?: boolean; selected?: boolean; }): Locator;
+  getByTitle(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   owner(): Locator;
 }
 
@@ -1250,8 +1223,8 @@ export interface Frame {
   url(): string;
   name(): string;
   frameElement(): Promise<ElementHandle>;
-  goto(url: string, options?: PageGotoOptions): Promise<Response | null>;
-  setContent(html: string, options?: PageSetContentOptions): Promise<void>;
+  goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<Response | null>;
+  setContent(html: string, options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   title(): Promise<string>;
   evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
@@ -1259,15 +1232,9 @@ export interface Frame {
   evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<SmartHandle<R>>;
   waitForFunction<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
   waitForFunction<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
-  waitForURL(
-    url: string | RegExp | URLPattern | ((url: URL) => boolean),
-    options?: WaitForURLOptions
-  ): Promise<void>;
-  waitForNavigation(options?: WaitForNavigationOptions): Promise<Response | null>;
-  waitForLoadState(
-    state?: "load" | "domcontentloaded" | "networkidle",
-    options?: { timeout?: number }
-  ): Promise<void>;
+  waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
+  waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<Response | null>;
+  waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { timeout?: number; }): Promise<void>;
   waitForTimeout(timeout: number): Promise<void>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
   waitForSelector(selector: string, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
@@ -1292,13 +1259,13 @@ export interface Frame {
     hasText?: string|RegExp;
   }): Locator;
   frameLocator(selector: string): FrameLocator;
-  getByText(text: string | RegExp, options?: GetByTextOptions): Locator;
-  getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator;
-  getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator;
-  getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): Locator;
+  getByText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByAltText(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByLabel(text: string|RegExp, options?: { exact?: boolean; }): Locator;
+  getByPlaceholder(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   getByTestId(testId: string | RegExp): Locator;
-  getByRole(role: string, options?: GetByRoleOptions): Locator;
-  getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator;
+  getByRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: { checked?: boolean; description?: string|RegExp; disabled?: boolean; exact?: boolean; expanded?: boolean; includeHidden?: boolean; level?: number; name?: string|RegExp; pressed?: boolean; selected?: boolean; }): Locator;
+  getByTitle(text: string|RegExp, options?: { exact?: boolean; }): Locator;
   content(): Promise<string>;
   addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
   addStyleTag(options?: { content?: string; path?: string; url?: string; }): Promise<ElementHandle>;

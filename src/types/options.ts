@@ -292,6 +292,8 @@ export interface ScreenshotOptions {
   type?: ScreenshotType;
 }
 
+export interface LocatorScreenshotOptions extends ScreenshotOptions {}
+
 export type PageScreenshotOptions = ScreenshotOptions;
 
 export interface AddScriptTagOptions {

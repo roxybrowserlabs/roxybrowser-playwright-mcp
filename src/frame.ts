@@ -15,6 +15,7 @@ import type {
   Locator,
   PageFunction,
   PageFunctionOn,
+  EvaluationArgument,
   Response,
   SmartHandle
 } from "./types/api.js";
@@ -56,9 +57,9 @@ type FrameSelectOptionValues =
   | string
   | ElementHandle
   | ReadonlyArray<string>
-  | SelectOptionValue
+  | { value?: string; label?: string; index?: number; }
   | ReadonlyArray<ElementHandle>
-  | ReadonlyArray<SelectOptionValue>;
+  | ReadonlyArray<{ value?: string; label?: string; index?: number; }>;
 
 export interface RoxyFrameSnapshot {
   id: string;
@@ -484,7 +485,7 @@ export class RoxyFrame implements Frame {
     await (await this.requiredElementHandleForSelector(selector, "frame.focus", options)).focus();
   }
 
-  async dispatchEvent(selector: string, type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void> {
+  async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: DispatchEventOptions): Promise<void> {
     await this.locator(selector).dispatchEvent(type, eventInit, options);
   }
 
