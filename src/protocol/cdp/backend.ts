@@ -1922,6 +1922,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     loadFired: boolean;
   }>();
   private readonly loadingFrameIds = new Set<string>();
+  private pendingRunBeforeUnloadCloseCount = 0;
   private currentUrl = "about:blank";
   private domContentLoaded = false;
   private loadFired = false;
@@ -2878,9 +2879,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       };
     }, sessionId?: string) => onExecutionContextCreated(event, sessionId));
 
-    client.Runtime.executionContextsCleared?.(() => {
-      this.defaultExecutionContextByFrameId.clear();
-      this.defaultExecutionContextSessionByFrameId.clear();
+    const onExecutionContextsCleared = (sessionId?: string) => {
+      this.clearDefaultExecutionContexts(sessionId);
+    };
+
+    client.Runtime.executionContextsCleared?.(() => onExecutionContextsCleared());
+    client.on?.("Runtime.executionContextsCleared", (_event: unknown, sessionId?: string) => {
+      onExecutionContextsCleared(sessionId);
     });
 
     client.Page.frameStoppedLoading((event) => {
@@ -5092,9 +5097,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async close(options: PageCloseOptions = {}): Promise<void> {
     if (options.runBeforeUnload) {
-      await (this.options.client.Page as typeof this.options.client.Page & {
-        close(): Promise<void>;
-      }).close();
+      this.pendingRunBeforeUnloadCloseCount += 1;
+      try {
+        await (this.options.client.Page as typeof this.options.client.Page & {
+          close(): Promise<void>;
+        }).close();
+      } finally {
+        this.pendingRunBeforeUnloadCloseCount = Math.max(0, this.pendingRunBeforeUnloadCloseCount - 1);
+      }
       return;
     }
 
@@ -6527,6 +6537,25 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
 
     throw new Error(`Frame execution context is not available for frame "${frameId}".`);
+  }
+
+  private clearDefaultExecutionContexts(sessionId?: string): void {
+    if (sessionId === undefined && this.pendingRunBeforeUnloadCloseCount > 0 && !this.closed) {
+      return;
+    }
+    if (sessionId === undefined) {
+      this.defaultExecutionContextByFrameId.clear();
+      this.defaultExecutionContextSessionByFrameId.clear();
+      return;
+    }
+
+    for (const [frameId, contextSessionId] of Array.from(this.defaultExecutionContextSessionByFrameId.entries())) {
+      if (contextSessionId !== sessionId) {
+        continue;
+      }
+      this.defaultExecutionContextSessionByFrameId.delete(frameId);
+      this.defaultExecutionContextByFrameId.delete(frameId);
+    }
   }
 
   private async waitForDefaultExecutionContext(frameId: string, timeout: number): Promise<number> {

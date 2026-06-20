@@ -196,6 +196,10 @@ interface PickLocatorState {
   resolve: (locator: Locator) => void;
 }
 
+interface DialogAutoHandler {
+  shouldAutoHandleDialog(page: RoxyPage): boolean;
+}
+
 class RoxyFileChooser implements FileChooser {
   constructor(
     private readonly roxyPage: RoxyPage,
@@ -3773,7 +3777,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const observation = this.eventObservations.get(event);
     if (!observation) {
       if (event === "dialog" && normalizedPayload && typeof normalizedPayload === "object") {
-        void (normalizedPayload as Dialog).dismiss().catch(() => {});
+        this.autoHandleDialog(normalizedPayload as Dialog);
       }
       return;
     }
@@ -3794,6 +3798,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           ? (wrapped as () => void)()
           : (wrapped as (eventPayload: PageEventMap[K]) => void)(normalizedPayload as PageEventMap[K]);
       this.trackPendingHandler(event, result);
+    }
+
+    if (
+      event === "dialog"
+      && normalizedPayload
+      && typeof normalizedPayload === "object"
+      && observation.listeners.size === 0
+      && this.shouldAutoHandleDialog()
+    ) {
+      this.autoHandleDialog(normalizedPayload as Dialog);
     }
   }
 
@@ -4062,6 +4076,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       page: () => payload.page?.() ?? this,
       type: () => payload.type()
     };
+  }
+
+  private shouldAutoHandleDialog(): boolean {
+    if ((this.eventObservations.get("dialog")?.listeners.size ?? 0) > 0) {
+      return false;
+    }
+    const autoHandler = this.browserContext as (RoxyBrowserContext & DialogAutoHandler) | undefined;
+    return autoHandler?.shouldAutoHandleDialog(this) ?? true;
+  }
+
+  private autoHandleDialog(dialog: Dialog): void {
+    const operation =
+      dialog.type() === "beforeunload"
+        ? dialog.accept()
+        : dialog.dismiss();
+    void operation.catch(() => {});
   }
 
   private createPublicConsoleMessage(payload: PageConsoleMessage): PageConsoleMessage {

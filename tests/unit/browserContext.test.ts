@@ -24,6 +24,73 @@ function createResponseWithSetCookies(
 }
 
 describe("RoxyBrowserContext", () => {
+  it("auto-handles page dialogs when only context bubbling listeners are attached internally", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const pageAdapter = createPageAdapterStub();
+    adapter.newPage = async () => pageAdapter;
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await context.newPage();
+
+    const dismiss = vi.fn(async () => {});
+    pageAdapter.emit("dialog", {
+      accept: vi.fn(async () => {}),
+      defaultValue: () => "",
+      dismiss,
+      message: () => "hello",
+      type: () => "alert"
+    });
+
+    await vi.waitFor(() => {
+      expect(dismiss).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not auto-handle dialogs when the browser context has dialog listeners", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const pageAdapter = createPageAdapterStub();
+    adapter.newPage = async () => pageAdapter;
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const seen: string[] = [];
+    context.on("dialog", (dialog) => {
+      seen.push(dialog.message());
+    });
+    await context.newPage();
+
+    const dismiss = vi.fn(async () => {});
+    pageAdapter.emit("dialog", {
+      accept: vi.fn(async () => {}),
+      defaultValue: () => "",
+      dismiss,
+      message: () => "hello",
+      type: () => "alert"
+    });
+
+    await vi.waitFor(() => {
+      expect(seen).toEqual(["hello"]);
+    });
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
   it("creates roxy pages from the underlying adapter", async () => {
     const adapter = createBrowserContextAdapterStub();
     adapter.newPage = async () => createPageAdapterStub();

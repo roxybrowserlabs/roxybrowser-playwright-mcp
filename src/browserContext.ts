@@ -607,6 +607,10 @@ export class RoxyBrowserContext implements BrowserContext {
     return true;
   }
 
+  shouldAutoHandleDialog(_page: RoxyPage): boolean {
+    return (this.listeners.get("dialog")?.size ?? 0) === 0;
+  }
+
   private attachPageEventBubbling(page: RoxyPage): void {
     const disposers: Array<() => void> = [];
     for (const event of BUBBLED_PAGE_EVENTS) {
