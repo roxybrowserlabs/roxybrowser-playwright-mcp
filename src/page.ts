@@ -2529,7 +2529,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }): Promise<void> {
     const removed = [...this.routeHandlers];
     this.routeHandlers.length = 0;
-    this.websocketRouteHandlers.length = 0;
     this.harRoutes.length = 0;
     await this.stopRouteHandlers(removed, options?.behavior ?? "default");
     await this.syncRouteInterception();

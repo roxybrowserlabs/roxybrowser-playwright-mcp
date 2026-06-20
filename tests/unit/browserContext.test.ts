@@ -219,7 +219,7 @@ describe("RoxyBrowserContext", () => {
     expect(seen).toEqual(["page:request"]);
   });
 
-  it("falls back to context websocket routes after page routes are cleared", async () => {
+  it("keeps page websocket routes after page.unrouteAll like Playwright", async () => {
     const adapter = createBrowserContextAdapterStub();
     adapter.newPage = async () => createPageAdapterStub();
     const context = new RoxyBrowserContext(adapter, {
@@ -251,21 +251,21 @@ describe("RoxyBrowserContext", () => {
     await page.unrouteAll();
 
     const decision = await (page as any).dispatchWebSocketOpen({
-      id: "websocket:context-after-page-unroute",
+      id: "websocket:page-still-routed-after-unroute-all",
       url: "wss://example.com/ws1",
       protocols: []
     });
     await (page as any).dispatchWebSocketEvent({
-      id: "websocket:context-after-page-unroute",
+      id: "websocket:page-still-routed-after-unroute-all",
       kind: "message",
       message: "request"
     });
 
     expect(decision).toEqual({ action: "mock" });
-    expect(seen).toEqual(["context:request"]);
+    expect(seen).toEqual(["page:request"]);
   });
 
-  it("clears browser-context websocket routes when unrouteAll is called", async () => {
+  it("keeps browser-context websocket routes after context.unrouteAll like Playwright", async () => {
     const adapter = createBrowserContextAdapterStub();
     adapter.newPage = async () => createPageAdapterStub();
     const context = new RoxyBrowserContext(adapter, {
@@ -289,12 +289,12 @@ describe("RoxyBrowserContext", () => {
     await context.unrouteAll({ behavior: "wait" });
 
     const decision = await (page as any).dispatchWebSocketOpen({
-      id: "websocket:context-unroute-all",
+      id: "websocket:context-still-routed-after-unroute-all",
       url: "wss://example.com/ws2",
       protocols: []
     });
 
-    expect(decision).toEqual({ action: "passthrough" });
+    expect(decision).toEqual({ action: "mock" });
   });
 
   it("validates extra http header values before delegating to the context adapter", async () => {

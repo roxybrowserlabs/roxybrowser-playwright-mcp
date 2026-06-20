@@ -176,7 +176,7 @@ export class RoxyBrowserContext implements BrowserContext {
   async unrouteAll(_options?: {
     behavior?: "wait" | "ignoreErrors" | "default";
   }): Promise<void> {
-    this.websocketRouteHandlers.length = 0;
+    return;
   }
 
   async storageState(options?: {
