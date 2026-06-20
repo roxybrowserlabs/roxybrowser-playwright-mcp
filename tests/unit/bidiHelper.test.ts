@@ -69,21 +69,20 @@ describe("bidi helper cleanup", () => {
     expect(events[0]).toBe("close-profile");
     expect(events[1]).toBe("cleanup");
     expect(events[2]).toBe("launch");
-    expect(events).not.toContain("browser.close");
-    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(1);
-    expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(1);
+    expect(events).toContain("browser.close");
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
+    expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(2);
     expect(resolveRoxyBrowserFirefoxBidiEndpoint).not.toHaveBeenCalled();
 
     await cleanupExternalBidiTestState();
 
     expect(events).toContain("browser.close");
-    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
-    expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(2);
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(3);
+    expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(3);
   });
 
   it("closes the local Firefox browser after each bidi test", async () => {
     const {
-      cleanupBidiTestStateAfterTest,
       cleanupExternalBidiTestState,
       withBidiPage
     } = await import("../helpers/bidi.js");
@@ -91,7 +90,6 @@ describe("bidi helper cleanup", () => {
     await withBidiPage(async () => {
       events.push("run:first");
     });
-    await cleanupBidiTestStateAfterTest();
 
     expect(launch).toHaveBeenCalledTimes(1);
     expect(events.filter((event) => event === "browser.close")).toHaveLength(1);
@@ -101,6 +99,7 @@ describe("bidi helper cleanup", () => {
     });
 
     expect(launch).toHaveBeenCalledTimes(2);
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(2);
 
     await cleanupExternalBidiTestState();
 
@@ -124,7 +123,6 @@ describe("bidi helper cleanup", () => {
     }));
 
     const {
-      cleanupBidiTestStateAfterTest,
       cleanupExternalBidiTestState,
       withBidiPage
     } = await import("../helpers/bidi.js");
@@ -132,7 +130,6 @@ describe("bidi helper cleanup", () => {
     await withBidiPage(async () => {
       events.push("run:first");
     });
-    await cleanupBidiTestStateAfterTest();
     await withBidiPage(async () => {
       events.push("run:second");
     });
@@ -159,13 +156,13 @@ describe("bidi helper cleanup", () => {
       events.push("run:second");
     });
 
-    expect(launch).toHaveBeenCalledTimes(1);
-    expect(events.filter((event) => event === "browser.close")).toHaveLength(0);
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(2);
 
     await secondModule.cleanupExternalBidiTestState();
 
-    expect(events.filter((event) => event === "browser.close")).toHaveLength(1);
-    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(2);
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(5);
   });
 
   it("closes a non-reused external Firefox browser after each bidi test", async () => {
@@ -184,7 +181,6 @@ describe("bidi helper cleanup", () => {
     }));
 
     const {
-      cleanupBidiTestStateAfterTest,
       cleanupExternalBidiTestState,
       withBidiPage
     } = await import("../helpers/bidi.js");
@@ -192,7 +188,6 @@ describe("bidi helper cleanup", () => {
     await withBidiPage(async () => {
       events.push("run:first");
     });
-    await cleanupBidiTestStateAfterTest();
 
     expect(connect).toHaveBeenCalledTimes(1);
     expect(events.filter((event) => event === "browser.close")).toHaveLength(1);
@@ -202,6 +197,7 @@ describe("bidi helper cleanup", () => {
     });
 
     expect(connect).toHaveBeenCalledTimes(2);
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(2);
 
     await cleanupExternalBidiTestState();
 
@@ -226,7 +222,6 @@ describe("bidi helper cleanup", () => {
     }));
 
     const {
-      cleanupBidiTestStateAfterTest,
       cleanupExternalBidiTestState,
       withBidiPage
     } = await import("../helpers/bidi.js");
@@ -234,7 +229,6 @@ describe("bidi helper cleanup", () => {
     await withBidiPage(async () => {
       events.push("run:first");
     });
-    await cleanupBidiTestStateAfterTest();
 
     expect(connect).toHaveBeenCalledTimes(1);
     expect(events.filter((event) => event === "browser.close")).toHaveLength(1);

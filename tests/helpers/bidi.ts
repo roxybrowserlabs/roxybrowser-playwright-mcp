@@ -194,6 +194,7 @@ export async function withBidiPage<T>(
     }
   } finally {
     await closeForTest("context.close", () => context.close()).catch(() => {});
+    await cleanupBidiTestStateAfterTest().catch(() => {});
   }
 }
 
