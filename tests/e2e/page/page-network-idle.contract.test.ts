@@ -153,4 +153,51 @@ describe("page networkidle contract e2e", () => {
       });
     });
   });
+
+  it("should wait for networkidle from the popup like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent(`
+        <button id=box1 onclick="window.open('./popup/popup.html')">Button1</button>
+        <button id=box2 onclick="window.open('./popup/popup.html')">Button2</button>
+        <button id=box3 onclick="window.open('./popup/popup.html')">Button3</button>
+        <button id=box4 onclick="window.open('./popup/popup.html')">Button4</button>
+        <button id=box5 onclick="window.open('./popup/popup.html')">Button5</button>
+      `);
+
+      for (let index = 1; index < 6; index += 1) {
+        const [popup] = await Promise.all([
+          page.waitForEvent("popup"),
+          page.click(`#box${index}`)
+        ]);
+        await popup.waitForLoadState("networkidle");
+      }
+    });
+  });
+
+  it("should wait for networkidle when iframe attaches and detaches like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", () => {});
+      let done = false;
+      const promise = page.setContent(`
+        <body>
+          <script>
+            const iframe = document.createElement('iframe');
+            iframe.src = ${JSON.stringify(fixture.server.EMPTY_PAGE)};
+            document.body.appendChild(iframe);
+          </script>
+        </body>
+      `, { waitUntil: "networkidle" }).then(() => {
+        done = true;
+      });
+
+      await page.waitForTimeout(600);
+      expect(done).toBe(false);
+      await page.evaluate(() => {
+        document.querySelector("iframe")?.remove();
+      });
+      await promise;
+      expect(done).toBe(true);
+    });
+  });
 });
