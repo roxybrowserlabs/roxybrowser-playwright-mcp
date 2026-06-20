@@ -2031,22 +2031,23 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         }).on?.(`Runtime.consoleAPICalled.${event.sessionId}`, (params: unknown) => {
           const consoleEvent = params as {
             args: CdpRemoteObject[];
+            stackTrace?: {
+              callFrames?: Array<{
+                columnNumber?: number;
+                lineNumber?: number;
+                url?: string;
+              }>;
+            };
             timestamp?: number;
             type: RawPageEventMap["console"]["type"] extends () => infer T ? T : string;
           };
           const args = consoleEvent.args.map((arg) => createCdpConsoleHandle(arg));
           const message: RawPageEventMap["console"] = {
             args: () => args,
-            location: () => ({
-              column: 0,
-              columnNumber: 0,
-              line: 0,
-              lineNumber: 0,
-              url: event.targetInfo.url ?? ""
-            }),
+            location: () => consoleStackTraceLocation(consoleEvent.stackTrace, event.targetInfo.url ?? ""),
             page: () => null,
             text: () => args.map((arg) => String(arg)).join(" "),
-            timestamp: () => consoleEvent.timestamp ? consoleEvent.timestamp * 1000 : Date.now(),
+            timestamp: () => normalizeConsoleTimestamp(consoleEvent.timestamp),
             type: () => consoleEvent.type,
             worker: () => worker
           };
@@ -2207,16 +2208,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const args = event.args.map((arg) => createCdpConsoleHandle(arg));
       this.emit("console", {
         args: () => args,
-        location: () => ({
-          column: 0,
-          columnNumber: 0,
-          line: 0,
-          lineNumber: 0,
-          url: ""
-        }),
+        location: () => consoleStackTraceLocation(event.stackTrace),
         page: () => null,
         text: () => args.map((arg) => String(arg)).join(" "),
-        timestamp: () => Date.now(),
+        timestamp: () => normalizeConsoleTimestamp(event.timestamp),
         type: () => event.type,
         worker: () => null
       });
@@ -8920,8 +8915,14 @@ function cdpRemoteObjectPreview(arg: {
     }
     return arg.description ? `JSHandle@${arg.description}` : "JSHandle@node";
   }
-  if (arg.subtype === "array" && arg.description) {
-    return arg.description.replace(/^\((\d+)\)\s*/, "");
+  if (arg.subtype === "array") {
+    const preview = cdpArrayRemoteObjectPreview(arg.preview?.properties);
+    if (preview) {
+      return preview;
+    }
+    if (arg.description) {
+      return arg.description.replace(/^\((\d+)\)\s*/, "");
+    }
   }
   if (arg.preview?.properties?.length) {
     const entries = arg.preview.properties.map((property) => {
@@ -8946,6 +8947,69 @@ function parseCdpArrayPreview(description: string): unknown[] | undefined {
     return [];
   }
   return content.split(",").map((part) => parseCdpPreviewPrimitive(part.trim()));
+}
+
+function cdpArrayRemoteObjectPreview(
+  properties:
+    | Array<{
+        name: string;
+        type?: string;
+        value?: string;
+        valuePreview?: { description?: string };
+      }>
+    | undefined
+): string | undefined {
+  if (!properties?.length) {
+    return undefined;
+  }
+
+  const entries = properties
+    .filter((property) => /^\d+$/.test(property.name))
+    .sort((left, right) => Number(left.name) - Number(right.name))
+    .map((property) => property.value ?? property.valuePreview?.description ?? property.type ?? "");
+
+  if (!entries.length) {
+    return undefined;
+  }
+
+  return `[${entries.join(", ")}]`;
+}
+
+function normalizeConsoleTimestamp(timestamp: number | undefined): number {
+  if (timestamp === undefined) {
+    return Date.now();
+  }
+  return timestamp < 100_000_000_000 ? timestamp * 1000 : timestamp;
+}
+
+function consoleStackTraceLocation(
+  stackTrace:
+    | {
+        callFrames?: Array<{
+          columnNumber?: number;
+          lineNumber?: number;
+          url?: string;
+        }>;
+      }
+    | undefined,
+  fallbackUrl = ""
+): {
+  column: number;
+  columnNumber: number;
+  line: number;
+  lineNumber: number;
+  url: string;
+} {
+  const callFrame = stackTrace?.callFrames?.[0];
+  const lineNumber = callFrame?.lineNumber ?? 0;
+  const columnNumber = callFrame?.columnNumber ?? 0;
+  return {
+    column: columnNumber,
+    columnNumber,
+    line: lineNumber,
+    lineNumber,
+    url: callFrame?.url ?? fallbackUrl
+  };
 }
 
 function parseCdpObjectPreview(description: string): Record<string, unknown> | undefined {

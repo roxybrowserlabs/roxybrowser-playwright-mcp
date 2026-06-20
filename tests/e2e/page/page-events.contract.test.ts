@@ -198,6 +198,97 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("formats console.time/timeLog/timeEnd like Playwright on Chromium", async () => {
+    await withPage(async (page) => {
+      const messages: Array<{ text: string; type: string }> = [];
+      page.on("console", (message) => {
+        messages.push({
+          text: message.text(),
+          type: message.type()
+        });
+      });
+
+      await page.evaluate(async () => {
+        console.time("foo time");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        console.timeLog("foo time");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        console.timeEnd("foo time");
+      });
+
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ type: "log" });
+      expect(messages[1]).toMatchObject({ type: "timeEnd" });
+      expect(messages[0]!.text).toMatch(/foo time: \d+(?:\.\d+)? ?ms/);
+      expect(messages[1]!.text).toMatch(/foo time: \d+(?:\.\d+)? ?ms/);
+    });
+  });
+
+  it("exposes console message location like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const [message] = await Promise.all([
+        page.waitForEvent("console", (entry) => entry.text().startsWith("here:")),
+        page.goto(fixture.server.PREFIX + "/consolelog.html")
+      ]);
+
+      expect(message.type()).toBe("log");
+      expect(message.location()).toEqual({
+        url: fixture.server.PREFIX + "/consolelog.html",
+        line: 11,
+        lineNumber: 11,
+        column: 14,
+        columnNumber: 14
+      });
+    });
+  });
+
+  it("uses object previews for arrays and objects", async () => {
+    await withPage(async (page) => {
+      let text = "";
+      page.on("console", (message) => {
+        text = message.text();
+      });
+
+      await page.evaluate(() => console.log([1, 2, 3], { a: 1 }, window));
+
+      expect(text).toBe("[1, 2, 3] {a: 1} Window");
+    });
+  });
+
+  it("exposes console timestamps like Playwright", async () => {
+    await withPage(async (page) => {
+      const before = Date.now() - 100;
+      const [message] = await Promise.all([
+        page.waitForEvent("console"),
+        page.evaluate(() => console.log("timestamp test"))
+      ]);
+      const after = Date.now() + 100;
+
+      expect(message.timestamp()).toBeGreaterThanOrEqual(before);
+      expect(message.timestamp()).toBeLessThanOrEqual(after);
+    });
+  });
+
+  it("keeps console timestamps monotonic", async () => {
+    await withPage(async (page) => {
+      const messages: Array<Awaited<ReturnType<typeof page.waitForEvent<"console">>>> = [];
+      page.on("console", (message) => {
+        messages.push(message);
+      });
+
+      await page.evaluate(() => {
+        console.log("first");
+        console.log("second");
+        console.log("third");
+      });
+
+      expect(messages).toHaveLength(3);
+      expect(messages[1]!.timestamp()).toBeGreaterThanOrEqual(messages[0]!.timestamp());
+      expect(messages[2]!.timestamp()).toBeGreaterThanOrEqual(messages[1]!.timestamp());
+    });
+  });
+
   it("consoleMessages defaults to since-navigation like Playwright", async () => {
     await withPage(async (page) => {
       await page.evaluate(() => console.log("before navigation"));
