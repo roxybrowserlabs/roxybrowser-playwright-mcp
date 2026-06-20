@@ -66,8 +66,12 @@ describe("page waitForRequest contract e2e", () => {
   it("should respect default timeout", async () => {
     await withPage(async (page) => {
       page.setDefaultTimeout(1);
-      const error = await page.waitForEvent("request", () => false).catch((caught) => caught);
+      const error = await page.waitForRequest(() => false).catch((caught) => caught);
       expect(error).toBeInstanceOf(TimeoutError);
+      const firstFrame = String(error.stack)
+        .split("\n")
+        .find((line) => line.startsWith("    at "));
+      expect(firstFrame).toContain("page-wait-for-request.contract.test.ts");
     });
   });
 
