@@ -655,6 +655,45 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("returns last requests like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/title.html");
+      for (let index = 0; index < 200; index += 1) {
+        fixture.server.setRoute(`/fetch?${index}`, (request, response) => {
+          response.end(`url:${fixture.server.PREFIX}${request.url}`);
+        });
+      }
+
+      // #0 is the navigation request, so start with #1.
+      for (let index = 0; index < 99; index += 1) {
+        await page.evaluate((url) => fetch(url), fixture.server.PREFIX + `/fetch?${index}`);
+      }
+      const first99Requests = await page.requests();
+      first99Requests.shift();
+
+      for (let index = 99; index < 199; index += 1) {
+        await page.evaluate((url) => fetch(url), fixture.server.PREFIX + `/fetch?${index}`);
+      }
+      const last100Requests = await page.requests();
+      const allRequests = [...first99Requests, ...last100Requests];
+
+      const received = await Promise.all(allRequests.map(async (request) => {
+        const response = await request.response();
+        return {
+          text: await response!.text(),
+          url: request.url()
+        };
+      }));
+      const expected = [];
+      for (let index = 0; index < 199; index += 1) {
+        const url = fixture.server.PREFIX + `/fetch?${index}`;
+        expected.push({ text: `url:${url}`, url });
+      }
+
+      expect(received).toEqual(expected);
+    });
+  });
+
   it("reports raw headers", async () => {
     await withPage(async (page) => {
       let expectedHeaders: Array<{ name: string; value: string }> = [];
