@@ -51,6 +51,71 @@ describe("page goto contract e2e", () => {
     });
   });
 
+  it("should work cross-process like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      expect(page.url()).toBe(fixture.server.EMPTY_PAGE);
+
+      const url = fixture.server.CROSS_PROCESS_PREFIX + "/empty.html";
+      let requestFrame: ReturnType<typeof page.mainFrame> | undefined;
+      page.on("request", (request) => {
+        if (request.url() === url) {
+          requestFrame = request.frame();
+        }
+      });
+
+      const response = await page.goto(url);
+      expect(page.url()).toBe(url);
+      expect(response!.frame()).toBe(page.mainFrame());
+      expect(requestFrame).toBe(page.mainFrame());
+      expect(response!.url()).toBe(url);
+    });
+  });
+
+  it("should capture iframe navigation request like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      expect(page.url()).toBe(fixture.server.EMPTY_PAGE);
+
+      let requestFrame: ReturnType<typeof page.frames>[number] | undefined;
+      page.on("request", (request) => {
+        if (request.url() === fixture.server.PREFIX + "/frames/frame.html") {
+          requestFrame = request.frame();
+        }
+      });
+
+      const response = await page.goto(fixture.server.PREFIX + "/frames/one-frame.html");
+      expect(page.url()).toBe(fixture.server.PREFIX + "/frames/one-frame.html");
+      expect(response!.frame()).toBe(page.mainFrame());
+      expect(response!.url()).toBe(fixture.server.PREFIX + "/frames/one-frame.html");
+
+      expect(page.frames().length).toBe(2);
+      expect(requestFrame).toBe(page.frames()[1]);
+    });
+  });
+
+  it("should capture cross-process iframe navigation request like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      expect(page.url()).toBe(fixture.server.EMPTY_PAGE);
+
+      let requestFrame: ReturnType<typeof page.frames>[number] | undefined;
+      page.on("request", (request) => {
+        if (request.url() === fixture.server.CROSS_PROCESS_PREFIX + "/frames/frame.html") {
+          requestFrame = request.frame();
+        }
+      });
+
+      const response = await page.goto(fixture.server.CROSS_PROCESS_PREFIX + "/frames/one-frame.html");
+      expect(page.url()).toBe(fixture.server.CROSS_PROCESS_PREFIX + "/frames/one-frame.html");
+      expect(response!.frame()).toBe(page.mainFrame());
+      expect(response!.url()).toBe(fixture.server.CROSS_PROCESS_PREFIX + "/frames/one-frame.html");
+
+      expect(page.frames().length).toBe(2);
+      expect(requestFrame).toBe(page.frames()[1]);
+    });
+  });
+
   it("should work with anchor navigation", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);

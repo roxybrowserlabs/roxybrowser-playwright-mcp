@@ -4186,7 +4186,48 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return resolvedFrame;
     }
 
+    const syntheticFrame = this.ensureSyntheticRequestFrame(state);
+    if (syntheticFrame) {
+      return syntheticFrame;
+    }
+
     return this.mainFrame();
+  }
+
+  private ensureSyntheticRequestFrame(state: ObservedRequestState): RoxyFrame | null {
+    if (!state.frameId) {
+      return null;
+    }
+    if (state.resourceType !== "document" && !state.isNavigationRequest) {
+      return null;
+    }
+
+    const mainFrame = this.mainFrame();
+    if (!(mainFrame instanceof RoxyFrame)) {
+      return null;
+    }
+    const mainSnapshot = mainFrame.snapshotState();
+    if (state.frameId === mainSnapshot.id || state.frameId === mainSnapshot.nativeFrameId) {
+      return null;
+    }
+
+    const existing = this.frameMap.get(state.frameId);
+    if (existing) {
+      return existing;
+    }
+
+    const frame = new RoxyFrame(this, {
+      id: state.frameId,
+      name: "",
+      nativeFrameId: state.frameId,
+      ownerElementChain: [],
+      parentId: mainSnapshot.id,
+      referenceChain: [],
+      url: state.url
+    });
+    this.frameMap.set(state.frameId, frame);
+    this.nativeFrameBindings.set(state.frameId, state.frameId);
+    return frame;
   }
 
   private matchFrameForObservedRequest(state: ObservedRequestState): RoxyFrame | null {
