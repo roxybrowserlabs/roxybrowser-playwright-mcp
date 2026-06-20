@@ -532,10 +532,9 @@ export class RoxyBrowserContext implements BrowserContext {
       const listener = ((payload: PageConsoleMessage | Dialog | Request | Response) => {
         this.emit(event, payload as BrowserContextEventMap[typeof event]);
       }) as (...args: any[]) => any;
-      (page.on as (event: BubbledPageEvent, listener: (...args: any[]) => any) => RoxyPage)(event, listener);
-      disposers.push(() => {
-        (page.off as (event: BubbledPageEvent, listener: (...args: any[]) => any) => RoxyPage)(event, listener);
-      });
+      disposers.push(
+        page.attachInternalListener(event, listener as never)
+      );
     }
     this.pageEventDisposers.set(page, disposers);
   }

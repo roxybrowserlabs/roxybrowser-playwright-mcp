@@ -157,6 +157,11 @@ interface ListenerEntry<K extends PageEventName> {
   wrapped: PageEventListener<K>;
 }
 
+interface EventObservation<K extends PageEventName> {
+  listeners: Set<ListenerEntry<PageEventName>>;
+  internalListeners: Set<PageEventListener<PageEventName>>;
+}
+
 type RemoveAllListenersBehavior = "default" | "wait" | "ignoreErrors";
 
 type InternalWaitForEventOptions<K extends PageEventName> = {
@@ -870,7 +875,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   readonly sessionStorage: WebStorage;
   readonly touchscreen: Touchscreen;
   private readonly humanController: DefaultHumanController;
-  private readonly pageListeners = new Map<PageEventName, Set<ListenerEntry<PageEventName>>>();
+  private readonly eventObservations = new Map<PageEventName, EventObservation<PageEventName>>();
   private readonly adapterDisposers = new Map<PageEventName, () => void>();
   private readonly pendingHandlers = new Map<PageEventName, Set<Promise<void>>>();
   private rejectionHandler: ((error: Error) => void) | undefined;
@@ -1284,9 +1289,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
         clearInterval(interval);
         navigationResponseAbortController.abort();
-        this.removeListener("response", responseListener);
-        this.removeListener("close", closeListener);
-        this.removeListener("framedetached", frameDetachedListener);
+        this.removeInternalListener("response", responseListener);
+        this.removeInternalListener("close", closeListener);
+        this.removeInternalListener("framedetached", frameDetachedListener);
       };
 
       const closeListener = (() => {
@@ -1375,9 +1380,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
       }) as PageEventListener<"response">;
 
-      this.on("response", responseListener);
-      this.on("close", closeListener);
-      this.on("framedetached", frameDetachedListener);
+      this.addInternalListener("response", responseListener);
+      this.addInternalListener("close", closeListener);
+      this.addInternalListener("framedetached", frameDetachedListener);
       void checkForMatch();
     });
 
@@ -1610,22 +1615,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   on(event: 'worker', listener: (worker: Worker) => any): this;
   on(event: PageEventName, listener: (...args: any[]) => any): this {
     this.maybeStartFileChooserInterception(event);
-    const entries = this.ensureListenerSet(event);
-    entries.add({
+    this.ensurePublicListenerSet(event).add({
       original: listener as PageEventListener<PageEventName>,
       wrapped: listener as PageEventListener<PageEventName>
     });
-
-    if (isAdapterBackedPageEvent(event) && !this.adapterDisposers.has(event)) {
-      const dispose = this.adapter.on(
-        event,
-        ((payload?: RawPageEventMap[RawPageEventName]) => {
-          void this.handleAdapterBackedEvent(event, payload);
-        }) as RawPageEventListener<RawPageEventName>
-      );
-      this.adapterDisposers.set(event, dispose);
-    }
-
+    this.ensureAdapterObservation(event);
     return this;
   }
 
@@ -1683,21 +1677,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       (listener as (eventPayload: PageEventMap[PageEventName]) => void)(payload);
     }) as PageEventListener<PageEventName>;
 
-    this.ensureListenerSet(event).add({
+    this.ensurePublicListenerSet(event).add({
       original: listener as PageEventListener<PageEventName>,
       wrapped: wrapped as PageEventListener<PageEventName>
     });
-
-    if (isAdapterBackedPageEvent(event) && !this.adapterDisposers.has(event)) {
-      const dispose = this.adapter.on(
-        event,
-        ((payload?: RawPageEventMap[RawPageEventName]) => {
-          void this.handleAdapterBackedEvent(event, payload);
-        }) as RawPageEventListener<RawPageEventName>
-      );
-      this.adapterDisposers.set(event, dispose);
-    }
-
+    this.ensureAdapterObservation(event);
     return this;
   }
 
@@ -1721,7 +1705,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   removeListener(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
   removeListener(event: 'worker', listener: (worker: Worker) => any): this;
   removeListener(event: PageEventName, listener: (...args: any[]) => any): this {
-    const entries = this.pageListeners.get(event);
+    const entries = this.eventObservations.get(event)?.listeners;
     if (!entries) {
       return this;
     }
@@ -1733,12 +1717,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
 
     if (entries.size === 0) {
-      this.pageListeners.delete(event);
-      const dispose = this.adapterDisposers.get(event);
-      if (dispose) {
-        this.adapterDisposers.delete(event);
-        dispose();
-      }
+      this.trimObservation(event);
     }
 
     return this;
@@ -1788,24 +1767,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   prependListener(event: 'worker', listener: (worker: Worker) => any): this;
   prependListener(event: PageEventName, listener: (...args: any[]) => any): this {
     this.maybeStartFileChooserInterception(event);
-    const entries = this.ensureListenerSet(event);
+    const entries = this.ensurePublicListenerSet(event);
     const entry = {
       original: listener as PageEventListener<PageEventName>,
       wrapped: listener as PageEventListener<PageEventName>
     };
     const reordered = new Set<ListenerEntry<PageEventName>>([entry, ...entries]);
-    this.pageListeners.set(event, reordered);
-
-    if (isAdapterBackedPageEvent(event) && !this.adapterDisposers.has(event)) {
-      const dispose = this.adapter.on(
-        event,
-        ((payload?: RawPageEventMap[RawPageEventName]) => {
-          void this.handleAdapterBackedEvent(event, payload);
-        }) as RawPageEventListener<RawPageEventName>
-      );
-      this.adapterDisposers.set(event, dispose);
-    }
-
+    this.ensureObservation(event).listeners = reordered;
+    this.ensureAdapterObservation(event);
     return this;
   }
 
@@ -1840,43 +1809,33 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       (listener as (eventPayload: PageEventMap[PageEventName]) => void)(payload);
     }) as PageEventListener<PageEventName>;
 
-    const entries = this.ensureListenerSet(event);
+    const entries = this.ensurePublicListenerSet(event);
     const entry = {
       original: listener as PageEventListener<PageEventName>,
       wrapped
     };
     const reordered = new Set<ListenerEntry<PageEventName>>([entry, ...entries]);
-    this.pageListeners.set(event, reordered);
-
-    if (isAdapterBackedPageEvent(event) && !this.adapterDisposers.has(event)) {
-      const dispose = this.adapter.on(
-        event,
-        ((payload?: RawPageEventMap[RawPageEventName]) => {
-          void this.handleAdapterBackedEvent(event, payload);
-        }) as RawPageEventListener<RawPageEventName>
-      );
-      this.adapterDisposers.set(event, dispose);
-    }
-
+    this.ensureObservation(event).listeners = reordered;
+    this.ensureAdapterObservation(event);
     return this;
   }
 
   eventNames(): Array<string | symbol> {
-    return Array.from(this.pageListeners.entries())
-      .filter(([, entries]) => entries.size > 0)
+    return Array.from(this.eventObservations.entries())
+      .filter(([, observation]) => observation.listeners.size > 0)
       .map(([event]) => event);
   }
 
   listenerCount(type: string | symbol): number {
-    return this.pageListeners.get(type as PageEventName)?.size ?? 0;
+    return this.eventObservations.get(type as PageEventName)?.listeners.size ?? 0;
   }
 
   listeners(type: string | symbol): Function[] {
-    return Array.from(this.pageListeners.get(type as PageEventName) ?? []).map((entry) => entry.original as Function);
+    return Array.from(this.eventObservations.get(type as PageEventName)?.listeners ?? []).map((entry) => entry.original as Function);
   }
 
   rawListeners(type: string | symbol): Function[] {
-    return Array.from(this.pageListeners.get(type as PageEventName) ?? []).map((entry) => entry.wrapped as Function);
+    return Array.from(this.eventObservations.get(type as PageEventName)?.listeners ?? []).map((entry) => entry.wrapped as Function);
   }
 
   setMaxListeners(n: number): this {
@@ -2139,9 +2098,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         if (timer) {
           clearTimeout(timer);
         }
-        (this.removeListener as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
+        this.removeInternalListener(event, listener);
         if (event !== "close") {
-          this.removeListener("close", closeListener as PageEventListener<"close">);
+          this.removeInternalListener("close", closeListener as PageEventListener<"close">);
         }
       };
 
@@ -2167,9 +2126,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }) as PageEventListener<PageEventName>;
 
       if (event !== "close") {
-        this.on("close", closeListener as PageEventListener<PageEventName>);
+        this.addInternalListener("close", closeListener as PageEventListener<"close">);
       }
-      (this.on as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
+      this.addInternalListener(event, listener);
     });
 
     const registeredEvent = waitForRegisteredEvent();
@@ -3800,17 +3759,81 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
   }
 
-  private ensureListenerSet<K extends PageEventName>(
-    event: K
-  ): Set<ListenerEntry<PageEventName>> {
-    const existing = this.pageListeners.get(event);
+  private ensureObservation<K extends PageEventName>(event: K): EventObservation<PageEventName> {
+    const existing = this.eventObservations.get(event);
     if (existing) {
       return existing;
     }
 
-    const created = new Set<ListenerEntry<PageEventName>>();
-    this.pageListeners.set(event, created);
+    const created: EventObservation<PageEventName> = {
+      listeners: new Set<ListenerEntry<PageEventName>>(),
+      internalListeners: new Set<PageEventListener<PageEventName>>()
+    };
+    this.eventObservations.set(event, created);
     return created;
+  }
+
+  private ensurePublicListenerSet<K extends PageEventName>(
+    event: K
+  ): Set<ListenerEntry<PageEventName>> {
+    return this.ensureObservation(event).listeners;
+  }
+
+  private ensureInternalListenerSet<K extends PageEventName>(
+    event: K
+  ): Set<PageEventListener<PageEventName>> {
+    return this.ensureObservation(event).internalListeners;
+  }
+
+  private addInternalListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): void {
+    this.maybeStartFileChooserInterception(event);
+    this.ensureInternalListenerSet(event).add(listener as PageEventListener<PageEventName>);
+    this.ensureAdapterObservation(event);
+  }
+
+  private removeInternalListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): void {
+    const internalListeners = this.eventObservations.get(event)?.internalListeners;
+    internalListeners?.delete(listener as PageEventListener<PageEventName>);
+    this.trimObservation(event);
+  }
+
+  attachInternalListener<K extends PageEventName>(event: K, listener: PageEventListener<K>): () => void {
+    this.addInternalListener(event, listener);
+    return () => {
+      this.removeInternalListener(event, listener);
+    };
+  }
+
+  private ensureAdapterObservation(event: PageEventName): void {
+    if (!isAdapterBackedPageEvent(event) || this.adapterDisposers.has(event)) {
+      return;
+    }
+
+    const dispose = this.adapter.on(
+      event,
+      ((payload?: RawPageEventMap[RawPageEventName]) => {
+        void this.handleAdapterBackedEvent(event, payload);
+      }) as RawPageEventListener<RawPageEventName>
+    );
+    this.adapterDisposers.set(event, dispose);
+  }
+
+  private trimObservation(event: PageEventName): void {
+    const observation = this.eventObservations.get(event);
+    if (!observation) {
+      return;
+    }
+
+    if (observation.listeners.size > 0 || observation.internalListeners.size > 0) {
+      return;
+    }
+
+    this.eventObservations.delete(event);
+    const dispose = this.adapterDisposers.get(event);
+    if (dispose) {
+      this.adapterDisposers.delete(event);
+      dispose();
+    }
   }
 
   private emit<K extends PageEventName>(event: K, payload: PageEventMap[K]): void {
@@ -3823,16 +3846,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
     this.recordEvent(event, normalizedPayload as PageEventMap[K]);
 
-    const entries = this.pageListeners.get(event);
-    if (!entries) {
+    const observation = this.eventObservations.get(event);
+    if (!observation) {
       if (event === "dialog" && normalizedPayload && typeof normalizedPayload === "object") {
         void (normalizedPayload as Dialog).dismiss().catch(() => {});
       }
       return;
     }
 
-    for (const entry of Array.from(entries)) {
+    for (const entry of Array.from(observation.listeners)) {
       const wrapped = entry.wrapped as PageEventListener<K>;
+      const result =
+        normalizedPayload === undefined
+          ? (wrapped as () => void)()
+          : (wrapped as (eventPayload: PageEventMap[K]) => void)(normalizedPayload as PageEventMap[K]);
+      this.trackPendingHandler(event, result);
+    }
+
+    for (const listener of Array.from(observation.internalListeners)) {
+      const wrapped = listener as PageEventListener<K>;
       const result =
         normalizedPayload === undefined
           ? (wrapped as () => void)()
@@ -3842,22 +3874,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private removeAllListenersInternal(event?: PageEventName): void {
-    const events = event ? [event] : Array.from(this.pageListeners.keys());
+    const events = event ? [event] : Array.from(this.eventObservations.keys());
     for (const eventName of events) {
-      this.pageListeners.delete(eventName);
-      const dispose = this.adapterDisposers.get(eventName);
-      if (dispose) {
-        this.adapterDisposers.delete(eventName);
-        dispose();
+      const observation = this.eventObservations.get(eventName);
+      if (!observation) {
+        continue;
       }
+      observation.listeners.clear();
+      this.trimObservation(eventName);
     }
   }
 
   private hasFrameEventObservers(): boolean {
     return (
-      (this.pageListeners.get("frameattached")?.size ?? 0) > 0 ||
-      (this.pageListeners.get("framedetached")?.size ?? 0) > 0 ||
-      (this.pageListeners.get("framenavigated")?.size ?? 0) > 0
+      ((this.eventObservations.get("frameattached")?.listeners.size ?? 0) > 0) ||
+      ((this.eventObservations.get("framedetached")?.listeners.size ?? 0) > 0) ||
+      ((this.eventObservations.get("framenavigated")?.listeners.size ?? 0) > 0)
     );
   }
 

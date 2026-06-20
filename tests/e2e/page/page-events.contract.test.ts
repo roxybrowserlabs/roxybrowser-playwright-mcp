@@ -169,9 +169,12 @@ describe("page events contract e2e", () => {
       page.on("console", persistent);
       page.prependOnceListener("console", prepended);
 
-      expect(page.eventNames()).toContain("console");
-      expect(page.listenerCount("console")).toBeGreaterThanOrEqual(2);
-      expect(page.rawListeners("console")).not.toContain(prepended);
+      expect(page.eventNames()).toEqual(["console"]);
+      expect(page.listenerCount("console")).toBe(2);
+      expect(page.listeners("console")).toEqual([prepended, persistent]);
+      expect(page.rawListeners("console")).toHaveLength(2);
+      expect(page.rawListeners("console")[0]).not.toBe(prepended);
+      expect(page.rawListeners("console")[1]).toBe(persistent);
 
       await page.evaluate(() => {
         console.log("hello");
@@ -181,7 +184,8 @@ describe("page events contract e2e", () => {
       });
 
       expect(calls).toEqual(["prepended", "persistent", "persistent"]);
-      expect(page.listeners("console")).toContain(persistent);
+      expect(page.listenerCount("console")).toBe(1);
+      expect(page.listeners("console")).toEqual([persistent]);
     });
   });
 
