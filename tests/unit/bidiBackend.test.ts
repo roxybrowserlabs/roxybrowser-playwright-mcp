@@ -490,8 +490,7 @@ describe("BidiBrowserAdapterFactory", () => {
 
     expect(scriptEvaluate).toHaveBeenCalledTimes(1);
     const expression = String(scriptEvaluate.mock.calls[0]?.[0]?.expression ?? "");
-    expect(expression).toContain('typeof globalThis.gc === \\"function\\"');
-    expect(expression).toContain("globalThis.gc()");
+    expect(expression).toBe("TestUtils.gc()");
   });
 
   it("sends page extra http headers through network.setExtraHeaders", async () => {

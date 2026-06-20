@@ -125,6 +125,14 @@ describe("CDP coverage", () => {
     chromeRemoteInterfaceMock.Version.mockReset();
   });
 
+  it("dispatches requestGC through HeapProfiler.collectGarbage", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+
+    await page.requestGC();
+
+    expect(pageClient.send).toHaveBeenCalledWith("HeapProfiler.collectGarbage");
+  });
+
   it("collects JS coverage with parsed script sources and ignores anonymous scripts by default", async () => {
     const { page, pageClient } = await createCdpPageClients();
 

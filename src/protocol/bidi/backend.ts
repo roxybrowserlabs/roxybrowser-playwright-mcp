@@ -1254,13 +1254,18 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async requestGC(): Promise<void> {
-    await this.evaluateFunction<void>(
-      `() => {
-        if (typeof globalThis.gc === "function") {
-          globalThis.gc();
-        }
-      }`
-    );
+    const response = await this.client.scriptEvaluate({
+      expression: "TestUtils.gc()",
+      target: {
+        context: this.contextId
+      },
+      awaitPromise: true,
+      resultOwnership: "none"
+    }) as BidiEvaluateResult;
+
+    if (response.type === "exception") {
+      throw new Error("Method not implemented.");
+    }
   }
 
   async textContent(selector: LocatorSelector[]): Promise<string | null> {

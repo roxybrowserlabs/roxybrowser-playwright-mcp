@@ -3649,13 +3649,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async requestGC(): Promise<void> {
-    await this.evaluateFunction<void>(
-      `() => {
-        if (typeof globalThis.gc === "function") {
-          globalThis.gc();
-        }
-      }`
-    );
+    await (
+      this.options.client as typeof this.options.client & {
+        send(method: "HeapProfiler.collectGarbage"): Promise<unknown>;
+      }
+    ).send("HeapProfiler.collectGarbage");
   }
 
   async textContent(selector: LocatorSelector[]): Promise<string | null> {
