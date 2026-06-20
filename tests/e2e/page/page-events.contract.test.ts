@@ -1,3 +1,4 @@
+import util from "node:util";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withPage } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
@@ -172,6 +173,19 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("uses text() for console message inspection like Playwright", async () => {
+    await withPage(async (page) => {
+      let text = "";
+      page.on("console", (message) => {
+        text = util.inspect(message);
+      });
+
+      await page.evaluate(() => console.log("Hello world"));
+
+      expect(text).toBe("Hello world");
+    });
+  });
+
   it("reports different console API types", async () => {
     await withPage(async (page) => {
       const messages: Array<{ text: string; type: string }> = [];
@@ -306,6 +320,19 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("uses object previews for errors like Playwright", async () => {
+    await withPage(async (page) => {
+      let text = "";
+      page.on("console", (message) => {
+        text = message.text();
+      });
+
+      await page.evaluate(() => console.log(new Error("Exception")));
+
+      expect(text).toContain("Error");
+    });
+  });
+
   it("does not fail for window object like Playwright", async () => {
     await withPage(async (page) => {
       let message = null as Awaited<ReturnType<typeof page.waitForEvent<"console">>> | null;
@@ -374,6 +401,34 @@ describe("page events contract e2e", () => {
       });
 
       await expect.poll(() => messages).toEqual(["begin", "end"]);
+    });
+  });
+
+  it("does not throw when detached iframes emit console messages", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.evaluate(async () => {
+          const win = window.open("");
+          window["__popup"] = win;
+          if (!win) {
+            throw new Error("Expected popup window.");
+          }
+          if (window.document.readyState !== "complete") {
+            await new Promise<void>((resolve) => window.addEventListener("load", () => resolve(), { once: true }));
+          }
+
+          win.document.body.innerHTML = `<iframe src="/consolelog.html"></iframe>`;
+          const frame = win.document.querySelector("iframe");
+          if (!frame.contentDocument || frame.contentDocument.readyState !== "complete") {
+            await new Promise<void>((resolve) => frame.addEventListener("load", () => resolve(), { once: true }));
+          }
+          frame.remove();
+        })
+      ]);
+
+      expect(await popup.evaluate("1 + 1")).toBe(2);
     });
   });
 

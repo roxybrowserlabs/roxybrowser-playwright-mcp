@@ -1,5 +1,6 @@
 import { STATUS_CODES } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import util from "node:util";
 import { dirname, extname } from "node:path";
 import { createApiResponse, fetchWithRetries, RoxyAPIRequestContext } from "./apiRequestContext.js";
 import {
@@ -3941,7 +3942,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private createPublicConsoleMessage(payload: PageConsoleMessage): PageConsoleMessage {
     const location = payload.location?.() ?? DEFAULT_CONSOLE_LOCATION;
     const rawArgs = payload.args?.() ?? [];
-    return {
+    const message: PageConsoleMessage = {
       args: () => rawArgs,
       location: () => ({
         column: location.column,
@@ -3956,6 +3957,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       type: () => payload.type(),
       worker: () => payload.worker?.() ?? null
     };
+    (message as PageConsoleMessage & { [util.inspect.custom]?: () => string; })[util.inspect.custom] = () =>
+      message.text();
+    return message;
   }
 
   private observeAdapterRequest(payload: PageRequest): Request {

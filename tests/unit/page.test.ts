@@ -1,3 +1,4 @@
+import util from "node:util";
 import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3221,6 +3222,7 @@ describe("RoxyPage", () => {
     expect(args).toHaveLength(2);
     await expect(args[0].jsonValue()).resolves.toBe("hello");
     await expect(args[1].jsonValue()).resolves.toBe(42);
+    expect(util.inspect(message)).toBe("hello 42");
   });
 
   it("records and clears page errors", async () => {
