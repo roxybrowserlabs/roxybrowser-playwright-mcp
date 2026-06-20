@@ -9494,7 +9494,7 @@ function formatSelectorChain(chain: LocatorSelector[]): string {
         return `xpath=${selector.value}`;
       }
       if (selector.strategy === "text") {
-        return `text=${selector.value}`;
+        return `${selector.light ? "text:light" : "text"}=${selector.value}`;
       }
       return `${selector.strategy}=${selector.value}`;
     })
@@ -9608,7 +9608,7 @@ function formatLocator(locator: CdpLocatorState): string {
       }
 
       if (selector.strategy === "text") {
-        return `text=${selector.isRegex ? `/${selector.value}/${selector.regexFlags ?? ""}` : selector.value}`;
+        return `${selector.light ? "text:light" : "text"}=${selector.isRegex ? `/${selector.value}/${selector.regexFlags ?? ""}` : selector.value}`;
       }
 
       const namePart =

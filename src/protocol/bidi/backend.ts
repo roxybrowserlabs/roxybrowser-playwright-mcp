@@ -3080,7 +3080,7 @@ function formatSelectorChain(chain: LocatorSelector[]): string {
         return `xpath=${selector.value}`;
       }
       if (selector.strategy === "text") {
-        return `text=${selector.value}`;
+        return `${selector.light ? "text:light" : "text"}=${selector.value}`;
       }
       return `${selector.strategy}=${selector.value}`;
     })

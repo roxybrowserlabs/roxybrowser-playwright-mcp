@@ -53,6 +53,7 @@ export interface LocatorSelector {
   hasChain?: LocatorSelector[];
   exact?: boolean;
   internal?: boolean;
+  light?: boolean;
   negate?: boolean;
   name?: string;
   label?: string;

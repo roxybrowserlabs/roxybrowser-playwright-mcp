@@ -35,13 +35,13 @@ function splitSelectorChain(selector: string): string[] {
 
   const shouldIgnoreTextSelectorQuote = (index: number): boolean => {
     const prefix = selector.substring(start, index);
-    const match = prefix.match(/^\s*text\s*=(.*)$/s);
+    const match = prefix.match(/^\s*text(?::light)?\s*=(.*)$/s);
     return !!match && !!match[1];
   };
 
   const isInsideUnpairedTextSelectorQuoteLike = (index: number): boolean => {
     const prefix = selector.substring(start, index);
-    const match = prefix.match(/^\s*text\s*=(.*)$/s);
+    const match = prefix.match(/^\s*text(?::light)?\s*=(.*)$/s);
     if (!match || !match[1]) {
       return false;
     }
@@ -130,7 +130,7 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
   if (bodyPart === "*" && selectorText.trim() !== "*") {
     capture = true;
     bodyPart = "css=*";
-  } else if (/^\*[a-zA-Z0-9-]*\s*=/.test(bodyPart)) {
+  } else if (/^\*[a-zA-Z0-9:-]*\s*=/.test(bodyPart)) {
     capture = true;
     bodyPart = bodyPart.slice(1);
   }
@@ -145,7 +145,7 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
     throw new Error(`Unknown engine "" while parsing selector ${selectorText}`);
   }
 
-  const engineMatch = /^([a-zA-Z0-9-]+)\s*=(.*)$/s.exec(bodyPart);
+  const engineMatch = /^([a-zA-Z0-9:-]+)\s*=(.*)$/s.exec(bodyPart);
   if (engineMatch) {
     const engine = engineMatch[1]!;
     const body = engineMatch[2]!;
@@ -195,6 +195,8 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
         });
       case "text":
         return withCapture(parseTextSelector(body));
+      case "text:light":
+        return withCapture(parseTextSelector(body, true));
       case "xpath":
         return withCapture({
           strategy: "xpath",
@@ -247,13 +249,14 @@ function parseSelectorPart(part: string, selectorText: string): LocatorSelector 
   });
 }
 
-function parseTextSelector(body: string): LocatorSelector {
+function parseTextSelector(body: string, light = false): LocatorSelector {
   const trimmed = body.trim();
   const hasLeadingWhitespace = /^\s/.test(body);
   if (!trimmed) {
     return {
       strategy: "text",
-      value: ""
+      value: "",
+      ...(light ? { light: true } : {})
     };
   }
 
@@ -264,6 +267,7 @@ function parseTextSelector(body: string): LocatorSelector {
     return {
       strategy: "text",
       value: pattern,
+      ...(light ? { light: true } : {}),
       isRegex: true,
       regexFlags: flags
     };
@@ -272,7 +276,8 @@ function parseTextSelector(body: string): LocatorSelector {
   if (trimmed === `"` || trimmed === `'`) {
     return {
       strategy: "text",
-      value: trimmed
+      value: trimmed,
+      ...(light ? { light: true } : {})
     };
   }
 
@@ -284,13 +289,15 @@ function parseTextSelector(body: string): LocatorSelector {
     return {
       strategy: "text",
       value: unescapeQuotedText(trimmed.slice(1, -1), quote),
+      ...(light ? { light: true } : {}),
       exact: true
     };
   }
 
   return {
     strategy: "text",
-    value: trimmed
+    value: trimmed,
+    ...(light ? { light: true } : {})
   };
 }
 

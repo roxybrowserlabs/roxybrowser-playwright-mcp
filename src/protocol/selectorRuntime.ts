@@ -921,7 +921,11 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
   };
 
-  const descendantsOf = (root: ParentNode | Element, includeRoot: boolean): Element[] => {
+  const descendantsOf = (
+    root: ParentNode | Element,
+    includeRoot: boolean,
+    pierceShadow = true
+  ): Element[] => {
     const descendants: Element[] = [];
     if (includeRoot && isElementNode(root)) {
       descendants.push(root);
@@ -931,13 +935,19 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       if (includeRoot && root.documentElement) {
         pushUnique(descendants, root.documentElement);
       }
-      for (const element of querySelectorAllPierce(root, "*")) {
+      const elements = pierceShadow
+        ? querySelectorAllPierce(root, "*")
+        : Array.from(root.querySelectorAll("*"));
+      for (const element of elements) {
         pushUnique(descendants, element);
       }
       return descendants;
     }
 
-    for (const element of querySelectorAllPierce(root, "*")) {
+    const elements = pierceShadow
+      ? querySelectorAllPierce(root, "*")
+      : Array.from(root.querySelectorAll("*"));
+    for (const element of elements) {
       pushUnique(descendants, element);
     }
     return descendants;
@@ -993,7 +1003,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       return xpathCandidates(root, selector.value, includeRoot);
     }
 
-    const descendants = descendantsOf(root, includeRoot);
+    const descendants = descendantsOf(root, includeRoot, !selector.light);
 
     if (selector.strategy === "text") {
       const matching = descendants.filter((element) => {
@@ -1004,7 +1014,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       });
 
       return matching.filter((element) => {
-        const childElements = descendantsOf(element, false);
+        const childElements = descendantsOf(element, false, !selector.light);
         return !childElements.some((child) =>
           !shouldSkipTextSelectorElement(child) &&
           matchesTextSelector(child, selector)

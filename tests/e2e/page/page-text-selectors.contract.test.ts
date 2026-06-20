@@ -245,6 +245,71 @@ describe("page text selector contract e2e", () => {
     });
   });
 
+  it("supports open shadow roots and text:light semantics like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => {
+        const outer = document.createElement("section");
+        document.body.appendChild(outer);
+
+        const root1 = document.createElement("div");
+        root1.setAttribute("id", "root1");
+        outer.appendChild(root1);
+        const shadowRoot1 = root1.attachShadow({ mode: "open" });
+        const span1 = document.createElement("span");
+        span1.textContent = "Hello from root1";
+        shadowRoot1.appendChild(span1);
+
+        const root2 = document.createElement("div");
+        shadowRoot1.appendChild(root2);
+        const shadowRoot2 = root2.attachShadow({ mode: "open" });
+        const span2 = document.createElement("span");
+        span2.setAttribute("id", "target");
+        span2.textContent = "Hello from root2";
+        shadowRoot2.appendChild(span2);
+
+        const root3 = document.createElement("div");
+        shadowRoot1.appendChild(root3);
+        const shadowRoot3 = root3.attachShadow({ mode: "open" });
+        const span3 = document.createElement("span");
+        span3.textContent = "Hello from root3";
+        shadowRoot3.appendChild(span3);
+      });
+
+      expect(await page.$eval("text=root1", (element) => element.textContent)).toBe("Hello from root1");
+      expect(await page.$eval("text=root2", (element) => element.textContent)).toBe("Hello from root2");
+      expect(await page.$eval("text=root3", (element) => element.textContent)).toBe("Hello from root3");
+      expect(await page.$eval("#root1 >> text=from root3", (element) => element.textContent)).toBe("Hello from root3");
+      expect(await page.$eval("#target >> text=from root2", (element) => element.textContent)).toBe("Hello from root2");
+      expect(await page.$("text:light=root1")).toBe(null);
+      expect(await page.$("text:light=root2")).toBe(null);
+      expect(await page.$("text:light=root3")).toBe(null);
+    });
+  });
+
+  it("waitForSelector resolves distributed light-dom text over shadow content like Playwright", async () => {
+    await withPage(async (page) => {
+      const handlePromise = page.waitForSelector("div >> text=Hello");
+
+      await page.evaluate(() => {
+        const div = document.createElement("div");
+        document.body.appendChild(div);
+
+        div.attachShadow({ mode: "open" });
+        const shadowSpan = document.createElement("span");
+        shadowSpan.textContent = "Hello from shadow";
+        div.shadowRoot!.appendChild(shadowSpan);
+        div.shadowRoot!.appendChild(document.createElement("slot"));
+
+        const lightSpan = document.createElement("span");
+        lightSpan.textContent = "Hello from light";
+        div.appendChild(lightSpan);
+      });
+
+      const handle = await handlePromise;
+      expect(await handle!.textContent()).toBe("Hello from light");
+    });
+  });
+
   it("matches text selector root after chained selector like Playwright", async () => {
     await withPage(async (page) => {
       await page.setContent("<section>test</section>");

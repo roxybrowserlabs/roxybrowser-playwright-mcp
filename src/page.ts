@@ -7700,7 +7700,9 @@ function formatLocatorSelectorForMessage(selector: LocatorSelector): string {
       : `getByRole('${selector.value}')`;
   }
   if (selector.strategy === "text") {
-    return `getByText(${JSON.stringify(selector.value)})`;
+    return selector.light
+      ? `text:light=${selector.value}`
+      : `getByText(${JSON.stringify(selector.value)})`;
   }
   if (selector.strategy === "css") {
     return `locator(${JSON.stringify(selector.value)})`;
