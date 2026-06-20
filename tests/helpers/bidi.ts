@@ -35,6 +35,9 @@ let usesExternalBidiEndpoint = false;
 let externalBidiBrowser: Browser | undefined;
 let externalBidiBrowserKey: string | undefined;
 let cachedRoxyBrowserEndpoint: string | undefined;
+let sharedBidiBrowser: Browser | undefined;
+let sharedBidiBrowserKind: "external" | "local" | undefined;
+let sharedBidiBrowserKey: string | undefined;
 
 function bidiHumanOptions() {
   return {
@@ -46,28 +49,29 @@ function bidiHumanOptions() {
 }
 
 export async function openBidiBrowser(): Promise<Browser> {
-  if (!shouldKeepConfiguredExternalBidiBrowserOpen()) {
-    await cleanupExternalBidiTestState();
-  }
-
   const roxyBrowserEndpoint = BIDI_WS_ENDPOINT
     ? toBidiWsEndpoint(BIDI_WS_ENDPOINT)
     : await resolveRoxyBrowserBidiEndpoint();
 
   if (roxyBrowserEndpoint) {
+    if (
+      sharedBidiBrowser
+      && sharedBidiBrowserKind === "external"
+      && sharedBidiBrowserKey === `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`
+    ) {
+      usesExternalBidiEndpoint = true;
+      return sharedBidiBrowser;
+    }
+
+    if (!sharedBidiBrowser && !shouldKeepConfiguredExternalBidiBrowserOpen()) {
+      await cleanupStaleBidiTestArtifacts();
+    }
+
     usesExternalBidiEndpoint = true;
 
     const browserKey = `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`;
-    if (
-      REUSE_EXTERNAL_BIDI_BROWSER
-      && externalBidiBrowser
-      && externalBidiBrowserKey === browserKey
-    ) {
-      return externalBidiBrowser;
-    }
-
-    if (REUSE_EXTERNAL_BIDI_BROWSER) {
-      await closeExternalBidiBrowser();
+    if (sharedBidiBrowser) {
+      await closeSharedBidiBrowser();
     }
     externalBidiBrowserKey = browserKey;
     externalBidiBrowser = await firefox.connect({
@@ -77,16 +81,33 @@ export async function openBidiBrowser(): Promise<Browser> {
       ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
       human: bidiHumanOptions()
     });
-    return externalBidiBrowser;
+    sharedBidiBrowser = externalBidiBrowser;
+    sharedBidiBrowserKind = "external";
+    sharedBidiBrowserKey = browserKey;
+    return sharedBidiBrowser;
+  }
+
+  if (sharedBidiBrowser && sharedBidiBrowserKind === "local") {
+    usesExternalBidiEndpoint = false;
+    return sharedBidiBrowser;
+  }
+
+  if (!sharedBidiBrowser) {
+    await cleanupStaleBidiTestArtifacts();
+  } else {
+    await closeSharedBidiBrowser();
   }
 
   usesExternalBidiEndpoint = false;
 
-  return firefox.launch({
+  sharedBidiBrowser = await firefox.launch({
     headless: true,
     executablePath: FIREFOX_EXECUTABLE,
     human: bidiHumanOptions()
   });
+  sharedBidiBrowserKind = "local";
+  sharedBidiBrowserKey = undefined;
+  return sharedBidiBrowser;
 }
 
 async function resolveRoxyBrowserBidiEndpoint(): Promise<string | undefined> {
@@ -121,14 +142,13 @@ export async function withBidiPage<T>(
   run: (page: Page, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
   let browser = await openBidiBrowser();
-  const keepBrowserOpen = shouldKeepExternalBidiBrowserOpen();
   let context: BrowserContext | undefined;
 
   try {
     try {
       context = await browser.newContext({});
     } catch (error) {
-      if (!keepBrowserOpen || !isClosedBidiConnectionError(error)) {
+      if (!isRecoverableBidiBrowserError(error)) {
         throw error;
       }
 
@@ -149,34 +169,9 @@ export async function withBidiPage<T>(
       await closeForTest("context.close", () => context.close()).catch(() => {});
     }
   } finally {
-    if (!keepBrowserOpen) {
-      await closeForTest("browser.close", () => browser.close()).catch(() => {});
-      if (usesExternalBidiEndpoint) {
-        externalBidiBrowser = undefined;
-        externalBidiBrowserKey = undefined;
-        cachedRoxyBrowserEndpoint = undefined;
-        await closeRoxyBrowserFirefoxBidiProfile({
-          apiPort: ROXYBROWSER_API_PORT,
-          apiToken: ROXYBROWSER_API_TOKEN,
-          workspaceId: ROXYBROWSER_WORKSPACE_ID,
-          projectId: ROXYBROWSER_PROJECT_ID,
-          profileId: ROXYBROWSER_PROFILE_ID,
-          coreType: "Firefox",
-          coreVersion: ROXYBROWSER_CORE_VERSION,
-          windowRemark: "firefox bidi e2e"
-        });
-      }
-      await cleanupLocalTestBrowserProcessesWithTimeout();
-    }
+    // Browser lifetime is shared across the whole BiDi suite. Individual tests
+    // only own their page/context and global teardown closes the browser.
   }
-}
-
-function shouldKeepExternalBidiBrowserOpen(): boolean {
-  if (!usesExternalBidiEndpoint) {
-    return false;
-  }
-
-  return shouldKeepConfiguredExternalBidiBrowserOpen();
 }
 
 function shouldKeepConfiguredExternalBidiBrowserOpen(): boolean {
@@ -197,6 +192,28 @@ async function closeExternalBidiBrowser(): Promise<void> {
   await delay(250);
 }
 
+async function closeSharedBidiBrowser(): Promise<void> {
+  const browser = sharedBidiBrowser;
+  const browserKind = sharedBidiBrowserKind;
+  sharedBidiBrowser = undefined;
+  sharedBidiBrowserKind = undefined;
+  sharedBidiBrowserKey = undefined;
+
+  if (!browser) {
+    return;
+  }
+
+  if (browserKind === "external") {
+    externalBidiBrowser = browser;
+  }
+  await closeForTest("browser.close", () => browser.close()).catch(() => {});
+  if (browserKind === "external") {
+    externalBidiBrowser = undefined;
+    externalBidiBrowserKey = undefined;
+  }
+  await delay(250);
+}
+
 async function resetExternalBidiBrowserState(): Promise<void> {
   await cleanupExternalBidiTestState();
   await delay(500);
@@ -212,10 +229,16 @@ function isClosedBidiConnectionError(error: unknown): boolean {
   );
 }
 
-export async function cleanupExternalBidiTestState(): Promise<void> {
-  usesExternalBidiEndpoint = false;
-  await closeExternalBidiBrowser();
-  cachedRoxyBrowserEndpoint = undefined;
+function isRecoverableBidiBrowserError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  return (
+    isClosedBidiConnectionError(error)
+    || message.includes("Target page, context or browser has been closed")
+    || message.includes("Session closed")
+  );
+}
+
+async function cleanupStaleBidiTestArtifacts(): Promise<void> {
   await closeRoxyBrowserFirefoxBidiProfile({
     apiPort: ROXYBROWSER_API_PORT,
     apiToken: ROXYBROWSER_API_TOKEN,
@@ -229,12 +252,17 @@ export async function cleanupExternalBidiTestState(): Promise<void> {
   await cleanupLocalTestBrowserProcessesWithTimeout();
 }
 
-export async function cleanupBidiTestStateAfterTest(): Promise<void> {
-  if (shouldKeepExternalBidiBrowserOpen()) {
-    return;
-  }
+export async function cleanupExternalBidiTestState(): Promise<void> {
+  usesExternalBidiEndpoint = false;
+  await closeSharedBidiBrowser();
+  await closeExternalBidiBrowser();
+  cachedRoxyBrowserEndpoint = undefined;
+  await cleanupStaleBidiTestArtifacts();
+}
 
-  await cleanupExternalBidiTestState();
+export async function cleanupBidiTestStateAfterTest(): Promise<void> {
+  // `withBidiPage()` owns page/context cleanup per test. Keep the browser alive
+  // across tests and let global teardown/exit hooks close it once per suite.
 }
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {

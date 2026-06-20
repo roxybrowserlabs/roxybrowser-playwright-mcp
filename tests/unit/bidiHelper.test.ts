@@ -57,8 +57,8 @@ describe("bidi helper cleanup", () => {
     delete process.env.ROXY_BIDI_REUSE_BROWSER;
   });
 
-  it("cleans stale Firefox state before opening a new local browser", async () => {
-    const { withBidiPage } = await import("../helpers/bidi.js");
+  it("cleans stale Firefox state before opening a shared local browser", async () => {
+    const { cleanupExternalBidiTestState, withBidiPage } = await import("../helpers/bidi.js");
 
     await withBidiPage(async () => {
       events.push("run");
@@ -67,9 +67,38 @@ describe("bidi helper cleanup", () => {
     expect(events[0]).toBe("close-profile");
     expect(events[1]).toBe("cleanup");
     expect(events[2]).toBe("launch");
-    expect(events).toContain("browser.close");
-    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
+    expect(events).not.toContain("browser.close");
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(1);
     expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(1);
     expect(resolveRoxyBrowserFirefoxBidiEndpoint).not.toHaveBeenCalled();
+
+    await cleanupExternalBidiTestState();
+
+    expect(events).toContain("browser.close");
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
+    expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses one local Firefox browser across bidi tests and closes it during suite cleanup", async () => {
+    const {
+      cleanupBidiTestStateAfterTest,
+      cleanupExternalBidiTestState,
+      withBidiPage
+    } = await import("../helpers/bidi.js");
+
+    await withBidiPage(async () => {
+      events.push("run:first");
+    });
+    await cleanupBidiTestStateAfterTest();
+    await withBidiPage(async () => {
+      events.push("run:second");
+    });
+
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(0);
+
+    await cleanupExternalBidiTestState();
+
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(1);
   });
 });
