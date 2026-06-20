@@ -451,6 +451,73 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("exposes timestamps for stored consoleMessages like Playwright", async () => {
+    await withPage(async (page) => {
+      const before = Date.now() - 100;
+      await page.evaluate(() => console.log("stored message"));
+      const after = Date.now() + 100;
+
+      const messages = await page.consoleMessages();
+      expect(messages.length).toBeGreaterThanOrEqual(1);
+      const last = messages[messages.length - 1]!;
+      expect(last.text()).toBe("stored message");
+      expect(last.timestamp()).toBeGreaterThanOrEqual(before);
+      expect(last.timestamp()).toBeLessThanOrEqual(after);
+    });
+  });
+
+  it("returns recent consoleMessages like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => {
+        for (let index = 0; index < 301; index += 1) {
+          console.log("message" + index);
+        }
+      });
+
+      const messages = await page.consoleMessages();
+      const objects = messages.map((message) => ({
+        text: message.text(),
+        type: message.type(),
+        page: message.page()
+      }));
+
+      const expected = [];
+      for (let index = 201; index < 301; index += 1) {
+        expected.push(expect.objectContaining({
+          text: "message" + index,
+          type: "log",
+          page
+        }));
+      }
+
+      expect(objects.length).toBeGreaterThanOrEqual(100);
+      expect(objects.slice(objects.length - expected.length)).toEqual(expected);
+    });
+  });
+
+  it("clearConsoleMessages works like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => {
+        console.log("message1");
+        console.log("message2");
+      });
+
+      let messages = await page.consoleMessages();
+      expect(messages.map((message) => message.text())).toContain("message1");
+      expect(messages.map((message) => message.text())).toContain("message2");
+
+      await page.clearConsoleMessages();
+
+      messages = await page.consoleMessages();
+      expect(messages).toEqual([]);
+
+      await page.evaluate(() => console.log("message3"));
+      messages = await page.consoleMessages();
+      expect(messages).toHaveLength(1);
+      expect(messages[0]!.text()).toBe("message3");
+    });
+  });
+
   it("fires domcontentloaded and load during navigation", async () => {
     await withPage(async (page) => {
       const events: string[] = [];

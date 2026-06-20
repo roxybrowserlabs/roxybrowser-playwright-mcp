@@ -528,6 +528,7 @@ interface HarRouteEntry {
 }
 
 const DEFAULT_EVENT_TIMEOUT_MS = 30_000;
+const MAX_CONSOLE_MESSAGE_HISTORY = 1_000;
 const INTERNAL_RECORDED_EVENTS = [
   "console",
   "domcontentloaded",
@@ -3753,10 +3754,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (event === "console" && payload) {
       this.consoleMessageHistory.push(payload as PageConsoleMessage);
       this.consoleMessageHistorySinceNavigation.push(payload as PageConsoleMessage);
-      if (this.consoleMessageHistory.length > 200) {
+      if (this.consoleMessageHistory.length > MAX_CONSOLE_MESSAGE_HISTORY) {
         this.consoleMessageHistory.shift();
       }
-      if (this.consoleMessageHistorySinceNavigation.length > 200) {
+      if (this.consoleMessageHistorySinceNavigation.length > MAX_CONSOLE_MESSAGE_HISTORY) {
         this.consoleMessageHistorySinceNavigation.shift();
       }
       return;
@@ -3828,14 +3829,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           if (event === "framenavigated" && this.isRawMainFrameNavigation(payload)) {
             this.resetHistorySinceNavigation();
           }
-          if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
-            await this.refreshFrameSnapshots().catch(() => {});
-            return;
-          }
-          const normalizedPayload = this.normalizePublicEventPayload(event, payload);
-          this.recordEvent(event, normalizedPayload as PageEventMap[typeof event]);
-        }) as RawPageEventListener<typeof event>
-      );
+        if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
+          await this.refreshFrameSnapshots().catch(() => {});
+          return;
+        }
+        if (this.adapterDisposers.has(event)) {
+          return;
+        }
+        const normalizedPayload = this.normalizePublicEventPayload(event, payload);
+        this.recordEvent(event, normalizedPayload as PageEventMap[typeof event]);
+      }) as RawPageEventListener<typeof event>
+    );
       this.internalDisposers.set(event, dispose);
     }
   }
