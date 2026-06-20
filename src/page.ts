@@ -2008,8 +2008,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | ((payload: any) => boolean | Promise<boolean>)
       | InternalWaitForEventOptions<PageEventName>
   ): Promise<any> {
+    const apiStack = new Error().stack;
     if (this.isClosed() && event !== "close") {
-      throw this.createClosedError();
+      const error = this.createClosedError();
+      appendAsyncApiStack(error, apiStack);
+      throw error;
     }
     const interceptionPromise =
       event === "filechooser" ? this.ensureFileChooserInterception() : null;
@@ -2025,12 +2028,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         : optionsOrPredicate?.timeout ?? this.defaultTimeoutMs;
 
     return new Promise<PageEventMap[PageEventName]>((resolve, reject) => {
+      const rejectWithApiStack = (error: unknown) => {
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        appendAsyncApiStack(normalizedError, apiStack);
+        reject(normalizedError);
+      };
       const timer =
         timeout === 0
           ? null
           : setTimeout(() => {
               cleanup();
-              reject(createWaitForEventTimeoutError(String(event), timeout, logLine));
+              rejectWithApiStack(createWaitForEventTimeoutError(String(event), timeout, logLine));
             }, timeout);
 
       const cleanup = () => {
@@ -2045,7 +2053,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
       const closeListener = (() => {
         cleanup();
-        reject(this.createClosedError());
+        rejectWithApiStack(this.createClosedError());
       }) as PageEventListener<"close">;
 
       const listener = (async (payload?: PageEventMap[PageEventName]) => {
@@ -2060,7 +2068,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           resolve(eventPayload);
         } catch (error) {
           cleanup();
-          reject(error instanceof Error ? error : new Error(String(error)));
+          rejectWithApiStack(error);
         }
       }) as PageEventListener<PageEventName>;
 
@@ -2070,7 +2078,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       (this.on as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
       interceptionPromise?.catch((error) => {
         cleanup();
-        reject(error instanceof Error ? error : new Error(String(error)));
+        rejectWithApiStack(error);
       });
     });
   }
@@ -6768,7 +6776,12 @@ function appendAsyncApiStack(error: unknown, apiStack: string | undefined): void
   if (currentStack.includes(userStack)) {
     return;
   }
-  error.stack = `${currentStack}\n${userStack}`;
+  const [headline, ...currentFrames] = currentStack.split("\n");
+  error.stack = [
+    headline,
+    userStack,
+    ...currentFrames.filter((line) => !line.includes(userStack))
+  ].join("\n");
 }
 
 async function observedRequestSizes(state: ObservedRequestState): Promise<{

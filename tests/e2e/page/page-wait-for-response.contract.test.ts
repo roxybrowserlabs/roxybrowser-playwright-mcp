@@ -47,6 +47,10 @@ describe("page waitForResponse contract e2e", () => {
       page.setDefaultTimeout(1);
       const error = await page.waitForResponse(() => false).catch((caught) => caught);
       expect(error).toBeInstanceOf(TimeoutError);
+      const firstFrame = String(error.stack)
+        .split("\n")
+        .find((line) => line.startsWith("    at "));
+      expect(firstFrame).toContain("page-wait-for-response.contract.test.ts");
     });
   });
 

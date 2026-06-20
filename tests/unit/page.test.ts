@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { RoxyElementHandle } from "../../src/elementHandle.js";
+import { TimeoutError } from "../../src/errors.js";
 import { RoxyFrameLocator } from "../../src/locator.js";
 import { RoxyJSHandle } from "../../src/jsHandle.js";
 import { RoxyLocator } from "../../src/locator.js";
@@ -2501,6 +2502,29 @@ describe("RoxyPage", () => {
     });
 
     expect((await waited).url()).toBe("https://example.com/match");
+  });
+
+  it("surfaces waitForResponse timeout stacks from the api call site", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    page.setDefaultTimeout(1);
+    const error = await page.waitForResponse(() => false).catch((caught) => caught as Error);
+    const firstFrame = String(error.stack)
+      .split("\n")
+      .find((line) => line.startsWith("    at "));
+
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect(firstFrame).toContain("page.test.ts");
   });
 
   it("waits for request and response by url matcher", async () => {
