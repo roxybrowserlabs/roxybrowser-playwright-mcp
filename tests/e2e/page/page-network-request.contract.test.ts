@@ -24,7 +24,27 @@ describe("page network request contract e2e", () => {
       page.on("request", (request) => requests.push(request));
       await page.goto(fixture.server.EMPTY_PAGE);
       expect(requests).toHaveLength(1);
+      expect(requests[0]!.url()).toBe(fixture.server.EMPTY_PAGE);
+      expect(requests[0]!.resourceType()).toBe("document");
+      expect(requests[0]!.method()).toBe("GET");
+      expect(await requests[0]!.response()).toBeTruthy();
       expect(requests[0]!.frame()).toBe(page.mainFrame());
+      expect(requests[0]!.frame().url()).toBe(fixture.server.EMPTY_PAGE);
+    });
+  });
+
+  it("emits response details for navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      const responses = [];
+      page.on("response", (response) => responses.push(response));
+
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      expect(responses).toHaveLength(1);
+      expect(responses[0]!.url()).toBe(fixture.server.EMPTY_PAGE);
+      expect(responses[0]!.status()).toBe(200);
+      expect(responses[0]!.ok()).toBe(true);
+      expect(responses[0]!.request()).toBeTruthy();
     });
   });
 
@@ -712,6 +732,22 @@ describe("page network request contract e2e", () => {
       expect(failedRequests[0]!.resourceType()).toBe("stylesheet");
       expect(failedRequests[0]!.failure()!.errorText.length).toBeGreaterThan(0);
       expect(failedRequests[0]!.frame()).toBeTruthy();
+    });
+  });
+
+  it("emits requestfinished details for successful navigations like Playwright", async () => {
+    await withPage(async (page) => {
+      const [response] = await Promise.all([
+        page.goto(fixture.server.EMPTY_PAGE),
+        page.waitForEvent("requestfinished")
+      ]);
+
+      const request = response!.request();
+      expect(request.url()).toBe(fixture.server.EMPTY_PAGE);
+      expect(await request.response()).toBeTruthy();
+      expect(request.frame()).toBe(page.mainFrame());
+      expect(request.frame().url()).toBe(fixture.server.EMPTY_PAGE);
+      expect(request.failure()).toBe(null);
     });
   });
 
