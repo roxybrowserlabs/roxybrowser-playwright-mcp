@@ -67,15 +67,15 @@ describe("bidi helper cleanup", () => {
     expect(events[0]).toBe("close-profile");
     expect(events[1]).toBe("cleanup");
     expect(events[2]).toBe("launch");
-    expect(events).not.toContain("browser.close");
-    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(1);
+    expect(events).toContain("browser.close");
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
     expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(1);
     expect(resolveRoxyBrowserFirefoxBidiEndpoint).not.toHaveBeenCalled();
 
     await cleanupExternalBidiTestState();
 
     expect(events).toContain("browser.close");
-    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(3);
     expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(2);
   });
 
@@ -95,13 +95,13 @@ describe("bidi helper cleanup", () => {
     });
 
     expect(launch).toHaveBeenCalledTimes(2);
-    expect(events.filter((event) => event === "browser.close")).toHaveLength(1);
-    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(3);
+    expect(events.filter((event) => event === "browser.close")).toHaveLength(2);
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(5);
 
     await cleanupExternalBidiTestState();
 
     expect(events.filter((event) => event === "browser.close")).toHaveLength(2);
-    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(4);
+    expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(6);
   });
 
   it("keeps an explicitly reused external Firefox browser open across bidi tests", async () => {

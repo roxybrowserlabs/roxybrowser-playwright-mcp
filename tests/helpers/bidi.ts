@@ -169,8 +169,12 @@ export async function withBidiPage<T>(
       await closeForTest("context.close", () => context.close()).catch(() => {});
     }
   } finally {
-    // Browser lifetime is shared across the whole BiDi suite. Individual tests
-    // only own their page/context and global teardown closes the browser.
+    // Local Firefox runs should be self-contained even if suite-level cleanup
+    // hooks are skipped or a test file is run in isolation.
+    if (!usesExternalBidiEndpoint) {
+      await closeSharedBidiBrowser().catch(() => {});
+      await cleanupLocalTestBrowserProcessesWithTimeout().catch(() => {});
+    }
   }
 }
 
