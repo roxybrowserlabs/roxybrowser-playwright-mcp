@@ -492,6 +492,7 @@ interface NavigationResponseCapture {
 
 interface NavigationFailureCapture {
   apiName: string;
+  allowCommittedRedirectTimeout?: boolean;
   committed?: boolean;
   expectedLoaderId?: string;
   resolveCommittedInterruption: () => void;
@@ -3399,6 +3400,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.interruptPendingNavigations(targetUrl);
     const capture = this.beginNavigationResponseCapture();
     const failureCapture = this.beginNavigationFailureCapture(targetUrl, "page.goto");
+    failureCapture.allowCommittedRedirectTimeout = waitUntil === "networkidle";
     this.resetNavigationState();
 
     try {
@@ -7596,7 +7598,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (capture.expectedLoaderId === loaderId) {
         continue;
       }
-      capture.reject(new Error(formatInterruptedNavigationMessage(capture, committedUrl)));
+      if (capture.allowCommittedRedirectTimeout) {
+        continue;
+      }
+      capture.resolveCommittedInterruption();
     }
   }
 
