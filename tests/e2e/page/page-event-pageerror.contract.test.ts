@@ -23,6 +23,7 @@ describe("page event pageerror contract e2e", () => {
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end(`<!doctype html>
           <script>
+            console.error('Not a JS error');
             function a() { b(); }
             function b() { c(); }
             function c() { throw new Error('Fancy error!'); }
@@ -39,6 +40,33 @@ describe("page event pageerror contract e2e", () => {
       expect(error.message).toBe("Fancy error!");
       expect(error.stack).toContain("Fancy error!");
       expect(error.stack).toContain("myscript.js");
+    });
+  });
+
+  it("should not receive extra console noise for pageerror like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/error.html", (_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(`<!doctype html>
+          <script>
+            console.error('Not a JS error');
+            function a() { b(); }
+            function b() { c(); }
+            function c() { throw new Error('Fancy error!'); }
+            a();
+            //# sourceURL=myscript.js
+          </script>`);
+      });
+
+      const messages: Array<Awaited<ReturnType<typeof page.waitForEvent<"console">>>> = [];
+      page.on("console", (message) => messages.push(message));
+
+      await Promise.all([
+        page.waitForEvent("pageerror"),
+        page.goto(fixture.server.PREFIX + "/error.html")
+      ]);
+
+      expect(messages).toHaveLength(1);
     });
   });
 
@@ -123,6 +151,21 @@ describe("page event pageerror contract e2e", () => {
         ]);
         expect(error.message).toBe("Window");
       }
+    });
+  });
+
+  it("should emit error from unhandled rejects like Playwright", async () => {
+    await withPage(async (page) => {
+      const [error] = await Promise.all([
+        page.waitForEvent("pageerror"),
+        page.setContent(`
+          <script>
+            Promise.reject(new Error('sad :('));
+          </script>
+        `)
+      ]);
+
+      expect(error.message).toContain("sad :(");
     });
   });
 
