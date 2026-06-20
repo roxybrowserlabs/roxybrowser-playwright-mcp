@@ -1059,7 +1059,7 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   waitForElementState(state: "visible"|"hidden"|"stable"|"enabled"|"disabled"|"editable", options?: { timeout?: number; }): Promise<void>;
   click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   hover(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  fill(text: string, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+  fill(value: string, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   type(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   press(key: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   textContent(): Promise<null|string>;
@@ -1223,7 +1223,7 @@ export interface Frame {
   url(): string;
   name(): string;
   frameElement(): Promise<ElementHandle>;
-  goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<Response | null>;
+  goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   setContent(html: string, options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   title(): Promise<string>;
   evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
@@ -1233,7 +1233,7 @@ export interface Frame {
   waitForFunction<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
   waitForFunction<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
   waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
-  waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<Response | null>;
+  waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { timeout?: number; }): Promise<void>;
   waitForTimeout(timeout: number): Promise<void>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
