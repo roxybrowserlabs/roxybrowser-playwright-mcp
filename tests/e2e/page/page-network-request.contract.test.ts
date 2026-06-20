@@ -421,6 +421,56 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("reports service worker navigation failures like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/serviceworkers/stub/sw.html");
+      await page.evaluate(() => (window as typeof window & { activationPromise: Promise<void> }).activationPromise);
+
+      const reloadResponse = await page.reload();
+      expect(await page.evaluate("window.fromSW")).toBe(true);
+      expect(reloadResponse!.url()).toBe(fixture.server.PREFIX + "/serviceworkers/stub/sw.html");
+      await page.evaluate(() => (window as typeof window & { activationPromise: Promise<void> }).activationPromise);
+
+      const [, failedRequest] = await Promise.all([
+        page.evaluate(() => {
+          window.location.href = "/serviceworkers/stub/error.html";
+        }),
+        page.waitForEvent("requestfailed")
+      ]);
+
+      expect(failedRequest.url()).toBe(fixture.server.PREFIX + "/serviceworkers/stub/error.html");
+      expect(failedRequest.failure()!.errorText).toContain("net::ERR_FAILED");
+      expect(failedRequest.serviceWorker()).toBe(null);
+      expect(await failedRequest.response()).toBe(null);
+    });
+  });
+
+  it("reports service worker navigation failures with routing like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.route("**/*", (route) => route.continue());
+      await page.goto(fixture.server.PREFIX + "/serviceworkers/stub/sw.html");
+      await page.evaluate(() => (window as typeof window & { activationPromise: Promise<void> }).activationPromise);
+
+      const reloadResponse = await page.reload();
+      expect(await page.evaluate("window.fromSW")).toBe(true);
+      expect(reloadResponse!.url()).toBe(fixture.server.PREFIX + "/serviceworkers/stub/sw.html");
+      await page.evaluate(() => (window as typeof window & { activationPromise: Promise<void> }).activationPromise);
+
+      const [, failedRequest] = await Promise.all([
+        page.evaluate(() => {
+          window.location.href = "/serviceworkers/stub/error.html";
+          return undefined;
+        }),
+        page.waitForEvent("requestfailed")
+      ]);
+
+      expect(failedRequest.url()).toBe(fixture.server.PREFIX + "/serviceworkers/stub/error.html");
+      expect(failedRequest.failure()!.errorText).toContain("net::ERR_FAILED");
+      expect(failedRequest.serviceWorker()).toBe(null);
+      expect(await failedRequest.response()).toBe(null);
+    });
+  });
+
   it("reports raw headers", async () => {
     await withPage(async (page) => {
       let expectedHeaders: Array<{ name: string; value: string }> = [];
