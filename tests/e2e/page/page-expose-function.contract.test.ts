@@ -143,6 +143,33 @@ describe("page exposeFunction/exposeBinding contract e2e", () => {
     });
   });
 
+  it("exposeFunction should work with complex objects", async () => {
+    await withPage(async (page) => {
+      await page.exposeFunction("complexObject", (a: { x: number }, b: { x: number }) => {
+        return { x: a.x + b.x };
+      });
+      const result = await page.evaluate(async () => window["complexObject"]({ x: 5 }, { x: 2 }));
+      expect(result.x).toBe(7);
+    });
+  });
+
+  it("exposeFunction should work with setContent", async () => {
+    await withPage(async (page) => {
+      await page.exposeFunction("compute", (a: number, b: number) => Promise.resolve(a * b));
+      await page.setContent("<script>window.result = compute(3, 2)</script>");
+      expect(await page.evaluate("window.result")).toBe(6);
+    });
+  });
+
+  it("exposeBinding should alias Window, Document and Node", async () => {
+    await withPage(async (page) => {
+      let object: unknown;
+      await page.exposeBinding("log", (_source, obj) => object = obj);
+      await page.evaluate("window.log([window, document, document.body])");
+      expect(object).toEqual(["ref: <Window>", "ref: <Document>", "ref: <Node>"]);
+    });
+  });
+
   it("exposeBinding should serialize cycles", async () => {
     await withPage(async (page) => {
       let object: unknown;
@@ -154,11 +181,53 @@ describe("page exposeFunction/exposeBinding contract e2e", () => {
     });
   });
 
+  it("exposeFunction should work with overridden console object", async () => {
+    await withPage(async (page) => {
+      await page.evaluate(() => {
+        window.console = null as unknown as Console;
+      });
+      expect(await page.evaluate(() => window.console === null)).toBe(true);
+      await page.exposeFunction("add", (a: number, b: number) => a + b);
+      expect(await page.evaluate("add(5, 6)")).toBe(11);
+    });
+  });
+
+  it("exposeFunction should work with busted Array.prototype.map/push", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/test", (_request, response) => {
+        response.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8"
+        });
+        response.end(`<!doctype html><html><body><script>
+          Array.prototype.map = null;
+          Array.prototype.push = null;
+        </script></body></html>`);
+      });
+
+      await page.goto(fixture.server.PREFIX + "/test");
+      await page.exposeFunction("add", (a: number, b: number) => a + b);
+      expect(await page.evaluate("add(5, 6)")).toBe(11);
+    });
+  });
+
   it("exposeFunction should reject duplicates", async () => {
     await withPage(async (page) => {
       await page.exposeFunction("foo", () => {});
       const error = await page.exposeFunction("foo", () => {}).catch((caught) => caught);
       expect(error.message).toContain('page.exposeFunction: Function "foo" has been already registered');
+    });
+  });
+
+  it("exposeBinding should work in parallel", async () => {
+    await withPage(async (page) => {
+      await Promise.all([
+        page.exposeBinding("foo", () => 42),
+        page.exposeBinding("bar", () => 42)
+      ]);
+      await page.evaluate(() => {
+        window["foo"]();
+        window["bar"]();
+      });
     });
   });
 });

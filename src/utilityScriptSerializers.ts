@@ -111,9 +111,11 @@ function typedArrayToBase64(array: any): string {
   if ("toBase64" in array) {
     return array.toBase64();
   }
-  const binary = Array.from(new Uint8Array(array.buffer, array.byteOffset, array.byteLength))
-    .map((b) => String.fromCharCode(b))
-    .join("");
+  const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]!);
+  }
   return btoa(binary);
 }
 
@@ -180,8 +182,8 @@ export function parseEvaluationResultValue(
     if ("a" in value) {
       const result: any[] = [];
       refs.set(value.id, result);
-      for (const a of value.a) {
-        result.push(parseEvaluationResultValue(a, handles, refs));
+      for (let index = 0; index < value.a.length; index += 1) {
+        result[index] = parseEvaluationResultValue(value.a[index]!, handles, refs);
       }
       return result;
     }
@@ -320,7 +322,7 @@ function innerSerialize(
     const id = ++visitorInfo.lastId;
     visitorInfo.visited.set(value, id);
     for (let i = 0; i < value.length; i += 1) {
-      a.push(serialize(value[i], handleSerializer, visitorInfo));
+      a[i] = serialize(value[i], handleSerializer, visitorInfo);
     }
     return { a, id };
   }
@@ -329,6 +331,7 @@ function innerSerialize(
     const o: Array<{ k: string; v: SerializedValue }> = [];
     const id = ++visitorInfo.lastId;
     visitorInfo.visited.set(value, id);
+    let objectIndex = 0;
     for (const name of Object.keys(value)) {
       let item;
       try {
@@ -337,9 +340,9 @@ function innerSerialize(
         continue;
       }
       if (name === "toJSON" && typeof item === "function") {
-        o.push({ k: name, v: { o: [], id: 0 } });
+        o[objectIndex++] = { k: name, v: { o: [], id: 0 } };
       } else {
-        o.push({ k: name, v: serialize(item, handleSerializer, visitorInfo) });
+        o[objectIndex++] = { k: name, v: serialize(item, handleSerializer, visitorInfo) };
       }
     }
 

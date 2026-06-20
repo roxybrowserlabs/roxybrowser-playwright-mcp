@@ -4954,9 +4954,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         if ("toBase64" in array) {
           return array.toBase64();
         }
-        const binary = Array.from(new Uint8Array(array.buffer, array.byteOffset, array.byteLength))
-          .map((b) => String.fromCharCode(b))
-          .join("");
+        const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+        let binary = "";
+        for (let index = 0; index < bytes.length; index += 1) {
+          binary += String.fromCharCode(bytes[index]!);
+        }
         return btoa(binary);
       };
       const base64ToTypedArray = (base64: string, TypedArrayConstructor: any) => {
@@ -5033,12 +5035,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         if (Array.isArray(value)) {
           const id = ++visitorInfo.lastId;
           visitorInfo.visited.set(value, id);
-          return { a: value.map((entry) => serializeBindingArgument(entry, visitorInfo)), id };
+          const serializedEntries = [];
+          for (let index = 0; index < value.length; index += 1) {
+            serializedEntries[index] = serializeBindingArgument(value[index], visitorInfo);
+          }
+          return { a: serializedEntries, id };
         }
         if (typeof value === "object") {
           const id = ++visitorInfo.lastId;
           visitorInfo.visited.set(value, id);
           const o: Array<{ k: string; v: unknown }> = [];
+          let objectIndex = 0;
           for (const key of Object.keys(value)) {
             let item;
             try {
@@ -5047,9 +5054,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
               continue;
             }
             if (key === "toJSON" && typeof item === "function") {
-              o.push({ k: key, v: { o: [], id: 0 } });
+              o[objectIndex++] = { k: key, v: { o: [], id: 0 } };
             } else {
-              o.push({ k: key, v: serializeBindingArgument(item, visitorInfo) });
+              o[objectIndex++] = { k: key, v: serializeBindingArgument(item, visitorInfo) };
             }
           }
           let jsonWrapper;
@@ -5114,8 +5121,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           if ("a" in value) {
             const result: any[] = [];
             refs.set(value.id, result);
-            for (const item of value.a) {
-              result.push(parseBindingResult(item, refs));
+            for (let index = 0; index < value.a.length; index += 1) {
+              result[index] = parseBindingResult(value.a[index], refs);
             }
             return result;
           }
@@ -5154,13 +5161,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
       (globalThis as typeof globalThis & Record<string, unknown>)[bindingName] = async (...args: unknown[]) => {
         const callId = `${bindingName}:${++store.__roxyBindingNextId!}`;
-        store.__roxyBindingCalls!.push({
+        const serializedArgs = [];
+        for (let index = 0; index < args.length; index += 1) {
+          serializedArgs[index] = serializeBindingArgument(args[index]);
+        }
+        store.__roxyBindingCalls![store.__roxyBindingCalls!.length] = {
           id: callId,
           name: bindingName,
-          serializedArgs: args.map((arg) => serializeBindingArgument(arg)),
+          serializedArgs,
           frameId:
             (globalThis.frameElement as Element | null)?.getAttribute("data-roxy-frame-id") ?? null
-        });
+        };
 
         for (;;) {
           if (callId in store.__roxyBindingResults!) {

@@ -5657,7 +5657,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const argCount = argsAndHandles[0];
       const serializedArgs = argsAndHandles.slice(1, argCount + 1);
       const handles = argsAndHandles.slice(argCount + 1);
-      const parameters = serializedArgs.map(value => __roxyParseEvaluationResultValue(value, handles));
+      const parameters = [];
+      for (let index = 0; index < serializedArgs.length; index += 1) {
+        parameters[index] = __roxyParseEvaluationResultValue(serializedArgs[index], handles);
+      }
       let result = (0, eval)(${serializeForEvaluation(normalizeEvaluationExpression(expression, isFunction))});
       if (${isFunction ? "true" : "false"})
         result = result(...parameters);

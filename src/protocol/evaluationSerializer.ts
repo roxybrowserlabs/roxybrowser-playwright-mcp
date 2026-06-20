@@ -18,7 +18,10 @@ function __roxySerializeEvaluationResult(value) {
   const typedArrayToBase64 = (array) => {
     if ("toBase64" in array)
       return array.toBase64();
-    const binary = Array.from(new Uint8Array(array.buffer, array.byteOffset, array.byteLength)).map((b) => String.fromCharCode(b)).join("");
+    const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 1)
+      binary += String.fromCharCode(bytes[index]);
     return btoa(binary);
   };
   const isRegExp = (obj) => {
@@ -89,19 +92,25 @@ function __roxySerializeEvaluationResult(value) {
       }
       return undefined;
     };
-    const setVisited = (object, id) => visitorInfo.visited.push({ object, id });
+    const setVisited = (object, id) => {
+      visitorInfo.visited[visitorInfo.visited.length] = { object, id };
+    };
     const existingId = getVisited(value);
     if (existingId)
       return { ref: existingId };
     if (Array.isArray(value)) {
       const id = ++visitorInfo.lastId;
       setVisited(value, id);
-      return { a: value.map((entry) => serialize(entry, visitorInfo)), id };
+      const a = [];
+      for (let index = 0; index < value.length; index += 1)
+        a[index] = serialize(value[index], visitorInfo);
+      return { a, id };
     }
     if (typeof value === "object") {
       const id = ++visitorInfo.lastId;
       setVisited(value, id);
       const o = [];
+      let objectIndex = 0;
       for (const name of Object.keys(value)) {
         let item;
         try {
@@ -110,9 +119,9 @@ function __roxySerializeEvaluationResult(value) {
           continue;
         }
         if (name === "toJSON" && typeof item === "function")
-          o.push({ k: name, v: { o: [], id: 0 } });
+          o[objectIndex++] = { k: name, v: { o: [], id: 0 } };
         else
-          o.push({ k: name, v: serialize(item, visitorInfo) });
+          o[objectIndex++] = { k: name, v: serialize(item, visitorInfo) };
       }
       let jsonWrapper;
       try {
@@ -187,14 +196,14 @@ function __roxyParseEvaluationResultValue(value, handles = [], refs = []) {
       return new RegExp(value.r.p, value.r.f);
     if ("a" in value) {
       const result = [];
-      refs.push({ id: value.id, value: result });
-      for (const a of value.a)
-        result.push(__roxyParseEvaluationResultValue(a, handles, refs));
+      refs[refs.length] = { id: value.id, value: result };
+      for (let index = 0; index < value.a.length; index += 1)
+        result[index] = __roxyParseEvaluationResultValue(value.a[index], handles, refs);
       return result;
     }
     if ("o" in value) {
       const result = {};
-      refs.push({ id: value.id, value: result });
+      refs[refs.length] = { id: value.id, value: result };
       for (const { k, v } of value.o) {
         if (k === "__proto__")
           continue;
