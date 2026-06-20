@@ -102,6 +102,106 @@ describe("page history e2e", () => {
     });
   });
 
+  it("page.reload during renderer-initiated navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/one-style.html", { waitUntil: "load" });
+      await page.setContent("<form method='POST' action='/post'>Form is here<input type='submit'></form>");
+      fixture.server.setRoute("/post", () => {});
+
+      let resolveReloadFailed: (() => void) | undefined;
+      const reloadFailedPromise = new Promise<void>((resolve) => {
+        resolveReloadFailed = resolve;
+      });
+      page.once("request", async () => {
+        await page.reload().catch(() => {});
+        resolveReloadFailed?.();
+      });
+      const clickPromise = page.click("input[type=submit]").catch(() => {});
+      await reloadFailedPromise;
+      await clickPromise;
+      await page.waitForSelector("text=hello");
+    });
+  });
+
+  it("page.reload should work with same origin redirect like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+      fixture.server.setRedirect("/empty.html", fixture.server.PREFIX + "/title.html");
+      await page.reload();
+      expect(await page.url()).toBe(fixture.server.PREFIX + "/title.html");
+    });
+  });
+
+  it("page.reload should work with cross-origin redirect like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+      fixture.server.setRedirect("/empty.html", fixture.server.CROSS_PROCESS_PREFIX + "/title.html");
+      await page.reload();
+      expect(await page.url()).toBe(fixture.server.CROSS_PROCESS_PREFIX + "/title.html");
+    });
+  });
+
+  it("page.reload should work on a page with a hash like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE + "#hash", { waitUntil: "load" });
+      await page.reload();
+      expect(await page.url()).toBe(fixture.server.EMPTY_PAGE + "#hash");
+    });
+  });
+
+  it("page.reload should work on a page with a trailing hash like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE + "#", { waitUntil: "load" });
+      await page.reload();
+      expect(await page.url()).toBe(fixture.server.EMPTY_PAGE + "#");
+    });
+  });
+
+  it("page.goBack during renderer-initiated navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/one-style.html", { waitUntil: "load" });
+      await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+      await page.setContent("<form method='POST' action='/post'>Form is here<input type='submit'></form>");
+      fixture.server.setRoute("/post", () => {});
+
+      let resolveGoBackFailed: (() => void) | undefined;
+      const goBackFailedPromise = new Promise<void>((resolve) => {
+        resolveGoBackFailed = resolve;
+      });
+      page.once("request", async () => {
+        await page.goBack().catch(() => {});
+        resolveGoBackFailed?.();
+      });
+      const clickPromise = page.click("input[type=submit]").catch(() => {});
+      await goBackFailedPromise;
+      await clickPromise;
+      await page.waitForSelector("text=hello");
+    });
+  });
+
+  it("page.goForward during renderer-initiated navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+      await page.goto(fixture.server.PREFIX + "/one-style.html", { waitUntil: "load" });
+      await page.goBack();
+      await page.setContent("<form method='POST' action='/post'>Form is here<input type='submit'></form>");
+      fixture.server.setRoute("/post", () => {});
+
+      let resolveGoForwardFailed: (() => void) | undefined;
+      const goForwardFailedPromise = new Promise<void>((resolve) => {
+        resolveGoForwardFailed = resolve;
+      });
+      page.once("request", async () => {
+        await page.goForward().catch(() => {});
+        resolveGoForwardFailed?.();
+      });
+      const clickPromise = page.click("input[type=submit]").catch(() => {});
+      await goForwardFailedPromise;
+      await clickPromise;
+      await page.waitForSelector("text=hello");
+    });
+  });
+
   it("page.goBack should work for file urls", async () => {
     await withPage(async (page) => {
       const url1 = pathToFileURL(fixture.asset("consolelog.html")).href;
