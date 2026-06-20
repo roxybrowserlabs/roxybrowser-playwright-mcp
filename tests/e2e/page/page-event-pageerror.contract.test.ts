@@ -237,4 +237,35 @@ describe("page event pageerror contract e2e", () => {
       );
     });
   });
+
+  it("should fire illegal character error like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/error.html", (_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(`
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="UTF-8" />
+              <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+              <title>vite-project</title>
+            </head>
+            <body>
+              <div id="app"></div>
+              <script>
+                let a=10；// note: full-width semicolon
+              </script>
+            </body>
+          </html>
+        `);
+      });
+
+      const [error] = await Promise.all([
+        page.waitForEvent("pageerror"),
+        page.goto(fixture.server.PREFIX + "/error.html")
+      ]);
+
+      expect(error.message).toContain("Invalid or unexpected token");
+    });
+  });
 });
