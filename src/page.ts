@@ -1187,6 +1187,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     frame: RoxyFrameSnapshot | null,
     options: WaitForNavigationOptions = {}
   ): Promise<Response | null> {
+    const apiStack = new Error().stack;
     const frameObject = frame ? this.frameById(frame.id) : null;
     const initialUrl = frameObject?.url() ?? this.url();
     const timeout = options.timeout ?? this.defaultNavigationTimeoutMs;
@@ -1211,12 +1212,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     });
     const start = Date.now();
     const navigationPromise = new Promise<Response | null>((resolve, reject) => {
+      const rejectWithApiStack = (error: unknown) => {
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        appendAsyncApiStack(normalizedError, apiStack);
+        reject(normalizedError);
+      };
       let latestNavigationResponse: Response | null = null;
       const timer =
         timeout === 0
           ? null
           : setTimeout(() => {
-              reject(
+              rejectWithApiStack(
                 new TimeoutError(
                   `page.waitForNavigation: Timeout ${timeout}ms exceeded.\n` +
                     `=========================== logs ===========================\n` +
@@ -1277,13 +1283,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
       const closeListener = (() => {
         cleanup();
-        reject(new Error("Navigation failed because page was closed!"));
+        rejectWithApiStack(new Error("Navigation failed because page was closed!"));
       }) as PageEventListener<"close">;
 
       const frameDetachedListener = ((detachedFrame: Frame) => {
         if (frameObject && detachedFrame === frameObject) {
           cleanup();
-          reject(formatFrameDetachError());
+          rejectWithApiStack(formatFrameDetachError());
         }
       }) as PageEventListener<"framedetached">;
 

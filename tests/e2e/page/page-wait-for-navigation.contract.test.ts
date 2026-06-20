@@ -41,6 +41,10 @@ describe("page waitForNavigation contract e2e", () => {
       expect(error.message).toContain("page.waitForNavigation: Timeout 5000ms exceeded.");
       expect(error.message).toContain('waiting for navigation to "**/frame.html" until "load"');
       expect(error.message).toContain(`navigated to "${fixture.server.EMPTY_PAGE}"`);
+      const firstFrame = String(error.stack)
+        .split("\n")
+        .find((line) => line.startsWith("    at "));
+      expect(firstFrame).toContain("page-wait-for-navigation.contract.test.ts");
     });
   });
 
