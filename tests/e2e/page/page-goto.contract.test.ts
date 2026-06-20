@@ -72,6 +72,144 @@ describe("page goto contract e2e", () => {
     });
   });
 
+  it("should work with cross-process that fails before committing like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", (request) => {
+        request.socket.destroy();
+      });
+      const response = await page.goto(fixture.server.CROSS_PROCESS_PREFIX + "/title.html");
+      await response!.finished();
+      const error = await page.goto(fixture.server.EMPTY_PAGE).catch((caught) => caught);
+      expect(error instanceof Error).toBe(true);
+    });
+  });
+
+  it("should work with Cross-Origin-Opener-Policy like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", (_request, response) => {
+        response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+        response.end(`
+          <div>Hello there!</div>
+          <script>window.onload = () => console.log('onload')</script>
+        `);
+      });
+      const requests = new Set();
+      const events: string[] = [];
+      page.on("request", (request) => {
+        events.push("request");
+        requests.add(request);
+      });
+      page.on("requestfailed", (request) => {
+        events.push("requestfailed");
+        requests.add(request);
+      });
+      page.on("requestfinished", (request) => {
+        events.push("requestfinished");
+        requests.add(request);
+      });
+      page.on("response", (response) => {
+        events.push("response");
+        requests.add(response.request());
+      });
+
+      const response = await page.goto(fixture.server.EMPTY_PAGE);
+      expect(page.url()).toBe(fixture.server.EMPTY_PAGE);
+      await response!.finished();
+      expect(events).toEqual(["request", "response", "requestfinished"]);
+      expect(requests.size).toBe(1);
+      expect(response!.request().failure()).toBe(null);
+    });
+  });
+
+  it("should work with Cross-Origin-Opener-Policy and interception like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/empty.html", (_request, response) => {
+        response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+        response.end(`
+          <div>Hello there!</div>
+          <script>window.onload = () => console.log('onload')</script>
+        `);
+      });
+      const requests = new Set();
+      const events: string[] = [];
+      page.on("request", (request) => {
+        events.push("request");
+        requests.add(request);
+      });
+      page.on("requestfailed", (request) => {
+        events.push("requestfailed");
+        requests.add(request);
+      });
+      page.on("requestfinished", (request) => {
+        events.push("requestfinished");
+        requests.add(request);
+      });
+      page.on("response", (response) => {
+        events.push("response");
+        requests.add(response.request());
+      });
+      await page.route("**/*", async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await route.continue();
+      });
+
+      const response = await page.goto(fixture.server.EMPTY_PAGE);
+      expect(page.url()).toBe(fixture.server.EMPTY_PAGE);
+      await response!.finished();
+      expect(events).toEqual(["request", "response", "requestfinished"]);
+      expect(requests.size).toBe(1);
+      expect(response!.request().failure()).toBe(null);
+    });
+  });
+
+  it("should work with Cross-Origin-Opener-Policy after redirect like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRedirect("/redirect", "/empty.html");
+      fixture.server.setRoute("/empty.html", (_request, response) => {
+        response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+        response.end(`
+          <div>Hello there!</div>
+          <script>window.onload = () => console.log('onload')</script>
+        `);
+      });
+      const requests = new Set();
+      const events: string[] = [];
+      page.on("request", (request) => {
+        events.push("request");
+        requests.add(request);
+      });
+      page.on("requestfailed", (request) => {
+        events.push("requestfailed");
+        requests.add(request);
+      });
+      page.on("requestfinished", (request) => {
+        events.push("requestfinished");
+        requests.add(request);
+      });
+      page.on("response", (response) => {
+        events.push("response");
+        requests.add(response.request());
+      });
+
+      const response = await page.goto(fixture.server.PREFIX + "/redirect");
+      expect(page.url()).toBe(fixture.server.EMPTY_PAGE);
+      await response!.finished();
+      expect(events).toEqual([
+        "request",
+        "response",
+        "requestfinished",
+        "request",
+        "response",
+        "requestfinished"
+      ]);
+      expect(requests.size).toBe(2);
+      expect(response!.request().failure()).toBe(null);
+      const firstRequest = response!.request().redirectedFrom();
+      expect(firstRequest).toBeTruthy();
+      expect(firstRequest!.url()).toBe(fixture.server.PREFIX + "/redirect");
+    });
+  });
+
   it("should capture iframe navigation request like Playwright", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);
