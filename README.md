@@ -30,7 +30,7 @@ This branch establishes the package scaffold, API shape, and protocol boundaries
 
 The e2e suite writes a temporary HTML fixture, launches Chrome or Edge in headless mode, and verifies the public API against a real page through CDP. If auto-detection is not enough for your machine or CI image, set `ROXY_E2E_EXECUTABLE_PATH` to a Chromium-based browser binary before running the e2e command.
 
-The BiDi e2e suite prefers connecting to an existing Firefox BiDi websocket when `ROXY_BIDI_WS_ENDPOINT` is set. Without that variable, it launches a local Firefox binary with a temporary test profile and will use `ROXY_BIDI_EXECUTABLE_PATH` when provided. Set `ROXY_BIDI_USE_ROXYBROWSER_API=1` to opt into opening a Firefox profile through the RoxyBrowser local API; the helper closes the connected browser/profile after each test by default so repeated local runs do not leak Firefox windows. Set `ROXY_BIDI_KEEP_BROWSER_OPEN=1` only when deliberately debugging a shared endpoint. See `.env.example` for the supported local settings.
+The BiDi e2e suite prefers connecting to an existing Firefox BiDi websocket when `ROXY_BIDI_WS_ENDPOINT` is set. Without that variable, it launches a local Firefox binary with a temporary test profile and will use `ROXY_BIDI_EXECUTABLE_PATH` when provided. Set `ROXY_BIDI_USE_ROXYBROWSER_API=1` to opt into opening a Firefox profile through the RoxyBrowser local API; the helper closes the connected browser/profile after each test by default so repeated local runs do not leak Firefox windows. Set `ROXY_BIDI_KEEP_BROWSER_OPEN=1` only when deliberately debugging a shared endpoint and you intentionally want the Firefox window to stay open after a test. See `.env.example` for the supported local settings.
 
 ## Browser launch
 

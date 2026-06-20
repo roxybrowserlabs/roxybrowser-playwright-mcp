@@ -30,7 +30,6 @@ const ROXYBROWSER_DEBUG = process.env.ROXYBROWSER_DEBUG === "1";
 const USE_ROXYBROWSER_API = process.env.ROXY_BIDI_USE_ROXYBROWSER_API === "1";
 const KEEP_BIDI_BROWSER_OPEN =
   process.env.ROXY_BIDI_KEEP_BROWSER_OPEN === "1" && Boolean(BIDI_WS_ENDPOINT);
-const REUSE_EXTERNAL_BIDI_BROWSER = process.env.ROXY_BIDI_REUSE_BROWSER === "1";
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
 const SIGNAL_EXIT_GRACE_MS = Number(process.env.ROXY_TEST_BROWSER_SIGNAL_EXIT_GRACE_MS ?? 20_000);
 
@@ -199,7 +198,7 @@ export async function withBidiPage<T>(
 }
 
 function shouldKeepConfiguredExternalBidiBrowserOpen(): boolean {
-  return Boolean(BIDI_WS_ENDPOINT) && (KEEP_BIDI_BROWSER_OPEN || REUSE_EXTERNAL_BIDI_BROWSER);
+  return Boolean(BIDI_WS_ENDPOINT) && KEEP_BIDI_BROWSER_OPEN;
 }
 
 async function closeExternalBidiBrowser(): Promise<void> {
