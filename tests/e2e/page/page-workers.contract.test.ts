@@ -356,13 +356,12 @@ describe("page workers contract e2e", () => {
         response.setHeader("Content-Type", "text/javascript");
         response.end("console.log('hello from the worker');");
       });
-      const [request] = await Promise.all([
-        page.waitForEvent("request", (candidate) => candidate.url().includes("/worker.js")),
-        page.waitForEvent("console", (message) => message.text().includes("hello from the worker")),
-        page.evaluate(() => {
-          (window as typeof window & { worker?: Worker }).worker = new Worker("/worker.js");
-        })
-      ]);
+      const requestPromise = page.waitForEvent("request", (candidate) => candidate.url().includes("/worker.js"));
+      const consolePromise = page.waitForEvent("console", (message) => message.text().includes("hello from the worker"));
+      await page.evaluate(() => {
+        (window as typeof window & { worker?: Worker }).worker = new Worker("/worker.js");
+      });
+      const request = await requestPromise;
 
       expect(request.url()).toBe(fixture.server.PREFIX + "/worker.js");
       await expect.poll(() => request.redirectedTo()?.url() ?? null).toBe(
@@ -371,6 +370,7 @@ describe("page workers contract e2e", () => {
       const redirect = request.redirectedTo();
       expect(redirect).toBeTruthy();
       expect(redirect!.url()).toBe(fixture.server.PREFIX + "/worker2.js");
+      await consolePromise;
       const response = await redirect!.response();
       expect(response).not.toBeNull();
       expect(await response!.text()).toContain("hello from the worker");

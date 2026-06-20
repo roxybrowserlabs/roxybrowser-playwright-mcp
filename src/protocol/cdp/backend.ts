@@ -2028,6 +2028,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly continuedRequestHeaders = new Map<string, Array<{ name: string; value: string }>>();
   private readonly continuedRequestUrls = new Map<string, string>();
   private readonly responseBodies = new Map<string, ResponseBodyState>();
+  private readonly responseBodyRequestIds = new Map<string, string>();
   private readonly navigationResponseCaptures = new Set<NavigationResponseCapture>();
   private readonly navigationFailureCaptures = new Set<NavigationFailureCapture>();
   private pageExtraHTTPHeaders: Record<string, string> | undefined;
@@ -2115,10 +2116,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
     this.flushPendingRequestEvent(redirectedRequestId);
     this.continuedRequestUrls.set(redirectedRequestId, request.url);
-    this.continuedRequestUrls.set(
-      `${this.scopedWorkerRequestId(sessionId, requestId)}:redirect:${previousUrl}`,
-      previousUrl
-    );
     return redirectedRequestId;
   }
 
@@ -2532,6 +2529,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           let metadata = this.requestMetadata.get(scopedRequestId);
           const pageOwnedRequest = this.requestMetadata.get(responseEvent.requestId);
           let activeRequestId = scopedRequestId;
+          let activeBodySourceRequestId = scopedRequestId;
           if (!metadata && pageOwnedRequest && pageOwnedRequest.url !== responseEvent.response.url) {
             this.emitRedirectResponse({
               request: {
@@ -2566,8 +2564,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
               pageOwnedRequest.type,
               pageOwnedRequest.url
             );
+            this.responseBodyRequestIds.set(activeRequestId, scopedRequestId);
             this.requestMetadata.delete(responseEvent.requestId);
             metadata = this.requestMetadata.get(activeRequestId);
+            activeBodySourceRequestId = scopedRequestId;
           } else if (!metadata && pageOwnedRequest) {
             this.requestMetadata.set(scopedRequestId, pageOwnedRequest);
             this.requestMetadata.delete(responseEvent.requestId);
@@ -2577,6 +2577,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           bodyState.sessionId = event.sessionId;
           if (workerFrameId) {
             bodyState.frameId = workerFrameId;
+          }
+          if (activeBodySourceRequestId !== activeRequestId) {
+            const sourceBodyState = this.ensureResponseBodyState(activeBodySourceRequestId);
+            bodyState.ready = sourceBodyState.ready;
+            bodyState.resolveReady = sourceBodyState.resolveReady;
+            bodyState.markFailed = sourceBodyState.markFailed;
+            bodyState.url = responseEvent.response.url;
+            bodyState.sessionId = event.sessionId;
+            if (workerFrameId) {
+              bodyState.frameId = workerFrameId;
+            }
           }
           const request = this.requestMetadata.get(activeRequestId) ?? metadata ?? this.requestMetadata.get(scopedRequestId);
           if (request) {
@@ -7551,7 +7562,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             }, sessionId?: string): Promise<{ base64Encoded: boolean; body: string }>;
           }
         ).getResponseBody({
-          requestId
+          requestId: this.responseBodyRequestIds.get(requestId) ?? requestId
         }, state.sessionId);
         const body = response.base64Encoded
           ? Buffer.from(response.body, "base64")
