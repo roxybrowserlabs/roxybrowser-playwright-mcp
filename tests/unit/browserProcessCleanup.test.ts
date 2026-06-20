@@ -1,5 +1,8 @@
 import { execFile, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({
@@ -9,17 +12,24 @@ vi.mock("node:child_process", () => ({
 
 describe("browser process cleanup", () => {
   let killSpy: ReturnType<typeof vi.spyOn>;
+  let registryDir: string;
+  let registryPath: string;
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(execFile).mockReset();
     vi.mocked(spawnSync).mockReset();
     killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    registryDir = mkdtempSync(join(tmpdir(), "roxy-browser-process-cleanup-test-"));
+    registryPath = join(registryDir, "registry.jsonl");
+    process.env.ROXY_TEST_BROWSER_PROCESS_REGISTRY = registryPath;
   });
 
   afterEach(() => {
     killSpy.mockRestore();
     vi.useRealTimers();
+    delete process.env.ROXY_TEST_BROWSER_PROCESS_REGISTRY;
+    rmSync(registryDir, { force: true, recursive: true });
   });
 
   it("cleans local test browser process trees only", async () => {
@@ -40,7 +50,7 @@ describe("browser process cleanup", () => {
     const { cleanupLocalTestBrowserProcesses } = await import("../helpers/browser-process-cleanup.js");
     const cleanup = cleanupLocalTestBrowserProcesses();
 
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.runAllTimersAsync();
     await cleanup;
 
     expect(killSpy).toHaveBeenCalledWith(101, "SIGTERM");
@@ -81,7 +91,7 @@ describe("browser process cleanup", () => {
     const { cleanupLocalTestBrowserProcesses } = await import("../helpers/browser-process-cleanup.js");
     const cleanup = cleanupLocalTestBrowserProcesses();
 
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.runAllTimersAsync();
     await cleanup;
 
     expect(killSpy).toHaveBeenCalledWith(-101, "SIGTERM");
@@ -182,7 +192,7 @@ describe("browser process cleanup", () => {
     const { terminateProcessTree } = await import("../../src/processCleanup.js");
     const cleanup = terminateProcessTree(proc, { timeoutMs: 500 });
 
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.runAllTimersAsync();
     await cleanup;
 
     expect(killSpy).toHaveBeenCalledWith(-501, "SIGTERM");
@@ -190,6 +200,32 @@ describe("browser process cleanup", () => {
     expect(killSpy).toHaveBeenCalledWith(502, "SIGKILL");
     expect(killSpy).toHaveBeenCalledWith(501, "SIGKILL");
     expect(proc.kill).not.toHaveBeenCalled();
+  });
+
+  it("synchronously cleans persisted test browser processes left by an earlier worker", async () => {
+    const { cleanupRegisteredTestBrowserProcessesSync } = await import(
+      "../../src/processCleanup.js"
+    );
+    writeFileSync(
+      registryPath,
+      `${JSON.stringify({
+        pid: 991,
+        userDataDir: "/tmp/roxybrowser-bidi-persisted"
+      })}\n`
+    );
+
+    vi.mocked(spawnSync).mockReturnValue({
+      stdout: [
+        "991 1 /Applications/Firefox.app/Contents/MacOS/firefox -profile /tmp/roxybrowser-bidi-persisted --remote-debugging-port=9222",
+        "992 991 /Applications/Firefox.app/Contents/MacOS/plugin-container child"
+      ].join("\n")
+    } as ReturnType<typeof spawnSync>);
+
+    cleanupRegisteredTestBrowserProcessesSync();
+
+    expect(killSpy).toHaveBeenCalledWith(-991, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(992, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(991, "SIGKILL");
   });
 
   it("falls back to synchronous cleanup when async cleanup times out", async () => {
@@ -206,7 +242,7 @@ describe("browser process cleanup", () => {
     );
     const cleanup = cleanupLocalTestBrowserProcessesWithTimeout();
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.runAllTimersAsync();
     await cleanup;
 
     expect(killSpy).toHaveBeenCalledWith(901, "SIGTERM");

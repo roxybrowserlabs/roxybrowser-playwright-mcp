@@ -117,8 +117,7 @@ export async function withBidiPage<T>(
   run: (page: Page, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
   let browser = await openBidiBrowser();
-  const keepBrowserOpen =
-    usesExternalBidiEndpoint && (KEEP_BIDI_BROWSER_OPEN || REUSE_EXTERNAL_BIDI_BROWSER);
+  const keepBrowserOpen = shouldKeepExternalBidiBrowserOpen();
   let context: BrowserContext | undefined;
 
   try {
@@ -168,6 +167,14 @@ export async function withBidiPage<T>(
   }
 }
 
+function shouldKeepExternalBidiBrowserOpen(): boolean {
+  if (!usesExternalBidiEndpoint) {
+    return false;
+  }
+
+  return Boolean(BIDI_WS_ENDPOINT) && (KEEP_BIDI_BROWSER_OPEN || REUSE_EXTERNAL_BIDI_BROWSER);
+}
+
 async function closeExternalBidiBrowser(): Promise<void> {
   const browser = externalBidiBrowser;
   externalBidiBrowser = undefined;
@@ -213,7 +220,7 @@ export async function cleanupExternalBidiTestState(): Promise<void> {
 }
 
 export async function cleanupBidiTestStateAfterTest(): Promise<void> {
-  if (KEEP_BIDI_BROWSER_OPEN || REUSE_EXTERNAL_BIDI_BROWSER) {
+  if (shouldKeepExternalBidiBrowserOpen()) {
     return;
   }
 
