@@ -3602,7 +3602,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.evaluateFunction<void>(HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE);
 
     if (waitUntil !== "commit") {
-      await this.waitForLoadState(waitUntil, options.timeout);
+      await this.waitForLoadState(waitUntil, options.timeout, undefined, {
+        skipDocumentReadyStateSync: true
+      });
     }
   }
 
@@ -4029,14 +4031,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async waitForLoadState(
     state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
     timeout = DEFAULT_TIMEOUT_MS,
-    frameId?: string
+    frameId?: string,
+    options: { skipDocumentReadyStateSync?: boolean } = {}
   ): Promise<void> {
     const targetState = verifyLifecycle("state", state ?? "load");
     if (targetState === "commit") {
       return;
     }
 
-    if (!frameId) {
+    if (!frameId && !options.skipDocumentReadyStateSync) {
       await this.syncLifecycleStateFromDocument();
     }
     if (this.isStateSatisfied(targetState, frameId)) {
