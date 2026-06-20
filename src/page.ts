@@ -6416,6 +6416,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         await this.flushWebSocketCommands(state.id);
       },
       connectToServer: () => {
+        if (state.serverConnected) {
+          throw new Error("Already connected to the server");
+        }
         state.serverConnected = true;
         return this.createHostedWebSocketRoute(state, "server");
       },

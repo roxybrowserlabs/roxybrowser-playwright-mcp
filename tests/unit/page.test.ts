@@ -1922,6 +1922,39 @@ describe("RoxyPage", () => {
     );
   });
 
+  it("throws when websocket route connects to server twice like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    let capturedError: Error | null = null;
+
+    await page.routeWebSocket("**/ws", (ws) => {
+      ws.connectToServer();
+      try {
+        ws.connectToServer();
+      } catch (error) {
+        capturedError = error as Error;
+      }
+    });
+
+    const decision = await (page as any).dispatchWebSocketOpen({
+      id: "websocket:double-connect",
+      url: "wss://example.com/ws",
+      protocols: []
+    });
+
+    expect(decision).toEqual({ action: "mock" });
+    expect(capturedError?.message).toContain("Already connected to the server");
+  });
+
   it("stops default forwarding once the original websocket route handles messages", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
