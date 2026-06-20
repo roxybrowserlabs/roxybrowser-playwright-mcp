@@ -702,6 +702,22 @@ function locatorOperation(payload: LocatorPayload) {
     return normalize((element as HTMLElement).innerText || element.textContent);
   };
 
+  const textSelectorValue = (element: Element): string => {
+    if (
+      element instanceof HTMLInputElement &&
+      ["button", "submit", "reset"].includes(element.type)
+    ) {
+      return element.value;
+    }
+
+    return (element as HTMLElement).innerText || element.textContent || "";
+  };
+
+  const shouldSkipTextSelectorElement = (element: Element): boolean => {
+    const tagName = element.tagName.toLowerCase();
+    return tagName === "head" || tagName === "script" || tagName === "style";
+  };
+
   const candidatesFromRoot = (root: ParentNode | Element, selector: LocatorSelector): Element[] => {
     if (selector.strategy === "css") {
       const matches: Element[] = [];
@@ -718,8 +734,18 @@ function locatorOperation(payload: LocatorPayload) {
         : [root as Element, ...Array.from(root.querySelectorAll("*"))];
 
     if (selector.strategy === "text") {
-      return descendants.filter((element) =>
-        matchesPattern((element as HTMLElement).innerText || element.textContent || "", selector, "value")
+      const matching = descendants.filter((element) => {
+        if (shouldSkipTextSelectorElement(element)) {
+          return false;
+        }
+        return matchesPattern(textSelectorValue(element), selector, "value");
+      });
+
+      return matching.filter((element) =>
+        !Array.from(element.querySelectorAll("*")).some((child) =>
+          !shouldSkipTextSelectorElement(child) &&
+          matchesPattern(textSelectorValue(child), selector, "value")
+        )
       );
     }
 

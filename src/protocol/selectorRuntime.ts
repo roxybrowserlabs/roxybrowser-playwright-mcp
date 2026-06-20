@@ -160,6 +160,12 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       return matchesPattern(textForSelector(element), selector, "value");
     }
     if (selector.exact && !selector.isRegex) {
+      if (
+        isInputElement(element) &&
+        ["button", "submit", "reset"].includes(element.type)
+      ) {
+        return matchesPattern(textForSelector(element), selector, "value");
+      }
       const immediateTextNodes = immediateTextNodesForSelector(element);
       if (!normalize(selector.value) && !immediateTextNodes.length) {
         return true;

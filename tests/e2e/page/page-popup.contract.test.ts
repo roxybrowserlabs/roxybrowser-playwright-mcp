@@ -173,6 +173,59 @@ describe("page popup contract e2e", () => {
     });
   });
 
+  it("emits popup when clicking cross-process target=_blank links", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent(
+        `<a target="_blank" rel="opener" href="${fixture.server.CROSS_PROCESS_PREFIX}/empty.html">open popup</a>`
+      );
+
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.click("a")
+      ]);
+
+      expect(await popup.opener()).toBe(page);
+      expect(await popup.evaluate(() => !!window.opener)).toBe(true);
+      expect(popup.mainFrame().page()).toBe(popup);
+    });
+  });
+
+  it("emits popup for target=_blank forms using get and post", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/done.html?", (_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end("Done");
+      });
+      fixture.server.setRoute("/done.html", (_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end("Done");
+      });
+
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      await page.setContent(`<form target="_blank" action="done.html">
+        <input type="submit" value="Click me">
+      </form>`);
+      const [getPopup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.click('"Click me"')
+      ]);
+      await getPopup.waitForLoadState("load");
+      expect(await getPopup.textContent("body")).toBe("Done");
+
+      await page.setContent(`<form target="_blank" action="done.html" method="post">
+        <input type="submit" value="Click me">
+      </form>`);
+      const [postPopup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.click('"Click me"')
+      ]);
+      await postPopup.waitForLoadState("load");
+      expect(await postPopup.textContent("body")).toBe("Done");
+    });
+  });
+
   it("emits popup for rel=noopener target=_blank links", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);
