@@ -2544,6 +2544,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       ...this.emulatedMedia,
       ...options
     };
+    await this.adapter.emulateMedia?.({
+      ...(this.emulatedMedia.media !== undefined ? { media: this.emulatedMedia.media === null ? "no-override" : this.emulatedMedia.media } : {}),
+      ...(this.emulatedMedia.colorScheme !== undefined ? { colorScheme: this.emulatedMedia.colorScheme === null ? "no-override" : this.emulatedMedia.colorScheme } : {}),
+      ...(this.emulatedMedia.reducedMotion !== undefined ? { reducedMotion: this.emulatedMedia.reducedMotion === null ? "no-override" : this.emulatedMedia.reducedMotion } : {}),
+      ...(this.emulatedMedia.forcedColors !== undefined ? { forcedColors: this.emulatedMedia.forcedColors === null ? "no-override" : this.emulatedMedia.forcedColors } : {}),
+      ...(this.emulatedMedia.contrast !== undefined ? { contrast: this.emulatedMedia.contrast === null ? "no-override" : this.emulatedMedia.contrast } : {})
+    });
     await this.applyEmulatedMedia();
   }
 
@@ -4935,23 +4942,43 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         const normalized = query.replace(/\s+/g, "").toLowerCase();
         const emulated = globalState.__roxyEmulatedMediaState ?? {};
         const hasOverride = (key: keyof EmulateMediaOptions) =>
-          emulated[key] !== undefined && emulated[key] !== null;
+          emulated[key] !== undefined;
+        const effectiveValue = (key: keyof EmulateMediaOptions) => {
+          const value = emulated[key];
+          if (value !== null) {
+            return value;
+          }
+          switch (key) {
+            case "media":
+              return "screen";
+            case "colorScheme":
+              return "light";
+            case "reducedMotion":
+              return "no-preference";
+            case "forcedColors":
+              return "none";
+            case "contrast":
+              return "no-preference";
+            default:
+              return value;
+          }
+        };
         const featureValue = () => normalized.replace(/[()]/g, "").split(":").pop() ?? "";
         const matchesOverride = (() => {
           if (hasOverride("media") && (normalized === "screen" || normalized === "print")) {
-            return emulated.media === normalized;
+            return effectiveValue("media") === normalized;
           }
           if (normalized.startsWith("(prefers-color-scheme:") && hasOverride("colorScheme")) {
-            return featureValue() === String(emulated.colorScheme);
+            return featureValue() === String(effectiveValue("colorScheme"));
           }
           if (normalized.startsWith("(prefers-reduced-motion:") && hasOverride("reducedMotion")) {
-            return featureValue() === String(emulated.reducedMotion);
+            return featureValue() === String(effectiveValue("reducedMotion"));
           }
           if (normalized.startsWith("(prefers-contrast:") && hasOverride("contrast")) {
-            return featureValue() === String(emulated.contrast);
+            return featureValue() === String(effectiveValue("contrast"));
           }
           if (normalized.startsWith("(forced-colors:") && hasOverride("forcedColors")) {
-            return featureValue() === String(emulated.forcedColors);
+            return featureValue() === String(effectiveValue("forcedColors"));
           }
           return original.matches;
         })();

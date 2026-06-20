@@ -4256,6 +4256,43 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.currentViewportSize = viewportSize;
   }
 
+  async emulateMedia(options: {
+    colorScheme?: "light" | "dark" | "no-preference" | "no-override";
+    contrast?: "no-preference" | "more" | "no-override";
+    forcedColors?: "active" | "none" | "no-override";
+    media?: "screen" | "print" | "no-override";
+    reducedMotion?: "reduce" | "no-preference" | "no-override";
+  }): Promise<void> {
+    const media = options.media === "no-override" ? "" : options.media ?? "";
+    const features: Array<{ name: string; value: string }> = [];
+    if (options.colorScheme !== undefined && options.colorScheme !== "no-override") {
+      features.push({ name: "prefers-color-scheme", value: options.colorScheme });
+    }
+    if (options.reducedMotion !== undefined && options.reducedMotion !== "no-override") {
+      features.push({ name: "prefers-reduced-motion", value: options.reducedMotion });
+    }
+    if (options.forcedColors !== undefined && options.forcedColors !== "no-override") {
+      features.push({ name: "forced-colors", value: options.forcedColors });
+    }
+    if (options.contrast !== undefined && options.contrast !== "no-override") {
+      features.push({ name: "prefers-contrast", value: options.contrast });
+    }
+    await (
+      this.options.client as typeof this.options.client & {
+        send(
+          method: "Emulation.setEmulatedMedia",
+          params: {
+            media?: string;
+            features?: Array<{ name: string; value: string }>;
+          }
+        ): Promise<unknown>;
+      }
+    ).send("Emulation.setEmulatedMedia", {
+      media,
+      features
+    });
+  }
+
   async dispatchEvent(
     selector: LocatorSelector[],
     type: string,

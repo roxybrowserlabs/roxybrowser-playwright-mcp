@@ -6,6 +6,7 @@ import type {
   BrowserContextOptions,
   ClickOptions,
   DispatchEventOptions,
+  EmulateMediaOptions,
   FillOptions,
   GetByAltTextOptions,
   GetByLabelOptions,
@@ -206,6 +207,13 @@ export interface ProtocolPageAdapter {
   ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
+  emulateMedia?(options: {
+    colorScheme?: "light" | "dark" | "no-preference" | "no-override";
+    contrast?: "no-preference" | "more" | "no-override";
+    forcedColors?: "active" | "none" | "no-override";
+    media?: "screen" | "print" | "no-override";
+    reducedMotion?: "reduce" | "no-preference" | "no-override";
+  }): Promise<void>;
   setScreenshotBackgroundColor?(color?: { a: number; b: number; g: number; r: number }): Promise<void>;
   screenshotClipOrigin?(): ScreenshotClipOrigin;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;

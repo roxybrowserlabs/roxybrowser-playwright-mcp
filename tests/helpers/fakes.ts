@@ -250,6 +250,7 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
     pdf: vi.fn(async () => Buffer.from("%PDF-fake")),
     viewportSize: vi.fn(() => ({ width: 1280, height: 720 })),
     setViewportSize: vi.fn(async () => {}),
+    emulateMedia: vi.fn(async () => {}),
     dispatchEvent: vi.fn(async () => {}),
     requestGC: vi.fn(async () => {}),
     textContent: vi.fn(async () => "page-text-content"),

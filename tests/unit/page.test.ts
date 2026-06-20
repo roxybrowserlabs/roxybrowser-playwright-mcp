@@ -3858,10 +3858,19 @@ describe("RoxyPage", () => {
     });
 
     await page.emulateMedia({ media: "print", colorScheme: "dark" });
+    await page.emulateMedia({ colorScheme: null });
 
-    expect(adapter.addInitScript).toHaveBeenCalledTimes(1);
-    expect(adapter.evaluate).toHaveBeenCalledWith(expect.stringContaining("__roxyEmulatedMediaState"), {
+    expect(adapter.emulateMedia).toHaveBeenNthCalledWith(1, {
       colorScheme: "dark",
+      media: "print"
+    });
+    expect(adapter.emulateMedia).toHaveBeenNthCalledWith(2, {
+      colorScheme: "no-override",
+      media: "print"
+    });
+    expect(adapter.addInitScript).toHaveBeenCalledTimes(2);
+    expect(adapter.evaluate).toHaveBeenLastCalledWith(expect.stringContaining("__roxyEmulatedMediaState"), {
+      colorScheme: null,
       media: "print"
     }, true);
   });
