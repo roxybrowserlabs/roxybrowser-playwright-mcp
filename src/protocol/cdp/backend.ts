@@ -8713,7 +8713,7 @@ class CdpJSHandleAdapter<T = unknown> implements ProtocolJSHandleAdapter<T> {
 
     const response = await this.page.sendRuntimeCallFunctionOn({
       objectId: this.remoteObject.objectId,
-      functionDeclaration: "function(name) { return this[name]; }",
+      functionDeclaration: "function(name) { const result = { __proto__: null }; result[name] = this[name]; return result; }",
       arguments: [{ value: propertyName }],
       returnByValue: false,
       awaitPromise: true
@@ -8729,12 +8729,44 @@ class CdpJSHandleAdapter<T = unknown> implements ProtocolJSHandleAdapter<T> {
       throw new Error(formatCdpEvaluationError(response));
     }
 
-    return new CdpJSHandleAdapter(
-      this.page,
-      response.result,
-      this.runtimeSessionId,
-      this.runtimeFrameId
-    );
+    const wrapperObject = response.result;
+    if (!wrapperObject.objectId) {
+      return new CdpJSHandleAdapter(this.page, {
+        type: "undefined",
+        value: undefined
+      }, this.runtimeSessionId, this.runtimeFrameId);
+    }
+
+    try {
+      const properties = await this.page.sendRuntimeGetProperties({
+        objectId: wrapperObject.objectId,
+        ownProperties: true
+      }, this.runtimeSessionId).catch((error) => {
+        const message = String(error instanceof Error ? error.message : error);
+        if (message.includes("Session with given id not found.") || isClosedCdpConnectionError(error)) {
+          throw new Error("Target page, context or browser has been closed");
+        }
+        throw error;
+      });
+      for (const property of properties.result) {
+        if (property.name === propertyName && property.enumerable && property.value) {
+          return new CdpJSHandleAdapter(
+            this.page,
+            property.value,
+            this.runtimeSessionId,
+            this.runtimeFrameId
+          );
+        }
+      }
+      return new CdpJSHandleAdapter(this.page, {
+        type: "undefined",
+        value: undefined
+      }, this.runtimeSessionId, this.runtimeFrameId);
+    } finally {
+      await this.page.sendRuntimeReleaseObject({
+        objectId: wrapperObject.objectId
+      }, this.runtimeSessionId).catch(() => {});
+    }
   }
 
   preview(): string {
