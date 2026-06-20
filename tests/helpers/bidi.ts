@@ -32,6 +32,7 @@ const TEST_CLOSE_TIMEOUT_MS = 5_000;
 const SIGNAL_EXIT_GRACE_MS = Number(process.env.ROXY_TEST_BROWSER_SIGNAL_EXIT_GRACE_MS ?? 20_000);
 
 let usesExternalBidiEndpoint = false;
+let usesManagedRoxyBrowserProfile = false;
 let externalBidiBrowser: Browser | undefined;
 let externalBidiBrowserKey: string | undefined;
 let cachedRoxyBrowserEndpoint: string | undefined;
@@ -49,7 +50,8 @@ function bidiHumanOptions() {
 }
 
 export async function openBidiBrowser(): Promise<Browser> {
-  const roxyBrowserEndpoint = BIDI_WS_ENDPOINT
+  const usesConfiguredBidiEndpoint = Boolean(BIDI_WS_ENDPOINT);
+  const roxyBrowserEndpoint = usesConfiguredBidiEndpoint
     ? toBidiWsEndpoint(BIDI_WS_ENDPOINT)
     : await resolveRoxyBrowserBidiEndpoint();
 
@@ -68,6 +70,7 @@ export async function openBidiBrowser(): Promise<Browser> {
     }
 
     usesExternalBidiEndpoint = true;
+    usesManagedRoxyBrowserProfile = !usesConfiguredBidiEndpoint;
 
     const browserKey = `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`;
     if (sharedBidiBrowser) {
@@ -99,6 +102,7 @@ export async function openBidiBrowser(): Promise<Browser> {
   }
 
   usesExternalBidiEndpoint = false;
+  usesManagedRoxyBrowserProfile = false;
 
   sharedBidiBrowser = await firefox.launch({
     headless: true,
@@ -243,6 +247,8 @@ function isRecoverableBidiBrowserError(error: unknown): boolean {
 }
 
 async function cleanupStaleBidiTestArtifacts(): Promise<void> {
+  usesManagedRoxyBrowserProfile = false;
+  cachedRoxyBrowserEndpoint = undefined;
   await closeRoxyBrowserFirefoxBidiProfile({
     apiPort: ROXYBROWSER_API_PORT,
     apiToken: ROXYBROWSER_API_TOKEN,
@@ -269,8 +275,14 @@ export async function cleanupBidiTestStateAfterTest(): Promise<void> {
     return;
   }
 
+  const shouldCloseManagedRoxyBrowserProfile = usesManagedRoxyBrowserProfile;
   await closeSharedBidiBrowser();
   await closeExternalBidiBrowser();
+  if (shouldCloseManagedRoxyBrowserProfile) {
+    await cleanupStaleBidiTestArtifacts();
+    return;
+  }
+
   await cleanupLocalTestBrowserProcessesWithTimeout();
 }
 
