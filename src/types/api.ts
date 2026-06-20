@@ -1052,12 +1052,12 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   ownerFrame(): Promise<null|Frame>;
   boundingBox(): Promise<null|{ x: number; y: number; width: number; height: number; }>;
   dispatchEvent(type: string, eventInit?: EvaluationArgument): Promise<void>;
-  screenshot(options?: LocatorScreenshotOptions): Promise<Buffer>;
+  screenshot(options?: { animations?: "disabled"|"allow"; caret?: "hide"|"initial"; mask?: Array<Locator>; maskColor?: string; omitBackground?: boolean; path?: string; quality?: number; scale?: "css"|"device"; style?: string; timeout?: number; type?: "png"|"jpeg"; }): Promise<Buffer>;
   scrollIntoViewIfNeeded(options?: { timeout?: number; }): Promise<void>;
   selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
   tap(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   waitForElementState(state: "visible"|"hidden"|"stable"|"enabled"|"disabled"|"editable", options?: { timeout?: number; }): Promise<void>;
-  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
   hover(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   fill(value: string, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   type(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
@@ -1077,15 +1077,9 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   check(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   setChecked(checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   uncheck(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  selectOption(
-    values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>,
-    options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number }
-  ): Promise<Array<string>>;
-  setInputFiles(
-    files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>,
-    options?: { noWaitAfter?: boolean; timeout?: number; }
-  ): Promise<void>;
-  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  selectOption(values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<Array<string>>;
+  setInputFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
 }
 
 export interface JSHandle<T = unknown> extends Disposable {
@@ -1144,11 +1138,11 @@ export interface Locator {
   evaluateAll<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E[], void, R>): Promise<R>;
   evaluateHandle<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
   evaluateHandle<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, void, R>): Promise<SmartHandle<R>>;
-  boundingBox(options?: { timeout?: number; }): Promise<Rect | null>;
-  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  boundingBox(options?: { timeout?: number; }): Promise<null|{ x: number; y: number; width: number; height: number; }>;
+  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
   check(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   clear(options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
   dispatchEvent(type: string, eventInit?: EvaluationArgument, options?: { timeout?: number; }): Promise<void>;
   dragTo(target: Locator, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   drop(payload: { files?: string|Array<string>|{ name: string; mimeType: string; buffer: Buffer; }|Array<{ name: string; mimeType: string; buffer: Buffer; }>; data?: { [key: string]: string; }; }, options?: { position?: { x: number; y: number; }; timeout?: number; }): Promise<void>;
@@ -1159,7 +1153,7 @@ export interface Locator {
   press(key: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   focus(options?: { timeout?: number; }): Promise<void>;
   blur(options?: { timeout?: number; }): Promise<void>;
-  getAttribute(name: string, options?: { timeout?: number; }): Promise<string | null>;
+  getAttribute(name: string, options?: { timeout?: number; }): Promise<null|string>;
   highlight(options?: { style?: string | { [key: string]: string|number }; }): Promise<Disposable>;
   hideHighlight(): Promise<void>;
   innerHTML(options?: { timeout?: number; }): Promise<string>;
@@ -1174,18 +1168,12 @@ export interface Locator {
   normalize(): Promise<Locator>;
   screenshot(options?: LocatorScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(options?: { timeout?: number; }): Promise<void>;
-  selectOption(
-    values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>,
-    options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number }
-  ): Promise<Array<string>>;
+  selectOption(values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<Array<string>>;
   selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
   setChecked(checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  setInputFiles(
-    files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>,
-    options?: { noWaitAfter?: boolean; timeout?: number; }
-  ): Promise<void>;
+  setInputFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
   tap(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  textContent(options?: { timeout?: number; }): Promise<string | null>;
+  textContent(options?: { timeout?: number; }): Promise<null|string>;
   uncheck(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   isVisible(options?: { timeout?: number; }): Promise<boolean>;
   waitFor(options?: { state?: "attached"|"detached"|"visible"|"hidden"; timeout?: number; }): Promise<void>;
