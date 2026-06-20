@@ -529,6 +529,7 @@ interface HarRouteEntry {
 
 const DEFAULT_EVENT_TIMEOUT_MS = 30_000;
 const MAX_CONSOLE_MESSAGE_HISTORY = 1_000;
+const DEFAULT_MAX_LISTENERS = 10;
 const INTERNAL_RECORDED_EVENTS = [
   "console",
   "domcontentloaded",
@@ -869,7 +870,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   readonly sessionStorage: WebStorage;
   readonly touchscreen: Touchscreen;
   private readonly humanController: DefaultHumanController;
-  private readonly listeners = new Map<PageEventName, Set<ListenerEntry<PageEventName>>>();
+  private readonly pageListeners = new Map<PageEventName, Set<ListenerEntry<PageEventName>>>();
   private readonly adapterDisposers = new Map<PageEventName, () => void>();
   private readonly pendingHandlers = new Map<PageEventName, Set<Promise<void>>>();
   private rejectionHandler: ((error: Error) => void) | undefined;
@@ -912,6 +913,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private fileChooserBridgeInstalled = false;
   private fileChooserInterceptionPromise: Promise<void> | null = null;
   private readonly pendingFileChoosers: PendingFileChooserState[] = [];
+  private maxListeners = DEFAULT_MAX_LISTENERS;
   private routeInterceptorsInstalled = false;
   private routePumpStarted = false;
   private readonly routeHandlers: RouteHandlerEntry[] = [];
@@ -1719,7 +1721,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   removeListener(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
   removeListener(event: 'worker', listener: (worker: Worker) => any): this;
   removeListener(event: PageEventName, listener: (...args: any[]) => any): this {
-    const entries = this.listeners.get(event);
+    const entries = this.pageListeners.get(event);
     if (!entries) {
       return this;
     }
@@ -1731,7 +1733,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
 
     if (entries.size === 0) {
-      this.listeners.delete(event);
+      this.pageListeners.delete(event);
       const dispose = this.adapterDisposers.get(event);
       if (dispose) {
         this.adapterDisposers.delete(event);
@@ -1792,7 +1794,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       wrapped: listener as PageEventListener<PageEventName>
     };
     const reordered = new Set<ListenerEntry<PageEventName>>([entry, ...entries]);
-    this.listeners.set(event, reordered);
+    this.pageListeners.set(event, reordered);
 
     if (isAdapterBackedPageEvent(event) && !this.adapterDisposers.has(event)) {
       const dispose = this.adapter.on(
@@ -1805,6 +1807,88 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
 
     return this;
+  }
+
+  prependOnceListener(event: 'close', listener: (page: Page) => any): this;
+  prependOnceListener(event: 'console', listener: (consoleMessage: ConsoleMessage) => any): this;
+  prependOnceListener(event: 'crash', listener: (page: Page) => any): this;
+  prependOnceListener(event: 'dialog', listener: (dialog: Dialog) => any): this;
+  prependOnceListener(event: 'domcontentloaded', listener: (page: Page) => any): this;
+  prependOnceListener(event: 'download', listener: (download: Download) => any): this;
+  prependOnceListener(event: 'filechooser', listener: (fileChooser: FileChooser) => any): this;
+  prependOnceListener(event: 'frameattached', listener: (frame: Frame) => any): this;
+  prependOnceListener(event: 'framedetached', listener: (frame: Frame) => any): this;
+  prependOnceListener(event: 'framenavigated', listener: (frame: Frame) => any): this;
+  prependOnceListener(event: 'load', listener: (page: Page) => any): this;
+  prependOnceListener(event: 'pageerror', listener: (error: Error) => any): this;
+  prependOnceListener(event: 'popup', listener: (page: Page) => any): this;
+  prependOnceListener(event: 'request', listener: (request: Request) => any): this;
+  prependOnceListener(event: 'requestfailed', listener: (request: Request) => any): this;
+  prependOnceListener(event: 'requestfinished', listener: (request: Request) => any): this;
+  prependOnceListener(event: 'response', listener: (response: Response) => any): this;
+  prependOnceListener(event: 'websocket', listener: (webSocket: WebSocket) => any): this;
+  prependOnceListener(event: 'worker', listener: (worker: Worker) => any): this;
+  prependOnceListener(event: PageEventName, listener: (...args: any[]) => any): this {
+    this.maybeStartFileChooserInterception(event);
+    const wrapped = ((payload?: PageEventMap[PageEventName]) => {
+      (this.removeListener as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
+      if (payload === undefined) {
+        (listener as () => void)();
+        return;
+      }
+
+      (listener as (eventPayload: PageEventMap[PageEventName]) => void)(payload);
+    }) as PageEventListener<PageEventName>;
+
+    const entries = this.ensureListenerSet(event);
+    const entry = {
+      original: listener as PageEventListener<PageEventName>,
+      wrapped
+    };
+    const reordered = new Set<ListenerEntry<PageEventName>>([entry, ...entries]);
+    this.pageListeners.set(event, reordered);
+
+    if (isAdapterBackedPageEvent(event) && !this.adapterDisposers.has(event)) {
+      const dispose = this.adapter.on(
+        event,
+        ((payload?: RawPageEventMap[RawPageEventName]) => {
+          void this.handleAdapterBackedEvent(event, payload);
+        }) as RawPageEventListener<RawPageEventName>
+      );
+      this.adapterDisposers.set(event, dispose);
+    }
+
+    return this;
+  }
+
+  eventNames(): Array<string | symbol> {
+    return Array.from(this.pageListeners.entries())
+      .filter(([, entries]) => entries.size > 0)
+      .map(([event]) => event);
+  }
+
+  listenerCount(type: string | symbol): number {
+    return this.pageListeners.get(type as PageEventName)?.size ?? 0;
+  }
+
+  listeners(type: string | symbol): Function[] {
+    return Array.from(this.pageListeners.get(type as PageEventName) ?? []).map((entry) => entry.original as Function);
+  }
+
+  rawListeners(type: string | symbol): Function[] {
+    return Array.from(this.pageListeners.get(type as PageEventName) ?? []).map((entry) => entry.wrapped as Function);
+  }
+
+  setMaxListeners(n: number): this {
+    if (typeof n !== "number" || n < 0 || Number.isNaN(n)) {
+      throw new RangeError(`The value of "n" is out of range. It must be a non-negative number. Received ${n}.`);
+    }
+    this.maxListeners = n;
+    return this;
+  }
+
+  getMaxListeners(): number {
+    return this.maxListeners;
   }
 
   removeAllListeners(type?: string): this;
@@ -3719,13 +3803,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private ensureListenerSet<K extends PageEventName>(
     event: K
   ): Set<ListenerEntry<PageEventName>> {
-    const existing = this.listeners.get(event);
+    const existing = this.pageListeners.get(event);
     if (existing) {
       return existing;
     }
 
     const created = new Set<ListenerEntry<PageEventName>>();
-    this.listeners.set(event, created);
+    this.pageListeners.set(event, created);
     return created;
   }
 
@@ -3739,7 +3823,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
     this.recordEvent(event, normalizedPayload as PageEventMap[K]);
 
-    const entries = this.listeners.get(event);
+    const entries = this.pageListeners.get(event);
     if (!entries) {
       if (event === "dialog" && normalizedPayload && typeof normalizedPayload === "object") {
         void (normalizedPayload as Dialog).dismiss().catch(() => {});
@@ -3758,9 +3842,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private removeAllListenersInternal(event?: PageEventName): void {
-    const events = event ? [event] : Array.from(this.listeners.keys());
+    const events = event ? [event] : Array.from(this.pageListeners.keys());
     for (const eventName of events) {
-      this.listeners.delete(eventName);
+      this.pageListeners.delete(eventName);
       const dispose = this.adapterDisposers.get(eventName);
       if (dispose) {
         this.adapterDisposers.delete(eventName);
@@ -3771,9 +3855,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private hasFrameEventObservers(): boolean {
     return (
-      (this.listeners.get("frameattached")?.size ?? 0) > 0 ||
-      (this.listeners.get("framedetached")?.size ?? 0) > 0 ||
-      (this.listeners.get("framenavigated")?.size ?? 0) > 0
+      (this.pageListeners.get("frameattached")?.size ?? 0) > 0 ||
+      (this.pageListeners.get("framedetached")?.size ?? 0) > 0 ||
+      (this.pageListeners.get("framenavigated")?.size ?? 0) > 0
     );
   }
 

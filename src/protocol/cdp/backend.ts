@@ -2863,7 +2863,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }).catch(() => {})),
       initializeCommand(client.Page.setLifecycleEventsEnabled({ enabled: true }).catch(() => {})),
       initializeCommand(client.Runtime.enable()),
-      initializeCommand(client.Log?.enable?.({}).catch(() => {})),
+      initializeCommand(client.Log?.enable?.().catch(() => {})),
       initializeCommand(client.DOM.enable({})),
       initializeCommand(client.Network.enable({})),
       initializeCommand(client.Target?.setAutoAttach?.({
