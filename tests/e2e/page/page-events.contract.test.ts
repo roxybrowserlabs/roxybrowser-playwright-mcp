@@ -292,6 +292,53 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("does not fire page load for form submissions targeted at an iframe like Playwright", async () => {
+    await withPage(async (page) => {
+      let requestCount = 0;
+      fixture.server.setRoute("/tracker", (_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(`request count: ${++requestCount}`);
+      });
+      fixture.server.setRoute("/home", (_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(`
+          <!DOCTYPE html>
+          <html>
+            <body>
+              <script>
+                window.eventLog = [];
+                window.addEventListener('load', () => window.eventLog.push('load'));
+              </script>
+              <form id="trackerForm" action="/tracker" method="post" target="tracker">
+                <input type="submit">
+              </form>
+              <iframe name="tracker" src="/tracker"></iframe>
+            </body>
+          </html>
+        `);
+      });
+
+      let loadCount = 0;
+      page.on("load", () => {
+        loadCount += 1;
+      });
+
+      await page.goto(fixture.server.PREFIX + "/home", { waitUntil: "load" });
+      await expect.poll(async () => page.frame("tracker")?.locator("body").textContent()).toContain("request count: 1");
+
+      const loadFired = Promise.race([
+        page.waitForEvent("load").then(() => "loadfired"),
+        page.waitForTimeout(1000).then(() => "timeout")
+      ]);
+      await page.locator('input[type="submit"]').click();
+
+      expect(await loadFired).toBe("timeout");
+      expect(loadCount).toBe(1);
+      expect(await page.evaluate(() => window["eventLog"])).toEqual(["load"]);
+      expect(await page.frame("tracker")!.locator("body").textContent()).toContain("request count: 2");
+    });
+  });
+
   it("emits frameattached, framenavigated and framedetached for dynamic iframes", async () => {
     await withPage(async (page) => {
       const attached: string[] = [];
