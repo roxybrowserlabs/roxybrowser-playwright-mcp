@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants as fsConstants } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as cdpModule from "chrome-remote-interface";
@@ -9054,7 +9054,7 @@ async function launchBrowser(options: LaunchOptions): Promise<CdpConnectionDetai
     );
 
     try {
-      const browserWsEndpoint = await waitForDebuggerEndpoint(processRef, 15_000);
+      const browserWsEndpoint = await waitForDebuggerEndpoint(processRef, userDataDir, 15_000);
       const connection = buildConnectionFromWsEndpoint(browserWsEndpoint);
       return {
         ...connection,
@@ -9100,13 +9100,15 @@ async function cleanupConnection(connection: CdpConnectionDetails): Promise<void
   }
 }
 
-async function waitForDebuggerEndpoint(
+export async function waitForDebuggerEndpoint(
   processRef: ChildProcess,
+  userDataDir: string,
   timeoutMs: number
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let settled = false;
     let stderr = "";
+    let activePortTimer: ReturnType<typeof setInterval> | undefined;
 
     const finish = (callback: () => void) => {
       if (settled) {
@@ -9115,6 +9117,9 @@ async function waitForDebuggerEndpoint(
 
       settled = true;
       clearTimeout(timer);
+      if (activePortTimer) {
+        clearInterval(activePortTimer);
+      }
       callback();
     };
 
@@ -9152,11 +9157,37 @@ async function waitForDebuggerEndpoint(
       );
     }, timeoutMs);
 
+    const activePortPath = join(userDataDir, "DevToolsActivePort");
+    activePortTimer = setInterval(() => {
+      void readDevToolsActivePort(activePortPath)
+        .then((endpoint) => {
+          if (endpoint) {
+            finish(() => resolve(endpoint));
+          }
+        })
+        .catch(() => {});
+    }, 50);
+
     processRef.stderr?.on("data", onData);
     processRef.stdout?.on("data", onData);
     processRef.once("error", onError);
     processRef.once("exit", onExit);
   });
+}
+
+export async function readDevToolsActivePort(filePath: string): Promise<string | null> {
+  const content = await readFile(filePath, "utf8").catch(() => null);
+  if (!content) {
+    return null;
+  }
+
+  const [portLine] = content.split(/\r?\n/);
+  const port = Number(portLine?.trim());
+  if (!Number.isFinite(port) || port <= 0) {
+    return null;
+  }
+
+  return `ws://127.0.0.1:${port}/devtools/browser`;
 }
 
 function buildConnectionFromWsEndpoint(browserWsEndpoint: string): CdpConnectionDetails {

@@ -181,7 +181,7 @@ describe("CDP coverage", () => {
     });
     expect(message.timestamp()).toBe(1700000000000);
     expect(message.args()).toEqual([]);
-    expect(pageClient.Log.enable).toHaveBeenCalledWith({});
+    expect(pageClient.Log.enable).toHaveBeenCalledWith();
   });
 
   it("collects JS coverage with parsed script sources and ignores anonymous scripts by default", async () => {
