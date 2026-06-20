@@ -14,8 +14,7 @@ import {
 
 const FIREFOX_EXECUTABLE =
   process.env.ROXY_BIDI_EXECUTABLE_PATH
-  ?? process.env.ROXY_EXECUTABLE_PATH
-  ?? "/Applications/Firefox.app/Contents/MacOS/firefox";
+  ?? process.env.ROXY_EXECUTABLE_PATH;
 const BIDI_WS_ENDPOINT = process.env.ROXY_BIDI_WS_ENDPOINT;
 const BIDI_SESSION_ID = process.env.ROXY_BIDI_SESSION_ID;
 const ROXYBROWSER_API_PORT = process.env.ROXYBROWSER_API_PORT ?? process.env.ROXY_API_PORT ?? "50000";
@@ -155,7 +154,7 @@ export async function openBidiBrowser(): Promise<Browser> {
 
   state.sharedBidiBrowser = await firefox.launch({
     headless: true,
-    executablePath: FIREFOX_EXECUTABLE,
+    ...(FIREFOX_EXECUTABLE ? { executablePath: FIREFOX_EXECUTABLE } : {}),
     human: bidiHumanOptions()
   });
   state.usesExternalBidiEndpoint = false;

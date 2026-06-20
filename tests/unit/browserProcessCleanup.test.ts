@@ -68,6 +68,34 @@ describe("browser process cleanup", () => {
     expect(killSpy).not.toHaveBeenCalledWith(201, expect.anything());
   });
 
+  it("matches local RoxyBrowser-based test browser process trees", async () => {
+    vi.mocked(execFile).mockImplementation((_file, _args, callback) => {
+      callback(
+        null,
+        [
+          "101 1 /Applications/RoxyBrowserDev.app/Contents/MacOS/RoxyBrowserDev --user-data-dir=/tmp/roxybrowser-bidi-a --remote-debugging-port=1234",
+          "102 101 /Applications/RoxyBrowserDev.app/Contents/Frameworks/RoxyBrowserDev Helper.app/Contents/MacOS/RoxyBrowserDev Helper --type=renderer",
+          "201 1 /Applications/RoxyBrowser.app/Contents/MacOS/RoxyBrowser --user-data-dir=/Users/me/Library/Application Support/RoxyBrowser"
+        ].join("\n")
+      );
+      return undefined as never;
+    });
+
+    const { cleanupLocalTestBrowserProcesses } = await import("../helpers/browser-process-cleanup.js");
+    const cleanup = cleanupLocalTestBrowserProcesses();
+
+    await vi.runAllTimersAsync();
+    await cleanup;
+
+    expect(killSpy).toHaveBeenCalledWith(101, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(-101, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(102, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(101, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(-101, "SIGKILL");
+    expect(killSpy).toHaveBeenCalledWith(102, "SIGKILL");
+    expect(killSpy).not.toHaveBeenCalledWith(201, expect.anything());
+  });
+
   it("rescans before force-killing local test browser process trees", async () => {
     vi.mocked(execFile)
       .mockImplementationOnce((_file, _args, callback) => {

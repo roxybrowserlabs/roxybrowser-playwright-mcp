@@ -79,6 +79,38 @@ describe("bidi helper cleanup", () => {
     expect(events).toContain("browser.close");
     expect(cleanupLocalTestBrowserProcessesWithTimeout).toHaveBeenCalledTimes(2);
     expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(2);
+    expect(launch).toHaveBeenCalledWith({
+      headless: true,
+      human: {
+        hoverBeforeClickMs: 0,
+        clickHoldMs: 0,
+        typingDelayMs: 0,
+        typingVarianceMs: 0
+      }
+    });
+  });
+
+  it("passes executablePath only when explicitly configured", async () => {
+    process.env.ROXY_BIDI_EXECUTABLE_PATH = "/Applications/RoxyBrowserDev.app/Contents/MacOS/RoxyBrowserDev";
+
+    const { cleanupExternalBidiTestState, withBidiPage } = await import("../helpers/bidi.js");
+
+    await withBidiPage(async () => {
+      events.push("run");
+    });
+
+    expect(launch).toHaveBeenCalledWith({
+      headless: true,
+      executablePath: "/Applications/RoxyBrowserDev.app/Contents/MacOS/RoxyBrowserDev",
+      human: {
+        hoverBeforeClickMs: 0,
+        clickHoldMs: 0,
+        typingDelayMs: 0,
+        typingVarianceMs: 0
+      }
+    });
+
+    await cleanupExternalBidiTestState();
   });
 
   it("reuses the local Firefox browser across bidi tests and closes it on cleanup", async () => {

@@ -15,7 +15,8 @@ const TEST_BROWSER_COMMAND_MARKERS = [
   "firefox",
   "--remote-debugging-port=",
   "chromium",
-  "chrome"
+  "chrome",
+  "roxybrowser"
 ];
 const CLEANUP_TIMEOUT_MS = Number(process.env.ROXY_TEST_BROWSER_CLEANUP_TIMEOUT_MS ?? 5_000);
 const SIGNAL_EXIT_GRACE_MS = Number(process.env.ROXY_TEST_BROWSER_SIGNAL_EXIT_GRACE_MS ?? 20_000);
