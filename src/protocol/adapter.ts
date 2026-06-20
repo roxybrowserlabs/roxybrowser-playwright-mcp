@@ -198,6 +198,11 @@ export interface ProtocolPageAdapter {
     timeout?: number;
     url?: string | RegExp | ((url: URL) => boolean);
   }): Promise<PageResponse | null>;
+  onFileChooserOpened?(listener: (payload: {
+    element: ProtocolElementHandleReference;
+    frameId: string | null;
+    isMultiple: boolean;
+  }) => void | Promise<void>): () => void;
   ariaSnapshot(options?: AriaSnapshotOptions): Promise<string>;
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;

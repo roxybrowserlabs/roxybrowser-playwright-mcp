@@ -656,6 +656,10 @@ function hasFileChooserBridgeRuntimeInstalled() {
   }).__roxyFileChooserRuntimeInstalled);
 }
 
+function isFrameExecutionContextUnavailableError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("Frame execution context is not available");
+}
+
 class RoxyKeyboard implements Keyboard {
   constructor(private readonly adapter: ProtocolPageAdapter) {}
 
@@ -904,6 +908,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private locatorHandlerRunningCounter = 0;
   private pickLocatorState: PickLocatorState | null = null;
   private bindingPumpStarted = false;
+  private fileChooserAdapterDisposer: (() => void) | null = null;
   private fileChooserBridgeInstalled = false;
   private fileChooserInterceptionPromise: Promise<void> | null = null;
   private readonly pendingFileChoosers: PendingFileChooserState[] = [];
@@ -1068,6 +1073,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
     });
     await this.reinstallExposedBindings();
+    await this.waitForFileChooserInterceptionIfPending();
     await this.refreshFrameSnapshots();
     return this.toPublicResponse(response);
   }
@@ -2020,8 +2026,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       appendAsyncApiStack(error, apiStack);
       throw error;
     }
-    const interceptionPromise =
-      event === "filechooser" ? this.ensureFileChooserInterception() : null;
     const predicate =
       typeof optionsOrPredicate === "function"
         ? optionsOrPredicate
@@ -2033,7 +2037,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         ? this.defaultTimeoutMs
         : optionsOrPredicate?.timeout ?? this.defaultTimeoutMs;
 
-    return new Promise<PageEventMap[PageEventName]>((resolve, reject) => {
+    const waitForRegisteredEvent = () => new Promise<PageEventMap[PageEventName]>((resolve, reject) => {
       const rejectWithApiStack = (error: unknown) => {
         const normalizedError = error instanceof Error ? error : new Error(String(error));
         appendAsyncApiStack(normalizedError, apiStack);
@@ -2082,11 +2086,54 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         this.on("close", closeListener as PageEventListener<PageEventName>);
       }
       (this.on as (event: PageEventName, listener: (...args: any[]) => any) => this)(event, listener);
-      interceptionPromise?.catch((error) => {
-        cleanup();
-        rejectWithApiStack(error);
-      });
     });
+
+    const registeredEvent = waitForRegisteredEvent();
+    const handledRegisteredEvent = registeredEvent.catch((error) => {
+      throw error;
+    });
+
+    if (event === "filechooser") {
+      const interceptionPromise = this.ensureFileChooserInterception().catch((error) => {
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        appendAsyncApiStack(normalizedError, apiStack);
+        throw normalizedError;
+      });
+      return new Promise<PageEventMap[PageEventName]>((resolve, reject) => {
+        let settled = false;
+        const settleResolve = (value: PageEventMap[PageEventName]) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve(value);
+        };
+        const settleReject = (error: unknown) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          reject(error);
+        };
+
+        void interceptionPromise.then(
+          () => {},
+          (error) => {
+            settleReject(error);
+          }
+        );
+        void handledRegisteredEvent.then(
+          (value) => {
+            settleResolve(value);
+          },
+          (error) => {
+            settleReject(error);
+          }
+        );
+      });
+    }
+
+    return handledRegisteredEvent;
   }
 
   async $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
@@ -3370,6 +3417,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         timeout: options.timeout ?? this.defaultNavigationTimeoutMs
       });
       await this.reinstallExposedBindings();
+      await this.waitForFileChooserInterceptionIfPending();
       await this.refreshFrameSnapshots();
       const currentUrl = this.adapter.url();
       const mainFrame = this.mainFrame();
@@ -3442,6 +3490,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
       });
       await this.reinstallExposedBindings();
+      await this.waitForFileChooserInterceptionIfPending();
       await this.refreshFrameSnapshots();
       return;
     }
@@ -5007,11 +5056,23 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private async ensureFileChooserInterception(): Promise<void> {
     if (!this.fileChooserInterceptionPromise) {
       this.fileChooserInterceptionPromise = (async () => {
+        if (this.adapter.onFileChooserOpened) {
+          this.fileChooserAdapterDisposer ??= this.adapter.onFileChooserOpened(async (payload) => {
+            await this.handleNativeFileChooserOpened(payload);
+          });
+          return;
+        }
         if (!this.fileChooserBridgeInstalled) {
           await this.installFileChooserHandleFactory();
           await this.installFileChooserBridge();
         }
-        await this.installFileChooserRuntimeIntoCurrentFrames();
+        try {
+          await this.installFileChooserRuntimeIntoCurrentFrames();
+        } catch (error) {
+          if (!isFrameExecutionContextUnavailableError(error)) {
+            throw error;
+          }
+        }
       })().finally(() => {
         this.fileChooserInterceptionPromise = null;
       });
@@ -5021,11 +5082,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private async installFileChooserRuntimeIntoCurrentFrames(): Promise<void> {
     await this.refreshFrameSnapshots().catch(() => {});
-    await this.adapter.evaluate<void>(
-      installFileChooserBridgeRuntime.toString(),
-      null,
-      true
-    ).catch(() => {});
+    const mainFrame = this.mainFrame();
+    const mainFrameSnapshot = mainFrame instanceof RoxyFrame ? mainFrame.snapshotState() : null;
+    if (mainFrameSnapshot) {
+      await this.evaluate<void, string | null>(
+        installFileChooserBridgeRuntime,
+        mainFrameSnapshot.id
+      ).catch(
+        () => {}
+      );
+    }
     for (const frame of this.frames()) {
       if (frame === this.mainFrame()) {
         continue;
@@ -5094,6 +5160,30 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.pendingFileChoosers.push({
       chooser,
       handleId: payload.handleId
+    });
+    this.emit("filechooser", chooser);
+  }
+
+  private async handleNativeFileChooserOpened(payload: {
+    element: ProtocolElementHandleReference;
+    frameId: string | null;
+    isMultiple: boolean;
+  }): Promise<void> {
+    const handleId = payload.element.handleId ?? `native:${this.pendingFileChoosers.length + 1}`;
+    const existing = this.pendingFileChoosers.find((entry) => entry.handleId === handleId);
+    if (existing) {
+      this.emit("filechooser", existing.chooser);
+      return;
+    }
+
+    const chooser = new RoxyFileChooser(
+      this,
+      payload.isMultiple,
+      this.createElementHandle(this.adapter.createHandle(payload.element))
+    );
+    this.pendingFileChoosers.push({
+      chooser,
+      handleId
     });
     this.emit("filechooser", chooser);
   }

@@ -1956,6 +1956,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly screencastOverlays = new Map<string, CdpScreencastOverlayState>();
   private readonly stateWaiters = new Set<StateWaiter>();
   private readonly eventListeners = new Map<RawPageEventName, Set<RawPageEventListener<RawPageEventName>>>();
+  private readonly fileChooserOpenedListeners = new Set<(payload: {
+    element: ProtocolElementHandleReference;
+    frameId: string | null;
+    isMultiple: boolean;
+  }) => void | Promise<void>>();
   private readonly earlyEvents = new Map<
     "dialog" | "request" | "response" | "requestfinished" | "requestfailed",
     Array<
@@ -2221,6 +2226,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         url: this.nativeFrames.get(event.frameId)?.url ?? "about:blank"
       });
       this.emit("frameattached", undefined);
+    });
+
+    client.Page.fileChooserOpened?.((event: {
+      backendNodeId?: number;
+      frameId: string;
+      mode: "selectSingle" | "selectMultiple";
+    }) => {
+      if (!event.backendNodeId || !this.fileChooserOpenedListeners.size) {
+        return;
+      }
+      void this.handleFileChooserOpened(event);
     });
 
     client.Page.frameStartedLoading?.((event: { frameId: string }) => {
@@ -3883,6 +3899,25 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       registeredListeners?.delete(listener as RawPageEventListener<RawPageEventName>);
       if (registeredListeners?.size === 0) {
         this.eventListeners.delete(event);
+      }
+    };
+  }
+
+  onFileChooserOpened(listener: (payload: {
+    element: ProtocolElementHandleReference;
+    frameId: string | null;
+    isMultiple: boolean;
+  }) => void | Promise<void>): () => void {
+    this.fileChooserOpenedListeners.add(listener);
+    void this.options.client.Page.setInterceptFileChooserDialog?.({
+      enabled: true
+    }).catch(() => {});
+    return () => {
+      this.fileChooserOpenedListeners.delete(listener);
+      if (!this.fileChooserOpenedListeners.size) {
+        void this.options.client.Page.setInterceptFileChooserDialog?.({
+          enabled: false
+        }).catch(() => {});
       }
     };
   }
@@ -7289,6 +7324,59 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
 
       (listener as (eventPayload: RawPageEventMap[K]) => void)(payload);
+    }
+  }
+
+  private async handleFileChooserOpened(event: {
+    backendNodeId?: number;
+    frameId: string;
+    mode: "selectSingle" | "selectMultiple";
+  }): Promise<void> {
+    if (!event.backendNodeId) {
+      return;
+    }
+    const sessionId =
+      this.defaultExecutionContextSessionByFrameId.get(event.frameId)
+      ?? this.frameSessionIds.get(event.frameId);
+    const executionContextId = await this.defaultExecutionContextIdForFrame(event.frameId).catch(() => undefined);
+    const domClient = this.options.client as CdpDomClient;
+    const resolveNode = async (targetSessionId: string | undefined, targetExecutionContextId: number | undefined) => {
+      return domClient.send(
+        "DOM.resolveNode",
+        {
+          backendNodeId: event.backendNodeId!,
+          ...(targetExecutionContextId !== undefined ? { executionContextId: targetExecutionContextId } : {})
+        },
+        targetSessionId
+      );
+    };
+    const resolved =
+      await resolveNode(sessionId, executionContextId).catch(async (error) => {
+        if (isClosedCdpConnectionError(error) || String(error).includes("No target with given id found")) {
+          return resolveNode(undefined, undefined).catch(() => null);
+        }
+        return null;
+      });
+    const objectId = resolved?.object.objectId;
+    if (!objectId || resolved?.object.subtype === "null") {
+      return;
+    }
+    const handle = new CdpJSHandleAdapter<unknown>(
+      this,
+      resolved.object,
+      this.defaultExecutionContextSessionByFrameId.get(event.frameId) ?? this.frameSessionIds.get(event.frameId),
+      event.frameId
+    );
+    const element = await this.storeRemoteElementHandle(handle, { disposeHandle: false }).catch(() => null);
+    if (!element) {
+      return;
+    }
+    for (const listener of Array.from(this.fileChooserOpenedListeners)) {
+      await listener({
+        element,
+        frameId: event.frameId,
+        isMultiple: event.mode === "selectMultiple"
+      });
     }
   }
 

@@ -154,10 +154,21 @@ export function createElementHandleAdapterStub(): ProtocolElementHandleAdapter {
 
 export function createPageAdapterStub(): ProtocolPageAdapter & {
   emit<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void;
+  emitFileChooserOpened(payload: {
+    element: {
+      chain: [];
+      handleId: string;
+    };
+    frameId: string | null;
+    isMultiple: boolean;
+  }): Promise<void>;
 } {
   const locatorAdapter = createLocatorAdapterStub();
   const elementHandleAdapter = createElementHandleAdapterStub();
   const listeners = new Map<RawPageEventName, Set<RawPageEventListener<RawPageEventName>>>();
+  const fileChooserOpenedListeners = new Set<
+    NonNullable<ProtocolPageAdapter["onFileChooserOpened"]> extends (listener: infer T) => () => void ? T : never
+  >();
 
   return {
     goto: vi.fn(
@@ -217,6 +228,12 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
     addScriptTag: vi.fn(async () => elementHandleAdapter),
     addStyleTag: vi.fn(async () => elementHandleAdapter),
     waitForLoadState: vi.fn(async () => {}),
+    onFileChooserOpened: vi.fn((listener) => {
+      fileChooserOpenedListeners.add(listener);
+      return () => {
+        fileChooserOpenedListeners.delete(listener);
+      };
+    }),
     ariaSnapshot: vi.fn(async () => '- document\n  - button "Example"'),
     resolveAriaRef: vi.fn(async (ref: string) => ({
       ref,
@@ -318,6 +335,11 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
         }
 
         (listener as (eventPayload: RawPageEventMap[K]) => void)(payload);
+      }
+    },
+    emitFileChooserOpened: async (payload) => {
+      for (const listener of Array.from(fileChooserOpenedListeners)) {
+        await listener(payload);
       }
     }
   };

@@ -3915,6 +3915,35 @@ describe("RoxyPage", () => {
     release();
     await expect(removePromise).rejects.toThrow("Error in handler");
   });
+
+  it("prefers adapter-native filechooser events when available", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const chooserPromise = page.waitForEvent("filechooser");
+    await adapter.emitFileChooserOpened({
+      element: {
+        chain: [],
+        handleId: "native-handle"
+      },
+      frameId: "main",
+      isMultiple: true
+    });
+
+    const chooser = await chooserPromise;
+    expect(chooser.page()).toBe(page);
+    expect(chooser.isMultiple()).toBe(true);
+    expect(adapter.onFileChooserOpened).toHaveBeenCalledTimes(1);
+  });
 });
 
 async function createFakeFfmpeg(directory: string): Promise<string> {
