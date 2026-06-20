@@ -3819,6 +3819,24 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private resetHistorySinceNavigation(): void {
     this.consoleMessageHistorySinceNavigation.length = 0;
     this.pageErrorHistorySinceNavigation.length = 0;
+    this.resolveDanglingMainFrameRequestsAfterNavigation();
+  }
+
+  private resolveDanglingMainFrameRequestsAfterNavigation(): void {
+    const mainFrame = this.mainFrame();
+    const mainSnapshot = mainFrame instanceof RoxyFrame ? mainFrame.snapshotState() : null;
+    for (const state of this.observedRequestsById.values()) {
+      const belongsToMainFrame =
+        !state.frameId
+        || (mainSnapshot !== null && (state.frameId === mainSnapshot.id || state.frameId === mainSnapshot.nativeFrameId));
+      if (!belongsToMainFrame) {
+        continue;
+      }
+      if (state.response !== null || state.failure !== null) {
+        continue;
+      }
+      state.responsePromiseResolve(null);
+    }
   }
 
   private initializeInternalEventRecording(): void {

@@ -2633,6 +2633,42 @@ describe("RoxyPage", () => {
     expect(await response.json()).toEqual({ ok: true });
   });
 
+  it("resolves request.response() to null after main-frame navigation", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const requestPromise = page.waitForRequest(/pending\.json$/);
+    adapter.emit("request", {
+      frameId: "main",
+      url: "https://example.com/pending.json",
+      isNavigationRequest: true,
+      method: "GET",
+      requestId: "req-pending",
+      resourceType: "document",
+      headers: []
+    });
+    const request = await requestPromise;
+
+    const responsePromise = request.response();
+
+    adapter.emit("framenavigated", {
+      frameId: "main",
+      parentFrameId: null,
+      url: "https://example.com/next"
+    });
+
+    await expect(responsePromise).resolves.toBe(null);
+  });
+
   it("links redirect chains between observed requests", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
