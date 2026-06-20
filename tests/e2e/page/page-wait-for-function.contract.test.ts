@@ -59,6 +59,28 @@ describe("page.waitForFunction contract e2e", () => {
     });
   });
 
+  it("should avoid side effects after timeout like Playwright", async () => {
+    await withPage(async (page) => {
+      let counter = 0;
+      page.on("console", () => {
+        counter += 1;
+      });
+
+      const error = await page.waitForFunction(() => {
+        window["counter"] = (window["counter"] || 0) + 1;
+        console.log(window["counter"]);
+        return false;
+      }, {}, { polling: 10, timeout: 100 }).catch((caught) => caught);
+
+      const savedCounter = counter;
+      await page.waitForTimeout(300);
+
+      expect(error).toBeInstanceOf(TimeoutError);
+      expect(error.message).toContain("page.waitForFunction: Timeout 100ms exceeded");
+      expect(counter).toBe(savedCounter);
+    });
+  });
+
   it("should reject bad polling options", async () => {
     await withPage(async (page) => {
       const unknown = await page.waitForFunction(() => true, {}, {
@@ -124,6 +146,62 @@ describe("page.waitForFunction contract e2e", () => {
         arg1: 1,
         arg2: 2
       });
+    });
+  });
+
+  it("should not be called after finishing successfully like Playwright", async () => {
+    await withPage(async (page) => {
+      const messages: string[] = [];
+      page.on("console", (message) => {
+        if (message.text().startsWith("waitForFunction")) {
+          messages.push(message.text());
+        }
+      });
+
+      await page.waitForFunction(() => {
+        console.log("waitForFunction1");
+        return true;
+      });
+      await page.reload();
+      await page.waitForFunction(() => {
+        console.log("waitForFunction2");
+        return true;
+      });
+      await page.reload();
+      await page.waitForFunction(() => {
+        console.log("waitForFunction3");
+        return true;
+      });
+
+      expect(messages.join("|")).toBe("waitForFunction1|waitForFunction2|waitForFunction3");
+    });
+  });
+
+  it("should not be called after finishing unsuccessfully like Playwright", async () => {
+    await withPage(async (page) => {
+      const messages: string[] = [];
+      page.on("console", (message) => {
+        if (message.text().startsWith("waitForFunction")) {
+          messages.push(message.text());
+        }
+      });
+
+      await page.waitForFunction(() => {
+        console.log("waitForFunction1");
+        throw new Error("waitForFunction1");
+      }).catch(() => null);
+      await page.reload();
+      await page.waitForFunction(() => {
+        console.log("waitForFunction2");
+        throw new Error("waitForFunction2");
+      }).catch(() => null);
+      await page.reload();
+      await page.waitForFunction(() => {
+        console.log("waitForFunction3");
+        throw new Error("waitForFunction3");
+      }).catch(() => null);
+
+      expect(messages.join("|")).toBe("waitForFunction1|waitForFunction2|waitForFunction3");
     });
   });
 });
