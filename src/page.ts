@@ -3876,7 +3876,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       defaultValue: () => payload.defaultValue(),
       dismiss: () => payload.dismiss(),
       message: () => payload.message(),
-      page: () => this,
+      page: () => payload.page?.() ?? this,
       type: () => payload.type()
     };
   }

@@ -39,6 +39,11 @@ interface ContextListenerEntry<K extends BrowserContextEventName> {
   wrapped: BrowserContextEventListener<K>;
 }
 
+interface InternalPageAdapterMetadata {
+  __roxyOpenerTargetId?: string | null;
+  __roxyTargetId?: string;
+}
+
 export class RoxyBrowserContext implements BrowserContext {
   private readonly pageSet = new Set<RoxyPage>();
   private readonly pageByAdapter = new Map<ProtocolPageAdapter, RoxyPage>();
@@ -59,13 +64,13 @@ export class RoxyBrowserContext implements BrowserContext {
     private readonly options: BrowserContextOptions = {}
   ) {
     this.disposeAdapterPageListener =
-      this.adapter.onPage?.((pageAdapter, openerAdapter, hasWindowOpener) => {
-        void this.attachDiscoveredPage(
+      this.adapter.onPage?.((pageAdapter, openerAdapter, hasWindowOpener) =>
+        this.attachDiscoveredPage(
           pageAdapter,
           openerAdapter ?? null,
           hasWindowOpener ?? true
-        );
-      }) ?? null;
+        )
+      ) ?? null;
   }
 
   async newPage(): Promise<Page> {
@@ -269,12 +274,17 @@ export class RoxyBrowserContext implements BrowserContext {
     hasWindowOpener: boolean
   ): Promise<void> {
     const page = await this.registerPage(pageAdapter);
-    if (!openerAdapter) {
+    const resolvedOpenerAdapter =
+      openerAdapter ?? await this.resolvePageAdapterByTargetId(this.openerTargetIdOf(pageAdapter));
+    const opener = resolvedOpenerAdapter
+      ? await this.registerPage(resolvedOpenerAdapter)
+      : hasWindowOpener
+        ? this.resolveFallbackPopupOpener(page)
+        : null;
+    if (!opener) {
       this.emit("page", page);
       return;
     }
-
-    const opener = await this.registerPage(openerAdapter);
     if (opener === page) {
       return;
     }
@@ -395,6 +405,39 @@ export class RoxyBrowserContext implements BrowserContext {
       width: 800,
       height: 450
     };
+  }
+
+  private async resolvePageAdapterByTargetId(targetId: string | null | undefined): Promise<ProtocolPageAdapter | null> {
+    if (!targetId) {
+      return null;
+    }
+
+    for (const adapter of this.pageByAdapter.keys()) {
+      if (this.targetIdOf(adapter) === targetId) {
+        return adapter;
+      }
+    }
+
+    for (const adapter of this.pendingPageRegistrations.keys()) {
+      if (this.targetIdOf(adapter) === targetId) {
+        return adapter;
+      }
+    }
+
+    return null;
+  }
+
+  private openerTargetIdOf(pageAdapter: ProtocolPageAdapter): string | null | undefined {
+    return (pageAdapter as ProtocolPageAdapter & InternalPageAdapterMetadata).__roxyOpenerTargetId;
+  }
+
+  private targetIdOf(pageAdapter: ProtocolPageAdapter): string | undefined {
+    return (pageAdapter as ProtocolPageAdapter & InternalPageAdapterMetadata).__roxyTargetId;
+  }
+
+  private resolveFallbackPopupOpener(page: RoxyPage): RoxyPage | null {
+    const candidates = Array.from(this.pageSet).filter((candidate) => candidate !== page);
+    return candidates.length === 1 ? (candidates[0] ?? null) : null;
   }
 
   private ensureListenerSet<K extends BrowserContextEventName>(

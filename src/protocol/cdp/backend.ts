@@ -200,8 +200,16 @@ function isFaviconRequestUrl(url: string): boolean {
   return url.endsWith("/favicon.ico");
 }
 
-function isBufferedNetworkEvent(event: RawPageEventName): event is "request" | "response" | "requestfinished" | "requestfailed" {
-  return event === "request" || event === "response" || event === "requestfinished" || event === "requestfailed";
+function isBufferedEarlyEvent(
+  event: RawPageEventName
+): event is "dialog" | "request" | "response" | "requestfinished" | "requestfailed" {
+  return (
+    event === "dialog"
+    || event === "request"
+    || event === "response"
+    || event === "requestfinished"
+    || event === "requestfailed"
+  );
 }
 
 const PAGE_PAPER_FORMATS: Record<string, { width: number; height: number }> = {
@@ -217,6 +225,7 @@ const PAGE_PAPER_FORMATS: Record<string, { width: number; height: number }> = {
   a5: { width: 5.83, height: 8.27 },
   a6: { width: 4.13, height: 5.83 }
 };
+const DEBUG_POPUP_RESOLVE = process.env.ROXY_DEBUG_POPUP_RESOLVE === "1";
 
 const UNIT_TO_PIXELS: Record<string, number> = {
   px: 1,
@@ -1061,6 +1070,8 @@ class CdpBrowserSession implements ProtocolBrowserSession {
 class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Map<string, ProtocolPageAdapter>();
   private readonly pendingPages = new Map<string, Promise<ProtocolPageAdapter>>();
+  private readonly detachedTargetIds = new Set<string>();
+  private readonly pendingTargetDetachWaiters = new Map<string, Set<() => void>>();
   private readonly pointerActionScheduler = new CdpPointerActionScheduler();
   private readonly manuallyCreatedTargetIds = new Set<string>();
   private readonly creatingPageTargetIds = new Set<string>();
@@ -1335,6 +1346,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   }
 
   private async handleTargetDetached(targetId: string): Promise<void> {
+    this.markTargetDetached(targetId);
     const existing = this.pages.get(targetId);
     if (existing) {
       (existing as ProtocolPageAdapter & { didClose?: () => void }).didClose?.();
@@ -1403,29 +1415,38 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
     const pagePromise = (async () => {
       let page: ProtocolPageAdapter;
+      const targetDetachedPromise = this.waitForTargetDetached(targetId);
       try {
-        const client = options.client ?? await connectToTarget(this.state.connection, targetId);
-        page = await CdpPageAdapter.create({
-          browserClient: this.state.browserClient,
-          client,
-          targetId,
-          contextOptions: this.options,
-          pointerActionScheduler: this.pointerActionScheduler,
-          initialNavigationFrameUnavailable: Boolean(options.openerTargetId),
-          ...(options.sessionId
-            ? {
-                resumeOnInitialized: async () => {
-                  await sendBrowserCommandInSession(this.state.browserClient, "Runtime.runIfWaitingForDebugger", {}, options.sessionId!).catch(() => {});
-                }
+        page = await Promise.race([
+          (async () => {
+            const client = options.client ?? await connectToTarget(this.state.connection, targetId);
+            return CdpPageAdapter.create({
+              browserClient: this.state.browserClient,
+              client,
+              targetId,
+              contextOptions: this.options,
+              pointerActionScheduler: this.pointerActionScheduler,
+              initialNavigationFrameUnavailable: Boolean(options.openerTargetId),
+              ...(options.sessionId
+                ? {
+                    resumeOnInitialized: async () => {
+                      await sendBrowserCommandInSession(this.state.browserClient, "Runtime.runIfWaitingForDebugger", {}, options.sessionId!).catch(() => {});
+                    }
+                  }
+                : {}),
+              onClosed: (closedTargetId) => {
+                this.pages.delete(closedTargetId);
+                this.pendingPages.delete(closedTargetId);
+                this.manuallyCreatedTargetIds.delete(closedTargetId);
+                this.creatingPageTargetIds.delete(closedTargetId);
+                this.detachedTargetIds.delete(closedTargetId);
               }
-            : {}),
-          onClosed: (closedTargetId) => {
-            this.pages.delete(closedTargetId);
-            this.pendingPages.delete(closedTargetId);
-            this.manuallyCreatedTargetIds.delete(closedTargetId);
-            this.creatingPageTargetIds.delete(closedTargetId);
-          }
-        });
+            });
+          })(),
+          targetDetachedPromise.then(() => {
+            throw new Error("Target closed");
+          })
+        ]);
       } catch (error) {
         const shouldCreateClosedPopupFallback =
           options.emitPage &&
@@ -1440,6 +1461,12 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         }
         page = createTransientClosedPageAdapter(options.fallbackUrl ?? "about:blank");
       }
+      const pageWithMetadata = page as ProtocolPageAdapter & {
+        __roxyOpenerTargetId?: string | null;
+        __roxyTargetId?: string;
+      };
+      pageWithMetadata.__roxyTargetId = targetId;
+      pageWithMetadata.__roxyOpenerTargetId = options.openerTargetId ?? null;
       this.pages.set(targetId, page);
 
       if (options.emitPage && !this.creatingPageTargetIds.has(targetId)) {
@@ -1464,21 +1491,38 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   }
 
   private async resolveKnownPage(targetId: string): Promise<ProtocolPageAdapter | null> {
-    const existing = this.pages.get(targetId);
-    if (existing) {
-      return existing;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const existing = this.pages.get(targetId);
+      if (existing) {
+        return existing;
+      }
+
+      const pending = this.pendingPages.get(targetId);
+      if (pending) {
+        try {
+          return await pending;
+        } catch {
+          return null;
+        }
+      }
+
+      if (attempt < 19) {
+        await delay(5);
+      }
     }
 
-    const pending = this.pendingPages.get(targetId);
-    if (!pending) {
-      return null;
+    if (DEBUG_POPUP_RESOLVE) {
+      console.error(
+        "[roxy-popup-resolve] missing",
+        JSON.stringify({
+          targetId,
+          pageKeys: Array.from(this.pages.keys()),
+          pendingKeys: Array.from(this.pendingPages.keys())
+        })
+      );
     }
 
-    try {
-      return await pending;
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   private async emitPage(
@@ -1488,6 +1532,37 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   ): Promise<void> {
     for (const listener of Array.from(this.pageListeners)) {
       await listener(page, opener, hasWindowOpener);
+    }
+  }
+
+  private waitForTargetDetached(targetId: string): Promise<void> {
+    if (this.detachedTargetIds.has(targetId)) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve) => {
+      const waiters = this.pendingTargetDetachWaiters.get(targetId) ?? new Set<() => void>();
+      const done = () => {
+        waiters.delete(done);
+        if (waiters.size === 0) {
+          this.pendingTargetDetachWaiters.delete(targetId);
+        }
+        resolve();
+      };
+      waiters.add(done);
+      this.pendingTargetDetachWaiters.set(targetId, waiters);
+    });
+  }
+
+  private markTargetDetached(targetId: string): void {
+    this.detachedTargetIds.add(targetId);
+    const waiters = this.pendingTargetDetachWaiters.get(targetId);
+    if (!waiters) {
+      return;
+    }
+    this.pendingTargetDetachWaiters.delete(targetId);
+    for (const waiter of waiters) {
+      waiter();
     }
   }
 }
@@ -1646,6 +1721,8 @@ class CdpPointerActionScheduler {
 }
 
 class CdpPageAdapter implements ProtocolPageAdapter {
+  private readonly closePromise: Promise<void>;
+  private resolveClosePromise!: () => void;
   private mainFrameId: string | undefined;
   private readonly defaultExecutionContextByFrameId = new Map<string, number>();
   private readonly defaultExecutionContextSessionByFrameId = new Map<string, string | undefined>();
@@ -1701,9 +1778,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly screencastOverlays = new Map<string, CdpScreencastOverlayState>();
   private readonly stateWaiters = new Set<StateWaiter>();
   private readonly eventListeners = new Map<RawPageEventName, Set<RawPageEventListener<RawPageEventName>>>();
-  private readonly earlyNetworkEvents = new Map<
-    "request" | "response" | "requestfinished" | "requestfailed",
-    Array<RawPageEventMap["request"] | RawPageEventMap["response"] | RawPageEventMap["requestfailed"]>
+  private readonly earlyEvents = new Map<
+    "dialog" | "request" | "response" | "requestfinished" | "requestfailed",
+    Array<
+      | RawPageEventMap["dialog"]
+      | RawPageEventMap["request"]
+      | RawPageEventMap["response"]
+      | RawPageEventMap["requestfailed"]
+    >
   >();
   private readonly requestMetadata = new Map<
     string,
@@ -1774,7 +1856,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     onClosed: (targetId: string) => void;
   }): Promise<CdpPageAdapter> {
     const page = new CdpPageAdapter(options);
-    await page.initialize();
+    await Promise.race([
+      page.initialize(),
+      page.closePromise.then(() => {
+        throw page.createClosedError();
+      })
+    ]);
     return page;
   }
 
@@ -1790,6 +1877,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       onClosed: (targetId: string) => void;
     }
   ) {
+    this.closePromise = new Promise<void>((resolve) => {
+      this.resolveClosePromise = resolve;
+    });
     this.options.client.on("disconnect", () => {
       this.didClose();
     });
@@ -1820,6 +1910,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.clearNetworkIdleTimer();
     this.rejectWaiters(this.createClosedError());
     this.emit("close", undefined);
+    this.resolveClosePromise();
     this.options.onClosed(this.options.targetId);
   }
 
@@ -1866,6 +1957,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.createDialogPayload({
           defaultValue: event.defaultPrompt ?? "",
           message: event.message,
+          page: () => null,
           type: event.type
         })
       );
@@ -3491,7 +3583,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.eventListeners.get(event) ?? new Set<RawPageEventListener<RawPageEventName>>();
     listeners.add(listener as RawPageEventListener<RawPageEventName>);
     this.eventListeners.set(event, listeners);
-    this.replayEarlyNetworkEvents(event, listener);
+    this.replayEarlyEvents(event, listener);
 
     return () => {
       const registeredListeners = this.eventListeners.get(event);
@@ -6686,6 +6778,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private createDialogPayload(input: {
     defaultValue: string;
     message: string;
+    page?: PageDialog["page"];
     type: "alert" | "beforeunload" | "confirm" | "prompt";
   }): PageDialog {
     let handled = false;
@@ -6709,9 +6802,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       defaultValue: () => input.defaultValue,
       dismiss: () => respond(false),
       message: () => input.message,
+      page: () => input.page?.() ?? null,
       type: () => input.type
     };
-    if ((this.eventListeners.get("dialog")?.size ?? 0) === 0) {
+    if (
+      (this.eventListeners.get("dialog")?.size ?? 0) === 0
+      && (this.earlyEvents.get("dialog")?.length ?? 0) === 0
+    ) {
       void dialog.dismiss().catch(() => {});
     }
     return dialog;
@@ -6724,7 +6821,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private emit<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void {
     const listeners = this.eventListeners.get(event);
     if (!listeners) {
-      this.bufferEarlyNetworkEvent(event, payload);
+      this.bufferEarlyEvent(event, payload);
       return;
     }
 
@@ -6738,28 +6835,37 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   }
 
-  private bufferEarlyNetworkEvent<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void {
-    if (!isBufferedNetworkEvent(event) || payload === undefined) {
+  private bufferEarlyEvent<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void {
+    if (!isBufferedEarlyEvent(event) || payload === undefined) {
       return;
     }
-    const events = this.earlyNetworkEvents.get(event) ?? [];
-    events.push(payload as RawPageEventMap["request"] | RawPageEventMap["response"] | RawPageEventMap["requestfailed"]);
+    const events = this.earlyEvents.get(event) ?? [];
+    events.push(
+      payload as
+        | RawPageEventMap["dialog"]
+        | RawPageEventMap["request"]
+        | RawPageEventMap["response"]
+        | RawPageEventMap["requestfailed"]
+    );
     if (events.length > 100) {
       events.shift();
     }
-    this.earlyNetworkEvents.set(event, events);
+    this.earlyEvents.set(event, events);
   }
 
-  private replayEarlyNetworkEvents<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): void {
-    if (!isBufferedNetworkEvent(event)) {
+  private replayEarlyEvents<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): void {
+    if (!isBufferedEarlyEvent(event)) {
       return;
     }
-    const events = this.earlyNetworkEvents.get(event);
+    const events = this.earlyEvents.get(event);
     if (!events?.length) {
       return;
     }
     for (const payload of events) {
       (listener as (eventPayload: typeof payload) => void)(payload);
+    }
+    if (event === "dialog") {
+      this.earlyEvents.delete(event);
     }
   }
 }

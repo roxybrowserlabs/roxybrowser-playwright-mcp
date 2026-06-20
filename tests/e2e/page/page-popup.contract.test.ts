@@ -138,6 +138,25 @@ describe("page popup contract e2e", () => {
     });
   });
 
+  it("captures dialogs opened by a popup and associates them to that popup", async () => {
+    await withPage(async (page) => {
+      const evaluatePromise = page.evaluate(() => {
+        const win = window.open("");
+        win?.alert("hello");
+      });
+
+      const [popup, dialog] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.context().waitForEvent("dialog")
+      ]);
+
+      expect(dialog.message()).toBe("hello");
+      expect(dialog.page()).toBe(popup);
+      await dialog.dismiss();
+      await evaluatePromise;
+    });
+  });
+
   it("emits popup when clicking target=_blank links", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.EMPTY_PAGE);

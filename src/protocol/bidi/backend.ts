@@ -2880,6 +2880,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   private createDialogPayload(input: {
     defaultValue: string;
     message: string;
+    page?: PageDialog["page"];
     type: "alert" | "beforeunload" | "confirm" | "prompt";
   }): PageDialog {
     let handled = false;
@@ -2900,6 +2901,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       defaultValue: () => input.defaultValue,
       dismiss: () => respond(false),
       message: () => input.message,
+      page: () => input.page?.() ?? null,
       type: () => input.type
     };
     if ((this.eventListeners.get("dialog")?.size ?? 0) === 0) {

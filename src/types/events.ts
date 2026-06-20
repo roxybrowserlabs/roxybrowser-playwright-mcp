@@ -81,6 +81,7 @@ export interface PageDialog {
   defaultValue(): string;
   dismiss(): Promise<void>;
   message(): string;
+  page(): Page | null;
   type(): "alert" | "beforeunload" | "confirm" | "prompt";
 }
 
