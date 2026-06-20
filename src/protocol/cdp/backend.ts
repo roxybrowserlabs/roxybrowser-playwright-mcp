@@ -8909,6 +8909,9 @@ function cdpRemoteObjectPreview(arg: {
   if (arg.className === "Document") {
     return "Document";
   }
+  if (arg.subtype === "promise") {
+    return arg.className ?? arg.description ?? "Promise";
+  }
   if (arg.subtype === "node") {
     if (arg.description && /^[a-z][a-z0-9-]*$/i.test(arg.description)) {
       return `JSHandle@<${arg.description}></${arg.description}>`;

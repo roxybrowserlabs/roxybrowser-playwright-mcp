@@ -198,6 +198,56 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("reports different console API calls like Playwright", async () => {
+    await withPage(async (page) => {
+      const messages: Array<{ text: string; type: string }> = [];
+      page.on("console", (message) => {
+        messages.push({
+          text: message.text(),
+          type: message.type()
+        });
+      });
+
+      await page.evaluate(() => {
+        console.time("calling console.time");
+        console.timeEnd("calling console.time");
+        console.trace("calling console.trace");
+        console.dir("calling console.dir");
+        console.warn("calling console.warn");
+        console.error("calling console.error");
+        console.info("calling console.info");
+        console.debug("calling console.debug");
+        console.log(Promise.resolve("should not wait until resolved!"));
+      });
+
+      await page.exposeBinding("foobar", async (_, value) => page.evaluate((text) => console.log(text), value));
+      await page.evaluate(() => window["foobar"]("Using bindings"));
+
+      expect(messages.map((message) => message.type)).toEqual([
+        "timeEnd",
+        "trace",
+        "dir",
+        "warning",
+        "error",
+        "info",
+        "debug",
+        "log",
+        "log"
+      ]);
+      expect(messages[0]!.text).toContain("calling console.time");
+      expect(messages.slice(1).map((message) => message.text)).toEqual([
+        "calling console.trace",
+        "calling console.dir",
+        "calling console.warn",
+        "calling console.error",
+        "calling console.info",
+        "calling console.debug",
+        "Promise",
+        "Using bindings"
+      ]);
+    });
+  });
+
   it("formats console.time/timeLog/timeEnd like Playwright on Chromium", async () => {
     await withPage(async (page) => {
       const messages: Array<{ text: string; type: string }> = [];
@@ -256,6 +306,23 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("does not fail for window object like Playwright", async () => {
+    await withPage(async (page) => {
+      let message = null as Awaited<ReturnType<typeof page.waitForEvent<"console">>> | null;
+      page.once("console", (entry) => {
+        message = entry;
+      });
+
+      await Promise.all([
+        page.evaluate(() => console.error(window)),
+        page.waitForEvent("console")
+      ]);
+
+      expect(message).not.toBe(null);
+      expect(message!.text()).toBe("Window");
+    });
+  });
+
   it("exposes console timestamps like Playwright", async () => {
     await withPage(async (page) => {
       const before = Date.now() - 100;
@@ -286,6 +353,27 @@ describe("page events contract e2e", () => {
       expect(messages).toHaveLength(3);
       expect(messages[1]!.timestamp()).toBeGreaterThanOrEqual(messages[0]!.timestamp());
       expect(messages[2]!.timestamp()).toBeGreaterThanOrEqual(messages[1]!.timestamp());
+    });
+  });
+
+  it("does not update console count on unhandled rejections", async () => {
+    await withPage(async (page) => {
+      const messages: string[] = [];
+      page.addListener("console", (message) => {
+        messages.push(message.text());
+      });
+
+      await page.evaluate(() => {
+        const fail = async () => Promise.reject(new Error("error"));
+        console.log("begin");
+        void fail();
+        void fail();
+        fail().catch(() => {
+          console.log("end");
+        });
+      });
+
+      await expect.poll(() => messages).toEqual(["begin", "end"]);
     });
   });
 
