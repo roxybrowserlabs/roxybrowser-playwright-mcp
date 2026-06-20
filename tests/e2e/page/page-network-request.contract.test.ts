@@ -694,6 +694,63 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("emits requestfailed for stylesheet failures like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/one-style.css", (_request, response) => {
+        response.setHeader("Content-Type", "text/css");
+        response.destroy();
+      });
+
+      const failedRequests: Array<Awaited<ReturnType<typeof page.waitForEvent<"requestfailed">>>> = [];
+      page.on("requestfailed", (request) => failedRequests.push(request));
+      await page.goto(fixture.server.PREFIX + "/one-style.html");
+
+      expect(failedRequests).toHaveLength(1);
+      expect(failedRequests[0]!.url()).toContain("one-style.css");
+      expect(await failedRequests[0]!.response()).toBe(null);
+      expect(failedRequests[0]!.resourceType()).toBe("stylesheet");
+      expect(failedRequests[0]!.failure()!.errorText.length).toBeGreaterThan(0);
+      expect(failedRequests[0]!.frame()).toBeTruthy();
+    });
+  });
+
+  it("supports redirects with request and response event ordering like Playwright", async () => {
+    await withPage(async (page) => {
+      const fooUrl = fixture.server.PREFIX + "/foo.html";
+      const events: Record<string, Array<string | number>> = {
+        [fixture.server.EMPTY_PAGE]: [],
+        [fooUrl]: []
+      };
+
+      page.on("request", (request) => {
+        events[request.url()]!.push(request.method());
+      });
+      page.on("response", (response) => {
+        events[response.url()]!.push(response.status());
+      });
+      page.on("requestfinished", (request) => {
+        events[request.url()]!.push("DONE");
+      });
+      page.on("requestfailed", (request) => {
+        events[request.url()]!.push("FAIL");
+      });
+
+      fixture.server.setRedirect("/foo.html", "/empty.html");
+      const response = await page.goto(fooUrl);
+      await response!.finished();
+
+      expect(events).toEqual({
+        [fooUrl]: ["GET", 302, "DONE"],
+        [fixture.server.EMPTY_PAGE]: ["GET", 200, "DONE"]
+      });
+
+      const redirectedFrom = response!.request().redirectedFrom();
+      expect(redirectedFrom!.url()).toContain("/foo.html");
+      expect(redirectedFrom!.redirectedFrom()).toBe(null);
+      expect(redirectedFrom!.redirectedTo()).toBe(response!.request());
+    });
+  });
+
   it("reports raw headers", async () => {
     await withPage(async (page) => {
       let expectedHeaders: Array<{ name: string; value: string }> = [];
