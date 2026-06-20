@@ -2029,6 +2029,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly continuedRequestUrls = new Map<string, string>();
   private readonly responseBodies = new Map<string, ResponseBodyState>();
   private readonly responseBodyRequestIds = new Map<string, string>();
+  private readonly workerRequestAliases = new Map<string, string>();
   private readonly navigationResponseCaptures = new Set<NavigationResponseCapture>();
   private readonly navigationFailureCaptures = new Set<NavigationFailureCapture>();
   private pageExtraHTTPHeaders: Record<string, string> | undefined;
@@ -2117,6 +2118,100 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.flushPendingRequestEvent(redirectedRequestId);
     this.continuedRequestUrls.set(redirectedRequestId, request.url);
     return redirectedRequestId;
+  }
+
+  private resolveWorkerRequestIdAlias(requestId: string): string {
+    let resolved = requestId;
+    const visited = new Set<string>();
+    while (!visited.has(resolved)) {
+      visited.add(resolved);
+      const alias = this.workerRequestAliases.get(resolved);
+      if (!alias) {
+        break;
+      }
+      resolved = alias;
+    }
+    return resolved;
+  }
+
+  private aliasWorkerRequest(
+    sourceRequestId: string,
+    targetRequestId: string,
+    sessionId: string,
+    frameId: string | undefined
+  ): void {
+    if (sourceRequestId === targetRequestId) {
+      return;
+    }
+    this.workerRequestAliases.set(sourceRequestId, targetRequestId);
+    this.responseBodyRequestIds.set(targetRequestId, this.responseBodyRequestIds.get(sourceRequestId) ?? sourceRequestId);
+    const sourceState = this.responseBodies.get(sourceRequestId);
+    if (sourceState) {
+      const targetState = this.ensureResponseBodyState(targetRequestId);
+      if (sourceState.body) {
+        targetState.body = sourceState.body;
+      }
+      if (targetState.expectedLength === undefined && sourceState.expectedLength !== undefined) {
+        targetState.expectedLength = sourceState.expectedLength;
+      }
+      if (!targetState.failure && sourceState.failure) {
+        targetState.failure = sourceState.failure;
+      }
+      const resolvedFrameId = sourceState.frameId ?? frameId;
+      if (!targetState.frameId && resolvedFrameId) {
+        targetState.frameId = resolvedFrameId;
+      }
+      if (!targetState.fulfilledBody && sourceState.fulfilledBody) {
+        targetState.fulfilledBody = sourceState.fulfilledBody;
+      }
+      if (!targetState.sessionId) {
+        targetState.sessionId = sourceState.sessionId ?? sessionId;
+      }
+      if (!targetState.url && sourceState.url) {
+        targetState.url = sourceState.url;
+      }
+      if (sourceState.failure) {
+        targetState.markFailed(sourceState.failure);
+      } else {
+        sourceState.ready.then(() => {
+          targetState.resolveReady();
+        }).catch((error: unknown) => {
+          targetState.markFailed(error instanceof Error ? error : new Error(String(error)));
+        });
+      }
+    }
+  }
+
+  private remapWorkerRequestToScopedId(
+    sessionId: string,
+    requestId: string,
+    frameId: string | undefined
+  ): {
+    scopedRequestId: string;
+    metadata: {
+      frameId?: string;
+      isFavicon?: boolean;
+      isNavigationRequest?: boolean;
+      isPreflight?: boolean;
+      method: string;
+      responseStatus?: number;
+      type?: string;
+      url: string;
+    } | undefined;
+  } {
+    const { scopedRequestId, metadata } = this.adoptWorkerRequestMetadata(sessionId, requestId);
+    const resolvedRequestId = this.resolveWorkerRequestIdAlias(scopedRequestId);
+    if (resolvedRequestId !== scopedRequestId) {
+      this.aliasWorkerRequest(scopedRequestId, resolvedRequestId, sessionId, frameId);
+      return {
+        scopedRequestId: resolvedRequestId,
+        metadata: this.requestMetadata.get(resolvedRequestId) ?? metadata
+      };
+    }
+    return {
+      scopedRequestId,
+      metadata
+    };
   }
 
   static async create(options: {
@@ -2564,6 +2659,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
               pageOwnedRequest.type,
               pageOwnedRequest.url
             );
+            this.aliasWorkerRequest(scopedRequestId, activeRequestId, event.sessionId, workerFrameId);
             this.responseBodyRequestIds.set(activeRequestId, responseEvent.requestId);
             this.requestMetadata.delete(responseEvent.requestId);
             metadata = this.requestMetadata.get(activeRequestId);
@@ -2599,9 +2695,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         });
         workerClient.on("Network.loadingFinished", (params: unknown) => {
           const loadingFinished = params as { requestId: string };
-          const { scopedRequestId, metadata } = this.adoptWorkerRequestMetadata(
+          const { scopedRequestId, metadata } = this.remapWorkerRequestToScopedId(
             event.sessionId,
-            loadingFinished.requestId
+            loadingFinished.requestId,
+            workerFrameId
           );
           this.flushPendingResponseEvent(scopedRequestId);
           const bodyState = this.ensureResponseBodyState(scopedRequestId);
@@ -2623,13 +2720,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           this.responseExtraInfoDiscardCounts.delete(scopedRequestId);
           this.requestMetadata.delete(scopedRequestId);
           this.continuedRequestUrls.delete(scopedRequestId);
+          this.workerRequestAliases.delete(this.scopedWorkerRequestId(event.sessionId, loadingFinished.requestId));
           this.maybeArmNetworkIdleTimer();
         });
         workerClient.on("Network.loadingFailed", (params: unknown) => {
           const loadingFailed = params as { errorText: string; requestId: string };
-          const { scopedRequestId, metadata } = this.adoptWorkerRequestMetadata(
+          const { scopedRequestId, metadata } = this.remapWorkerRequestToScopedId(
             event.sessionId,
-            loadingFailed.requestId
+            loadingFailed.requestId,
+            workerFrameId
           );
           this.flushPendingResponseEvent(scopedRequestId);
           this.ensureResponseBodyState(scopedRequestId).markFailed(
@@ -2651,6 +2750,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           this.responseExtraInfoDiscardCounts.delete(scopedRequestId);
           this.requestMetadata.delete(scopedRequestId);
           this.continuedRequestUrls.delete(scopedRequestId);
+          this.workerRequestAliases.delete(this.scopedWorkerRequestId(event.sessionId, loadingFailed.requestId));
           this.maybeArmNetworkIdleTimer();
         });
         const sessionClient = this.options.client as typeof this.options.client & {
@@ -7544,19 +7644,33 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         if (state.fulfilledBody) {
           return Buffer.from(state.fulfilledBody);
         }
-        const response = await (
-          this.options.client.Network as typeof this.options.client.Network & {
-            getResponseBody(options: {
-              requestId: string;
-            }, sessionId?: string): Promise<{ base64Encoded: boolean; body: string }>;
+        let body = Buffer.alloc(0);
+        let shouldLoadResource = false;
+        try {
+          const response = await (
+            this.options.client.Network as typeof this.options.client.Network & {
+              getResponseBody(options: {
+                requestId: string;
+              }, sessionId?: string): Promise<{ base64Encoded: boolean; body: string }>;
+            }
+          ).getResponseBody({
+            requestId: this.responseBodyRequestIds.get(requestId) ?? requestId
+          }, state.sessionId);
+          body = response.base64Encoded
+            ? Buffer.from(response.body, "base64")
+            : Buffer.from(response.body, "utf8");
+          shouldLoadResource = !body.byteLength && Boolean(state.expectedLength && state.url);
+        } catch (error) {
+          if (!state.url || !String(error instanceof Error ? error.message : error).includes("No resource with given identifier found")) {
+            throw error;
           }
-        ).getResponseBody({
-          requestId: this.responseBodyRequestIds.get(requestId) ?? requestId
-        }, state.sessionId);
-        const body = response.base64Encoded
-          ? Buffer.from(response.body, "base64")
-          : Buffer.from(response.body, "utf8");
-        if (body.byteLength || !state.expectedLength || !state.url) {
+          shouldLoadResource = true;
+        }
+        if (!shouldLoadResource) {
+          return body;
+        }
+        const resourceUrl = state.url;
+        if (!resourceUrl) {
           return body;
         }
         const resource = await (
@@ -7568,7 +7682,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             }): Promise<{ resource: { stream?: string } }>;
           }
         ).loadNetworkResource({
-          url: state.url,
+          url: resourceUrl,
           ...(state.frameId ? { frameId: state.frameId } : {}),
           options: {
             disableCache: false,

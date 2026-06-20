@@ -4509,7 +4509,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     requestId?: string | null
   ): ObservedRequestState | null {
     if (requestId) {
-      return this.observedRequestsById.get(requestId) ?? null;
+      const exact = this.observedRequestsById.get(requestId) ?? null;
+      if (exact) {
+        return exact;
+      }
+      const queue = this.observedRequestsByUrl.get(url);
+      const fallback = queue?.find((entry) => entry.method === method) ?? queue?.[0] ?? null;
+      if (fallback) {
+        fallback.requestId = requestId;
+        this.observedRequestsById.set(requestId, fallback);
+      }
+      return fallback;
     }
     const queue = this.observedRequestsByUrl.get(url);
     if (!queue?.length) {
