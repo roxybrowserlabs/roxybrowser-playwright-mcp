@@ -65,6 +65,20 @@ describe("page popup contract e2e", () => {
     });
   });
 
+  it("emits popup for noopener about:blank windows", async () => {
+    await withPage(async (page) => {
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.evaluate(() => {
+          window.__popup = window.open("about:blank", null, "noopener");
+        })
+      ]);
+
+      expect(await popup.opener()).toBeNull();
+      expect(await popup.evaluate(() => !!window.opener)).toBe(false);
+    });
+  });
+
   it("emits popup for empty window.open urls", async () => {
     await withPage(async (page) => {
       const [popup] = await Promise.all([
@@ -100,6 +114,22 @@ describe("page popup contract e2e", () => {
         page.waitForEvent("popup"),
         page.evaluate(() => {
           const win = window.open("about:blank");
+          win?.close();
+        })
+      ]);
+
+      expect(popup).toBeTruthy();
+    });
+  });
+
+  it("emits popup even when an immediately navigated popup closes", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.evaluate(() => {
+          const win = window.open(window.location.href);
           win?.close();
         })
       ]);
@@ -184,6 +214,22 @@ describe("page popup contract e2e", () => {
       ]);
 
       expect(await popup.opener()).toBe(page);
+    });
+  });
+
+  it("emits popup for noopener windows that navigate to a URL", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.evaluate((url) => {
+          window.__popup = window.open(url, null, "noopener");
+        }, fixture.server.EMPTY_PAGE)
+      ]);
+
+      expect(await popup.opener()).toBeNull();
+      expect(await popup.evaluate(() => !!window.opener)).toBe(false);
     });
   });
 });

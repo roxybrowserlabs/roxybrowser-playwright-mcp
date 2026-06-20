@@ -318,6 +318,9 @@ export class RoxyBrowserContext implements BrowserContext {
       }
       return page;
     } catch (error) {
+      if (isClosedPageRegistrationError(error)) {
+        return page;
+      }
       this.pageSet.delete(page);
       this.pageByAdapter.delete(pageAdapter);
       this.adapterByPage.delete(page);
@@ -434,4 +437,15 @@ export class RoxyBrowserContext implements BrowserContext {
     }
     this.pageEventDisposers.set(page, disposers);
   }
+}
+
+function isClosedPageRegistrationError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return (
+    message.includes("target page, context or browser has been closed")
+    || message.includes("browser context has been closed")
+    || message.includes("session closed")
+    || message.includes("connection closed")
+    || message.includes("target closed")
+  );
 }

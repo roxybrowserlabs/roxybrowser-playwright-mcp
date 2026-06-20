@@ -1200,6 +1200,11 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       waitForDebuggerOnStart: true,
       flatten: true
     }).catch(() => {});
+    await (
+      this.state.browserClient.Target as typeof this.state.browserClient.Target & {
+        getTargetInfo?: () => Promise<unknown>;
+      }
+    ).getTargetInfo?.().catch(() => {});
     await this.state.browserClient.Target.setDiscoverTargets?.({
       discover: true
     });
@@ -1422,7 +1427,15 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
           }
         });
       } catch (error) {
-        if (!options.emitPage || options.client) {
+        const shouldCreateClosedPopupFallback =
+          options.emitPage &&
+          Boolean(options.openerTargetId) &&
+          isPageClosedInitializationError(error);
+
+        if (!shouldCreateClosedPopupFallback && (!options.emitPage || options.client)) {
+          throw error;
+        }
+        if (!shouldCreateClosedPopupFallback && options.client) {
           throw error;
         }
         page = createTransientClosedPageAdapter(options.fallbackUrl ?? "about:blank");
@@ -1477,6 +1490,16 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       await listener(page, opener, hasWindowOpener);
     }
   }
+}
+
+function isPageClosedInitializationError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return (
+    message.includes("target page, context or browser has been closed")
+    || message.includes("target closed")
+    || message.includes("session closed")
+    || message.includes("connection closed")
+  );
 }
 
 function createTransientClosedPageAdapter(url: string): ProtocolPageAdapter {
