@@ -539,6 +539,122 @@ describe("page network request contract e2e", () => {
     });
   });
 
+  it("finishes 204 requests like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/204", (_request, response) => {
+        response.writeHead(204, { "Content-type": "text/plain" });
+        response.end();
+      });
+      await page.goto(fixture.server.EMPTY_PAGE);
+      const requestPromise = Promise.race([
+        page.waitForEvent("requestfailed", (request) => request.url().endsWith("/204")).then(() => "requestfailed"),
+        page.waitForEvent("requestfinished", (request) => request.url().endsWith("/204")).then(() => "requestfinished")
+      ]);
+
+      await page.evaluate((url) => {
+        void fetch(url);
+      }, fixture.server.PREFIX + "/204");
+
+      expect(await requestPromise).toBe("requestfinished");
+    });
+  });
+
+  it("does not expose preflight OPTIONS request like Playwright", async () => {
+    await withPage(async (page) => {
+      const serverRequests: string[] = [];
+      fixture.server.setRoute("/cors", (request, response) => {
+        serverRequests.push(`${request.method} ${request.url}`);
+        if (request.method === "OPTIONS") {
+          response.writeHead(204, {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
+          });
+          response.end();
+          return;
+        }
+        response.writeHead(200, {
+          "Content-type": "text/plain",
+          "Access-Control-Allow-Origin": "*"
+        });
+        response.end("Hello there!");
+      });
+      const clientRequests: string[] = [];
+      page.on("request", (request) => {
+        clientRequests.push(`${request.method()} ${request.url()}`);
+      });
+
+      const response = await page.evaluate(async (url) => {
+        const response = await fetch(url, {
+          method: "POST",
+          body: "",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Custom-Header": "test-value"
+          }
+        });
+        return await response.text();
+      }, fixture.server.CROSS_PROCESS_PREFIX + "/cors");
+
+      expect(response).toBe("Hello there!");
+      expect(serverRequests).toEqual([
+        "OPTIONS /cors",
+        "POST /cors"
+      ]);
+      expect(clientRequests).toEqual([
+        `POST ${fixture.server.CROSS_PROCESS_PREFIX}/cors`
+      ]);
+    });
+  });
+
+  it("does not expose preflight OPTIONS request with network interception like Playwright", async () => {
+    await withPage(async (page) => {
+      const serverRequests: string[] = [];
+      fixture.server.setRoute("/cors", (request, response) => {
+        serverRequests.push(`${request.method} ${request.url}`);
+        if (request.method === "OPTIONS") {
+          response.writeHead(204, {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
+          });
+          response.end();
+          return;
+        }
+        response.writeHead(200, {
+          "Content-type": "text/plain",
+          "Access-Control-Allow-Origin": "*"
+        });
+        response.end("Hello there!");
+      });
+      await page.route("**/*", (route) => route.continue());
+      const clientRequests: string[] = [];
+      page.on("request", (request) => {
+        clientRequests.push(`${request.method()} ${request.url()}`);
+      });
+
+      const response = await page.evaluate(async (url) => {
+        const response = await fetch(url, {
+          method: "POST",
+          body: "",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Custom-Header": "test-value"
+          }
+        });
+        return await response.text();
+      }, fixture.server.CROSS_PROCESS_PREFIX + "/cors");
+
+      expect(response).toBe("Hello there!");
+      expect(serverRequests).toEqual([
+        "POST /cors"
+      ]);
+      expect(clientRequests).toEqual([
+        `POST ${fixture.server.CROSS_PROCESS_PREFIX}/cors`
+      ]);
+    });
+  });
+
   it("reports raw headers", async () => {
     await withPage(async (page) => {
       let expectedHeaders: Array<{ name: string; value: string }> = [];
