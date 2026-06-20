@@ -146,23 +146,102 @@ describe("page waitForLoadState contract e2e", () => {
     });
   });
 
+  it("waits for load state of newPage like Playwright", async () => {
+    await withPage(async (page, context) => {
+      const [newPage] = await Promise.all([
+        context.waitForEvent("page"),
+        context.newPage()
+      ]);
+      await newPage.waitForLoadState();
+      expect(await newPage.evaluate(() => document.readyState)).toBe("complete");
+    });
+  });
+
+  it("resolves after popup load like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      let cssResponse: { end(body?: string): void } | null = null;
+      fixture.server.setRoute("/one-style.css", (_request, response) => {
+        cssResponse = response;
+      });
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        fixture.server.waitForRequest("/one-style.css"),
+        page.evaluate((url) => {
+          (window as typeof window & { popup?: Window | null }).popup = window.open(url);
+        }, fixture.server.PREFIX + "/one-style.html")
+      ]);
+
+      let resolved = false;
+      const loadStatePromise = popup.waitForLoadState().then(() => {
+        resolved = true;
+      });
+
+      for (let index = 0; index < 5; index += 1) {
+        await page.evaluate("window");
+      }
+      expect(resolved).toBe(false);
+      cssResponse!.end("");
+      await loadStatePromise;
+      expect(resolved).toBe(true);
+      expect(popup.url()).toBe(fixture.server.PREFIX + "/one-style.html");
+    });
+  });
+
   it("works for frame", async () => {
     await withPage(async (page) => {
       await page.goto(fixture.server.PREFIX + "/frames/one-frame.html");
       const frame = page.frames()[1]!;
 
-      fixture.server.setRoute("/one-style.css", () => {});
+      const requestPromise = new Promise<{
+        continue(): Promise<void>;
+      }>((resolve) => {
+        void page.route(fixture.server.PREFIX + "/one-style.css", async (route) => {
+          resolve(route);
+        });
+      });
       await frame.goto(fixture.server.PREFIX + "/one-style.html", {
         waitUntil: "domcontentloaded"
       });
+      const request = await requestPromise;
       let resolved = false;
       const loadPromise = frame.waitForLoadState().then(() => {
         resolved = true;
       });
       await page.evaluate("1");
       expect(resolved).toBe(false);
-      fixture.server.reset();
+      await request.continue();
       await loadPromise;
+    });
+  });
+
+  it("works with javascript iframe like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent('<iframe src="javascript:false"></iframe>', { waitUntil: "commit" });
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForLoadState("load");
+      await page.waitForLoadState("networkidle");
+    });
+  });
+
+  it("works with broken data-url iframe like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent('<iframe src="data:text/html"></iframe>', { waitUntil: "commit" });
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForLoadState("load");
+      await page.waitForLoadState("networkidle");
+    });
+  });
+
+  it("works with broken blob-url iframe like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent('<iframe src="blob:"></iframe>', { waitUntil: "commit" });
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForLoadState("load");
+      await page.waitForLoadState("networkidle");
     });
   });
 });

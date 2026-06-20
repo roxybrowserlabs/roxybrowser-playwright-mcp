@@ -49,6 +49,7 @@ export class RoxyBrowserContext implements BrowserContext {
   private readonly pageByAdapter = new Map<ProtocolPageAdapter, RoxyPage>();
   private readonly adapterByPage = new WeakMap<RoxyPage, ProtocolPageAdapter>();
   private readonly pendingPageRegistrations = new Map<ProtocolPageAdapter, Promise<RoxyPage>>();
+  private readonly emittedPages = new WeakSet<RoxyPage>();
   private readonly clockDelegate = new RoxyBrowserContextClockDelegate();
   private readonly listeners = new Map<BrowserContextEventName, Set<ContextListenerEntry<BrowserContextEventName>>>();
   private readonly pageEventDisposers = new WeakMap<RoxyPage, Array<() => void>>();
@@ -75,7 +76,9 @@ export class RoxyBrowserContext implements BrowserContext {
 
   async newPage(): Promise<Page> {
     const pageAdapter = await this.adapter.newPage();
-    return this.registerPage(pageAdapter);
+    const page = await this.registerPage(pageAdapter);
+    this.emitPageEventOnce(page);
+    return page;
   }
 
   async addCookies(cookies: ReadonlyArray<{
@@ -330,7 +333,7 @@ export class RoxyBrowserContext implements BrowserContext {
         ? this.resolveFallbackPopupOpener(page)
         : null;
     if (!opener) {
-      this.emit("page", page);
+      this.emitPageEventOnce(page);
       return;
     }
     if (opener === page) {
@@ -338,7 +341,7 @@ export class RoxyBrowserContext implements BrowserContext {
     }
 
     page.setOpener(hasWindowOpener ? opener : null);
-    this.emit("page", page);
+    this.emitPageEventOnce(page);
     opener.emitPopup(page);
   }
 
@@ -385,6 +388,14 @@ export class RoxyBrowserContext implements BrowserContext {
       this.clockDelegate.detachPage(page);
       throw error;
     }
+  }
+
+  private emitPageEventOnce(page: RoxyPage): void {
+    if (this.emittedPages.has(page)) {
+      return;
+    }
+    this.emittedPages.add(page);
+    this.emit("page", page);
   }
 
   private async enableRecordVideo(page: RoxyPage, options: RecordVideoOptions): Promise<void> {

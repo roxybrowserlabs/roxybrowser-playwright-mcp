@@ -447,6 +447,7 @@ interface ActionPoint {
 }
 
 interface StateWaiter {
+  frameId?: string;
   state: WaitUntilState;
   resolve: () => void;
   reject: (error: Error) => void;
@@ -1508,6 +1509,13 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
   private async handleTargetDetached(targetId: string): Promise<void> {
     this.markTargetDetached(targetId);
+    const frameSessionForTarget = this.frameSessionIds.get(targetId);
+    if (frameSessionForTarget) {
+      this.frameSessionIds.delete(targetId);
+      this.loadingFrameIds.delete(targetId);
+      this.frameLifecycleStates.delete(targetId);
+      return;
+    }
     const existing = this.pages.get(targetId);
     if (existing) {
       (existing as ProtocolPageAdapter & { didClose?: () => void }).didClose?.();
@@ -1909,6 +1917,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   >();
   private readonly frameSessionIds = new Map<string, string>();
   private readonly nativeFrames = new Map<string, CdpNativeFrameState>();
+  private readonly frameLifecycleStates = new Map<string, {
+    domContentLoaded: boolean;
+    loadFired: boolean;
+  }>();
   private readonly loadingFrameIds = new Set<string>();
   private currentUrl = "about:blank";
   private domContentLoaded = false;
@@ -2099,6 +2111,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
     client.Page.domContentEventFired(() => {
       this.domContentLoaded = true;
+      if (this.mainFrameId) {
+        this.updateFrameLifecycleState(this.mainFrameId, {
+          domContentLoaded: true
+        });
+      }
       this.flushWaiters();
       this.emit("domcontentloaded", undefined);
       void this.syncCurrentUrlFromDocument();
@@ -2109,6 +2126,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client.Page.navigatedWithinDocument((event) => {
       this.currentUrl = event.url ?? this.currentUrl;
       void this.syncCurrentUrlFromDocument();
+      this.updateFrameLifecycleState(event.frameId, {
+        domContentLoaded: true,
+        loadFired: true
+      });
       this.emit("framenavigated", {
         frameId: event.frameId,
         ...(event.frameId === this.mainFrameId ? { parentFrameId: null } : {}),
@@ -2140,8 +2161,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client.Page.frameNavigated((event) => {
       this.upsertNativeFrame(event.frame);
       this.loadingFrameIds.add(event.frame.id);
+      this.updateFrameLifecycleState(event.frame.id, {
+        domContentLoaded: false,
+        loadFired: false
+      });
       this.loadFired = false;
       if (!event.frame.parentId) {
+        this.domContentLoaded = false;
+        this.networkIdleReached = false;
+        this.sameDocumentNavigation = false;
+        this.allowSameDocumentNavigationToResolveWaiters = false;
+        this.clearNetworkIdleTimer();
         this.rejectInterruptedNavigationFailureCapturesForCommittedNavigation(
           event.frame.loaderId,
           event.frame.url
@@ -2171,8 +2201,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (event.name === "DOMContentLoaded" && this.isMainFrameId(event.frameId)) {
         this.domContentLoaded = true;
       }
+      if (event.name === "DOMContentLoaded") {
+        this.updateFrameLifecycleState(event.frameId, {
+          domContentLoaded: true
+        });
+      }
       if (event.name === "load") {
         this.loadingFrameIds.delete(event.frameId);
+        this.updateFrameLifecycleState(event.frameId, {
+          loadFired: true
+        });
         this.loadFired = this.loadingFrameIds.size === 0;
         this.maybeArmNetworkIdleTimer();
       }
@@ -2194,6 +2232,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
     client.Page.frameStartedLoading?.((event: { frameId: string }) => {
       this.loadingFrameIds.add(event.frameId);
+      this.updateFrameLifecycleState(event.frameId, {
+        domContentLoaded: false,
+        loadFired: false
+      });
       this.networkIdleReached = false;
       this.clearNetworkIdleTimer();
     });
@@ -2203,6 +2245,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         return;
       }
       this.loadingFrameIds.delete(event.frameId);
+      this.frameLifecycleStates.delete(event.frameId);
       this.settleRequestsForDetachedFrame(event.frameId);
       this.frameSessionIds.delete(event.frameId);
       this.removeNativeFrame(event.frameId);
@@ -2377,6 +2420,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
     client.Page.frameStoppedLoading((event) => {
       this.loadingFrameIds.delete(event.frameId);
+      this.updateFrameLifecycleState(event.frameId, {
+        domContentLoaded: true,
+        loadFired: true
+      });
       if (this.isMainFrameId(event.frameId)) {
         this.domContentLoaded = true;
       }
@@ -2790,6 +2837,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     ]);
     await this.applyContextOptions();
     await this.syncLifecycleStateFromDocument();
+    this.maybeResolveInitialAboutBlankLifecycle();
     this.maybeArmNetworkIdleTimer();
   }
 
@@ -3485,10 +3533,18 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async waitForLoadState(
     state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
-    timeout = DEFAULT_TIMEOUT_MS
+    timeout = DEFAULT_TIMEOUT_MS,
+    frameId?: string
   ): Promise<void> {
     const targetState = verifyLifecycle("state", state ?? "load");
-    if (targetState === "commit" || this.isStateSatisfied(targetState)) {
+    if (targetState === "commit") {
+      return;
+    }
+
+    if (!frameId) {
+      await this.syncLifecycleStateFromDocument();
+    }
+    if (this.isStateSatisfied(targetState, frameId)) {
       return;
     }
 
@@ -3501,6 +3557,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           }, timeout);
 
       const waiter: StateWaiter = {
+        ...(frameId ? { frameId } : {}),
         state: targetState,
         resolve: () => {
           if (timer) {
@@ -5826,22 +5883,39 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     args: unknown[],
     isFunction: boolean
   ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
-    const sessionId = this.defaultExecutionContextSessionByFrameId.get(frameId) ?? this.frameSessionIds.get(frameId);
-    const executionContextId = await this.defaultExecutionContextIdForFrame(frameId).catch((error) => {
-      if (sessionId) {
-        return undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const sessionId = this.defaultExecutionContextSessionByFrameId.get(frameId) ?? this.frameSessionIds.get(frameId);
+      const executionContextId = await this.defaultExecutionContextIdForFrame(frameId).catch((error) => {
+        if (sessionId) {
+          return undefined;
+        }
+        throw error;
+      });
+      try {
+        return await this.evaluateWithArgumentsInContext<TResult>(
+          executionContextId,
+          sessionId,
+          expression,
+          returnByValue,
+          args,
+          isFunction,
+          frameId
+        );
+      } catch (error) {
+        if (
+          attempt === 1 ||
+          (!isClosedCdpConnectionError(error) &&
+            !String(error instanceof Error ? error.message : error).includes("Frame execution context is not available"))
+        ) {
+          throw error;
+        }
+        this.defaultExecutionContextByFrameId.delete(frameId);
+        this.defaultExecutionContextSessionByFrameId.delete(frameId);
+        await this.waitForDefaultExecutionContext(frameId, 2_000);
       }
-      throw error;
-    });
-    return this.evaluateWithArgumentsInContext<TResult>(
-      executionContextId,
-      sessionId,
-      expression,
-      returnByValue,
-      args,
-      isFunction,
-      frameId
-    );
+    }
+
+    throw new Error(`Frame execution context is not available for frame "${frameId}".`);
   }
 
   private async evaluateWithArgumentsInContext<TResult>(
@@ -6289,16 +6363,63 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private async syncLifecycleStateFromDocument(): Promise<void> {
     try {
       const readyState = await this.evaluateExpression<string>("document.readyState");
-      if (readyState === "interactive" || readyState === "complete") {
+      if (readyState === "loading") {
+        this.domContentLoaded = false;
+        this.loadFired = false;
+      } else if (readyState === "interactive") {
         this.domContentLoaded = true;
-      }
-      if (readyState === "complete") {
+        this.loadFired = false;
+      } else if (readyState === "complete") {
+        this.domContentLoaded = true;
         this.loadFired = true;
+      }
+      if (this.mainFrameId) {
+        this.updateFrameLifecycleState(this.mainFrameId, {
+          domContentLoaded: this.domContentLoaded,
+          loadFired: this.loadFired
+        });
       }
       this.flushWaiters();
     } catch {
       // Lifecycle events will update the state once a document is available.
     }
+  }
+
+  private maybeResolveInitialAboutBlankLifecycle(): void {
+    if (this.currentUrl !== "about:blank") {
+      return;
+    }
+    if (this.domContentLoaded && this.loadFired) {
+      return;
+    }
+    if (this.loadingFrameIds.size > 0 || this.activeRequests > 0) {
+      return;
+    }
+
+    this.domContentLoaded = true;
+    this.loadFired = true;
+    this.networkIdleReached = true;
+    if (this.mainFrameId) {
+      this.updateFrameLifecycleState(this.mainFrameId, {
+        domContentLoaded: true,
+        loadFired: true
+      });
+    }
+    this.flushWaiters();
+  }
+
+  private updateFrameLifecycleState(
+    frameId: string,
+    patch: Partial<{ domContentLoaded: boolean; loadFired: boolean; }>
+  ): void {
+    const current = this.frameLifecycleStates.get(frameId) ?? {
+      domContentLoaded: false,
+      loadFired: false
+    };
+    this.frameLifecycleStates.set(frameId, {
+      ...current,
+      ...patch
+    });
   }
 
   private queueRequestEvent(requestId: string, payload: RawPageEventMap["request"]): void {
@@ -6363,7 +6484,20 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     return true;
   }
 
-  private isStateSatisfied(state: WaitUntilState): boolean {
+  private isStateSatisfied(state: WaitUntilState, frameId?: string): boolean {
+    if (frameId && state !== "networkidle") {
+      const lifecycleState = this.frameLifecycleStates.get(frameId);
+      if (!lifecycleState) {
+        return false;
+      }
+      if (state === "domcontentloaded") {
+        return lifecycleState.domContentLoaded;
+      }
+      if (state === "load") {
+        return lifecycleState.loadFired;
+      }
+    }
+
     if (this.sameDocumentNavigation && this.allowSameDocumentNavigationToResolveWaiters) {
       return true;
     }
@@ -6382,6 +6516,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private resetNavigationState(): void {
     this.loadingFrameIds.clear();
+    this.frameLifecycleStates.clear();
     this.domContentLoaded = false;
     this.loadFired = false;
     this.networkIdleReached = false;
@@ -6825,7 +6960,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private flushWaiters(): void {
     for (const waiter of Array.from(this.stateWaiters)) {
-      if (this.isStateSatisfied(waiter.state)) {
+      if (this.isStateSatisfied(waiter.state, waiter.frameId)) {
         waiter.resolve();
       }
     }

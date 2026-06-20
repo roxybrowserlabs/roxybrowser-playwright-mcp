@@ -1320,7 +1320,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           return;
         }
         if (waitUntil !== "commit") {
-          await this.adapter.waitForLoadState(waitUntil, this.remainingTimeout(start, timeout));
+          const targetFrameId =
+            frameObject && frameObject instanceof RoxyFrame
+              ? frameObject.snapshotState().nativeFrameId ?? frameObject.snapshotState().id
+              : undefined;
+          await this.adapter.waitForLoadState(
+            waitUntil,
+            this.remainingTimeout(start, timeout),
+            targetFrameId
+          );
           if (!latestNavigationResponse) {
             const responseGraceDeadline = Date.now() + Math.min(500, this.remainingTimeout(start, timeout));
             while (!latestNavigationResponse && Date.now() < responseGraceDeadline) {

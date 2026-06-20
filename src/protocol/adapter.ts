@@ -190,7 +190,7 @@ export interface ProtocolPageAdapter {
   frameElementReference?(frameId: string): Promise<ProtocolElementHandleReference | null>;
   addScriptTag(options?: AddScriptTagOptions): Promise<ProtocolElementHandleAdapter>;
   addStyleTag(options?: AddStyleTagOptions): Promise<ProtocolElementHandleAdapter>;
-  waitForLoadState(state?: LoadState | "commit", timeout?: number): Promise<void>;
+  waitForLoadState(state?: LoadState | "commit", timeout?: number, frameId?: string): Promise<void>;
   waitForNavigationResponse?(options?: {
     frameId?: string;
     initialUrl?: string;

@@ -232,7 +232,7 @@ export class RoxyFrame implements Frame {
         continue;
       }
       if (options.waitUntil !== "commit") {
-        await this.roxyPage.waitForLoadState(
+        await this.waitForLoadState(
           options.waitUntil,
           timeout === 0 ? options : { timeout: Math.max(0, timeout - (Date.now() - start)) }
         );
@@ -263,7 +263,12 @@ export class RoxyFrame implements Frame {
     if (state !== "load" && state !== "domcontentloaded" && state !== "networkidle") {
       throw new Error("state: expected one of (load|domcontentloaded|networkidle|commit)");
     }
-    await this.roxyPage.waitForLoadState(state, options);
+    const frameId = this.snapshot.nativeFrameId ?? this.snapshot.id;
+    await this.roxyPage.adapter.waitForLoadState(
+      state,
+      options.timeout ?? this.roxyPage.defaultNavigationTimeout(),
+      this.snapshot.parentId === null ? undefined : frameId
+    );
     await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
     if (this.detached) {
       throw new Error("Navigating frame was detached!");
@@ -588,6 +593,8 @@ function isWaitForFunctionExecutionContextDestroyedError(error: unknown): boolea
   return (
     message.includes("Cannot find context with specified id")
     || message.includes("Execution context was destroyed")
+    || message.includes("Session with given id not found")
+    || message.includes("Frame execution context is not available")
     || message.includes("Frame was detached")
     || message.includes("Frame is not available")
   );

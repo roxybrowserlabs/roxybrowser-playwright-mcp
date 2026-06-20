@@ -1090,7 +1090,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async waitForLoadState(
     state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
-    timeout = 30_000
+    timeout = 30_000,
+    _frameId?: string
   ): Promise<void> {
     const targetState = verifyLifecycle("state", state ?? "load");
     if (targetState === "commit" || this.isStateSatisfied(targetState)) {
