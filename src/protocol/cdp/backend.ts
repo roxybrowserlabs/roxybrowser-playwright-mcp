@@ -2355,6 +2355,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.sameDocumentNavigation = false;
         this.allowSameDocumentNavigationToResolveWaiters = false;
         this.clearNetworkIdleTimer();
+        this.clearScreencastActionAnnotation();
         this.rejectInterruptedNavigationFailureCapturesForCommittedNavigation(
           event.frame.loaderId,
           event.frame.url
@@ -3573,6 +3574,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async setContent(html: string, options: PageSetContentOptions = {}): Promise<void> {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     this.resetNavigationState();
+    this.clearScreencastActionAnnotation();
 
     if (this.mainFrameId) {
       await (this.options.client as CdpPageFrameClient).send("Page.setDocumentContent", {
@@ -6184,6 +6186,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.screencastActionAbortController = null;
     this.screencastActionAnnotation = null;
     this.screencastActionOptions = null;
+  }
+
+  private clearScreencastActionAnnotation(): void {
+    this.screencastActionAbortController?.abort();
+    this.screencastActionAbortController = null;
+    this.screencastActionAnnotation = null;
   }
 
   private async showScreencastAction(title: string, point: ActionPoint): Promise<void> {
