@@ -350,6 +350,22 @@ describe("page events contract e2e", () => {
     });
   });
 
+  it("emits the Playwright-style CORS console error log", async () => {
+    await withPage(async (page) => {
+      await page.goto("about:blank");
+
+      const [message] = await Promise.all([
+        page.waitForEvent("console"),
+        page.evaluate(async (url) => {
+          await fetch(url).catch(() => {});
+        }, fixture.server.EMPTY_PAGE)
+      ]);
+
+      expect(message.text()).toMatch(/Access-Control-Allow-Origin|CORS/);
+      expect(message.type()).toBe("error");
+    });
+  });
+
   it("exposes console timestamps like Playwright", async () => {
     await withPage(async (page) => {
       const before = Date.now() - 100;

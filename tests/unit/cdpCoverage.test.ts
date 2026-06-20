@@ -11,11 +11,13 @@ vi.mock("chrome-remote-interface", () => ({
 }));
 
 import { CdpBrowserAdapterFactory } from "../../src/protocol/cdp/backend.js";
+import { RoxyPage } from "../../src/page.js";
 
 type Listener = (...args: any[]) => void;
 
 function createCdpClientStub() {
   const listeners = new Map<string, Set<Listener>>();
+  let logEntryAddedListener: Listener | undefined;
 
   const client = {
     on: vi.fn((event: string, listener: Listener) => {
@@ -69,6 +71,12 @@ function createCdpClientStub() {
     DOM: {
       enable: vi.fn(async () => ({}))
     },
+    Log: {
+      enable: vi.fn(async () => ({})),
+      entryAdded: vi.fn((listener: Listener) => {
+        logEntryAddedListener = listener;
+      })
+    },
     Network: {
       enable: vi.fn(async () => ({})),
       requestWillBeSent: vi.fn(),
@@ -81,6 +89,9 @@ function createCdpClientStub() {
       dispatchKeyEvent: vi.fn(async () => ({})),
       dispatchMouseEvent: vi.fn(async () => ({})),
       insertText: vi.fn(async () => ({}))
+    },
+    emitLogEntryAdded(payload: unknown) {
+      logEntryAddedListener?.(payload);
     }
   };
 
@@ -131,6 +142,46 @@ describe("CDP coverage", () => {
     await page.requestGC();
 
     expect(pageClient.send).toHaveBeenCalledWith("HeapProfiler.collectGarbage");
+  });
+
+  it("emits browser log entries as Playwright-style console events", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+    const roxyPage = new RoxyPage(page, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const messagePromise = roxyPage.waitForEvent("console");
+    pageClient.emitLogEntryAdded({
+      entry: {
+        level: "error",
+        lineNumber: 12,
+        source: "network",
+        text: "Access to fetch at 'https://example.com' from origin 'null' has been blocked by CORS policy",
+        timestamp: 1700000000000,
+        url: "https://example.com/"
+      }
+    });
+
+    const message = await messagePromise;
+    expect(message.type()).toBe("error");
+    expect(message.text()).toContain("blocked by CORS policy");
+    expect(message.location()).toEqual({
+      url: "https://example.com/",
+      line: 12,
+      lineNumber: 12,
+      column: 0,
+      columnNumber: 0
+    });
+    expect(message.timestamp()).toBe(1700000000000);
+    expect(message.args()).toEqual([]);
+    expect(pageClient.Log.enable).toHaveBeenCalledWith({});
   });
 
   it("collects JS coverage with parsed script sources and ignores anonymous scripts by default", async () => {

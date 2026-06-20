@@ -2465,6 +2465,28 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
     });
 
+    client.Log?.entryAdded?.((event) => {
+      const entry = event.entry;
+      if (entry.source === "worker") {
+        return;
+      }
+      this.emit("console", {
+        args: () => [],
+        location: () => ({
+          url: entry.url ?? "",
+          line: entry.lineNumber ?? 0,
+          lineNumber: entry.lineNumber ?? 0,
+          column: 0,
+          columnNumber: 0
+        }),
+        page: () => null,
+        text: () => entry.text,
+        timestamp: () => normalizeConsoleTimestamp(entry.timestamp),
+        type: () => normalizeLogEntryLevel(entry.level),
+        worker: () => null
+      });
+    });
+
     client.Runtime.exceptionThrown?.((event) => {
       this.emit("pageerror", exceptionToError(event.exceptionDetails));
     });
@@ -2825,6 +2847,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }).catch(() => {})),
       initializeCommand(client.Page.setLifecycleEventsEnabled({ enabled: true }).catch(() => {})),
       initializeCommand(client.Runtime.enable()),
+      initializeCommand(client.Log?.enable?.({}).catch(() => {})),
       initializeCommand(client.DOM.enable({})),
       initializeCommand(client.Network.enable({})),
       initializeCommand(client.Target?.setAutoAttach?.({
@@ -9416,6 +9439,21 @@ function normalizeConsoleTimestamp(timestamp: number | undefined): number {
     return Date.now();
   }
   return timestamp < 100_000_000_000 ? timestamp * 1000 : timestamp;
+}
+
+function normalizeLogEntryLevel(
+  level: "verbose" | "info" | "warning" | "error"
+): RawPageEventMap["console"]["type"] extends () => infer T ? T : never {
+  switch (level) {
+    case "verbose":
+      return "log" as RawPageEventMap["console"]["type"] extends () => infer T ? T : never;
+    case "info":
+      return "info" as RawPageEventMap["console"]["type"] extends () => infer T ? T : never;
+    case "warning":
+      return "warning" as RawPageEventMap["console"]["type"] extends () => infer T ? T : never;
+    case "error":
+      return "error" as RawPageEventMap["console"]["type"] extends () => infer T ? T : never;
+  }
 }
 
 function consoleStackTraceLocation(
