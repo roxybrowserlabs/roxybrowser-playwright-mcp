@@ -2690,7 +2690,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;
   async close(options: PageCloseOptions = {}): Promise<void> {
-    if (this.closed && !options.runBeforeUnload) {
+    if (this.isClosed() && !options.runBeforeUnload) {
       return;
     }
 
@@ -2830,6 +2830,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (stopRecording) {
       void stopRecording().catch(() => {});
     }
+    for (const dispose of this.internalDisposers.values()) {
+      dispose();
+    }
+    this.internalDisposers.clear();
     this.browserContext?.detachPage(this);
   }
 
@@ -3814,9 +3818,23 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.addInternalListener(event, listener);
   }
 
+  addInternalNavigationWaitListener(
+    event: "framenavigated",
+    listener: PageEventListener<"framenavigated">
+  ): void {
+    this.addInternalListener(event, listener);
+  }
+
   removeInternalFrameWaitListener<K extends "close" | "framedetached">(
     event: K,
     listener: PageEventListener<K>
+  ): void {
+    this.removeInternalListener(event, listener);
+  }
+
+  removeInternalNavigationWaitListener(
+    event: "framenavigated",
+    listener: PageEventListener<"framenavigated">
   ): void {
     this.removeInternalListener(event, listener);
   }
@@ -4080,6 +4098,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.resetHistorySinceNavigation();
     }
     if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
+      if (event === "framedetached" && payload && typeof payload === "object") {
+        const detached = payload as { frameId?: string };
+        const frameId = detached.frameId;
+        if (frameId) {
+          const targetFrame = this.resolveFrameAcrossKnownPages(frameId) ?? this.frameByNativeId(frameId);
+          if (targetFrame instanceof RoxyFrame) {
+            targetFrame.setDetached(true);
+            this.emit("framedetached", targetFrame);
+          }
+        }
+      }
       if (event === "framenavigated" && payload && typeof payload === "object") {
         const navigation = payload as { frameId?: string; url?: string };
         const frameId = navigation.frameId;

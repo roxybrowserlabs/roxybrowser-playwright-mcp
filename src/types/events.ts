@@ -128,6 +128,10 @@ export interface PageFrameNavigation {
   url?: string;
 }
 
+export interface PageFrameDetached {
+  frameId?: string;
+}
+
 export interface RawPageEventMap {
   close: void;
   console: PageConsoleMessage;
@@ -136,7 +140,7 @@ export interface RawPageEventMap {
   domcontentloaded: void;
   download: Download;
   frameattached: void;
-  framedetached: void;
+  framedetached: PageFrameDetached;
   framenavigated: PageFrameNavigation;
   load: void;
   pageerror: PageErrorEntry;

@@ -2428,7 +2428,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.settleRequestsForDetachedFrame(event.frameId);
       this.frameSessionIds.delete(event.frameId);
       this.removeNativeFrame(event.frameId);
-      this.emit("framedetached", undefined);
+      this.emit("framedetached", { frameId: event.frameId });
       this.flushWaiters();
     });
 
@@ -6532,66 +6532,101 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     frameId?: string
   ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
     const temporaryHandles: ProtocolJSHandleAdapter[] = [];
-    const globalHandle = executionContextId === undefined
-      ? await this.rawEvaluateHandle("globalThis", sessionId)
-      : null;
-    const targetObjectId = globalHandle?.remoteObjectId();
-    const targetContext: CdpEvaluationTargetContext = {
-      ...(executionContextId !== undefined ? { executionContextId } : {}),
-      ...(frameId !== undefined ? { frameId } : {}),
-      ...(targetObjectId !== undefined ? { objectId: targetObjectId } : {}),
-      ...(sessionId !== undefined ? { sessionId } : {})
-    };
-    const { values, handles } = await serializeCdpEvaluationArguments(args, this, temporaryHandles, targetContext);
-    const wrappedExpression = `(...argsAndHandles) => {
-      ${PARSE_EVALUATION_RESULT_SOURCE}
-      ${returnByValue ? SERIALIZE_EVALUATION_RESULT_SOURCE : ""}
-      const argCount = argsAndHandles[0];
-      const serializedArgs = argsAndHandles.slice(1, argCount + 1);
-      const handles = argsAndHandles.slice(argCount + 1);
-      const parameters = [];
-      for (let index = 0; index < serializedArgs.length; index += 1) {
-        parameters[index] = __roxyParseEvaluationResultValue(serializedArgs[index], handles);
-      }
-      let result = (0, eval)(${serializeForEvaluation(normalizeEvaluationExpression(expression, isFunction))});
-      if (${isFunction ? "true" : "false"})
-        result = result(...parameters);
-      return ${returnByValue ? "Promise.resolve(result).then(__roxySerializeEvaluationResult)" : "result"};
-    }`;
     try {
-      const callParameters: {
-        arguments?: Array<{ objectId?: string; unserializableValue?: string; value?: unknown }>;
-        awaitPromise?: boolean;
-        executionContextId?: number;
-        functionDeclaration: string;
-        objectId?: string;
-        returnByValue?: boolean;
-        userGesture?: boolean;
-      } = {
-        functionDeclaration: wrappedExpression,
-        arguments: [
-          { value: values.length },
-          ...values.map((value) => ({ value })),
-          ...handles.map((handle) => ({ objectId: handle._remoteObjectId()! }))
-        ],
-        returnByValue,
-        awaitPromise: true,
-        userGesture: true
-      };
-      if (globalHandle) {
-        callParameters.objectId = targetObjectId!;
-      } else if (executionContextId !== undefined) {
-        callParameters.executionContextId = executionContextId;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        let activeExecutionContextId = executionContextId;
+        let activeSessionId = sessionId;
+        let globalHandle: CdpJSHandleAdapter | null = null;
+        try {
+          globalHandle = activeExecutionContextId === undefined
+            ? await this.rawEvaluateHandle("globalThis", activeSessionId)
+            : null;
+          const targetObjectId = globalHandle?.remoteObjectId();
+          const targetContext: CdpEvaluationTargetContext = {
+            ...(activeExecutionContextId !== undefined ? { executionContextId: activeExecutionContextId } : {}),
+            ...(frameId !== undefined ? { frameId } : {}),
+            ...(targetObjectId !== undefined ? { objectId: targetObjectId } : {}),
+            ...(activeSessionId !== undefined ? { sessionId: activeSessionId } : {})
+          };
+          const { values, handles } = await serializeCdpEvaluationArguments(args, this, temporaryHandles, targetContext);
+          const wrappedExpression = `(...argsAndHandles) => {
+            ${PARSE_EVALUATION_RESULT_SOURCE}
+            ${returnByValue ? SERIALIZE_EVALUATION_RESULT_SOURCE : ""}
+            const argCount = argsAndHandles[0];
+            const serializedArgs = argsAndHandles.slice(1, argCount + 1);
+            const handles = argsAndHandles.slice(argCount + 1);
+            const parameters = [];
+            for (let index = 0; index < serializedArgs.length; index += 1) {
+              parameters[index] = __roxyParseEvaluationResultValue(serializedArgs[index], handles);
+            }
+            let result = (0, eval)(${serializeForEvaluation(normalizeEvaluationExpression(expression, isFunction))});
+            if (${isFunction ? "true" : "false"})
+              result = result(...parameters);
+            return ${returnByValue ? "Promise.resolve(result).then(__roxySerializeEvaluationResult)" : "result"};
+          }`;
+          const callParameters: {
+            arguments?: Array<{ objectId?: string; unserializableValue?: string; value?: unknown }>;
+            awaitPromise?: boolean;
+            executionContextId?: number;
+            functionDeclaration: string;
+            objectId?: string;
+            returnByValue?: boolean;
+            userGesture?: boolean;
+          } = {
+            functionDeclaration: wrappedExpression,
+            arguments: [
+              { value: values.length },
+              ...values.map((value) => ({ value })),
+              ...handles.map((handle) => ({ objectId: handle._remoteObjectId()! }))
+            ],
+            returnByValue,
+            awaitPromise: true,
+            userGesture: true
+          };
+          if (globalHandle) {
+            callParameters.objectId = targetObjectId!;
+          } else if (activeExecutionContextId !== undefined) {
+            callParameters.executionContextId = activeExecutionContextId;
+          }
+          const response = await this.sendRuntimeCallFunctionOn(callParameters, activeSessionId);
+          if (response.exceptionDetails) {
+            throw new Error(formatCdpEvaluationError(response));
+          }
+          return returnByValue
+            ? parseEvaluationResultValue(response.result.value as SerializedValue)
+            : new CdpJSHandleAdapter<TResult>(this, response.result, activeSessionId, frameId);
+        } catch (error) {
+          const message = String(error instanceof Error ? error.message : error);
+          if (
+            attempt === 1 ||
+            (!isClosedCdpConnectionError(error)
+              && !message.includes("Frame execution context is not available")
+              && !message.includes("Cannot find context with specified id")
+              && !message.includes("Execution context was destroyed"))
+          ) {
+            throw error;
+          }
+          if (frameId) {
+            this.defaultExecutionContextByFrameId.delete(frameId);
+            this.defaultExecutionContextSessionByFrameId.delete(frameId);
+            const frameSessionId = this.frameSessionIds.get(frameId);
+            if (frameSessionId === activeSessionId) {
+              this.frameSessionIds.delete(frameId);
+            }
+            activeExecutionContextId = await this.defaultExecutionContextIdForFrame(frameId).catch(() => undefined);
+            activeSessionId = this.defaultExecutionContextSessionByFrameId.get(frameId)
+              ?? this.frameSessionIds.get(frameId);
+            executionContextId = activeExecutionContextId;
+            sessionId = activeSessionId;
+            continue;
+          }
+          throw error;
+        } finally {
+          await globalHandle?.dispose().catch(() => {});
+        }
       }
-      const response = await this.sendRuntimeCallFunctionOn(callParameters, sessionId);
-      if (response.exceptionDetails) {
-        throw new Error(formatCdpEvaluationError(response));
-      }
-      return returnByValue
-        ? parseEvaluationResultValue(response.result.value as SerializedValue)
-        : new CdpJSHandleAdapter<TResult>(this, response.result, sessionId, frameId);
+      throw new Error("Execution context is not available.");
     } finally {
-      await globalHandle?.dispose();
       await Promise.all(
         temporaryHandles.map((handle) => Promise.resolve(handle.dispose()).catch(() => {}))
       );
@@ -6673,7 +6708,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     },
     sessionId?: string
   ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }> {
-    return (this.options.client as CdpRuntimeClient & {
+    const runtimeClient = (sessionId ? this.options.client : this.options.browserClient) as CdpRuntimeClient & {
       send(
         method: "Runtime.callFunctionOn",
         params: {
@@ -6687,7 +6722,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         },
         sessionId?: string
       ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
-    }).send("Runtime.callFunctionOn", params, sessionId);
+    };
+    return runtimeClient.send("Runtime.callFunctionOn", params, sessionId);
   }
 
   async sendRuntimeGetProperties(
@@ -6703,7 +6739,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       value?: CdpRemoteObject;
     }>;
   }> {
-    return (this.options.client as CdpRuntimeClient & {
+    const runtimeClient = (sessionId ? this.options.client : this.options.browserClient) as CdpRuntimeClient & {
       send(
         method: "Runtime.getProperties",
         params: {
@@ -6718,43 +6754,56 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           value?: CdpRemoteObject;
         }>;
       }>;
-    }).send("Runtime.getProperties", params, sessionId);
+    };
+    return runtimeClient.send("Runtime.getProperties", params, sessionId);
   }
 
   async sendRuntimeReleaseObject(
     params: { objectId: string },
     sessionId?: string
   ): Promise<unknown> {
-    return (this.options.client as CdpRuntimeClient & {
+    const runtimeClient = (sessionId ? this.options.client : this.options.browserClient) as CdpRuntimeClient & {
       send(
         method: "Runtime.releaseObject",
         params: { objectId: string },
         sessionId?: string
       ): Promise<unknown>;
-    }).send("Runtime.releaseObject", params, sessionId);
+    };
+    return runtimeClient.send("Runtime.releaseObject", params, sessionId);
   }
 
   async rawEvaluateHandle<T = unknown>(expression: string, sessionId?: string): Promise<CdpJSHandleAdapter<T>> {
-    const response = await (this.options.client as CdpRuntimeClient & {
-      send(
-        method: "Runtime.evaluate",
-        params: {
-          expression: string;
-          awaitPromise?: boolean;
-          returnByValue?: boolean;
-          userGesture?: boolean;
-        },
-        sessionId?: string
-      ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
-    }).send("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: false
-    }, sessionId);
-    if (response.exceptionDetails) {
-      throw new Error(formatCdpEvaluationError(response));
+    for (const activeSessionId of sessionId ? [sessionId, undefined] : [undefined]) {
+      try {
+        const runtimeClient = (activeSessionId ? this.options.client : this.options.browserClient) as CdpRuntimeClient & {
+          send(
+            method: "Runtime.evaluate",
+            params: {
+              expression: string;
+              awaitPromise?: boolean;
+              returnByValue?: boolean;
+              userGesture?: boolean;
+            },
+            sessionId?: string
+          ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
+        };
+        const response = await runtimeClient.send("Runtime.evaluate", {
+          expression,
+          awaitPromise: true,
+          returnByValue: false
+        }, activeSessionId);
+        if (response.exceptionDetails) {
+          throw new Error(formatCdpEvaluationError(response));
+        }
+        return new CdpJSHandleAdapter<T>(this, response.result, activeSessionId);
+      } catch (error) {
+        if (activeSessionId !== undefined && isClosedCdpConnectionError(error)) {
+          continue;
+        }
+        throw error;
+      }
     }
-    return new CdpJSHandleAdapter<T>(this, response.result, sessionId);
+    throw new Error("Target page, context or browser has been closed");
   }
 
   async resolveElementReferenceAsHandle<T = unknown>(

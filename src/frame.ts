@@ -579,11 +579,21 @@ export class RoxyFrame implements Frame {
       await handle.click(options);
       return;
     }
-    const navigationPromise = this.waitForNavigation({
-      timeout: options?.timeout
-    }).catch(() => null);
+    let navigated = false;
+    const navigationListener = ((frame: Frame) => {
+      if (frame === this) {
+        navigated = true;
+      }
+    }) as (frame: Frame) => void;
+    this.roxyPage.addInternalNavigationWaitListener("framenavigated", navigationListener);
     await handle.click(options);
-    await navigationPromise;
+    this.roxyPage.removeInternalNavigationWaitListener("framenavigated", navigationListener);
+    if (!navigated) {
+      return;
+    }
+    await this.waitForLoadState("load", {
+      timeout: options?.timeout
+    }).catch(() => {});
   }
 
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
