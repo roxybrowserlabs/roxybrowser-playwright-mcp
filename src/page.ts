@@ -3066,42 +3066,49 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async ownerFrameForElement(handle: RoxyElementHandle): Promise<Frame | null> {
     await this.refreshFrameSnapshots().catch(() => {});
     const nativeFrameId = await handle.protocolOwnerFrameId().catch(() => null);
-    if (nativeFrameId) {
-      const frame = this.frameByNativeId(nativeFrameId);
-      if (frame) {
-        return frame;
-      }
-      for (const page of this.browserContext?.pages() ?? []) {
-        if (page === this || !(page instanceof RoxyPage)) {
-          continue;
-        }
-        await page.refreshFrameSnapshots().catch(() => {});
-        const frame = page.frameByNativeId(nativeFrameId);
-        if (frame) {
-          return frame;
-        }
+    const handleReference = handle.reference();
+    const nativeFrame = nativeFrameId
+      ? await this.resolveFrameAcrossKnownPages(nativeFrameId)
+      : null;
+    const protocolFrame = handleReference.protocolFrameId
+      ? await this.resolveFrameAcrossKnownPages(handleReference.protocolFrameId)
+      : null;
+
+    if (nativeFrame && protocolFrame && nativeFrame !== protocolFrame) {
+      const nativeIsMain = nativeFrame.parentFrame() === null;
+      const protocolIsChild = protocolFrame.parentFrame() !== null;
+      if (nativeIsMain && protocolIsChild) {
+        return protocolFrame;
       }
     }
-    const handleReference = handle.reference();
-    if (handleReference.protocolFrameId) {
-      const frame = this.frameByNativeId(handleReference.protocolFrameId);
-      if (frame) {
-        return frame;
-      }
-      for (const page of this.browserContext?.pages() ?? []) {
-        if (page === this || !(page instanceof RoxyPage)) {
-          continue;
-        }
-        await page.refreshFrameSnapshots().catch(() => {});
-        const frame = page.frameByNativeId(handleReference.protocolFrameId);
-        if (frame) {
-          return frame;
-        }
-      }
+
+    if (nativeFrame) {
+      return nativeFrame;
+    }
+    if (protocolFrame) {
+      return protocolFrame;
     }
     for (const frame of this.frames()) {
       const snapshot = (frame as RoxyFrame).snapshotState();
       if (await this.evaluateOwnerFrameMatch(snapshot, handle)) {
+        return frame;
+      }
+    }
+    return null;
+  }
+
+  private async resolveFrameAcrossKnownPages(nativeFrameId: string): Promise<Frame | null> {
+    const local = this.frameByNativeId(nativeFrameId);
+    if (local) {
+      return local;
+    }
+    for (const page of this.browserContext?.pages() ?? []) {
+      if (page === this || !(page instanceof RoxyPage)) {
+        continue;
+      }
+      await page.refreshFrameSnapshots().catch(() => {});
+      const frame = page.frameByNativeId(nativeFrameId);
+      if (frame) {
         return frame;
       }
     }
