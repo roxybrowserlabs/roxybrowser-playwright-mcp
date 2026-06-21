@@ -110,4 +110,53 @@ describe("page close contract e2e", () => {
       expect(badSecondPopup).toBe(false);
     });
   });
+
+  it("interrupts request.response() when the page closes", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/one-style.css", (_request, response) => {
+        response.setHeader("Content-Type", "text/css");
+      });
+
+      const requestPromise = page.waitForRequest("**/one-style.css");
+      await page.goto(fixture.server.PREFIX + "/one-style.html", {
+        waitUntil: "domcontentloaded"
+      });
+      const request = await requestPromise;
+
+      const responsePromise = request.response().catch((error) => error as Error);
+
+      await page.close();
+
+      expect((await responsePromise).message).toContain("Target page, context or browser has been closed");
+    });
+  });
+
+  it("rejects response.finished() when the page closes", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      fixture.server.setRoute("/get", (_request, response) => {
+        response.setHeader("Content-Type", "text/plain; charset=utf-8");
+        response.write("hello ");
+      });
+
+      const [pageResponse] = await Promise.all([
+        page.waitForEvent("response"),
+        page.evaluate(() => fetch("./get", { method: "GET" }))
+      ]);
+
+      const finishedPromise = pageResponse.finished().catch((error) => error as Error);
+      await page.close();
+
+      expect((await finishedPromise).message).toContain("closed");
+    });
+  });
+
+  it("does not surface unhandled promise rejections when closing during mouse actions", async () => {
+    await withPage(async (page) => {
+      await Promise.all([
+        page.close(),
+        page.mouse.click(1, 2)
+      ]).catch((error) => error);
+    });
+  });
 });

@@ -3503,6 +3503,80 @@ describe("RoxyPage", () => {
     expect(error?.message).toBe("socket closed");
   });
 
+  it("rejects request.response() when the page closes", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const requestPromise = page.waitForRequest(/close-me\.css$/);
+    adapter.emit("request", {
+      headers: [],
+      method: "GET",
+      requestId: "close-observed-1",
+      resourceType: "stylesheet",
+      url: "https://example.com/close-me.css"
+    });
+    const request = await requestPromise;
+
+    const responsePromise = request.response().catch((error) => error as Error);
+
+    await page.close();
+
+    expect((await responsePromise).message).toContain("Target page, context or browser has been closed");
+  });
+
+  it("rejects response.finished() when the page closes", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    let resolveBody!: (value: string) => void;
+    const responsePromise = page.waitForResponse(/close-finished$/);
+    adapter.emit("request", {
+      headers: [],
+      method: "GET",
+      requestId: "close-finished-1",
+      url: "https://example.com/close-finished"
+    });
+    adapter.emit("response", {
+      headers: [],
+      mimeType: "text/plain",
+      fromCache: false,
+      requestId: "close-finished-1",
+      status: 200,
+      statusText: "OK",
+      text: () =>
+        new Promise<string>((resolve) => {
+          resolveBody = resolve;
+        }),
+      url: "https://example.com/close-finished"
+    });
+
+    const response = await responsePromise;
+    const finishedPromise = response.finished().catch((error) => error as Error);
+
+    await page.close();
+    resolveBody("late");
+
+    expect((await finishedPromise).message).toContain("Target page, context or browser has been closed");
+  });
+
   it("tracks page default timeouts and viewport state", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {

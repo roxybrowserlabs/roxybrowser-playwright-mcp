@@ -4362,7 +4362,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private createObservedRequest(state: ObservedRequestState): Request {
     return {
-      allHeaders: async () => ({ ...state.headers }),
+      allHeaders: async () => this.raceAgainstPageClose(async () => ({ ...state.headers })),
       existingResponse: () => state.response,
       failure: () => state.failure,
       frame: () => {
@@ -4372,8 +4372,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         return this.resolveObservedRequestFrame(state);
       },
       headers: () => ({ ...state.headers }),
-      headersArray: async () => state.headerEntries.map((header) => ({ ...header })),
-      headerValue: async (name: string) => joinHeaderValues(state.headerEntries, name),
+      headersArray: async () =>
+        this.raceAgainstPageClose(async () => state.headerEntries.map((header) => ({ ...header }))),
+      headerValue: async (name: string) =>
+        this.raceAgainstPageClose(async () => joinHeaderValues(state.headerEntries, name)),
       isNavigationRequest: () => state.isNavigationRequest,
       method: () => state.method,
       postData: () => state.postDataText,
@@ -4383,9 +4385,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       redirectedFrom: () => state.redirectedFrom?.request ?? null,
       redirectedTo: () => state.redirectedTo?.request ?? null,
       resourceType: () => state.resourceType,
-      response: async () => state.responsePromise,
+      response: async () => this.raceAgainstPageClose(async () => state.responsePromise),
       serviceWorker: () => null,
-      sizes: async () => observedRequestSizes(state),
+      sizes: async () => this.raceAgainstPageClose(async () => observedRequestSizes(state)),
       timing: () => ({
         startTime: state.timingStartTime,
         domainLookupStart: -1,
@@ -4437,24 +4439,27 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       async () => (await readBodyBuffer()).toString("utf8")
     );
     return {
-      allHeaders: async () => ({ ...headers }),
-      body: async () => readBodyBuffer(),
-      finished: async () => waitForResponseCompletion(readBodyText),
+      allHeaders: async () => this.raceAgainstPageClose(async () => ({ ...headers })),
+      body: async () => this.raceAgainstPageClose(async () => readBodyBuffer()),
+      finished: async () => this.raceAgainstPageClose(async () => waitForResponseCompletion(readBodyText)),
       frame: () => request.frame(),
       fromServiceWorker: () => payload.fromServiceWorker ?? false,
       headers: () => ({ ...headers }),
-      headersArray: async () => headerEntries.map((header) => ({ ...header })),
-      headerValue: async (name: string) => joinHeaderValues(headerEntries, name),
-      headerValues: async (name: string) => collectHeaderValues(headerEntries, name),
-      httpVersion: async () => "HTTP/1.1",
-      json: async () => JSON.parse(await readBodyText()),
+      headersArray: async () =>
+        this.raceAgainstPageClose(async () => headerEntries.map((header) => ({ ...header }))),
+      headerValue: async (name: string) =>
+        this.raceAgainstPageClose(async () => joinHeaderValues(headerEntries, name)),
+      headerValues: async (name: string) =>
+        this.raceAgainstPageClose(async () => collectHeaderValues(headerEntries, name)),
+      httpVersion: async () => this.raceAgainstPageClose(async () => "HTTP/1.1"),
+      json: async () => this.raceAgainstPageClose(async () => JSON.parse(await readBodyText())),
       ok: () => payload.status === 0 || (payload.status >= 200 && payload.status < 300),
       request: () => responseRequest,
-      securityDetails: async () => null,
-      serverAddr: async () => null,
+      securityDetails: async () => this.raceAgainstPageClose(async () => null),
+      serverAddr: async () => this.raceAgainstPageClose(async () => null),
       status: () => payload.status,
       statusText: () => payload.statusText,
-      text: () => readBodyText(),
+      text: () => this.raceAgainstPageClose(async () => readBodyText()),
       url: () => responseUrl
     };
   }
@@ -6881,6 +6886,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return 0;
     }
     return Math.max(0, timeout - (Date.now() - startTime));
+  }
+
+  private async raceAgainstPageClose<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.isClosed()) {
+      throw this.createClosedError();
+    }
+    return await Promise.race([
+      operation(),
+      this.waitForEvent("close").then(() => {
+        throw this.createClosedError();
+      })
+    ]);
   }
 
   private createClosedError(): Error {
