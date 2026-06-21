@@ -8315,7 +8315,7 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async tap(options?: TapOptions): Promise<void> {
-    await this.page.clickLocator(this.state, options);
+    await this.page.tap(this.state.chain, options);
   }
 
   async elementHandle(): Promise<ProtocolElementHandleAdapter> {

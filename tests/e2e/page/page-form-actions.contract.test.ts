@@ -463,6 +463,18 @@ describe("page form action contract e2e", () => {
 
       await page.tap("button");
 
+      expect(await page.evaluate(() => (window as any).touched)).toBe(true);
+      expect(await page.evaluate(() => (window as any).clicked)).toBe(true);
+    });
+  });
+
+  it("taps an element through the locator shortcut", async () => {
+    await withPage(async (page) => {
+      await page.setContent('<button ontouchstart="window.touched = true" onclick="window.clicked = true">Tap me</button>');
+
+      await page.locator("button").tap();
+
+      expect(await page.evaluate(() => (window as any).touched)).toBe(true);
       expect(await page.evaluate(() => (window as any).clicked)).toBe(true);
     });
   });
