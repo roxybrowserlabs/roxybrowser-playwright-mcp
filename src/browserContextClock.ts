@@ -3,8 +3,9 @@ import type { Disposable } from "./types/api.js";
 import { PLAYWRIGHT_CLOCK_SOURCE } from "./vendor/playwright/generated/clockSource.js";
 
 export interface ClockScriptHost {
-  addInitScript(script: string, arg?: unknown): Promise<Disposable>;
-  evaluate<TResult>(pageFunction: string, arg?: unknown): Promise<TResult>;
+  addInitScript<Arg>(script: string | ((arg: Arg) => unknown), arg?: Arg): Promise<Disposable>;
+  evaluate<TResult, Arg>(pageFunction: string | ((arg: Arg) => TResult), arg?: Arg): Promise<TResult>;
+  flushExposedBindingCallsForInternalUse?(): Promise<void>;
 }
 
 type ClockLogType =
@@ -19,10 +20,10 @@ type ClockLogType =
 interface ClockRegistration {
   arg?: unknown;
   evaluateOnAttach: boolean;
-  source: string;
+  script: string | ((arg?: unknown) => unknown);
 }
 
-const CLOCK_BOOTSTRAP_SOURCE = String.raw`(payload) => {
+const CLOCK_BOOTSTRAP_SOURCE = new Function("payload", `
 ${PLAYWRIGHT_CLOCK_SOURCE}
   if (!globalThis.__pwClock) {
     const bundle = globalThis.__roxyPlaywrightClockBundle;
@@ -31,13 +32,24 @@ ${PLAYWRIGHT_CLOCK_SOURCE}
     }
     globalThis.__pwClock = bundle.inject(globalThis, payload.browserName);
   }
-}`;
+`) as (payload: { browserName?: string }) => void;
 
-const CLOCK_LOG_SOURCE = String.raw`(payload) => {
+const CLOCK_LOG_SOURCE = ((payload: {
+  type: ClockLogType;
+  recordedAt: number;
+  param?: number;
+}) => {
   globalThis.__pwClock?.controller.log(payload.type, payload.recordedAt, payload.param);
-}`;
+}) as (payload: {
+  type: ClockLogType;
+  recordedAt: number;
+  param?: number;
+}) => void;
 
-const CLOCK_CALL_SOURCE = String.raw`(payload) => {
+const CLOCK_CALL_SOURCE = ((payload: {
+  method: ClockLogType;
+  param?: number;
+}) => {
   const controller = globalThis.__pwClock?.controller;
   if (!controller) {
     throw new Error("Playwright clock controller is not installed.");
@@ -45,11 +57,14 @@ const CLOCK_CALL_SOURCE = String.raw`(payload) => {
   return payload.param === undefined
     ? controller[payload.method]()
     : controller[payload.method](payload.param);
-}`;
+}) as (payload: {
+  method: ClockLogType;
+  param?: number;
+}) => unknown;
 
-const CLOCK_WARMUP_SOURCE = String.raw`() => {
+const CLOCK_WARMUP_SOURCE = (() => {
   globalThis.__pwClock?.controller.now();
-}`;
+}) as () => void;
 
 export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
   private readonly attachedPages = new Set<ClockScriptHost>();
@@ -63,14 +78,14 @@ export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
     }
 
     for (const registration of this.registrations) {
-      await page.addInitScript(registration.source, registration.arg);
+      await page.addInitScript(registration.script, registration.arg);
     }
 
     for (const registration of this.registrations) {
       if (!registration.evaluateOnAttach) {
         continue;
       }
-      await page.evaluate(registration.source, registration.arg);
+      await page.evaluate(registration.script, registration.arg);
     }
 
     await page.evaluate(CLOCK_WARMUP_SOURCE);
@@ -119,14 +134,14 @@ export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
     const registration: ClockRegistration = {
       arg: {},
       evaluateOnAttach: true,
-      source: CLOCK_BOOTSTRAP_SOURCE
+      script: CLOCK_BOOTSTRAP_SOURCE
     };
     this.registrations.push(registration);
 
     await Promise.all(
       Array.from(this.attachedPages).map(async (page) => {
-        await page.addInitScript(registration.source, registration.arg);
-        await page.evaluate(registration.source, registration.arg);
+        await page.addInitScript(registration.script, registration.arg);
+        await page.evaluate(registration.script, registration.arg);
       })
     );
   }
@@ -141,23 +156,24 @@ export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
         ...(param !== undefined ? { param } : {})
       },
       evaluateOnAttach: true,
-      source: CLOCK_LOG_SOURCE
+      script: CLOCK_LOG_SOURCE
     };
     this.registrations.push(logRegistration);
 
     await Promise.all(
       Array.from(this.attachedPages).map(async (page) => {
-        await page.addInitScript(logRegistration.source, logRegistration.arg);
+        await page.addInitScript(logRegistration.script, logRegistration.arg);
       })
     );
 
     await Promise.all(
-      Array.from(this.attachedPages).map((page) =>
-        page.evaluate(CLOCK_CALL_SOURCE, {
+      Array.from(this.attachedPages).map(async (page) => {
+        await page.evaluate(CLOCK_CALL_SOURCE, {
           method: type,
           ...(param !== undefined ? { param } : {})
-        })
-      )
+        });
+        await page.flushExposedBindingCallsForInternalUse?.();
+      })
     );
   }
 }

@@ -25,12 +25,15 @@ class ClockHost {
       configurable: true
     });
   }
-  async addInitScript(source: string, arg?: unknown) {
-    this.initScripts.push({ source, arg });
+  async addInitScript(source: string | ((arg?: unknown) => unknown), arg?: unknown) {
+    this.initScripts.push({ source: typeof source === "string" ? source : source.toString(), arg });
     return { dispose() {} };
   }
 
-  async evaluate<TResult>(pageFunction: string, arg?: unknown): Promise<TResult> {
+  async evaluate<TResult>(pageFunction: string | ((arg?: unknown) => TResult), arg?: unknown): Promise<TResult> {
+    if (typeof pageFunction === "function") {
+      return await pageFunction.call(this.window, arg);
+    }
     const runner = this.window.Function(
       "arg",
       `return (${pageFunction})(arg);`

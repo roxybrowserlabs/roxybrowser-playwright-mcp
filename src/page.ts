@@ -5160,6 +5160,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
   }
 
+  async flushExposedBindingCallsForInternalUse(): Promise<void> {
+    await this.drainBindingCalls().catch(() => {});
+  }
+
   private createBindingSource(frameId: string | null): BindingSource {
     return {
       context: this.browserContext ?? this.detachedContextFallback,
@@ -5633,7 +5637,20 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
             }
             throw error;
           }
-          await new Promise((resolve) => setTimeout(resolve, 0));
+          await new Promise<void>((resolve) => {
+            const originalSetTimeout = (globalThis as typeof globalThis & {
+              __pwClock?: {
+                builtins?: {
+                  setTimeout?: (callback: () => void, timeout?: number) => unknown;
+                };
+              };
+            }).__pwClock?.builtins?.setTimeout;
+            if (typeof originalSetTimeout === "function") {
+              originalSetTimeout(() => resolve(), 0);
+              return;
+            }
+            setTimeout(resolve, 0);
+          });
         }
       };
     };
