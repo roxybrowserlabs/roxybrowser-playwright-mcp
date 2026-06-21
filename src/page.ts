@@ -4332,7 +4332,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const responsePromise = new Promise<Response | null>((resolve) => {
       responsePromiseResolve = resolve;
     });
-
     const state: ObservedRequestState = {
       failure: null,
       frameId: payload.frameId ?? null,
@@ -4427,7 +4426,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private createObservedRequest(state: ObservedRequestState): Request {
     return {
-      allHeaders: async () => this.raceAgainstPageClose(async () => ({ ...state.headers })),
+      allHeaders: async () => this.raceAgainstPageClose(async () => {
+        if (!state.response && !state.failure) {
+          await state.responsePromise;
+        }
+        return { ...state.headers };
+      }),
       existingResponse: () => state.response,
       failure: () => state.failure,
       frame: () => {
@@ -4438,9 +4442,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       },
       headers: () => ({ ...state.headers }),
       headersArray: async () =>
-        this.raceAgainstPageClose(async () => state.headerEntries.map((header) => ({ ...header }))),
+        this.raceAgainstPageClose(async () => {
+          return state.headerEntries.map((header) => ({ ...header }));
+        }),
       headerValue: async (name: string) =>
-        this.raceAgainstPageClose(async () => joinHeaderValues(state.headerEntries, name)),
+        this.raceAgainstPageClose(async () => {
+          return joinHeaderValues(state.headerEntries, name);
+        }),
       isNavigationRequest: () => state.isNavigationRequest,
       method: () => state.method,
       postData: () => state.postDataText,

@@ -3565,6 +3565,36 @@ describe("RoxyPage", () => {
     expect((await responsePromise).message).toContain("Target page, context or browser has been closed");
   });
 
+  it("rejects request.allHeaders() when the page closes", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const requestPromise = page.waitForRequest(/close-headers\.css$/);
+    adapter.emit("request", {
+      headers: [],
+      method: "GET",
+      requestId: "close-observed-headers-1",
+      resourceType: "stylesheet",
+      url: "https://example.com/close-headers.css"
+    });
+    const request = await requestPromise;
+
+    const headersPromise = request.allHeaders().catch((error) => error as Error);
+
+    await page.close();
+
+    expect((await headersPromise).message).toContain("Target page, context or browser has been closed");
+  });
+
   it("rejects response.finished() when the page closes", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {

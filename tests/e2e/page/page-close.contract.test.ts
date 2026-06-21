@@ -32,6 +32,14 @@ describe("page close contract e2e", () => {
     });
   });
 
+  it("sets the page close state like Playwright", async () => {
+    await withPage(async (page) => {
+      expect(page.isClosed()).toBe(false);
+      await page.close();
+      expect(page.isClosed()).toBe(true);
+    });
+  });
+
   it("is callable multiple times like Playwright", async () => {
     await withPage(async (page) => {
       await Promise.all([
@@ -57,6 +65,21 @@ describe("page close contract e2e", () => {
       await page.close();
 
       expect(await popup.opener()).toBeNull();
+    });
+  });
+
+  it("rejects waitForEvent promises with a closed error after page.close", async () => {
+    await withPage(async (page) => {
+      let error: Error | null = null;
+      const waitForPromise = page.waitForEvent("download").catch((caught) => {
+        error = caught as Error;
+      });
+
+      await page.close();
+      await waitForPromise;
+
+      expect(error).toBeTruthy();
+      expect(error!.message).toContain("Target page, context or browser has been closed");
     });
   });
 
@@ -128,10 +151,12 @@ describe("page close contract e2e", () => {
       const request = await requestPromise;
 
       const responsePromise = request.response().catch((error) => error as Error);
+      const headersPromise = request.allHeaders().catch((error) => error as Error);
 
       await page.close();
 
       expect((await responsePromise).message).toContain("Target page, context or browser has been closed");
+      expect((await headersPromise).message).toContain("Target page, context or browser has been closed");
     });
   });
 
@@ -220,6 +245,35 @@ describe("page close contract e2e", () => {
       });
       await closedPromise;
       expect(await page.evaluate("1 + 1").catch((error) => error)).toBeInstanceOf(Error);
+    });
+  });
+
+  it("does not throw when continuing while the page is closing", async () => {
+    await withPage(async (page) => {
+      let done: Promise<unknown> | undefined;
+      await page.route("**/*", async (route) => {
+        done = Promise.all([
+          route.continue(),
+          page.close()
+        ]);
+      });
+
+      await page.goto(fixture.server.EMPTY_PAGE).catch((error) => error);
+      await done;
+    });
+  });
+
+  it("does not throw when continuing after the page is closed", async () => {
+    await withPage(async (page) => {
+      let done: Promise<unknown> | undefined;
+      await page.route("**/*", async (route) => {
+        await page.close();
+        done = route.continue();
+      });
+
+      const error = await page.goto(fixture.server.EMPTY_PAGE).catch((caught) => caught);
+      await done;
+      expect(error).toBeInstanceOf(Error);
     });
   });
 });
