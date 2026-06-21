@@ -1505,6 +1505,8 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
   private async handleTargetDetached(targetId: string): Promise<void> {
     this.markTargetDetached(targetId);
+    const page = this.pages.get(targetId) as (ProtocolPageAdapter & { didClose?: () => void }) | undefined;
+    page?.didClose?.();
   }
 
   private matchesTargetInfo(targetInfo: {
