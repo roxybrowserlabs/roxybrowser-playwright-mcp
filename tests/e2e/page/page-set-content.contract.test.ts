@@ -138,4 +138,21 @@ describe("page setContent contract e2e", () => {
       expect(await page.$eval("div", (div) => div.textContent)).toBe("\n");
     });
   });
+
+  it("should preserve the current url for history navigation like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/cached/bfcached.html", { waitUntil: "load" });
+      await page.setContent(
+        `<a href=${JSON.stringify(fixture.server.PREFIX + "/cached/bfcached.html?foo")}>click me</a>`
+      );
+      expect(await page.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html");
+
+      await page.click("a");
+      expect(await page.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html?foo");
+
+      const response = await page.goBack();
+      expect(response?.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html");
+      expect(await page.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html");
+    });
+  });
 });

@@ -237,4 +237,90 @@ describe("page history e2e", () => {
       await page.screenshot();
     });
   });
+
+  it("goBack/goForward should work with bfcache-able pages like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/cached/bfcached.html", { waitUntil: "load" });
+      await page.setContent(
+        `<a href=${JSON.stringify(fixture.server.PREFIX + "/cached/bfcached.html?foo")}>click me</a>`
+      );
+      await page.click("a");
+
+      let response = await page.goBack({ waitUntil: "commit" });
+      expect(response?.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html");
+      expect(await page.evaluate("window.didShow")).toEqual({ persisted: false });
+
+      response = await page.goForward({ waitUntil: "commit" });
+      expect(response?.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html?foo");
+    });
+  });
+
+  it("regression test for issue 20791 like Playwright", async () => {
+    await withPage(async (page) => {
+      fixture.server.setRoute("/iframe.html", (_request, response) => {
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end(`
+          <!doctype html>
+          <script type="text/javascript">
+            console.log(window.parent.foo);
+          </script>
+        `);
+      });
+      fixture.server.setRoute("/main.html", (_request, response) => {
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end(`
+          <!doctype html>
+          <iframe id="myframe" src="about:blank"></iframe>
+          <script type="text/javascript">
+            setTimeout(() => window.foo = "foo", 0);
+            setTimeout(() => myframe.contentDocument.location.href = "${fixture.server.PREFIX}/iframe.html", 0);
+          </script>
+        `);
+      });
+
+      const messages: string[] = [];
+      page.on("console", (message) => {
+        messages.push(message.text());
+      });
+
+      await page.goto(fixture.server.PREFIX + "/main.html", { waitUntil: "load" });
+      await expect.poll(() => [...messages]).toEqual(["foo"]);
+      await page.reload();
+      await expect.poll(() => [...messages]).toEqual(["foo", "foo"]);
+    });
+  });
+
+  it("should reload proper page like Playwright", async () => {
+    await withPage(async (page) => {
+      let mainRequest = 0;
+      let popupRequest = 0;
+
+      fixture.server.setRoute("/main.html", (_request, response) => {
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end(`<!doctype html><h1>main: ${++mainRequest}</h1>`);
+      });
+      fixture.server.setRoute("/popup.html", (_request, response) => {
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end(`<!doctype html><h1>popup: ${++popupRequest}</h1>`);
+      });
+
+      await page.goto(fixture.server.PREFIX + "/main.html", { waitUntil: "load" });
+      const popupPromise = page.waitForEvent("popup");
+      await page.evaluate(() => {
+        window.open("/popup.html");
+      });
+      const popup = await popupPromise;
+
+      await expect(page.locator("h1")).toHaveText("main: 1");
+      await expect(popup.locator("h1")).toHaveText("popup: 1");
+
+      await page.reload();
+      await expect(page.locator("h1")).toHaveText("main: 2");
+      await expect(popup.locator("h1")).toHaveText("popup: 1");
+
+      await popup.reload();
+      await expect(page.locator("h1")).toHaveText("main: 2");
+      await expect(popup.locator("h1")).toHaveText("popup: 2");
+    });
+  });
 });

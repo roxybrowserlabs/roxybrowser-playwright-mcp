@@ -574,7 +574,16 @@ export class RoxyFrame implements Frame {
 
   async click(selector: string, options?: ClickOptions): Promise<void> {
     await this.roxyPage.prepareForPendingFileChooser();
-    await (await this.requiredElementHandleForSelector(selector, "frame.click", options)).click(options);
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.click", options);
+    if (options?.noWaitAfter) {
+      await handle.click(options);
+      return;
+    }
+    const navigationPromise = this.waitForNavigation({
+      timeout: options?.timeout
+    }).catch(() => null);
+    await handle.click(options);
+    await navigationPromise;
   }
 
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {

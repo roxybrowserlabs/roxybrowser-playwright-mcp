@@ -1501,49 +1501,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     if (this.closing || !this.matchesTargetInfo(targetInfo)) {
       return;
     }
-    if (this.manuallyCreatedTargetIds.has(targetInfo.targetId)) {
-      return;
-    }
-    if (this.pages.has(targetInfo.targetId) || this.pendingPages.has(targetInfo.targetId)) {
-      return;
-    }
-    const isPendingManualPage =
-      this.pendingManualPageCreations > 0 &&
-      !targetInfo.openerId &&
-      (!targetInfo.url || targetInfo.url === "about:blank");
-    if (isPendingManualPage) {
-      return;
-    }
-
-    const pagePromise = this.getOrCreatePage(targetInfo.targetId, {
-      fallbackUrl: targetInfo.url ?? "about:blank",
-      hasWindowOpener: targetInfo.canAccessOpener ?? true,
-      openerTargetId: targetInfo.openerId ?? null,
-      emitPage: true
-    });
-    this.pendingPages.set(targetInfo.targetId, pagePromise);
-    void pagePromise.catch(() => {});
-    void pagePromise.finally(() => {
-      if (this.pendingPages.get(targetInfo.targetId) === pagePromise) {
-        this.pendingPages.delete(targetInfo.targetId);
-      }
-    });
   }
 
   private async handleTargetDetached(targetId: string): Promise<void> {
     this.markTargetDetached(targetId);
-    const existing = this.pages.get(targetId);
-    if (existing) {
-      (existing as ProtocolPageAdapter & { didClose?: () => void }).didClose?.();
-      return;
-    }
-
-    const pending = this.pendingPages.get(targetId);
-    if (!pending) {
-      return;
-    }
-    const page = await pending.catch(() => null);
-    (page as (ProtocolPageAdapter & { didClose?: () => void }) | null)?.didClose?.();
   }
 
   private matchesTargetInfo(targetInfo: {
@@ -2274,9 +2235,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ) {
     this.closePromise = new Promise<void>((resolve) => {
       this.resolveClosePromise = resolve;
-    });
-    this.options.client.on("disconnect", () => {
-      this.didClose();
     });
   }
 
@@ -3606,22 +3564,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     this.resetNavigationState();
     this.clearScreencastActionAnnotation();
-
-    if (this.mainFrameId) {
-      await (this.options.client as CdpPageFrameClient).send("Page.setDocumentContent", {
-        frameId: this.mainFrameId,
-        html
-      });
-    } else {
-      await this.evaluateFunction<void>(
-        `(payload) => {
-          document.open();
-          document.write(payload.html);
-          document.close();
-        }`,
-        { html }
-      );
-    }
+    await this.evaluateFunction<void>(
+      `(payload) => {
+        document.open();
+        document.write(payload.html);
+        document.close();
+      }`,
+      { html }
+    );
     await this.evaluateFunction<void>(HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE);
 
     if (waitUntil !== "commit") {
@@ -7217,7 +7167,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     await this.interruptPendingNavigations(nextEntry.url);
-    const capture = this.beginNavigationResponseCapture();
+    const capture = this.beginNavigationResponseCapture({
+      predicate: (response) => stripHash(response.url) === stripHash(nextEntry.url)
+    });
     const failureCapture = this.beginNavigationFailureCapture(
       nextEntry.url,
       delta < 0 ? "page.goBack" : "page.goForward"
