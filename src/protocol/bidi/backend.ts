@@ -1766,7 +1766,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async tap(selector: LocatorSelector[], options?: TapOptions): Promise<void> {
-    await this.clickLocator({ chain: selector }, options);
+    const point = await this.resolveActionPoint({ chain: selector }, options, true);
+    await this.touchscreenTap(point.x, point.y);
   }
 
   on<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): () => void {
@@ -2453,6 +2454,17 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     await this.performMouseClickActions(point, options, false);
     this.currentMousePosition = point;
     await this.showScreencastAction("click", point);
+  }
+
+  async tapReference(reference: ProtocolElementHandleReference, options?: TapOptions): Promise<void> {
+    const point = await this.runSelectorOperation<ActionPoint>({
+      operation: "actionPoint",
+      reference,
+      ...(options?.force !== undefined ? { force: options.force } : {}),
+      ...(options?.position ? { position: options.position } : {}),
+      waitForEnabled: true
+    });
+    await this.touchscreenTap(point.x, point.y);
   }
 
   async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
@@ -3596,7 +3608,7 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async tap(options?: TapOptions): Promise<void> {
-    await this.page.tap(this.reference().chain, options);
+    await this.page.tapReference(this.reference(), options);
   }
 
   async click(options?: ClickOptions): Promise<void> {

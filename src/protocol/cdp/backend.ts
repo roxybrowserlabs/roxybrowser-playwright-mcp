@@ -4408,7 +4408,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async tap(selector: LocatorSelector[], options?: TapOptions): Promise<void> {
-    await this.clickLocator({ chain: selector }, options);
+    const point = await this.resolveActionPoint({ chain: selector }, options, true);
+    await this.touchscreenTap(point.x, point.y);
   }
 
   on<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): () => void {
@@ -5159,7 +5160,33 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async touchscreenTap(x: number, y: number): Promise<void> {
-    await this.mouseClick(x, y);
+    await (
+      this.options.client.Input as typeof this.options.client.Input & {
+        dispatchTouchEvent(options: {
+          type: "touchStart" | "touchEnd";
+          touchPoints: Array<{ x: number; y: number }>;
+          modifiers?: number;
+        }): Promise<unknown>;
+      }
+    ).dispatchTouchEvent({
+      type: "touchStart",
+      touchPoints: [{ x: Math.round(x), y: Math.round(y) }],
+      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+    });
+    await (
+      this.options.client.Input as typeof this.options.client.Input & {
+        dispatchTouchEvent(options: {
+          type: "touchStart" | "touchEnd";
+          touchPoints: Array<{ x: number; y: number }>;
+          modifiers?: number;
+        }): Promise<unknown>;
+      }
+    ).dispatchTouchEvent({
+      type: "touchEnd",
+      touchPoints: [],
+      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+    });
+    this.currentMousePosition = { x, y };
   }
 
   async close(options: PageCloseOptions = {}): Promise<void> {
@@ -6105,6 +6132,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
       return;
     }
+  }
+
+  async tapReference(reference: ProtocolElementHandleReference, options?: TapOptions): Promise<void> {
+    const point = await this.resolveActionPointReference(reference, options, true);
+    await this.touchscreenTap(point.x, point.y);
   }
 
   async setCheckedReference(
@@ -8514,7 +8546,7 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
   }
 
   async tap(options?: TapOptions): Promise<void> {
-    await this.page.tap(this.reference().chain, options);
+    await this.page.tapReference(this.reference(), options);
   }
 
   async click(options?: ClickOptions): Promise<void> {
