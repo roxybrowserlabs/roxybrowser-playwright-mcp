@@ -905,6 +905,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private bindingPumpStarted = false;
   private fileChooserAdapterDisposer: (() => void) | null = null;
   private fileChooserBridgeInstalled = false;
+  private fileChooserInterceptionRequested = false;
+  private fileChooserRuntimeInitScriptInstalled = false;
   private fileChooserInterceptionPromise: Promise<void> | null = null;
   private readonly pendingFileChoosers: PendingFileChooserState[] = [];
   private routeInterceptorsInstalled = false;
@@ -5166,18 +5168,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private async ensureFileChooserInterception(): Promise<void> {
+    this.fileChooserInterceptionRequested = true;
     if (!this.fileChooserInterceptionPromise) {
       this.fileChooserInterceptionPromise = (async () => {
         if (this.adapter.onFileChooserOpened) {
           this.fileChooserAdapterDisposer ??= this.adapter.onFileChooserOpened(async (payload) => {
             await this.handleNativeFileChooserOpened(payload);
           });
-          return;
-        }
-        if (!this.fileChooserBridgeInstalled) {
+        } else if (!this.fileChooserBridgeInstalled) {
           await this.installFileChooserHandleFactory();
           await this.installFileChooserBridge();
         }
+        await this.installFileChooserRuntimeInitScript();
         try {
           await this.installFileChooserRuntimeIntoCurrentFrames();
         } catch (error) {
@@ -5220,10 +5222,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private async waitForFileChooserInterceptionIfPending(): Promise<void> {
-    if (!this.fileChooserInterceptionPromise && !this.fileChooserBridgeInstalled) {
+    if (!this.fileChooserInterceptionPromise && !this.fileChooserInterceptionRequested) {
       return;
     }
     await this.ensureFileChooserInterception();
+  }
+
+  private async installFileChooserRuntimeInitScript(): Promise<void> {
+    if (this.fileChooserRuntimeInitScriptInstalled) {
+      return;
+    }
+    await this.addInitScript(installFileChooserBridgeRuntime);
+    this.fileChooserRuntimeInitScriptInstalled = true;
   }
 
   private async installFileChooserBridge(): Promise<void> {
@@ -5238,7 +5248,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
     });
 
-    await this.addInitScript(installFileChooserBridgeRuntime);
     this.fileChooserBridgeInstalled = true;
   }
 
@@ -5301,7 +5310,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private async installFileChooserHandleFactory(): Promise<void> {
-    await this.addInitScript(installFileChooserBridgeRuntime);
+    await this.installFileChooserRuntimeInitScript();
   }
 
   private async installExposedBinding(name: string): Promise<void> {
