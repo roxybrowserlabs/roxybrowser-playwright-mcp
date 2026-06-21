@@ -7265,7 +7265,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       await this.syncCurrentUrlFromDocument();
 
       if (capture.lastResponse) {
-        return capture.lastResponse;
+        const capturedUrl = stripHash(capture.lastResponse.url);
+        const currentUrl = stripHash(this.currentUrl);
+        const expectedUrl = stripHash(nextEntry.url);
+        if (
+          capturedUrl === expectedUrl
+          || capturedUrl === currentUrl
+        ) {
+          return capture.lastResponse;
+        }
       }
       if (this.sameDocumentNavigation) {
         return null;
@@ -7282,7 +7290,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       status: 200,
       statusText: "OK",
       text: async () => "",
-      url: nextEntry.url
+      url: this.currentUrl
     });
   }
 

@@ -580,20 +580,33 @@ export class RoxyFrame implements Frame {
       return;
     }
     let navigated = false;
+    let resolveNavigationObserved: (() => void) | null = null;
+    const navigationObserved = new Promise<void>((resolve) => {
+      resolveNavigationObserved = resolve;
+    });
     const navigationListener = ((frame: Frame) => {
       if (frame === this) {
         navigated = true;
+        resolveNavigationObserved?.();
       }
     }) as (frame: Frame) => void;
     this.roxyPage.addInternalNavigationWaitListener("framenavigated", navigationListener);
+    const navigationPromise = this.waitForNavigation({
+      timeout: options?.timeout,
+      waitUntil: "load"
+    }).catch(() => null);
     await handle.click(options);
+    if (!navigated) {
+      await Promise.race([
+        navigationObserved,
+        new Promise((resolve) => setTimeout(resolve, 50))
+      ]);
+    }
     this.roxyPage.removeInternalNavigationWaitListener("framenavigated", navigationListener);
     if (!navigated) {
       return;
     }
-    await this.waitForLoadState("load", {
-      timeout: options?.timeout
-    }).catch(() => {});
+    await navigationPromise;
   }
 
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
@@ -657,6 +670,10 @@ export class RoxyFrame implements Frame {
     selector: string,
     options?: { strict?: boolean }
   ): Promise<ElementHandle | null> {
+    await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
+    if (this.detached) {
+      throw new Error("Frame has been detached.");
+    }
     return this.roxyPage.queryInFrame(this.snapshot, selector, {
       strict: this.strictForSelectorOptions(options)
     });
