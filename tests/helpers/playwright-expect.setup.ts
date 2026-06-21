@@ -1,6 +1,12 @@
 import { expect } from "vitest";
 
 type LocatorLike = {
+  page?: () => {
+    waitForEvent?: (
+      event: "close",
+      options?: { timeout?: number }
+    ) => Promise<unknown>;
+  } | null;
   allTextContents?: () => Promise<Array<string>>;
   textContent?: () => Promise<string | null>;
 };
@@ -34,21 +40,42 @@ function formatExpected(expected: TextExpectation): string {
   return expected instanceof RegExp ? String(expected) : JSON.stringify(expected);
 }
 
+function formatActual(actual: string | Array<string>): string {
+  return Array.isArray(actual)
+    ? `[${actual.map((item) => JSON.stringify(item)).join(", ")}]`
+    : JSON.stringify(actual);
+}
+
+function isCloseInterruption(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  return (
+    message.includes("Target page, context or browser has been closed")
+    || message.includes("Frame execution context is not available")
+  );
+}
+
 async function readLocatorText(locator: LocatorLike, expected: TextExpectation): Promise<string | Array<string>> {
-  if (Array.isArray(expected)) {
-    if (typeof locator.allTextContents === "function") {
-      return (await locator.allTextContents()).map((value) => normalizeText(value));
+  try {
+    if (Array.isArray(expected)) {
+      if (typeof locator.allTextContents === "function") {
+        return (await locator.allTextContents()).map((value) => normalizeText(value));
+      }
+      const single = typeof locator.textContent === "function" ? await locator.textContent() : "";
+      return [normalizeText(single)];
     }
-    const single = typeof locator.textContent === "function" ? await locator.textContent() : "";
-    return [normalizeText(single)];
+    if (typeof locator.textContent === "function") {
+      return normalizeText(await locator.textContent());
+    }
+    if (typeof locator.allTextContents === "function") {
+      return normalizeText((await locator.allTextContents())[0] ?? "");
+    }
+    return "";
+  } catch (error) {
+    if (isCloseInterruption(error)) {
+      throw new Error("Target page, context or browser has been closed");
+    }
+    throw error;
   }
-  if (typeof locator.textContent === "function") {
-    return normalizeText(await locator.textContent());
-  }
-  if (typeof locator.allTextContents === "function") {
-    return normalizeText((await locator.allTextContents())[0] ?? "");
-  }
-  return "";
 }
 
 function passTextExpectation(actual: string | Array<string>, expected: TextExpectation): boolean {
@@ -67,13 +94,38 @@ function passTextExpectation(actual: string | Array<string>, expected: TextExpec
 async function pollLocatorText(locator: LocatorLike, expected: TextExpectation): Promise<{
   actual: string | Array<string>;
   pass: boolean;
+  interruptedByClose?: boolean;
 }> {
   const deadline = Date.now() + DEFAULT_EXPECT_TIMEOUT_MS;
   let actual = await readLocatorText(locator, expected);
+  const page = typeof locator.page === "function" ? locator.page() : null;
+  const closePromise =
+    typeof page?.waitForEvent === "function"
+      ? page.waitForEvent("close", { timeout: 0 }).then(() => {
+          throw new Error("Target page, context or browser has been closed");
+        })
+      : null;
 
   while (!passTextExpectation(actual, expected) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    actual = await readLocatorText(locator, expected);
+    try {
+      await (closePromise
+        ? Promise.race([
+            new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS)),
+            closePromise
+          ])
+        : new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS)));
+      actual = await readLocatorText(locator, expected);
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error);
+      if (isCloseInterruption(error)) {
+        return {
+          actual,
+          pass: false,
+          interruptedByClose: true
+        };
+      }
+      throw error;
+    }
   }
 
   return {
@@ -91,14 +143,25 @@ expect.extend({
       };
     }
 
-    const { actual, pass } = await pollLocatorText(received, expected);
-    const actualText = Array.isArray(actual)
-      ? `[${actual.map((item) => JSON.stringify(item)).join(", ")}]`
-      : JSON.stringify(actual);
+    try {
+      const { actual, pass, interruptedByClose } = await pollLocatorText(received, expected);
+      return {
+        pass,
+        message: () =>
+          `expected locator text ${this.isNot ? "not " : ""}to be ${formatExpected(expected)}, received ${formatActual(actual)}`
+          + (interruptedByClose ? "\nTarget page, context or browser has been closed" : "")
+      };
+    } catch (error) {
+      if (!isCloseInterruption(error)) {
+        throw error;
+      }
 
-    return {
-      pass,
-      message: () => `expected locator text ${this.isNot ? "not " : ""}to be ${formatExpected(expected)}, received ${actualText}`
-    };
+      return {
+        pass: false,
+        message: () =>
+          `expected locator text ${this.isNot ? "not " : ""}to be ${formatExpected(expected)}, received ${formatActual("")}`
+          + "\nTarget page, context or browser has been closed"
+      };
+    }
   }
 });

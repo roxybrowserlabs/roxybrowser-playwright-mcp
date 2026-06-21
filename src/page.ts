@@ -2919,8 +2919,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         await runWithTimeout(handlerPromise, timeout, () => {
           timedOut = true;
         });
+        if (this.isClosed()) {
+          throw this.createClosedError();
+        }
         if (shouldRemove) {
           await this.removeLocatorHandler(entry.locator);
+        }
+        if (this.isClosed()) {
+          throw this.createClosedError();
         }
         if (!entry.noWaitAfter) {
           await this.waitForLocatorToHide(entry.locator, timeout);

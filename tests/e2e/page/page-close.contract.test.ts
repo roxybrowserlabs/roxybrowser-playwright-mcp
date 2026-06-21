@@ -2,6 +2,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withPage } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
 
+function stripAnsi(text: string): string {
+  return text.replace(/\u001B\[[0-9;]*m/g, "");
+}
+
 describe("page close contract e2e", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;
 
@@ -167,6 +171,40 @@ describe("page close contract e2e", () => {
       void page.click("button").catch(() => {});
       await page.waitForEvent("dialog");
       await expect(page.close()).resolves.toBeUndefined();
+    });
+  });
+
+  it("does not report timeout wording when expect polling is interrupted by page.close", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<div id=node>Text content</div>");
+
+      const [error] = await Promise.all([
+        expect(page.locator("div")).toHaveText("hey", { timeout: 100000 }).catch((caught) => caught as Error),
+        page.close()
+      ]);
+
+      expect(stripAnsi(error.message)).toContain("expected locator text to be");
+      expect(stripAnsi(error.message)).not.toContain("Timed out");
+      expect(stripAnsi(error.message)).toContain("Target page, context or browser has been closed");
+    });
+  });
+
+  it("propagates custom close reasons through locator handlers like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.PREFIX + "/input/handle-locator.html");
+
+      await page.addLocatorHandler(page.getByText("This interstitial covers the button"), async () => {
+        await page.close({ reason: "custom reason" });
+      });
+
+      await page.locator("#aside").hover();
+      await page.evaluate(() => {
+        window.clicked = 0;
+        window.setupAnnoyingInterstitial("mouseover", 1);
+      });
+
+      const error = await page.locator("#target").click().catch((caught) => caught as Error);
+      expect(error.message).toContain("custom reason");
     });
   });
 
