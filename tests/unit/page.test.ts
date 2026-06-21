@@ -4064,6 +4064,45 @@ describe("RoxyPage", () => {
     expect((await waiter).message).toContain("Target page, context or browser has been closed");
   });
 
+  it("emits websocket socketerror events", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    let resolveError!: (value: string) => void;
+    const errorPromise = new Promise<string>((resolve) => {
+      resolveError = resolve;
+    });
+
+    page.on("websocket", (webSocket) => {
+      webSocket.on("socketerror", resolveError);
+    });
+
+    const webSocketPromise = page.waitForEvent("websocket");
+    adapter.emit("websocket", {
+      kind: "created",
+      requestId: "ws-error-1",
+      url: "wss://example.com/socket"
+    });
+    await webSocketPromise;
+
+    adapter.emit("websocket", {
+      errorMessage: "WebSocket error: 400",
+      kind: "socketError",
+      requestId: "ws-error-1"
+    });
+
+    expect(await errorPromise).toContain("400");
+  });
+
   it("rejects pending video saveAs when the page closes externally", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
