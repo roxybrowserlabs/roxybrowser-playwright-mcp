@@ -49,6 +49,30 @@ describe("page websocket contract e2e", () => {
     });
   });
 
+  it("rejects websocket waiters when the socket closes like Playwright", async () => {
+    await withPage(async (page) => {
+      server.keepNextConnectionOpen();
+      const [webSocket] = await Promise.all([
+        page.waitForEvent("websocket").then(async (candidate) => {
+          await candidate.waitForEvent("framereceived");
+          return candidate;
+        }),
+        page.evaluate((url) => {
+          const socket = new WebSocket(url);
+          socket.addEventListener("open", () => socket.send("outgoing"));
+          window["ws"] = socket;
+        }, server.url())
+      ]);
+
+      const error = webSocket.waitForEvent("framesent").catch((caught) => caught as Error);
+      await page.evaluate(() => {
+        window["ws"].close();
+      });
+
+      expect((await error).message).toContain("Socket closed");
+    });
+  });
+
   it("rejects websocket waiters when the page closes like Playwright", async () => {
     await withPage(async (page) => {
       server.keepNextConnectionOpen();
@@ -110,6 +134,14 @@ class MinimalWebSocketServer {
         }
         server.autoCloseAfterFirstMessage = true;
       });
+      socket.on("data", (data) => {
+        if (!isCloseFrame(data)) {
+          return;
+        }
+        if (!socket.destroyed) {
+          socket.write(Buffer.from([0x88, 0x00]));
+        }
+      });
     });
     return server;
   }
@@ -147,6 +179,10 @@ function acceptKey(key: string): string {
 function encodeTextFrame(text: string): Buffer {
   const payload = Buffer.from(text);
   return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
+}
+
+function isCloseFrame(data: Buffer): boolean {
+  return (data[0] ?? 0) % 16 === 0x08;
 }
 
 async function listen(server: Server): Promise<number> {
