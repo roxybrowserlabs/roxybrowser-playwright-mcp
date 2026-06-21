@@ -73,6 +73,29 @@ describe("page websocket contract e2e", () => {
     });
   });
 
+  it("passes self to websocket close listeners like Playwright", async () => {
+    await withPage(async (page) => {
+      let resolveClosed!: (value: unknown) => void;
+      const closedPromise = new Promise<unknown>((resolve) => {
+        resolveClosed = resolve;
+      });
+      let webSocket: Awaited<ReturnType<typeof page.waitForEvent<"websocket">>> | null = null;
+
+      page.on("websocket", (candidate) => {
+        webSocket = candidate;
+        candidate.on("close", resolveClosed);
+      });
+
+      await page.evaluate((url) => {
+        const socket = new WebSocket(url);
+        socket.addEventListener("open", () => socket.close());
+      }, server.url());
+
+      const eventArg = await closedPromise;
+      expect(eventArg).toBe(webSocket);
+    });
+  });
+
   it("rejects websocket waiters when the page closes like Playwright", async () => {
     await withPage(async (page) => {
       server.keepNextConnectionOpen();
