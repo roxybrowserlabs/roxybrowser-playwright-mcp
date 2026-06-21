@@ -15,6 +15,58 @@ describe("page websocket contract e2e", () => {
     await server.stop();
   });
 
+  it("works like Playwright smoke", async () => {
+    await withPage(async (page) => {
+      server.sendOnNextConnection("incoming");
+
+      const value = await page.evaluate((url) => {
+        let resolveValue!: (value: string) => void;
+        const result = new Promise<string>((resolve) => {
+          resolveValue = resolve;
+        });
+        const socket = new WebSocket(url);
+        socket.addEventListener("message", (event) => {
+          socket.close();
+          resolveValue(String(event.data));
+        });
+        return result;
+      }, server.url());
+
+      expect(value).toBe("incoming");
+    });
+  });
+
+  it("emits websocket close events like Playwright", async () => {
+    await withPage(async (page) => {
+      const log: string[] = [];
+      let closed!: () => void;
+      const closedPromise = new Promise<void>((resolve) => {
+        closed = resolve;
+      });
+      let webSocket: Awaited<ReturnType<typeof page.waitForEvent<"websocket">>> | null = null;
+
+      page.on("websocket", (candidate) => {
+        log.push(`open<${candidate.url()}>`);
+        webSocket = candidate;
+        candidate.on("close", () => {
+          log.push("close");
+          closed();
+        });
+      });
+
+      await page.evaluate((url) => {
+        const socket = new WebSocket(url);
+        socket.addEventListener("open", () => {
+          socket.close();
+        });
+      }, server.url());
+
+      await closedPromise;
+      expect(log.join(":")).toBe(`open<${server.url()}>:close`);
+      expect(webSocket?.isClosed()).toBe(true);
+    });
+  });
+
   it("emits websocket frame and close events", async () => {
     await withPage(async (page) => {
       const log: string[] = [];
@@ -46,6 +98,39 @@ describe("page websocket contract e2e", () => {
         "received<incoming>",
         "close<true>"
       ]);
+    });
+  });
+
+  it("filters websocket close frames with a reason like Playwright", async () => {
+    await withPage(async (page) => {
+      server.sendOnNextConnection("incoming");
+      server.closeNextConnectionOnFirstMessage(1003, "closed by Playwright test-server");
+      const log: string[] = [];
+      let closed!: () => void;
+      const closedPromise = new Promise<void>((resolve) => {
+        closed = resolve;
+      });
+
+      page.on("websocket", (webSocket) => {
+        log.push("open");
+        webSocket.on("framesent", (data) => log.push(`sent<${data.payload.toString()}>`));
+        webSocket.on("framereceived", (data) => log.push(`received<${data.payload.toString()}>`));
+        webSocket.on("close", () => {
+          log.push("close");
+          closed();
+        });
+      });
+
+      await page.evaluate((url) => {
+        const socket = new WebSocket(url);
+        socket.addEventListener("message", () => {
+          socket.send("outgoing");
+        });
+        window["ws"] = socket;
+      }, server.url());
+
+      await closedPromise;
+      expect(log).toEqual(["open", "received<incoming>", "sent<outgoing>", "close"]);
     });
   });
 
@@ -214,6 +299,8 @@ describe("page websocket contract e2e", () => {
 
 class MinimalWebSocketServer {
   private autoCloseAfterFirstMessage = true;
+  private nextConnectionCloseFrame: Buffer | null = null;
+  private nextConnectionInitialMessage: string | null = null;
   private readonly server: Server;
   private sockets = new Set<Socket>();
 
@@ -249,9 +336,20 @@ class MinimalWebSocketServer {
           `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n` +
           "\r\n"
       );
+      const initialMessage = server.nextConnectionInitialMessage;
+      server.nextConnectionInitialMessage = null;
+      if (initialMessage !== null) {
+        socket.write(encodeTextFrame(initialMessage));
+      }
       socket.once("data", () => {
-        socket.write(encodeTextFrame("incoming"));
-        if (server.autoCloseAfterFirstMessage) {
+        if (initialMessage === null) {
+          socket.write(encodeTextFrame("incoming"));
+        }
+        if (server.nextConnectionCloseFrame) {
+          socket.write(server.nextConnectionCloseFrame);
+          socket.end();
+          server.nextConnectionCloseFrame = null;
+        } else if (server.autoCloseAfterFirstMessage) {
           setTimeout(() => {
             if (!socket.destroyed) {
               socket.write(Buffer.from([0x88, 0x00]));
@@ -285,6 +383,15 @@ class MinimalWebSocketServer {
     this.autoCloseAfterFirstMessage = false;
   }
 
+  sendOnNextConnection(message: string): void {
+    this.nextConnectionInitialMessage = message;
+  }
+
+  closeNextConnectionOnFirstMessage(code: number, reason: string): void {
+    this.autoCloseAfterFirstMessage = false;
+    this.nextConnectionCloseFrame = encodeCloseFrame(code, reason);
+  }
+
   async stop(): Promise<void> {
     for (const socket of this.sockets) {
       socket.destroy();
@@ -310,6 +417,14 @@ function acceptKey(key: string): string {
 function encodeTextFrame(text: string): Buffer {
   const payload = Buffer.from(text);
   return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
+}
+
+function encodeCloseFrame(code: number, reason: string): Buffer {
+  const reasonBytes = Buffer.from(reason);
+  const payload = Buffer.alloc(2 + reasonBytes.length);
+  payload.writeUInt16BE(code, 0);
+  reasonBytes.copy(payload, 2);
+  return Buffer.concat([Buffer.from([0x88, payload.length]), payload]);
 }
 
 function containsCloseFrame(data: Buffer): boolean {
