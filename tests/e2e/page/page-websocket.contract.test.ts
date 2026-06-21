@@ -96,6 +96,25 @@ describe("page websocket contract e2e", () => {
     });
   });
 
+  it("emits websocket socketerror like Playwright", async () => {
+    await withPage(async (page) => {
+      let resolveError!: (value: string) => void;
+      const errorPromise = new Promise<string>((resolve) => {
+        resolveError = resolve;
+      });
+
+      page.on("websocket", (webSocket) => {
+        webSocket.on("socketerror", resolveError);
+      });
+
+      await page.evaluate((url) => {
+        new WebSocket(url);
+      }, server.badUrl());
+
+      expect(await errorPromise).toContain("400");
+    });
+  });
+
   it("rejects websocket waiters when the page closes like Playwright", async () => {
     await withPage(async (page) => {
       server.keepNextConnectionOpen();
@@ -132,6 +151,16 @@ class MinimalWebSocketServer {
     const httpServer = createServer();
     const server = new MinimalWebSocketServer(httpServer, await listen(httpServer));
     httpServer.on("upgrade", (request, socket) => {
+      if (request.url !== "/ws") {
+        socket.write(
+          "HTTP/1.1 400 Bad Request\r\n" +
+            "Connection: close\r\n" +
+            "Content-Length: 0\r\n" +
+            "\r\n"
+        );
+        socket.destroy();
+        return;
+      }
       server.sockets.add(socket);
       socket.on("close", () => server.sockets.delete(socket));
       const key = request.headers["sec-websocket-key"];
@@ -163,6 +192,7 @@ class MinimalWebSocketServer {
         }
         if (!socket.destroyed) {
           socket.write(Buffer.from([0x88, 0x00]));
+          socket.end();
         }
       });
     });
@@ -171,6 +201,10 @@ class MinimalWebSocketServer {
 
   url(): string {
     return `ws://127.0.0.1:${this.port}/ws`;
+  }
+
+  badUrl(): string {
+    return `ws://127.0.0.1:${this.port}/bogus-ws`;
   }
 
   keepNextConnectionOpen(): void {
