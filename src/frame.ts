@@ -565,7 +565,7 @@ export class RoxyFrame implements Frame {
   }
 
   async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: DispatchEventOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.dispatchEvent", options)).dispatchEvent(type, eventInit);
+    await this.locator(selector).dispatchEvent(type, eventInit, options);
   }
 
   async dragAndDrop(source: string, target: string, options?: DragAndDropOptions): Promise<void> {
