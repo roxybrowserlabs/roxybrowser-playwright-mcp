@@ -592,8 +592,8 @@ export class RoxyFrame implements Frame {
     }) as (frame: Frame) => void;
     this.roxyPage.addInternalNavigationWaitListener("framenavigated", navigationListener);
     const navigationPromise = this.waitForNavigation({
-      timeout: options?.timeout,
-      waitUntil: "load"
+      waitUntil: "load",
+      ...(options?.timeout === undefined ? {} : { timeout: options.timeout })
     }).catch(() => null);
     await handle.click(options);
     if (!navigated) {

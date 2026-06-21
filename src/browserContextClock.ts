@@ -1,10 +1,13 @@
 import type { RoxyClockDelegate } from "./clock.js";
-import type { Disposable } from "./types/api.js";
+import type { Disposable, PageFunction } from "./types/api.js";
 import { PLAYWRIGHT_CLOCK_SOURCE } from "./vendor/playwright/generated/clockSource.js";
 
 export interface ClockScriptHost {
-  addInitScript<Arg>(script: string | ((arg: Arg) => unknown), arg?: Arg): Promise<Disposable>;
-  evaluate<TResult, Arg>(pageFunction: string | ((arg: Arg) => TResult), arg?: Arg): Promise<TResult>;
+  addInitScript<Arg>(
+    script: PageFunction<Arg, unknown> | { path?: string; content?: string },
+    arg?: Arg
+  ): Promise<Disposable>;
+  evaluate<TResult, Arg>(pageFunction: PageFunction<Arg, TResult>, arg?: Arg): Promise<TResult>;
   flushExposedBindingCallsForInternalUse?(): Promise<void>;
 }
 
@@ -20,17 +23,37 @@ type ClockLogType =
 interface ClockRegistration {
   arg?: unknown;
   evaluateOnAttach: boolean;
-  script: string | ((arg?: unknown) => unknown);
+  script: string | ((arg: any) => unknown);
 }
+
+type ClockGlobal = typeof globalThis & {
+  __pwClock?: {
+    controller: {
+      now(): unknown;
+      log(type: ClockLogType, recordedAt: number, param?: number): unknown;
+      fastForward(param?: number): unknown;
+      install(param?: number): unknown;
+      pauseAt(param?: number): unknown;
+      resume(): unknown;
+      runFor(param?: number): unknown;
+      setFixedTime(param?: number): unknown;
+      setSystemTime(param?: number): unknown;
+    };
+  };
+  __roxyPlaywrightClockBundle?: {
+    inject(globalObject: typeof globalThis, browserName?: string): ClockGlobal["__pwClock"];
+  };
+};
 
 const CLOCK_BOOTSTRAP_SOURCE = new Function("payload", `
 ${PLAYWRIGHT_CLOCK_SOURCE}
-  if (!globalThis.__pwClock) {
-    const bundle = globalThis.__roxyPlaywrightClockBundle;
+  const clockGlobal = globalThis;
+  if (!clockGlobal.__pwClock) {
+    const bundle = clockGlobal.__roxyPlaywrightClockBundle;
     if (!bundle?.inject) {
       throw new Error("Playwright clock bundle is not available.");
     }
-    globalThis.__pwClock = bundle.inject(globalThis, payload.browserName);
+    clockGlobal.__pwClock = bundle.inject(clockGlobal, payload.browserName);
   }
 `) as (payload: { browserName?: string }) => void;
 
@@ -39,7 +62,11 @@ const CLOCK_LOG_SOURCE = ((payload: {
   recordedAt: number;
   param?: number;
 }) => {
-  globalThis.__pwClock?.controller.log(payload.type, payload.recordedAt, payload.param);
+  (globalThis as ClockGlobal).__pwClock?.controller.log(
+    payload.type,
+    payload.recordedAt,
+    payload.param
+  );
 }) as (payload: {
   type: ClockLogType;
   recordedAt: number;
@@ -50,7 +77,7 @@ const CLOCK_CALL_SOURCE = ((payload: {
   method: ClockLogType;
   param?: number;
 }) => {
-  const controller = globalThis.__pwClock?.controller;
+  const controller = (globalThis as ClockGlobal).__pwClock?.controller;
   if (!controller) {
     throw new Error("Playwright clock controller is not installed.");
   }
@@ -63,7 +90,7 @@ const CLOCK_CALL_SOURCE = ((payload: {
 }) => unknown;
 
 const CLOCK_WARMUP_SOURCE = (() => {
-  globalThis.__pwClock?.controller.now();
+  (globalThis as ClockGlobal).__pwClock?.controller.now();
 }) as () => void;
 
 export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {

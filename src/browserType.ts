@@ -89,7 +89,12 @@ export class RoxyBrowserType implements BrowserType {
     await adapter.connect();
 
     const session = await adapter.browser();
-    return new RoxyBrowser(session, adapter, resolveHumanizationOptions(options.human));
+    return new RoxyBrowser(
+      session,
+      adapter,
+      resolveHumanizationOptions(options.human),
+      options.browserName ?? this.browserName
+    );
   }
 }
 

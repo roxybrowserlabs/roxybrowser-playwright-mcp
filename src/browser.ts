@@ -16,7 +16,8 @@ export class RoxyBrowser implements Browser {
   constructor(
     private readonly session: ProtocolBrowserSession,
     private readonly adapter: ProtocolBrowserAdapter,
-    private readonly humanDefaults: ResolvedHumanizationOptions
+    private readonly humanDefaults: ResolvedHumanizationOptions,
+    private readonly browserName: "chromium" | "firefox" = "chromium"
   ) {}
 
   async newContext(options: BrowserContextOptions = {}): Promise<BrowserContext> {
@@ -41,7 +42,7 @@ export class RoxyBrowser implements Browser {
       contextAdapter,
       resolveHumanizationOptions(normalizedOptions.human, this.humanDefaults),
       normalizedOptions,
-      this.adapter.browserName?.() ?? "chromium"
+      this.browserName
     );
   }
 
