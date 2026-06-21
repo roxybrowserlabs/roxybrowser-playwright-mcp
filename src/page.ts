@@ -2690,6 +2690,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;
   async close(options: PageCloseOptions = {}): Promise<void> {
+    if (this.closed && !options.runBeforeUnload) {
+      return;
+    }
+
     if (options.runBeforeUnload) {
       await this.adapter.close(options);
       return;
