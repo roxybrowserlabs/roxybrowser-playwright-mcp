@@ -6,6 +6,33 @@ import {
 } from "../../src/pageApiReport.js";
 
 describe("generatePageApiReport", () => {
+  it.each(["Page", "Frame", "Locator", "FrameLocator", "ElementHandle", "JSHandle"])(
+    "matches upstream Playwright full API surface signatures for %s",
+    (interfaceName) => {
+      const report = generateApiSurfaceReport(interfaceName);
+      const normalize = (signature: string) =>
+        signature
+          .replace(/; human\?: HumanizationOptions(?=;)/g, "")
+          .replace(/human\?: HumanizationOptions; /g, "")
+          .replace(/\{\s*,/g, "{")
+          .replace(/,\s*\}/g, " }")
+          .replace(/\s+/g, " ")
+          .trim();
+      const normalizedCurrentMethodSignatures = Object.fromEntries(
+        Object.entries(report.currentMethodSignatures).map(([methodName, signatures]) => [
+          methodName,
+          signatures.map(normalize)
+        ])
+      );
+
+      expect(report.missingMethods).toEqual([]);
+      expect(report.extraMethods).toEqual([]);
+      expect(report.missingProperties).toEqual([]);
+      expect(report.extraProperties).toEqual([]);
+      expect(normalizedCurrentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+    }
+  );
+
   it("tracks the upstream Playwright Page gap against our public Page type", () => {
     const report = generatePageApiReport();
 

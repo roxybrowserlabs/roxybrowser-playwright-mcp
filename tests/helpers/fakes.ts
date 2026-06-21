@@ -130,6 +130,7 @@ export function createElementHandleAdapterStub(): ProtocolElementHandleAdapter {
     check: vi.fn(async () => {}),
     click: vi.fn(async () => {}),
     hover: vi.fn(async () => {}),
+    tap: vi.fn(async () => {}),
     fill: vi.fn(async () => {}),
     type: vi.fn(async () => {}),
     press: vi.fn(async () => {}),
