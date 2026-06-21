@@ -115,6 +115,80 @@ describe("page websocket contract e2e", () => {
     });
   });
 
+  it("does not emit stray websocket socketerror events on normal close", async () => {
+    await withPage(async (page) => {
+      server.keepNextConnectionOpen();
+      let socketError: string | null = null;
+
+      page.on("websocket", (webSocket) => {
+        webSocket.on("socketerror", (error) => {
+          socketError = error;
+        });
+      });
+
+      await Promise.all([
+        page.waitForEvent("websocket").then(async (candidate) => {
+          await candidate.waitForEvent("framereceived");
+          return candidate;
+        }),
+        page.evaluate((url) => {
+          const socket = new WebSocket(url);
+          socket.addEventListener("open", () => {
+            socket.send("outgoing");
+          });
+          window["ws"] = socket;
+        }, server.url())
+      ]);
+
+      await page.evaluate(() => {
+        window["ws"].close();
+      });
+      await page.waitForTimeout(100);
+
+      expect(socketError).toBeNull();
+    });
+  });
+
+  it("emits websocket binary frames like Playwright", async () => {
+    await withPage(async (page) => {
+      server.keepNextConnectionOpen();
+      let resolveClosed!: () => void;
+      const closedPromise = new Promise<void>((resolve) => {
+        resolveClosed = resolve;
+      });
+      const sent: Array<string | Buffer> = [];
+
+      page.on("websocket", (webSocket) => {
+        webSocket.on("framesent", (data) => {
+          sent.push(data.payload);
+        });
+        webSocket.on("close", () => {
+          resolveClosed();
+        });
+      });
+
+      await page.evaluate((url) => {
+        const socket = new WebSocket(url);
+        socket.addEventListener("open", () => {
+          const binary = new Uint8Array(5);
+          for (let index = 0; index < 5; index += 1) {
+            binary[index] = index;
+          }
+          socket.send("text");
+          socket.send(binary);
+          socket.close();
+        });
+      }, server.url());
+
+      await closedPromise;
+      expect(sent[0]).toBe("text");
+      expect(Buffer.isBuffer(sent[1])).toBe(true);
+      for (let index = 0; index < 5; index += 1) {
+        expect((sent[1] as Buffer)[index]).toBe(index);
+      }
+    });
+  });
+
   it("rejects websocket waiters when the page closes like Playwright", async () => {
     await withPage(async (page) => {
       server.keepNextConnectionOpen();
@@ -187,7 +261,7 @@ class MinimalWebSocketServer {
         server.autoCloseAfterFirstMessage = true;
       });
       socket.on("data", (data) => {
-        if (!isCloseFrame(data)) {
+        if (!containsCloseFrame(data)) {
           return;
         }
         if (!socket.destroyed) {
@@ -238,8 +312,54 @@ function encodeTextFrame(text: string): Buffer {
   return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
 }
 
-function isCloseFrame(data: Buffer): boolean {
-  return (data[0] ?? 0) % 16 === 0x08;
+function containsCloseFrame(data: Buffer): boolean {
+  let offset = 0;
+
+  while (offset + 2 <= data.length) {
+    const firstByte = data[offset];
+    const secondByte = data[offset + 1];
+    if (firstByte === undefined || secondByte === undefined) {
+      return false;
+    }
+
+    const opcode = firstByte & 0x0f;
+    const masked = (secondByte & 0x80) !== 0;
+    let payloadLength = secondByte & 0x7f;
+    let cursor = offset + 2;
+
+    if (payloadLength === 126) {
+      if (cursor + 2 > data.length) {
+        return false;
+      }
+      payloadLength = data.readUInt16BE(cursor);
+      cursor += 2;
+    } else if (payloadLength === 127) {
+      if (cursor + 8 > data.length) {
+        return false;
+      }
+      const extendedLength = data.readBigUInt64BE(cursor);
+      if (extendedLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+        return false;
+      }
+      payloadLength = Number(extendedLength);
+      cursor += 8;
+    }
+
+    if (masked) {
+      cursor += 4;
+    }
+
+    const nextOffset = cursor + payloadLength;
+    if (nextOffset > data.length) {
+      return false;
+    }
+    if (opcode === 0x08) {
+      return true;
+    }
+    offset = nextOffset;
+  }
+
+  return false;
 }
 
 async function listen(server: Server): Promise<number> {
