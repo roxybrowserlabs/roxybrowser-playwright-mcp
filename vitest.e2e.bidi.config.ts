@@ -23,7 +23,8 @@ export default defineConfig({
       "tests/helpers/bidi.global-setup.ts"
     ],
     setupFiles: [
-      "tests/helpers/bidi-process-cleanup.setup.ts"
+      "tests/helpers/bidi-process-cleanup.setup.ts",
+      "tests/helpers/playwright-expect.setup.ts"
     ],
     environment: "node",
     testTimeout: 60_000,

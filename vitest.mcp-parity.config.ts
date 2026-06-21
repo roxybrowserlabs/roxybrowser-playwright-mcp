@@ -23,7 +23,10 @@ export default defineConfig({
     include: ["tests/mcp-parity/**/*.test.ts"],
     fileParallelism: false,
     globalSetup: ["tests/helpers/browser-process-cleanup.global-setup.ts"],
-    setupFiles: ["tests/helpers/browser-process-cleanup.setup.ts"],
+    setupFiles: [
+      "tests/helpers/browser-process-cleanup.setup.ts",
+      "tests/helpers/playwright-expect.setup.ts"
+    ],
     environment: "node",
     testTimeout: 120_000,
     hookTimeout: 120_000

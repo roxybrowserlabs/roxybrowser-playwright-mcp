@@ -2922,6 +2922,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (entry.source === "worker") {
         return;
       }
+      if (
+        entry.source === "network" ||
+        entry.text.startsWith("Failed to load resource:")
+      ) {
+        return;
+      }
       this.emit("console", {
         args: () => [],
         location: () => ({
@@ -3670,8 +3676,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }>> {
     const domSnapshots = await this.collectDomFrameSnapshots().catch(() => []);
     const domById = new Map(domSnapshots.map((snapshot) => [snapshot.id, snapshot]));
-    const frameTree = await (this.options.client as CdpPageFrameClient).send("Page.getFrameTree");
-    this.syncNativeFrameTree(frameTree.frameTree);
+    const frameTree = await (this.options.client as CdpPageFrameClient).send("Page.getFrameTree").catch(() => null);
+    if (frameTree) {
+      this.syncNativeFrameTree(frameTree.frameTree);
+    }
 
     const snapshots: Array<{
       id: string;
@@ -3744,13 +3752,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const rootFrame = this.mainFrameId ? this.nativeFrames.get(this.mainFrameId) : undefined;
     if (rootFrame) {
       await visit(rootFrame, null, "main");
-    } else {
+    } else if (frameTree) {
       await visit({
         id: frameTree.frameTree.frame.id,
         name: frameTree.frameTree.frame.name ?? "",
         parentId: null,
         url: frameTree.frameTree.frame.url ?? "about:blank"
       }, null, "main");
+    } else {
+      snapshots.push({
+        id: "main",
+        name: "",
+        ownerElementChain: [],
+        parentId: null,
+        referenceChain: [],
+        url: this.currentUrl || "about:blank"
+      });
     }
     const seenSnapshotIds = new Set(snapshots.map((snapshot) => snapshot.id));
     for (const domSnapshot of domSnapshots) {
