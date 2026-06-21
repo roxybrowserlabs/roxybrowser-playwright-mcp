@@ -6928,7 +6928,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
     const sessionId = handle instanceof CdpJSHandleAdapter ? handle.sessionId() : undefined;
     const frameId = handle instanceof CdpJSHandleAdapter
-      ? handle.frameId() ?? await this.ownerFrameIdForRemoteHandle(handle).catch(() => undefined)
+      ? await this.ownerFrameIdForRemoteHandle(handle).catch(() => handle.frameId())
+        ?? handle.frameId()
       : undefined;
     const response = await this.sendRuntimeCallFunctionOn({
       functionDeclaration: `function() {

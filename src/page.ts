@@ -3082,6 +3082,23 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
       }
     }
+    const handleReference = handle.reference();
+    if (handleReference.protocolFrameId) {
+      const frame = this.frameByNativeId(handleReference.protocolFrameId);
+      if (frame) {
+        return frame;
+      }
+      for (const page of this.browserContext?.pages() ?? []) {
+        if (page === this || !(page instanceof RoxyPage)) {
+          continue;
+        }
+        await page.refreshFrameSnapshots().catch(() => {});
+        const frame = page.frameByNativeId(handleReference.protocolFrameId);
+        if (frame) {
+          return frame;
+        }
+      }
+    }
     for (const frame of this.frames()) {
       const snapshot = (frame as RoxyFrame).snapshotState();
       if (await this.evaluateOwnerFrameMatch(snapshot, handle)) {
