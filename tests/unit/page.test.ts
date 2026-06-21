@@ -2787,6 +2787,38 @@ describe("RoxyPage", () => {
     expect(dismiss).toHaveBeenCalledTimes(1);
   });
 
+  it("dismisses active dialogs while closing the page", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const accept = vi.fn(async () => {});
+    const dismiss = vi.fn(async () => {});
+    const waited = page.waitForEvent("dialog");
+
+    adapter.emit("dialog", {
+      accept,
+      defaultValue: () => "",
+      dismiss,
+      message: () => "Leave?",
+      type: () => "alert"
+    });
+
+    await waited;
+    await page.close();
+
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(accept).not.toHaveBeenCalled();
+  });
+
   it("supports waitForEvent options with predicate and timeout", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {

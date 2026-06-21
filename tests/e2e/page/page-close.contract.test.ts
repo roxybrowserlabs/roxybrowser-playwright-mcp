@@ -159,4 +159,29 @@ describe("page close contract e2e", () => {
       ]).catch((error) => error);
     });
   });
+
+  it("closes cleanly with an active dialog like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.evaluate('"trigger builtins.setTimeout"');
+      await page.setContent("<button onclick=\"builtins.setTimeout(() => alert(1))\">alert</button>");
+      void page.click("button").catch(() => {});
+      await page.waitForEvent("dialog");
+      await expect(page.close()).resolves.toBeUndefined();
+    });
+  });
+
+  it("does not result in unhandled rejection when exposeFunction closes the page", async () => {
+    await withPage(async (page) => {
+      const closedPromise = page.waitForEvent("close");
+      await page.exposeFunction("foo", async () => {
+        await page.close();
+      });
+      await page.evaluate(() => {
+        window.builtins.setTimeout(() => window["foo"](), 0);
+        return undefined;
+      });
+      await closedPromise;
+      expect(await page.evaluate("1 + 1").catch((error) => error)).toBeInstanceOf(Error);
+    });
+  });
 });

@@ -454,6 +454,7 @@ export class RoxyBrowserContext implements BrowserContext {
     this.attachPageEventBubbling(page);
 
     try {
+      await page._ensurePlaywrightBuiltinsInstalled();
       await this.clockDelegate.attachPage(page);
       if (this.options.recordVideo) {
         await this.enableRecordVideo(page, this.options.recordVideo);

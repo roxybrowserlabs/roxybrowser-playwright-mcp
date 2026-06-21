@@ -869,6 +869,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private readonly pendingHandlers = new Map<PageEventName, Set<Promise<void>>>();
   private rejectionHandler: ((error: Error) => void) | undefined;
   private readonly internalDisposers = new Map<PageEventName, () => void>();
+  private readonly activeDialogs = new Set<Dialog>();
   private closed = false;
   private closeReason: string | undefined;
   private defaultTimeoutMs = DEFAULT_EVENT_TIMEOUT_MS;
@@ -1005,6 +1006,40 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async addInitScript<Arg>(script: PageFunction<Arg, any> | { path?: string; content?: string }, arg?: Arg): Promise<Disposable> {
     const source = await evaluationScript(script, arg as any);
     return this.adapter.addInitScript(source);
+  }
+
+  async _ensurePlaywrightBuiltinsInstalled(): Promise<void> {
+    const install = () => {
+      const globalState = globalThis as typeof globalThis & {
+        builtins?: Record<string, unknown>;
+      };
+      if (globalState.builtins) {
+        return;
+      }
+
+      const bind = <T extends Function | undefined>(value: T): T =>
+        (typeof value === "function" ? value.bind(globalThis) : value) as T;
+
+      globalState.builtins = {
+        Date: globalThis.Date,
+        clearInterval: bind(globalThis.clearInterval),
+        clearTimeout: bind(globalThis.clearTimeout),
+        performance: globalThis.performance,
+        requestAnimationFrame: bind(globalThis.requestAnimationFrame),
+        cancelAnimationFrame: bind(globalThis.cancelAnimationFrame),
+        requestIdleCallback: bind((globalThis as typeof globalThis & {
+          requestIdleCallback?: typeof globalThis.requestAnimationFrame;
+        }).requestIdleCallback),
+        cancelIdleCallback: bind((globalThis as typeof globalThis & {
+          cancelIdleCallback?: typeof globalThis.cancelAnimationFrame;
+        }).cancelIdleCallback),
+        setInterval: bind(globalThis.setInterval),
+        setTimeout: bind(globalThis.setTimeout)
+      };
+    };
+
+    await this.addInitScript(install);
+    await this.evaluate(install);
   }
 
   async addLocatorHandler(
@@ -2705,10 +2740,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     currentPick?.reject(this.createClosedError());
     this.closed = true;
     try {
+      await this.dismissActiveDialogsForClose();
       await this.finalizeVideoRecording();
       await this.adapter.close(options);
       this.emit("close", this as unknown as PageEventMap["close"]);
     } finally {
+      this.activeDialogs.clear();
       for (const dispose of this.internalDisposers.values()) {
         dispose();
       }
@@ -4204,7 +4241,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private createPublicDialog(payload: PageDialog): Dialog {
-    return {
+    const dialog: Dialog = {
       accept: (promptText?: string) => payload.accept(promptText),
       defaultValue: () => payload.defaultValue(),
       dismiss: () => payload.dismiss(),
@@ -4212,6 +4249,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       page: () => payload.page?.() ?? this,
       type: () => payload.type()
     };
+    this.activeDialogs.add(dialog);
+    const wrap = <T extends (...args: any[]) => Promise<void>>(handler: T) =>
+      (async (...args: Parameters<T>) => {
+        try {
+          await handler(...args);
+        } finally {
+          this.activeDialogs.delete(dialog);
+        }
+      }) as T;
+    dialog.accept = wrap(dialog.accept);
+    dialog.dismiss = wrap(dialog.dismiss);
+    return dialog;
   }
 
   private shouldAutoHandleDialog(): boolean {
@@ -4228,6 +4277,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         ? dialog.accept()
         : dialog.dismiss();
     void operation.catch(() => {});
+  }
+
+  private async dismissActiveDialogsForClose(): Promise<void> {
+    await Promise.all(
+      Array.from(this.activeDialogs, (dialog) =>
+        dialog.type() === "beforeunload"
+          ? Promise.resolve()
+          : dialog.dismiss().catch(() => {})
+      )
+    );
   }
 
   private createPublicConsoleMessage(payload: PageConsoleMessage): PageConsoleMessage {
