@@ -40,7 +40,8 @@ export class RoxyBrowser implements Browser {
     return new RoxyBrowserContext(
       contextAdapter,
       resolveHumanizationOptions(normalizedOptions.human, this.humanDefaults),
-      normalizedOptions
+      normalizedOptions,
+      this.adapter.browserName?.() ?? "chromium"
     );
   }
 

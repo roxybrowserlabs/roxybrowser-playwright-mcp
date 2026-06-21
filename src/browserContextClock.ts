@@ -70,6 +70,8 @@ export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
   private readonly attachedPages = new Set<ClockScriptHost>();
   private readonly registrations: ClockRegistration[] = [];
 
+  constructor(private readonly browserName: "chromium" | "firefox" = "chromium") {}
+
   async attachPage(page: ClockScriptHost): Promise<void> {
     this.attachedPages.add(page);
 
@@ -132,7 +134,9 @@ export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
     }
 
     const registration: ClockRegistration = {
-      arg: {},
+      arg: {
+        browserName: this.browserName
+      },
       evaluateOnAttach: true,
       script: CLOCK_BOOTSTRAP_SOURCE
     };

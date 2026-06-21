@@ -185,4 +185,183 @@ describe("page clock contract e2e", () => {
       expect(await page.evaluate(() => (window as any).__clockNow)).toBe(1000);
     });
   });
+
+  it("replaces global performance.timeOrigin like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.clock.install({ time: 1000 });
+      await page.clock.pauseAt(2000);
+
+      const promise = page.evaluate(async () => {
+        const prev = performance.now();
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const next = performance.now();
+        return { prev, next };
+      });
+
+      await page.clock.runFor(1000);
+
+      expect(await page.evaluate(() => performance.timeOrigin)).toBe(1000);
+      expect(await promise).toEqual({ prev: 1000, next: 2000 });
+    });
+  });
+
+  it("propagates paused clock state to popups", async () => {
+    await withPage(async (page) => {
+      await page.clock.install({ time: 0 });
+      const now = new Date("2015-09-25");
+      await page.clock.pauseAt(now);
+
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.evaluate(() => window.open("about:blank"))
+      ]);
+
+      expect(await popup.evaluate(() => Date.now())).toBe(now.getTime());
+
+      await page.clock.runFor(1000);
+      expect(await popup.evaluate(() => Date.now())).toBe(now.getTime() + 1000);
+    });
+  });
+
+  it("propagates elapsed clock state to popups opened later", async () => {
+    await withPage(async (page) => {
+      await page.clock.install({ time: 0 });
+      const now = new Date("2015-09-25");
+      await page.clock.pauseAt(now);
+      await page.clock.runFor(1000);
+
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.evaluate(() => window.open("about:blank"))
+      ]);
+
+      expect(await popup.evaluate(() => Date.now())).toBe(now.getTime() + 1000);
+    });
+  });
+
+  it("keeps fixed time stable while still allowing native timers", async () => {
+    await withPage(async (page) => {
+      await page.clock.setFixedTime(100);
+      expect(await page.evaluate(() => Date.now())).toBe(100);
+
+      const result = await page.evaluate(() => {
+        return new Promise<number>((resolve) => {
+          setTimeout(() => resolve(Date.now()), 1);
+        });
+      });
+
+      expect(result).toBe(100);
+
+      await page.clock.fastForward(20);
+      expect(await page.evaluate(() => Date.now())).toBe(100);
+    });
+  });
+
+  it("allows setting fixed time multiple times and then running fake timers", async () => {
+    await withPage(async (page) => {
+      const calls = await exposeStub(page);
+      await page.clock.setFixedTime(100);
+      expect(await page.evaluate(() => Date.now())).toBe(100);
+
+      await page.clock.setFixedTime(200);
+      expect(await page.evaluate(() => Date.now())).toBe(200);
+
+      await page.evaluate(() => {
+        setTimeout(() => (window as any).stub(Date.now()));
+      });
+
+      await page.clock.runFor(0);
+      expect(calls).toEqual([{ params: [200] }]);
+    });
+  });
+
+  it("continues time while running after install", async () => {
+    await withPage(async (page) => {
+      await page.clock.install({ time: 0 });
+      await page.goto("data:text/html,");
+      await page.waitForTimeout(1000);
+
+      const now = await page.evaluate(() => Date.now());
+      expect(now).toBeGreaterThanOrEqual(1000);
+      expect(now).toBeLessThanOrEqual(2000);
+    });
+  });
+
+  it("can pause and then fastForward like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.clock.install({ time: 0 });
+      await page.goto("data:text/html,");
+      await page.clock.pauseAt(1000);
+      await page.clock.fastForward(1000);
+
+      expect(await page.evaluate(() => Date.now())).toBe(2000);
+    });
+  });
+
+  it("AbortSignal.timeout follows fake clock time", async () => {
+    await withPage(async (page) => {
+      await page.clock.install({ time: 0 });
+
+      const controller = await page.evaluateHandle(() => {
+        const signal = AbortSignal.any([AbortSignal.timeout(100)]);
+        const handle = {
+          signal,
+          event: false,
+          handler: false
+        };
+        signal.addEventListener("abort", () => {
+          handle.event = true;
+        });
+        signal.onabort = () => {
+          handle.handler = true;
+        };
+        return handle;
+      });
+
+      expect(await controller.evaluate((handle: any) => ({
+        signal: handle.signal.aborted,
+        event: handle.event,
+        handler: handle.handler
+      }))).toEqual({
+        signal: false,
+        event: false,
+        handler: false
+      });
+
+      await page.clock.runFor(200);
+
+      expect(await controller.evaluate((handle: any) => ({
+        signal: handle.signal.aborted,
+        event: handle.event,
+        handler: handle.handler,
+        reason: {
+          name: handle.signal.reason.name,
+          message: handle.signal.reason.message,
+          code: handle.signal.reason.code
+        }
+      }))).toEqual({
+        signal: true,
+        event: true,
+        handler: true,
+        reason: {
+          name: "TimeoutError",
+          message: "signal timed out",
+          code: 23
+        }
+      });
+
+      expect(await page.evaluate(() => AbortSignal.abort().aborted)).toBe(true);
+    });
+  });
+
+  it("rounds fractional runFor ticks like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.clock.install({ time: 0 });
+      await page.goto("data:text/html,");
+      await page.clock.pauseAt(1000);
+      await page.clock.runFor(0.5);
+
+      expect(await page.evaluate(() => Date.now())).toBe(1001);
+    });
+  });
 });

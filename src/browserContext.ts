@@ -23,7 +23,7 @@ import type {
   BrowserContextEventPredicate,
   PageConsoleMessage
 } from "./types/events.js";
-import type { BrowserContextOptions, RecordVideoOptions } from "./types/options.js";
+import type { BrowserContextOptions, BrowserName, RecordVideoOptions } from "./types/options.js";
 
 const DEFAULT_CONTEXT_EVENT_TIMEOUT_MS = 30_000;
 const BUBBLED_PAGE_EVENTS = [
@@ -57,7 +57,7 @@ export class RoxyBrowserContext implements BrowserContext {
   private readonly adapterByPage = new WeakMap<RoxyPage, ProtocolPageAdapter>();
   private readonly pendingPageRegistrations = new Map<ProtocolPageAdapter, Promise<RoxyPage>>();
   private readonly emittedPages = new WeakSet<RoxyPage>();
-  private readonly clockDelegate = new RoxyBrowserContextClockDelegate();
+  private readonly clockDelegate: RoxyBrowserContextClockDelegate;
   private readonly listeners = new Map<BrowserContextEventName, Set<ContextListenerEntry<BrowserContextEventName>>>();
   private readonly pageEventDisposers = new WeakMap<RoxyPage, Array<() => void>>();
   private readonly routeHandlers: RouteHandlerEntry[] = [];
@@ -67,14 +67,17 @@ export class RoxyBrowserContext implements BrowserContext {
   private closed = false;
   private nextRouteMatcherId = 0;
   private videoOutputDirPromise: Promise<string> | null = null;
-  readonly clock: Clock = new RoxyClock(this.clockDelegate);
+  readonly clock: Clock;
   readonly request = new RoxyAPIRequestContext();
 
   constructor(
     private readonly adapter: ProtocolBrowserContextAdapter,
     private readonly humanDefaults: ResolvedHumanizationOptions,
-    private readonly options: BrowserContextOptions = {}
+    private readonly options: BrowserContextOptions = {},
+    browserName: BrowserName = "chromium"
   ) {
+    this.clockDelegate = new RoxyBrowserContextClockDelegate(browserName);
+    this.clock = new RoxyClock(this.clockDelegate);
     this.disposeAdapterPageListener =
       this.adapter.onPage?.((pageAdapter, openerAdapter, hasWindowOpener) =>
         this.attachDiscoveredPage(

@@ -3,6 +3,7 @@ import type { Browser, BrowserContext, Page, ResolvedAriaRef } from "../../src/t
 import { cleanupLocalTestBrowserProcessesWithTimeout } from "./browser-process-cleanup.js";
 
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
+const TEST_LAUNCH_RETRIES = 3;
 
 export type SnapshotPage = Page & {
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
@@ -11,12 +12,7 @@ export type SnapshotPage = Page & {
 export async function withPage<T>(
   run: (page: SnapshotPage, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
-  const browser = await chromium.launch({
-    headless: true,
-    ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-      ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-      : {})
-  });
+  const browser = await launchTestBrowser();
 
   try {
     const context = await browser.newContext();
@@ -36,6 +32,31 @@ export async function withPage<T>(
     await closeForTest("browser.close", () => browser.close()).catch(() => {});
     await cleanupLocalTestBrowserProcessesWithTimeout();
   }
+}
+
+async function launchTestBrowser(): Promise<Browser> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < TEST_LAUNCH_RETRIES; attempt += 1) {
+    try {
+      return await chromium.launch({
+        headless: true,
+        ...(process.env.ROXY_E2E_EXECUTABLE_PATH
+          ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
+          : {})
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isRetriableLaunchError(error) || attempt === TEST_LAUNCH_RETRIES - 1) {
+        throw error;
+      }
+      await cleanupLocalTestBrowserProcessesWithTimeout();
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function isRetriableLaunchError(error: unknown): boolean {
+  return String(error instanceof Error ? error.message : error).includes("Browser exited before exposing CDP endpoint.");
 }
 
 async function closeForTest(label: string, close: () => Promise<void>): Promise<void> {
