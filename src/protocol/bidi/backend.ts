@@ -151,6 +151,7 @@ type LocatorPick =
 interface BidiLocatorState {
   chain: LocatorSelector[];
   pick?: LocatorPick;
+  strict?: boolean;
 }
 
 interface ActionPoint {

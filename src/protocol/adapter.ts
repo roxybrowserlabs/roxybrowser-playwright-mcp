@@ -85,6 +85,7 @@ export interface ProtocolElementHandleReference {
   chain: LocatorSelector[];
   handleId?: string;
   pick?: LocatorPick;
+  strict?: boolean;
   protocolFrameId?: string;
   protocolObjectId?: string;
   protocolSessionId?: string;

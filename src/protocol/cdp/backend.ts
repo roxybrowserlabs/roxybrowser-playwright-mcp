@@ -439,6 +439,7 @@ type LocatorPick =
 interface CdpLocatorState {
   chain: LocatorSelector[];
   pick?: LocatorPick;
+  strict?: boolean;
   protocolFrameId?: string;
 }
 
@@ -1151,12 +1152,27 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     }
     this.creatingPageTargetIds.add(response.targetId);
     this.manuallyCreatedTargetIds.add(response.targetId);
+    this.detachedTargetIds.delete(response.targetId);
 
     const autoAttached = this.pendingPages.get(response.targetId);
     if (autoAttached) {
       return autoAttached;
     }
-    return this.getOrCreatePage(response.targetId);
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const pendingPage = this.pendingPages.get(response.targetId);
+      if (pendingPage) {
+        return pendingPage;
+      }
+      const existing = this.pages.get(response.targetId);
+      if (existing) {
+        return existing;
+      }
+      await delay(5);
+    }
+    return this.getOrCreatePage(response.targetId, {
+      skipDetachRace: true
+    });
   }
 
   async addCookies(cookies: ReadonlyArray<{
@@ -1404,12 +1420,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   }): Promise<void> {
     const { targetInfo } = event;
     if (this.closing) {
-      await this.state.browserClient.Target.detachFromTarget?.({ sessionId: event.sessionId }).catch(() => {});
       return;
     }
     if (targetInfo.type !== "page") {
       if (!this.matchesBrowserContextTarget(targetInfo)) {
-        await this.state.browserClient.Target.detachFromTarget?.({ sessionId: event.sessionId }).catch(() => {});
         return;
       }
       await sendBrowserCommandInSession(this.state.browserClient, "Runtime.enable", {}, event.sessionId).catch(() => {});
@@ -1417,7 +1431,6 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       return;
     }
     if (!this.matchesTargetInfo(targetInfo)) {
-      await this.state.browserClient.Target.detachFromTarget?.({ sessionId: event.sessionId }).catch(() => {});
       return;
     }
     if (this.pages.has(targetInfo.targetId) || this.pendingPages.has(targetInfo.targetId)) {
@@ -1494,6 +1507,13 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     if (this.pages.has(targetInfo.targetId) || this.pendingPages.has(targetInfo.targetId)) {
       return;
     }
+    const isPendingManualPage =
+      this.pendingManualPageCreations > 0 &&
+      !targetInfo.openerId &&
+      (!targetInfo.url || targetInfo.url === "about:blank");
+    if (isPendingManualPage) {
+      return;
+    }
 
     const pagePromise = this.getOrCreatePage(targetInfo.targetId, {
       fallbackUrl: targetInfo.url ?? "about:blank",
@@ -1566,6 +1586,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       hasWindowOpener?: boolean;
       emitPage?: boolean;
       sessionId?: string;
+      skipDetachRace?: boolean;
     } = {}
   ): Promise<ProtocolPageAdapter> {
     const existing = this.pages.get(targetId);
@@ -1580,38 +1601,40 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
     const pagePromise = (async () => {
       let page: ProtocolPageAdapter;
-      const targetDetachedPromise = this.waitForTargetDetached(targetId);
       try {
-        page = await Promise.race([
-          (async () => {
-            const client = options.client ?? await connectToTarget(this.state.connection, targetId);
-            return CdpPageAdapter.create({
-              browserClient: this.state.browserClient,
-              client,
-              targetId,
-              contextOptions: this.options,
-              pointerActionScheduler: this.pointerActionScheduler,
-              initialNavigationFrameUnavailable: Boolean(options.openerTargetId),
-              ...(options.sessionId
-                ? {
-                    resumeOnInitialized: async () => {
-                      await sendBrowserCommandInSession(this.state.browserClient, "Runtime.runIfWaitingForDebugger", {}, options.sessionId!).catch(() => {});
-                    }
+        const createPagePromise = (async () => {
+          const client = options.client ?? await connectToTarget(this.state.connection, targetId);
+          return CdpPageAdapter.create({
+            browserClient: this.state.browserClient,
+            client,
+            targetId,
+            contextOptions: this.options,
+            pointerActionScheduler: this.pointerActionScheduler,
+            initialNavigationFrameUnavailable: Boolean(options.openerTargetId),
+            ...(options.sessionId
+              ? {
+                  resumeOnInitialized: async () => {
+                    await sendBrowserCommandInSession(this.state.browserClient, "Runtime.runIfWaitingForDebugger", {}, options.sessionId!).catch(() => {});
                   }
-                : {}),
-              onClosed: (closedTargetId) => {
-                this.pages.delete(closedTargetId);
-                this.pendingPages.delete(closedTargetId);
-                this.manuallyCreatedTargetIds.delete(closedTargetId);
-                this.creatingPageTargetIds.delete(closedTargetId);
-                this.detachedTargetIds.delete(closedTargetId);
-              }
-            });
-          })(),
-          targetDetachedPromise.then(() => {
-            throw new Error("Target closed");
-          })
-        ]);
+                }
+              : {}),
+            onClosed: (closedTargetId) => {
+              this.pages.delete(closedTargetId);
+              this.pendingPages.delete(closedTargetId);
+              this.manuallyCreatedTargetIds.delete(closedTargetId);
+              this.creatingPageTargetIds.delete(closedTargetId);
+              this.detachedTargetIds.delete(closedTargetId);
+            }
+          });
+        })();
+        page = options.skipDetachRace || !options.emitPage
+          ? await createPagePromise
+          : await Promise.race([
+              createPagePromise,
+              this.waitForTargetDetached(targetId).then(() => {
+                throw new Error("Target closed");
+              })
+            ]);
       } catch (error) {
         const shouldCreateClosedPopupFallback =
           options.emitPage &&
@@ -6376,13 +6399,19 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     isFunction: boolean
   ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
     if (this.mainFrameId) {
-      return this.evaluateWithArgumentsInFrame<TResult>(
-        this.mainFrameId,
-        expression,
-        returnByValue,
-        args,
-        isFunction
-      );
+      try {
+        return await this.evaluateWithArgumentsInFrame<TResult>(
+          this.mainFrameId,
+          expression,
+          returnByValue,
+          args,
+          isFunction
+        );
+      } catch (error) {
+        if (!isFrameExecutionContextTransitionError(error)) {
+          throw error;
+        }
+      }
     }
     return this.evaluateWithArgumentsInContext<TResult>(
       undefined,
@@ -9966,6 +9995,15 @@ function isRoxyHandleInTargetContext(
 
 function isFrameExecutionContextUnavailableError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("Frame execution context is not available");
+}
+
+function isFrameExecutionContextTransitionError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return error.message.includes("Frame execution context is not available")
+    || error.message.includes("Cannot find context with specified id")
+    || error.message.includes("Execution context was destroyed");
 }
 
 function replaceJsHandleMarker(

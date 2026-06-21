@@ -565,7 +565,7 @@ export class RoxyFrame implements Frame {
   }
 
   async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: DispatchEventOptions): Promise<void> {
-    await this.locator(selector).dispatchEvent(type, eventInit, options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.dispatchEvent", options)).dispatchEvent(type, eventInit);
   }
 
   async dragAndDrop(source: string, target: string, options?: DragAndDropOptions): Promise<void> {
@@ -574,19 +574,19 @@ export class RoxyFrame implements Frame {
 
   async click(selector: string, options?: ClickOptions): Promise<void> {
     await this.roxyPage.prepareForPendingFileChooser();
-    await this.locator(selector).click(options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.click", options)).click(options);
   }
 
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
-    await this.locator(selector).dblclick(options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.dblclick", options)).dblclick(options);
   }
 
   async hover(selector: string, options?: HoverOptions): Promise<void> {
-    await this.locator(selector).hover(options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.hover", options)).hover(options);
   }
 
   async tap(selector: string, options?: TapOptions): Promise<void> {
-    await this.locator(selector).tap(options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.tap", options)).tap(options);
   }
 
   async fill(selector: string, value: string, options?: FillOptions): Promise<void> {
@@ -596,23 +596,23 @@ export class RoxyFrame implements Frame {
   }
 
   async type(selector: string, value: string, options?: TypeOptions): Promise<void> {
-    await this.locator(selector).type(value, options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.type", options)).type(value, options);
   }
 
   async press(selector: string, key: string, options?: PressOptions): Promise<void> {
-    await this.locator(selector).press(key, options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.press", options)).press(key, options);
   }
 
   async check(selector: string, options?: ClickOptions): Promise<void> {
-    await this.locator(selector).check(options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.check", options)).check(options);
   }
 
   async uncheck(selector: string, options?: ClickOptions): Promise<void> {
-    await this.locator(selector).uncheck(options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.uncheck", options)).uncheck(options);
   }
 
   async setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
-    await this.locator(selector).setChecked(checked, options);
+    await (await this.requiredElementHandleForSelector(selector, "frame.setChecked", options)).setChecked(checked, options);
   }
 
   async selectOption(
@@ -620,7 +620,7 @@ export class RoxyFrame implements Frame {
     values: FrameSelectOptionValues,
     options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number }
   ): Promise<Array<string>> {
-    return this.locator(selector).selectOption(values, options);
+    return (await this.requiredElementHandleForSelector(selector, "frame.selectOption", options)).selectOption(values, options);
   }
 
   async setInputFiles(
