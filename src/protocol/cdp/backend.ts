@@ -3746,6 +3746,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
     const visit = async (frame: CdpNativeFrameState, parentId: string | null, syntheticId: string) => {
       const domSnapshot = takeDomSnapshot(frame, parentId, syntheticId);
+      const normalizedFrameUrl =
+        frame.url && frame.url !== ":"
+          ? frame.url
+          : undefined;
       snapshots.push({
         id: syntheticId,
         name: frame.name || domSnapshot?.name || "",
@@ -3757,7 +3761,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         ownerElementChain: domSnapshot?.ownerElementChain ?? [],
         parentId,
         referenceChain: domSnapshot?.referenceChain ?? [],
-        url: frame.url || domSnapshot?.url || "about:blank"
+        url: normalizedFrameUrl || domSnapshot?.url || "about:blank"
       });
       const children = childrenByParent.get(frame.id) ?? [];
       for (const [index, child] of children.entries()) {
