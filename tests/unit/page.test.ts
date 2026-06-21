@@ -2365,6 +2365,62 @@ describe("RoxyPage", () => {
     expect(adapter.tap).not.toHaveBeenCalled();
   });
 
+  it("forwards page action options without requiring human overrides", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const clickSpy = vi.spyOn(page.mainFrame(), "click").mockResolvedValue(undefined);
+    const fillSpy = vi.spyOn(page.mainFrame(), "fill").mockResolvedValue(undefined);
+    const typeSpy = vi.spyOn(page.mainFrame(), "type").mockResolvedValue(undefined);
+    const pressSpy = vi.spyOn(page.mainFrame(), "press").mockResolvedValue(undefined);
+
+    await page.click("button");
+    await page.fill("input", "hello");
+    await page.type("input", "world");
+    await page.press("input", "Enter");
+
+    expect(clickSpy).toHaveBeenCalledWith("button", undefined);
+    expect(fillSpy).toHaveBeenCalledWith("input", "hello", undefined);
+    expect(typeSpy).toHaveBeenCalledWith("input", "world", undefined);
+    expect(pressSpy).toHaveBeenCalledWith("input", "Enter", undefined);
+  });
+
+  it("forwards optional human overrides through page actions", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const clickSpy = vi.spyOn(page.mainFrame(), "click").mockResolvedValue(undefined);
+    const fillSpy = vi.spyOn(page.mainFrame(), "fill").mockResolvedValue(undefined);
+    const typeSpy = vi.spyOn(page.mainFrame(), "type").mockResolvedValue(undefined);
+    const pressSpy = vi.spyOn(page.mainFrame(), "press").mockResolvedValue(undefined);
+
+    await page.click("button", { human: { enabled: false }, trial: true });
+    await page.fill("input", "hello", { human: { enabled: false }, force: true });
+    await page.type("input", "world", { human: { enabled: false }, delay: 12 });
+    await page.press("input", "Enter", { human: { enabled: false }, delay: 8 });
+
+    expect(clickSpy).toHaveBeenCalledWith("button", { human: { enabled: false }, trial: true });
+    expect(fillSpy).toHaveBeenCalledWith("input", "hello", { human: { enabled: false }, force: true });
+    expect(typeSpy).toHaveBeenCalledWith("input", "world", { human: { enabled: false }, delay: 12 });
+    expect(pressSpy).toHaveBeenCalledWith("input", "Enter", { human: { enabled: false }, delay: 8 });
+  });
+
   it("waitForSelector parses chained selectors and returns an element handle", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
