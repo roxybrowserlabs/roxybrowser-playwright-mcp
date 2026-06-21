@@ -197,20 +197,99 @@ export class RoxyFrame implements Frame {
     const start = Date.now();
     const isFunction = typeof pageFunction === "function" || looksLikeFunctionExpression(String(pageFunction));
     const apiName = this.snapshot.parentId === null ? "page.waitForFunction" : "frame.waitForFunction";
-    while (timeout === 0 || Date.now() - start <= timeout) {
-      const result = await this.roxyPage.evaluateInFrameWithFunctionFlag(this.snapshot, pageFunction, arg, isFunction).catch((error) => {
-        if (isWaitForFunctionExecutionContextDestroyedError(error)) {
-          throw new Error(`${apiName}: Execution context was destroyed`);
-        }
-        throw error;
-      });
-      if (result) {
-        return createSmartHandle(result);
-      }
-      await new Promise((resolve) => setTimeout(resolve, polling === "raf" ? 16 : polling));
-    }
+    const detachedError = () => new Error(`${apiName}: Frame was detached`);
 
-    throw new TimeoutError(`${apiName}: Timeout ${timeout}ms exceeded.`);
+    return await new Promise<SmartHandle<R>>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let stop = false;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        this.roxyPage.removeInternalFrameWaitListener("framedetached", frameDetachedListener);
+        this.roxyPage.removeInternalFrameWaitListener("close", closeListener);
+      };
+
+      const settleResolve = (value: SmartHandle<R>) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        stop = true;
+        cleanup();
+        resolve(value);
+      };
+
+      const settleReject = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        stop = true;
+        cleanup();
+        reject(error);
+      };
+
+      const closeListener = (() => {
+        settleReject(new Error(`${apiName}: Page closed`));
+      }) as (page: unknown) => void;
+
+      const frameDetachedListener = ((frame: Frame) => {
+        if (frame === this) {
+          settleReject(detachedError());
+        }
+      }) as (frame: Frame) => void;
+
+      const scheduleNextTick = () => {
+        if (stop) {
+          return;
+        }
+        timer = setTimeout(() => {
+          void tick();
+        }, polling === "raf" ? 16 : polling);
+      };
+
+      const tick = async () => {
+        if (stop) {
+          return;
+        }
+        if (this.detached) {
+          settleReject(detachedError());
+          return;
+        }
+        if (timeout !== 0 && Date.now() - start > timeout) {
+          settleReject(new TimeoutError(`${apiName}: Timeout ${timeout}ms exceeded.`));
+          return;
+        }
+        try {
+          const result = await this.roxyPage.evaluateInFrameWithFunctionFlag(this.snapshot, pageFunction, arg, isFunction).catch((error) => {
+            if (isWaitForFunctionExecutionContextDestroyedError(error)) {
+              throw new Error(`${apiName}: Execution context was destroyed`);
+            }
+            throw error;
+          });
+          if (result) {
+            settleResolve(createSmartHandle(result));
+            return;
+          }
+          scheduleNextTick();
+        } catch (error) {
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          if (normalized.message === `${apiName}: Execution context was destroyed` && this.detached) {
+            settleReject(detachedError());
+            return;
+          }
+          settleReject(normalized);
+        }
+      };
+
+      this.roxyPage.addInternalFrameWaitListener("framedetached", frameDetachedListener);
+      this.roxyPage.addInternalFrameWaitListener("close", closeListener);
+      void tick();
+    });
   }
 
   async waitForTimeout(timeout: number): Promise<void> {

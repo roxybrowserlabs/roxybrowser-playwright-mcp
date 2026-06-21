@@ -6475,7 +6475,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         if (
           attempt === 1 ||
           (!isClosedCdpConnectionError(error) &&
-            !String(error instanceof Error ? error.message : error).includes("Frame execution context is not available"))
+            !String(error instanceof Error ? error.message : error).includes("Frame execution context is not available") &&
+            !String(error instanceof Error ? error.message : error).includes("Cannot find context with specified id") &&
+            !String(error instanceof Error ? error.message : error).includes("Execution context was destroyed"))
         ) {
           throw error;
         }

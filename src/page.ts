@@ -3235,6 +3235,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           isFunction
         );
       } catch (error) {
+        if (frame.parentId === null && this.isMainFrameExecutionContextUnavailable(error)) {
+          return this.evaluate(pageFunction, arg as Arg);
+        }
         if (!this.shouldFallbackToOwnerElementFrameEvaluation(error, frame)) {
           throw error;
         }
@@ -3341,7 +3344,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (!frame.ownerElementReference && !frame.ownerElementChain.length) {
       return false;
     }
-    return error instanceof Error && error.message.includes("Frame execution context is not available");
+    return this.isMainFrameExecutionContextUnavailable(error);
+  }
+
+  private isMainFrameExecutionContextUnavailable(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+    return error.message.includes("Frame execution context is not available")
+      || error.message.includes("Cannot find context with specified id")
+      || error.message.includes("Execution context was destroyed");
   }
 
   private async ownerElementAdapterForFrame(frame: RoxyFrameSnapshot): Promise<ProtocolElementHandleAdapter | null> {
@@ -3739,6 +3751,20 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return () => {
       this.removeInternalListener(event, listener);
     };
+  }
+
+  addInternalFrameWaitListener<K extends "close" | "framedetached">(
+    event: K,
+    listener: PageEventListener<K>
+  ): void {
+    this.addInternalListener(event, listener);
+  }
+
+  removeInternalFrameWaitListener<K extends "close" | "framedetached">(
+    event: K,
+    listener: PageEventListener<K>
+  ): void {
+    this.removeInternalListener(event, listener);
   }
 
   private ensureAdapterObservation(event: PageEventName): void {
