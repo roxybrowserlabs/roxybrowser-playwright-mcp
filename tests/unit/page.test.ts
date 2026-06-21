@@ -4007,6 +4007,63 @@ describe("RoxyPage", () => {
     ]);
   });
 
+  it("rejects websocket waiters when the socket closes", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const webSocketPromise = page.waitForEvent("websocket");
+    adapter.emit("websocket", {
+      kind: "created",
+      requestId: "ws-close-1",
+      url: "wss://example.com/socket"
+    });
+    const webSocket = await webSocketPromise;
+    const waiter = webSocket.waitForEvent("framesent").catch((error) => error as Error);
+
+    adapter.emit("websocket", {
+      kind: "closed",
+      requestId: "ws-close-1"
+    });
+
+    expect((await waiter).message).toContain("Socket closed");
+  });
+
+  it("rejects websocket waiters when the page closes", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const webSocketPromise = page.waitForEvent("websocket");
+    adapter.emit("websocket", {
+      kind: "created",
+      requestId: "ws-close-2",
+      url: "wss://example.com/socket"
+    });
+    const webSocket = await webSocketPromise;
+    const waiter = webSocket.waitForEvent("framesent").catch((error) => error as Error);
+
+    await page.close();
+
+    expect((await waiter).message).toContain("Target page, context or browser has been closed");
+  });
+
   it("rejects pending video saveAs when the page closes externally", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {

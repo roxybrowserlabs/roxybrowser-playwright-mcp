@@ -3899,6 +3899,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private trimObservation(event: PageEventName): void {
     const observation = this.eventObservations.get(event);
     if (!observation) {
+      if (event === "websocket" && this.webSockets.size === 0) {
+        const dispose = this.adapterDisposers.get(event);
+        if (dispose) {
+          this.adapterDisposers.delete(event);
+          dispose();
+        }
+      }
       return;
     }
 
@@ -3907,6 +3914,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
 
     this.eventObservations.delete(event);
+    if (event === "websocket" && this.webSockets.size > 0) {
+      return;
+    }
     const dispose = this.adapterDisposers.get(event);
     if (dispose) {
       this.adapterDisposers.delete(event);
@@ -4242,6 +4252,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     } else if (payload.kind === "closed") {
       webSocket.emitClose();
       this.webSockets.delete(payload.requestId);
+      this.trimObservation("websocket");
     }
     return webSocket;
   }

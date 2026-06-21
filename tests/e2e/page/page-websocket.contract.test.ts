@@ -48,9 +48,32 @@ describe("page websocket contract e2e", () => {
       ]);
     });
   });
+
+  it("rejects websocket waiters when the page closes like Playwright", async () => {
+    await withPage(async (page) => {
+      server.keepNextConnectionOpen();
+      const [webSocket] = await Promise.all([
+        page.waitForEvent("websocket").then(async (candidate) => {
+          await candidate.waitForEvent("framereceived");
+          return candidate;
+        }),
+        page.evaluate((url) => {
+          const socket = new WebSocket(url);
+          socket.addEventListener("open", () => socket.send("outgoing"));
+          window["ws"] = socket;
+        }, server.url())
+      ]);
+
+      const error = webSocket.waitForEvent("framesent").catch((caught) => caught as Error);
+      await page.close();
+
+      expect((await error).message).toContain("Target page, context or browser has been closed");
+    });
+  });
 });
 
 class MinimalWebSocketServer {
+  private autoCloseAfterFirstMessage = true;
   private readonly server: Server;
   private sockets = new Set<Socket>();
 
@@ -78,11 +101,14 @@ class MinimalWebSocketServer {
       );
       socket.once("data", () => {
         socket.write(encodeTextFrame("incoming"));
-        setTimeout(() => {
-          if (!socket.destroyed) {
-            socket.write(Buffer.from([0x88, 0x00]));
-          }
-        }, 50);
+        if (server.autoCloseAfterFirstMessage) {
+          setTimeout(() => {
+            if (!socket.destroyed) {
+              socket.write(Buffer.from([0x88, 0x00]));
+            }
+          }, 50);
+        }
+        server.autoCloseAfterFirstMessage = true;
       });
     });
     return server;
@@ -90,6 +116,10 @@ class MinimalWebSocketServer {
 
   url(): string {
     return `ws://127.0.0.1:${this.port}/ws`;
+  }
+
+  keepNextConnectionOpen(): void {
+    this.autoCloseAfterFirstMessage = false;
   }
 
   async stop(): Promise<void> {
