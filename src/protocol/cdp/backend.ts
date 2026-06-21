@@ -2924,10 +2924,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (entry.source === "worker") {
         return;
       }
-      if (
-        entry.source === "network" ||
-        entry.text.startsWith("Failed to load resource:")
-      ) {
+      if (entry.text.startsWith("Failed to load resource:")) {
         return;
       }
       this.emit("console", {
