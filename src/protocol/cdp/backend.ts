@@ -1885,6 +1885,7 @@ class CdpPointerActionScheduler {
 class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly closePromise: Promise<void>;
   private resolveClosePromise!: () => void;
+  private closePromiseResolved = false;
   private mainFrameId: string | undefined;
   private readonly defaultExecutionContextByFrameId = new Map<string, number>();
   private readonly defaultExecutionContextSessionByFrameId = new Map<string, string | undefined>();
@@ -2242,6 +2243,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   didClose(): void {
     if (this.closed) {
+      this.resolveCloseSignal();
       return;
     }
 
@@ -2265,7 +2267,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.clearNetworkIdleTimer();
     this.rejectWaiters(this.createClosedError());
     this.emit("close", undefined);
-    this.resolveClosePromise();
+    this.resolveCloseSignal();
     this.options.onClosed(this.options.targetId);
   }
 
@@ -5199,6 +5201,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.clearNetworkIdleTimer();
     this.rejectWaiters(this.createClosedError());
     this.emit("close", undefined);
+    this.resolveCloseSignal();
 
     try {
       await this.options.browserClient.Target.closeTarget({
@@ -6364,11 +6367,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   private async evaluateExpression<TResult>(expression: string): Promise<TResult> {
-    const response = await (this.options.client as CdpRuntimeClient).send("Runtime.evaluate", {
-      expression: wrapWithSerializedEvaluationResult(expression),
-      returnByValue: true,
-      awaitPromise: true
-    });
+    const response = await this.raceWithClose(
+      (this.options.client as CdpRuntimeClient).send("Runtime.evaluate", {
+        expression: wrapWithSerializedEvaluationResult(expression),
+        returnByValue: true,
+        awaitPromise: true
+      })
+    );
 
     if (response.exceptionDetails) {
       throw new Error(formatCdpEvaluationError(response));
@@ -6606,6 +6611,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             ? parseEvaluationResultValue(response.result.value as SerializedValue)
             : new CdpJSHandleAdapter<TResult>(this, response.result, activeSessionId, frameId);
         } catch (error) {
+          if (this.closed && isClosedCdpConnectionError(error)) {
+            throw this.createClosedError();
+          }
           const message = String(error instanceof Error ? error.message : error);
           if (
             attempt === 1 ||
@@ -6733,7 +6741,26 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         sessionId?: string
       ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
     };
-    return runtimeClient.send("Runtime.callFunctionOn", params, sessionId);
+    return this.raceWithClose(runtimeClient.send("Runtime.callFunctionOn", params, sessionId));
+  }
+
+  private raceWithClose<TResult>(promise: Promise<TResult>): Promise<TResult> {
+    if (this.closed) {
+      return Promise.reject(this.createClosedError());
+    }
+    const guardedPromise = promise.catch((error) => {
+      if (this.closed && isClosedCdpConnectionError(error)) {
+        throw this.createClosedError();
+      }
+      throw error;
+    });
+    guardedPromise.catch(() => {});
+    return Promise.race([
+      guardedPromise,
+      this.closePromise.then(() => {
+        throw this.createClosedError();
+      })
+    ]);
   }
 
   async sendRuntimeGetProperties(
@@ -6797,16 +6824,19 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             sessionId?: string
           ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }>;
         };
-        const response = await runtimeClient.send("Runtime.evaluate", {
+        const response = await this.raceWithClose(runtimeClient.send("Runtime.evaluate", {
           expression,
           awaitPromise: true,
           returnByValue: false
-        }, activeSessionId);
+        }, activeSessionId));
         if (response.exceptionDetails) {
           throw new Error(formatCdpEvaluationError(response));
         }
         return new CdpJSHandleAdapter<T>(this, response.result, activeSessionId);
       } catch (error) {
+        if (this.closed && isClosedCdpConnectionError(error)) {
+          throw this.createClosedError();
+        }
         if (activeSessionId !== undefined && isClosedCdpConnectionError(error)) {
           continue;
         }
@@ -7961,6 +7991,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private createClosedError(): Error {
     return new Error(this.closeReason ?? "Target page, context or browser has been closed");
+  }
+
+  private resolveCloseSignal(): void {
+    if (this.closePromiseResolved) {
+      return;
+    }
+    this.closePromiseResolved = true;
+    this.resolveClosePromise();
   }
 
   private emit<K extends RawPageEventName>(event: K, payload: RawPageEventMap[K]): void {
@@ -9119,7 +9157,9 @@ function sendBrowserCommandInSession(
   const client = browserClient as CdpClient & {
     send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<unknown>;
   };
-  return client.send(method, params, sessionId);
+  const command = client.send(method, params, sessionId);
+  command.catch(() => {});
+  return command;
 }
 
 async function resolveConnectionDetails(

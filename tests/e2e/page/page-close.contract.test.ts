@@ -72,4 +72,42 @@ describe("page close contract e2e", () => {
       expect(responseError.message).not.toContain("Timeout");
     });
   });
+
+  it("rejects pending page promises when the page closes", async () => {
+    await withPage(async (page) => {
+      let error: Error | null = null;
+
+      await Promise.all([
+        page.evaluate(() => new Promise(() => {})).catch((caught) => {
+          error = caught as Error;
+        }),
+        page.close()
+      ]);
+
+      expect(error).toBeTruthy();
+      expect(error!.message).toContain("Target page, context or browser has been closed");
+    });
+  });
+
+  it("does not treat popup navigations as new popups", async () => {
+    await withPage(async (page) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.setContent('<a target=_blank rel=noopener href="/one-style.html">yo</a>');
+
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.click("a")
+      ]);
+
+      let badSecondPopup = false;
+      page.on("popup", () => {
+        badSecondPopup = true;
+      });
+
+      await popup.goto(fixture.server.CROSS_PROCESS_PREFIX + "/empty.html");
+      await page.close();
+
+      expect(badSecondPopup).toBe(false);
+    });
+  });
 });

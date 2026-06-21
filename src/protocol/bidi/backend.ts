@@ -816,6 +816,9 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 }
 
 class BidiPageAdapter implements ProtocolPageAdapter {
+  private readonly closePromise: Promise<void>;
+  private resolveClosePromise!: () => void;
+  private closePromiseResolved = false;
   private closed = false;
   private closeReason: string | undefined;
   private currentUrl = "about:blank";
@@ -857,7 +860,11 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     private readonly contextId: string,
     private readonly contextOptions: BrowserContextOptions,
     private readonly onClosed?: () => void
-  ) {}
+  ) {
+    this.closePromise = new Promise<void>((resolve) => {
+      this.resolveClosePromise = resolve;
+    });
+  }
 
   private async initialize(): Promise<void> {
     await this.client.sessionSubscribe({
@@ -1951,6 +1958,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     }
     this.screencastOverlays.clear();
     this.rejectWaiters(this.createClosedError());
+    this.resolveCloseSignal();
 
     await this.client.browsingContextClose({
       context: this.contextId,
@@ -2014,14 +2022,14 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   private async evaluateExpression<TResult>(expression: string): Promise<TResult> {
-    const response = await this.client.scriptEvaluate({
+    const response = await this.raceWithClose(this.client.scriptEvaluate({
       expression: wrapWithSerializedEvaluationResult(expression),
       target: {
         context: this.contextId
       },
       awaitPromise: true,
       resultOwnership: "none"
-    }) as BidiEvaluateResult;
+    })) as BidiEvaluateResult;
 
     if (response.type === "exception") {
       throw new Error(response.exceptionDetails.text || "BiDi evaluation failed.");
@@ -2924,6 +2932,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
       this.closed = true;
       this.rejectWaiters(this.createClosedError());
+      this.resolveCloseSignal();
       this.onClosed?.();
       this.emit("close", undefined);
       void this.cleanupBiDiListeners();
@@ -2990,6 +2999,26 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   private createClosedError(): Error {
     return new Error(this.closeReason ?? "Target page, context or browser has been closed");
+  }
+
+  private raceWithClose<TResult>(promise: Promise<TResult>): Promise<TResult> {
+    if (this.closed) {
+      return Promise.reject(this.createClosedError());
+    }
+    return Promise.race([
+      promise,
+      this.closePromise.then(() => {
+        throw this.createClosedError();
+      })
+    ]);
+  }
+
+  private resolveCloseSignal(): void {
+    if (this.closePromiseResolved) {
+      return;
+    }
+    this.closePromiseResolved = true;
+    this.resolveClosePromise();
   }
 
   private createDialogPayload(input: {
