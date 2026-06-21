@@ -6708,7 +6708,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     },
     sessionId?: string
   ): Promise<{ exceptionDetails?: CdpExceptionDetails; result: CdpRemoteObject }> {
-    const runtimeClient = (sessionId ? this.options.client : this.options.browserClient) as CdpRuntimeClient & {
+    const runtimeClient = this.options.client as CdpRuntimeClient & {
       send(
         method: "Runtime.callFunctionOn",
         params: {
@@ -6739,7 +6739,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       value?: CdpRemoteObject;
     }>;
   }> {
-    const runtimeClient = (sessionId ? this.options.client : this.options.browserClient) as CdpRuntimeClient & {
+    const runtimeClient = this.options.client as CdpRuntimeClient & {
       send(
         method: "Runtime.getProperties",
         params: {
@@ -6762,7 +6762,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     params: { objectId: string },
     sessionId?: string
   ): Promise<unknown> {
-    const runtimeClient = (sessionId ? this.options.client : this.options.browserClient) as CdpRuntimeClient & {
+    const runtimeClient = this.options.client as CdpRuntimeClient & {
       send(
         method: "Runtime.releaseObject",
         params: { objectId: string },
@@ -6775,7 +6775,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async rawEvaluateHandle<T = unknown>(expression: string, sessionId?: string): Promise<CdpJSHandleAdapter<T>> {
     for (const activeSessionId of sessionId ? [sessionId, undefined] : [undefined]) {
       try {
-        const runtimeClient = (activeSessionId ? this.options.client : this.options.browserClient) as CdpRuntimeClient & {
+        const runtimeClient = this.options.client as CdpRuntimeClient & {
           send(
             method: "Runtime.evaluate",
             params: {
