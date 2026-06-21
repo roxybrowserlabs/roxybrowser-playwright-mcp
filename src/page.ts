@@ -3470,7 +3470,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async titleInFrame(frame: RoxyFrameSnapshot): Promise<string> {
     if (frame.parentId === null) {
-      return this.adapter.title();
+      try {
+        return await this.adapter.title();
+      } catch (error) {
+        if (!this.isMainFrameExecutionContextUnavailable(error)) {
+          throw error;
+        }
+        const url = this.adapter.url();
+        return url ? `Loading ${url}` : "";
+      }
     }
     return this.evaluateInFrame(frame, () => document.title);
   }

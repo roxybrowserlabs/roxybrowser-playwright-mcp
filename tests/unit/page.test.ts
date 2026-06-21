@@ -4192,6 +4192,26 @@ describe("RoxyPage", () => {
     await expect(removePromise).rejects.toThrow("Error in handler");
   });
 
+  it("returns Loading url when title is queried during navigation like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.url = vi.fn(() => "https://example.com/title.html");
+    adapter.title = vi.fn(async () => {
+      throw new Error("Execution context was destroyed");
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await expect(page.title()).resolves.toBe("Loading https://example.com/title.html");
+  });
+
   it("prefers adapter-native filechooser events when available", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
