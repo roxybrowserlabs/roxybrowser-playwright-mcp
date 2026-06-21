@@ -1204,7 +1204,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   ): Promise<Response | null> {
     const apiStack = new Error().stack;
     const frameObject = frame ? this.frameById(frame.id) : null;
-    const initialUrl = frameObject?.url() ?? this.url();
+    const isMainFrameTarget =
+      !frameObject || (frameObject instanceof RoxyFrame && frameObject.snapshotState().parentId === null);
+    const currentNavigationUrl = () => (isMainFrameTarget ? this.url() : (frameObject?.url() ?? this.url()));
+    const initialUrl = currentNavigationUrl();
     const timeout = options.timeout ?? this.defaultNavigationTimeoutMs;
     const waitUntil = options.waitUntil ?? "load";
     const navigationTargetDescription = options.url ? ` to "${String(options.url)}"` : "";
@@ -1233,17 +1236,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         reject(normalizedError);
       };
       let latestNavigationResponse: Response | null = null;
+      let navigationObserved = false;
       const timer =
         timeout === 0
           ? null
           : setTimeout(() => {
               rejectWithApiStack(
                 new TimeoutError(
-                  `page.waitForNavigation: Timeout ${timeout}ms exceeded.\n` +
+                    `page.waitForNavigation: Timeout ${timeout}ms exceeded.\n` +
                     `=========================== logs ===========================\n` +
                     `waiting for navigation${navigationTargetDescription} until "${waitUntil}"\n` +
                     `============================================================\n` +
-                    `navigated to "${frameObject?.url() ?? this.url()}"`
+                    `navigated to "${currentNavigationUrl()}"`
                 )
               );
             }, timeout);
@@ -1294,6 +1298,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         this.removeInternalListener("response", responseListener);
         this.removeInternalListener("close", closeListener);
         this.removeInternalListener("framedetached", frameDetachedListener);
+        this.removeInternalListener("framenavigated", frameNavigatedListener);
       };
 
       const closeListener = (() => {
@@ -1328,12 +1333,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       };
 
       const matchesUrl = () => {
-        const current = this.tryParseUrl(frameObject?.url() ?? this.url());
+        const current = this.tryParseUrl(currentNavigationUrl());
         if (!current) {
           return false;
         }
         if (!options.url) {
-          return latestNavigationResponse !== null || current.toString() !== initialUrl;
+          return navigationObserved || latestNavigationResponse !== null || current.toString() !== initialUrl;
         }
         return this.matchesURL(current, options.url);
       };
@@ -1369,6 +1374,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           : latestNavigationResponse);
       };
 
+      const frameNavigatedListener = ((navigatedFrame: Frame) => {
+        if (frameObject) {
+          if (navigatedFrame !== frameObject) {
+            return;
+          }
+        } else if (navigatedFrame !== this.mainFrame()) {
+          return;
+        }
+        navigationObserved = true;
+        void checkForMatch();
+      }) as PageEventListener<"framenavigated">;
+
       const responseListener = (async (response: Response) => {
         if (isLikelyNavigationResponse(response)) {
           latestNavigationResponse = response;
@@ -1385,6 +1402,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.addInternalListener("response", responseListener);
       this.addInternalListener("close", closeListener);
       this.addInternalListener("framedetached", frameDetachedListener);
+      this.addInternalListener("framenavigated", frameNavigatedListener);
       void checkForMatch();
     });
 
@@ -4058,6 +4076,24 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.resetHistorySinceNavigation();
     }
     if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
+      if (event === "framenavigated" && payload && typeof payload === "object") {
+        const navigation = payload as { frameId?: string; url?: string };
+        const frameId = navigation.frameId;
+        const targetFrame = frameId
+          ? this.resolveFrameAcrossKnownPages(frameId) ?? this.frameByNativeId(frameId)
+          : this.mainFrame();
+        if (targetFrame instanceof RoxyFrame && navigation.url) {
+          const currentSnapshot = targetFrame.snapshotState();
+          if (currentSnapshot.url !== navigation.url) {
+            targetFrame.setSnapshot({
+              ...currentSnapshot,
+              url: navigation.url,
+              ...(frameId ? { nativeFrameId: currentSnapshot.nativeFrameId ?? frameId } : {})
+            });
+            this.emit("framenavigated", targetFrame);
+          }
+        }
+      }
       await this.refreshFrameSnapshots().catch(() => {});
       return;
     }
