@@ -177,6 +177,15 @@ describe("generatePageApiReport", () => {
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
 
+  it("allows optional human extensions on Page action signatures while preserving upstream shape", () => {
+    const report = generateApiSurfaceReport("Page");
+    const actionSignatures = Object.values(report.currentMethodSignatures)
+      .flat()
+      .filter((signature) => /^(click|dblclick|fill|hover|press|tap)\(/.test(signature));
+
+    expect(actionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(true);
+  });
+
   it("matches upstream Playwright Page selector query and state signatures", () => {
     const report = generateApiMethodSignatureReport("Page", [
       "focus",
@@ -235,6 +244,20 @@ describe("generatePageApiReport", () => {
     ]);
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("allows optional human extensions on Frame and Locator action signatures while preserving upstream shape", () => {
+    const frameReport = generateApiSurfaceReport("Frame");
+    const locatorReport = generateApiSurfaceReport("Locator");
+    const frameActionSignatures = Object.values(frameReport.currentMethodSignatures)
+      .flat()
+      .filter((signature) => /^(click|dblclick|fill|hover|press|tap)\(/.test(signature));
+    const locatorActionSignatures = Object.values(locatorReport.currentMethodSignatures)
+      .flat()
+      .filter((signature) => /^(click|dblclick|fill|hover|press|tap)\(/.test(signature));
+
+    expect(frameActionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(true);
+    expect(locatorActionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(true);
   });
 
   it("matches upstream Playwright Frame remaining forwarded signatures", () => {
