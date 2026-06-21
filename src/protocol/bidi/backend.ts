@@ -176,6 +176,8 @@ type BidiMouseAction =
 
 interface StateWaiter {
   state: NonNullable<PageGotoOptions["waitUntil"]>;
+  previousUrl: string | undefined;
+  startedAt: number;
   resolve: () => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
@@ -1098,18 +1100,21 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   private async waitForPendingLoadState(
     state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
-    timeout = 30_000
+    timeout = 30_000,
+    previousUrl?: string
   ): Promise<void> {
-    return this.waitForLoadStateInternal(state, timeout, true);
+    return this.waitForLoadStateInternal(state, timeout, true, previousUrl);
   }
 
   private async waitForLoadStateInternal(
     state: "load" | "domcontentloaded" | "networkidle" | "commit",
     timeout: number,
-    skipCurrentDocumentReadyCheck: boolean
+    skipCurrentDocumentReadyCheck: boolean,
+    previousUrl?: string
   ): Promise<void> {
     const targetState = verifyLifecycle("state", state ?? "load");
-    if (targetState === "commit" || this.isStateSatisfied(targetState)) {
+    const stillOnPreviousUrl = previousUrl !== undefined && this.currentUrl === previousUrl;
+    if (targetState === "commit" || (this.isStateSatisfied(targetState) && !stillOnPreviousUrl)) {
       return;
     }
 
@@ -1127,6 +1132,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
       const waiter: StateWaiter = {
         state: targetState,
+        previousUrl,
+        startedAt: Date.now(),
         resolve: () => {
           if (timer) {
             clearTimeout(timer);
@@ -2994,7 +3001,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     if (waitUntil !== "commit") {
-      await this.waitForPendingLoadState(waitUntil, options.timeout);
+      await this.waitForPendingLoadState(waitUntil, options.timeout, previousUrl);
     }
 
     const currentUrl = this.url();
@@ -3053,6 +3060,9 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   private flushWaiters(): void {
     for (const waiter of Array.from(this.stateWaiters)) {
+      if (waiter.previousUrl !== undefined && this.currentUrl === waiter.previousUrl) {
+        continue;
+      }
       if (this.isStateSatisfied(waiter.state)) {
         waiter.resolve();
       }
