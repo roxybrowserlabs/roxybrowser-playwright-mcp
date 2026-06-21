@@ -29,7 +29,8 @@ export { RoxyPage } from "./page.js";
 export { createPageResponse } from "./pageResponse.js";
 export {
   BidiBrowserAdapterFactory,
-  buildFirefoxLaunchArgs
+  buildFirefoxLaunchArgs,
+  resolveFirefoxExecutableCandidates
 } from "./protocol/bidi/backend.js";
 export {
   resetBidiClientFactoryForTests,

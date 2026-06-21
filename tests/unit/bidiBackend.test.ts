@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BidiBrowserAdapterFactory,
   buildFirefoxLaunchArgs,
+  resolveFirefoxExecutableCandidates,
   resetBidiClientFactoryForTests,
   setBidiClientFactoryForTests,
   WebSocketBidiClient
@@ -68,6 +69,43 @@ describe("buildFirefoxLaunchArgs", () => {
       "--remote-debugging-port=9333",
       "-new-instance",
       "--private-window"
+    ]);
+  });
+});
+
+describe("resolveFirefoxExecutableCandidates", () => {
+  it("returns the explicit executable path when provided", () => {
+    expect(
+      resolveFirefoxExecutableCandidates(
+        {
+          executablePath: "/custom/firefox"
+        },
+        "darwin",
+        "/playwright/firefox",
+        () => true
+      )
+    ).toEqual(["/custom/firefox"]);
+  });
+
+  it("prefers an existing Playwright Firefox executable on macOS", () => {
+    expect(
+      resolveFirefoxExecutableCandidates(
+        {},
+        "darwin",
+        "/Users/me/Library/Caches/ms-playwright/firefox/firefox",
+        (path) => path.includes("ms-playwright")
+      )
+    ).toEqual([
+      "/Users/me/Library/Caches/ms-playwright/firefox/firefox"
+    ]);
+  });
+
+  it("falls back to default Firefox candidates when none exist", () => {
+    expect(
+      resolveFirefoxExecutableCandidates({}, "darwin", undefined, () => false)
+    ).toEqual([
+      "/Applications/Firefox.app/Contents/MacOS/firefox",
+      "/Applications/Firefox Nightly.app/Contents/MacOS/firefox"
     ]);
   });
 });

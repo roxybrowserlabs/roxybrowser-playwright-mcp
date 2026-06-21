@@ -85,6 +85,7 @@ import { locatorSelectorForPick } from "../adapter.js";
 import type { ProtocolCapabilities } from "../capabilities.js";
 import { looksLikeFunctionExpression } from "../evaluate.js";
 import { spawn } from "node:child_process";
+import { accessSync, constants as fsConstants } from "node:fs";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -773,11 +774,11 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     const response = await this.client.browsingContextCreate(
       this.userContext
         ? {
-            type: "tab",
+            type: "window",
             userContext: this.userContext
           }
         : {
-            type: "tab"
+            type: "window"
           }
     );
 
@@ -1092,12 +1093,27 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     timeout = 30_000,
     _frameId?: string
   ): Promise<void> {
+    return this.waitForLoadStateInternal(state, timeout, false);
+  }
+
+  private async waitForPendingLoadState(
+    state: "load" | "domcontentloaded" | "networkidle" | "commit" = "load",
+    timeout = 30_000
+  ): Promise<void> {
+    return this.waitForLoadStateInternal(state, timeout, true);
+  }
+
+  private async waitForLoadStateInternal(
+    state: "load" | "domcontentloaded" | "networkidle" | "commit",
+    timeout: number,
+    skipCurrentDocumentReadyCheck: boolean
+  ): Promise<void> {
     const targetState = verifyLifecycle("state", state ?? "load");
     if (targetState === "commit" || this.isStateSatisfied(targetState)) {
       return;
     }
 
-    if (await this.isCurrentDocumentReadyFor(targetState)) {
+    if (!skipCurrentDocumentReadyCheck && await this.isCurrentDocumentReadyFor(targetState)) {
       return;
     }
 
@@ -2771,6 +2787,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         text: () => this.getResponseText(responsePayload.request.request),
         url: responsePayload.response.url || responsePayload.request.url
       });
+      if (
+        responsePayload.context === this.contextId &&
+        responsePayload.navigation !== null &&
+        responsePayload.request.destination === "document"
+      ) {
+        this.currentUrl = response.url;
+      }
       this.emit("response", response);
       if (
         this.navigationResponseCapture &&
@@ -2792,6 +2815,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         navigation: string | null;
         request: { destination: string; method?: string; request: string; url: string };
       };
+      if (
+        completedPayload.context === this.contextId &&
+        completedPayload.navigation !== null &&
+        completedPayload.request.destination === "document"
+      ) {
+        this.currentUrl = completedPayload.request.url;
+      }
       this.emit("requestfinished", {
         ...(completedPayload.context ? { frameId: completedPayload.context } : {}),
         headers: [],
@@ -2964,7 +2994,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     if (waitUntil !== "commit") {
-      await this.waitForLoadState(waitUntil, options.timeout);
+      await this.waitForPendingLoadState(waitUntil, options.timeout);
     }
 
     const currentUrl = this.url();
@@ -4046,31 +4076,54 @@ interface BidiConnectionResult {
 
 async function launchFirefoxBidi(options: BrowserConnectOptions): Promise<FirefoxLaunchResult> {
   const userDataDir = await mkdtemp(join(tmpdir(), "roxybrowser-bidi-"));
-  const executable = options.executablePath ?? defaultFirefoxExecutable();
-  await assertFirefoxExecutable(executable);
-  const host = options.host ?? "127.0.0.1";
-  const port = options.port ?? await pickFreePort();
-  const args = buildFirefoxLaunchArgs(options, userDataDir, port);
-  const proc = spawn(executable, args, {
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  const unregisterTestBrowserProcess = registerTestBrowserProcessForCleanup(proc, userDataDir);
+  const executableCandidates = resolveFirefoxExecutableCandidates(
+    options,
+    currentPlatform(),
+    await resolvePlaywrightFirefoxExecutablePath()
+  );
+  let lastError: unknown;
 
-  try {
-    const wsEndpoint = await waitForFirefoxBiDiEndpoint(proc, host, port, 15_000);
-    const connection = await connectBidiFromWsEndpoint(wsEndpoint, options.sessionId);
-    return {
-      client: connection.client,
-      ownsSession: connection.ownsSession,
-      process: proc,
-      unregisterTestBrowserProcess,
-      userDataDir
-    };
-  } catch (error) {
-    await cleanupFirefoxProcess(proc, userDataDir, unregisterTestBrowserProcess);
-    throw error;
+  for (const executable of executableCandidates) {
+    try {
+      await assertFirefoxExecutable(executable);
+    } catch (error) {
+      if (options.executablePath) {
+        throw error;
+      }
+      lastError = error;
+      continue;
+    }
+
+    const host = options.host ?? "127.0.0.1";
+    const port = options.port ?? await pickFreePort();
+    const args = buildFirefoxLaunchArgs(options, userDataDir, port);
+    const proc = spawn(executable, args, {
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const unregisterTestBrowserProcess = registerTestBrowserProcessForCleanup(proc, userDataDir);
+
+    try {
+      const wsEndpoint = await waitForFirefoxBiDiEndpoint(proc, host, port, 15_000);
+      const connection = await connectBidiFromWsEndpoint(wsEndpoint, options.sessionId);
+      return {
+        client: connection.client,
+        ownsSession: connection.ownsSession,
+        process: proc,
+        unregisterTestBrowserProcess,
+        userDataDir
+      };
+    } catch (error) {
+      lastError = error;
+      await cleanupFirefoxProcess(proc, userDataDir, unregisterTestBrowserProcess);
+      if (options.executablePath) {
+        throw error;
+      }
+    }
   }
+
+  await rm(userDataDir, { force: true, recursive: true }).catch(() => {});
+  throw lastError ?? new Error("Unable to launch a Firefox BiDi browser.");
 }
 
 async function cleanupFirefoxProcess(
@@ -4313,14 +4366,80 @@ export function buildFirefoxLaunchArgs(
   ];
 }
 
-function defaultFirefoxExecutable(): string {
-  switch (process.platform) {
+export function resolveFirefoxExecutableCandidates(
+  options: Pick<BrowserConnectOptions, "executablePath">,
+  platform = currentPlatform(),
+  playwrightExecutablePath?: string,
+  fileExistsFn: (path: string) => boolean = fileExists
+): string[] {
+  if (options.executablePath) {
+    return [options.executablePath];
+  }
+
+  return filterExistingFirefoxExecutableCandidates(
+    defaultFirefoxExecutableCandidates(platform, playwrightExecutablePath),
+    platform,
+    fileExistsFn
+  );
+}
+
+function defaultFirefoxExecutableCandidates(
+  platform: string,
+  playwrightExecutablePath?: string
+): string[] {
+  const candidates = playwrightExecutablePath ? [playwrightExecutablePath] : [];
+  switch (platform) {
     case "darwin":
-      return "/Applications/Firefox.app/Contents/MacOS/firefox";
+      candidates.push(
+        "/Applications/Firefox.app/Contents/MacOS/firefox",
+        "/Applications/Firefox Nightly.app/Contents/MacOS/firefox"
+      );
+      return candidates;
     case "win32":
-      return "C:\\Program Files\\Mozilla Firefox\\firefox.exe";
+      candidates.push(
+        "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+        "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe"
+      );
+      return candidates;
     default:
-      return "firefox";
+      candidates.push("firefox");
+      return candidates;
+  }
+}
+
+function filterExistingFirefoxExecutableCandidates(
+  candidates: string[],
+  platform: string,
+  fileExistsFn: (path: string) => boolean
+): string[] {
+  if (platform === "linux") {
+    return candidates;
+  }
+
+  const existing = candidates.filter(fileExistsFn);
+  return existing.length > 0 ? existing : candidates;
+}
+
+function fileExists(path: string): boolean {
+  try {
+    accessSync(path, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function currentPlatform(): string {
+  return process.platform;
+}
+
+async function resolvePlaywrightFirefoxExecutablePath(): Promise<string | undefined> {
+  try {
+    const playwright = await import("playwright");
+    const executablePath = playwright.firefox?.executablePath?.();
+    return typeof executablePath === "string" && executablePath ? executablePath : undefined;
+  } catch {
+    return undefined;
   }
 }
 
