@@ -4375,7 +4375,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async tap(selector: LocatorSelector[], options?: TapOptions): Promise<void> {
     const point = await this.resolveActionPoint({ chain: selector }, options, true);
-    await this.touchscreenTap(point.x, point.y);
+    await this.withPointerActionModifiers(options?.modifiers, async () => {
+      if (options?.trial) {
+        return;
+      }
+      await this.touchscreenTap(point.x, point.y);
+    });
   }
 
   on<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): () => void {
@@ -5126,6 +5131,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async touchscreenTap(x: number, y: number): Promise<void> {
+    const modifiers = keyboardModifierMask(this.activePointerModifiers());
     await (
       this.options.client.Input as typeof this.options.client.Input & {
         dispatchTouchEvent(options: {
@@ -5137,7 +5143,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     ).dispatchTouchEvent({
       type: "touchStart",
       touchPoints: [{ x: Math.round(x), y: Math.round(y) }],
-      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+      modifiers
     });
     await (
       this.options.client.Input as typeof this.options.client.Input & {
@@ -5150,7 +5156,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     ).dispatchTouchEvent({
       type: "touchEnd",
       touchPoints: [],
-      modifiers: keyboardModifierMask(this.pressedKeyboardModifiers)
+      modifiers
     });
     this.currentMousePosition = { x, y };
   }
@@ -6102,7 +6108,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async tapReference(reference: ProtocolElementHandleReference, options?: TapOptions): Promise<void> {
     const point = await this.resolveActionPointReference(reference, options, true);
-    await this.touchscreenTap(point.x, point.y);
+    await this.withPointerActionModifiers(options?.modifiers, async () => {
+      if (options?.trial) {
+        return;
+      }
+      await this.touchscreenTap(point.x, point.y);
+    });
   }
 
   async setCheckedReference(

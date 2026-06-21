@@ -51,6 +51,7 @@ import type {
   DispatchEventOptions,
   FillOptions,
   HoverOptions,
+  KeyboardModifier,
   MouseButton,
   PageCloseOptions,
   PageGotoOptions,
@@ -1735,6 +1736,29 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     };
   }
 
+  private async withTapModifiers<TResult>(
+    modifiers: KeyboardModifier[] | undefined,
+    action: () => Promise<TResult>
+  ): Promise<TResult> {
+    const modifiersToRelease: KeyboardModifier[] = [];
+    for (const modifier of modifiers ?? []) {
+      const normalized = resolveSmartModifierString(modifier);
+      if (!isKeyboardModifier(normalized) || this.pressedKeyboardModifiers.has(normalized)) {
+        continue;
+      }
+      await this.keyboardDown(normalized);
+      modifiersToRelease.push(normalized);
+    }
+
+    try {
+      return await action();
+    } finally {
+      for (let index = modifiersToRelease.length - 1; index >= 0; index -= 1) {
+        await this.keyboardUp(modifiersToRelease[index]!);
+      }
+    }
+  }
+
   async touchscreenTap(x: number, y: number): Promise<void> {
     await this.client.inputPerformActions({
       context: this.contextId,
@@ -1767,7 +1791,12 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async tap(selector: LocatorSelector[], options?: TapOptions): Promise<void> {
     const point = await this.resolveActionPoint({ chain: selector }, options, true);
-    await this.touchscreenTap(point.x, point.y);
+    await this.withTapModifiers(options?.modifiers, async () => {
+      if (options?.trial) {
+        return;
+      }
+      await this.touchscreenTap(point.x, point.y);
+    });
   }
 
   on<K extends RawPageEventName>(event: K, listener: RawPageEventListener<K>): () => void {
@@ -2464,7 +2493,12 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       ...(options?.position ? { position: options.position } : {}),
       waitForEnabled: true
     });
-    await this.touchscreenTap(point.x, point.y);
+    await this.withTapModifiers(options?.modifiers, async () => {
+      if (options?.trial) {
+        return;
+      }
+      await this.touchscreenTap(point.x, point.y);
+    });
   }
 
   async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
