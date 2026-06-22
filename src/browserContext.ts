@@ -713,6 +713,10 @@ export class RoxyBrowserContext implements BrowserContext {
     return this.routeHandlers.length > 0;
   }
 
+  _hasWebSocketRoutes(): boolean {
+    return this.websocketRouteHandlers.length > 0;
+  }
+
   _hasRouteInterception(): boolean {
     return this.routeHandlers.length > 0 || this.websocketRouteHandlers.length > 0;
   }

@@ -295,7 +295,155 @@ describe("page websocket contract e2e", () => {
       expect((await error).message).toContain("Target page, context or browser has been closed");
     });
   });
+
+  it("routes websocket messages on the page and context like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.routeWebSocket(/ws1/, (ws) => {
+        ws.onMessage(() => {
+          ws.send("page-mock-1");
+        });
+      });
+      await page.routeWebSocket(/ws1/, (ws) => {
+        ws.onMessage(() => {
+          ws.send("page-mock-2");
+        });
+      });
+      await page.context().routeWebSocket(/.*/, (ws) => {
+        ws.onMessage(() => {
+          ws.send("context-mock-1");
+        });
+        ws.onMessage(() => {
+          ws.send("context-mock-2");
+        });
+      });
+
+      await installLoggedWebSocket(page, `ws://${server.host()}/ws1`, "ws1");
+      await page.evaluate(() => {
+        window["ws"].send("request");
+      });
+      await page.waitForFunction(() => window["log"]?.length === 2);
+      expect(await page.evaluate(() => window["log"])).toEqual([
+        "open",
+        "message:page-mock-2"
+      ]);
+
+      await installLoggedWebSocket(page, `ws://${server.host()}/ws2`, "ws2");
+      await page.evaluate(() => {
+        window["ws"].send("request");
+      });
+      await page.waitForFunction(() => window["log"]?.length === 2);
+      expect(await page.evaluate(() => window["log"])).toEqual([
+        "open",
+        "message:context-mock-2"
+      ]);
+    });
+  });
+
+  it("works without an upstream server route like Playwright", async () => {
+    await withPage(async (page) => {
+      let routeRef: import("../../../src/types/api.js").WebSocketRoute | null = null;
+      await page.routeWebSocket(/.*/, (ws) => {
+        ws.onMessage((message) => {
+          if (String(message) === "to-respond") {
+            ws.send("response");
+          }
+        });
+        routeRef = ws;
+      });
+
+      await installLoggedWebSocket(page, `ws://${server.host()}/ws`, "mock");
+      await page.evaluate(async () => {
+        window["ws"].send("to-respond");
+        window["ws"].send("to-block");
+        window["ws"].send("to-respond");
+      });
+      await page.waitForFunction(() => window["log"]?.length === 3);
+      expect(await page.evaluate(() => window["log"])).toEqual([
+        "open",
+        "message:response",
+        "message:response"
+      ]);
+
+      routeRef!.send("another");
+      await routeRef!.close({ code: 3008, reason: "oops" });
+      await page.waitForFunction(() => window["log"]?.length === 5);
+      expect(await page.evaluate(() => window["log"])).toEqual([
+        "open",
+        "message:response",
+        "message:response",
+        "message:another",
+        "close:3008:oops:true"
+      ]);
+    });
+  });
+
+  it("keeps websocket routes open with an empty handler like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.routeWebSocket(/.*/, () => {});
+
+      await installLoggedWebSocket(page, `ws://${server.host()}/ws`, "empty");
+      await page.evaluate(() => {
+        window["ws"].send("hi");
+        window["ws"].send("hi2");
+      });
+      await page.waitForTimeout(100);
+
+      expect(await page.evaluate(() => window["log"])).toEqual(["open"]);
+    });
+  });
+
+  it("exposes websocket protocols to route handlers like Playwright", async () => {
+    await withPage(async (page) => {
+      const routes: Array<{ url: string; protocols: string[] }> = [];
+      await page.routeWebSocket(/.*/, (ws) => {
+        routes.push({
+          url: ws.url(),
+          protocols: ws.protocols()
+        });
+      });
+
+      await page.setContent("<div>ws protocols</div>");
+      await page.evaluate((host) => {
+        new WebSocket(`ws://${host}/ws-none`);
+        new WebSocket(`ws://${host}/ws-string`, "chat.v1");
+        new WebSocket(`ws://${host}/ws-array`, ["chat.v2", "chat.v1"]);
+      }, server.host());
+
+      await expect.poll(() => routes.length).toBe(3);
+      expect(routes).toEqual([
+        { url: `ws://${server.host()}/ws-none`, protocols: [] },
+        { url: `ws://${server.host()}/ws-string`, protocols: ["chat.v1"] },
+        { url: `ws://${server.host()}/ws-array`, protocols: ["chat.v2", "chat.v1"] }
+      ]);
+    });
+  });
 });
+
+async function installLoggedWebSocket(
+  page: Awaited<ReturnType<typeof withPage>> extends never ? never : any,
+  url: string,
+  tag: string
+): Promise<void> {
+  await page.setContent(`<div>${tag}</div>`);
+  await page.evaluate((socketUrl) => {
+    window["log"] = [];
+    const socket = new WebSocket(socketUrl);
+    socket.addEventListener("open", () => {
+      window["log"].push("open");
+    });
+    socket.addEventListener("message", (event) => {
+      window["log"].push(`message:${String(event.data)}`);
+    });
+    socket.addEventListener("close", (event) => {
+      window["log"].push(`close:${event.code}:${event.reason}:${event.wasClean}`);
+    });
+    window["ws"] = socket;
+    window["wsOpened"] = new Promise((resolve) => {
+      socket.addEventListener("open", () => resolve(undefined), { once: true });
+    });
+  }, url);
+  await page.evaluate(() => window["wsOpened"]);
+}
 
 class MinimalWebSocketServer {
   private autoCloseAfterFirstMessage = true;
@@ -343,15 +491,19 @@ class MinimalWebSocketServer {
       }
       socket.once("data", () => {
         if (initialMessage === null) {
-          socket.write(encodeTextFrame("incoming"));
+          if (!socket.destroyed && socket.writable) {
+            socket.write(encodeTextFrame("incoming"));
+          }
         }
         if (server.nextConnectionCloseFrame) {
-          socket.write(server.nextConnectionCloseFrame);
-          socket.end();
+          if (!socket.destroyed && socket.writable) {
+            socket.write(server.nextConnectionCloseFrame);
+            socket.end();
+          }
           server.nextConnectionCloseFrame = null;
         } else if (server.autoCloseAfterFirstMessage) {
           setTimeout(() => {
-            if (!socket.destroyed) {
+            if (!socket.destroyed && socket.writable) {
               socket.write(Buffer.from([0x88, 0x00]));
             }
           }, 50);
@@ -362,7 +514,7 @@ class MinimalWebSocketServer {
         if (!containsCloseFrame(data)) {
           return;
         }
-        if (!socket.destroyed) {
+        if (!socket.destroyed && socket.writable) {
           socket.write(Buffer.from([0x88, 0x00]));
           socket.end();
         }
@@ -373,6 +525,10 @@ class MinimalWebSocketServer {
 
   url(): string {
     return `ws://127.0.0.1:${this.port}/ws`;
+  }
+
+  host(): string {
+    return `127.0.0.1:${this.port}`;
   }
 
   badUrl(): string {

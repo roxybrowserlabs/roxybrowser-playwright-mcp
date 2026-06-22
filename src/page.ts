@@ -263,6 +263,7 @@ interface RoutedWebSocketEventCall {
   kind: "close" | "message";
   message?: string;
   reason?: string;
+  wasClean?: boolean;
 }
 
 type RoutedWebSocketOpenDecision =
@@ -274,6 +275,7 @@ interface RoutedWebSocketCommand {
   kind: "close" | "message";
   message?: string;
   reason?: string;
+  wasClean?: boolean;
 }
 
 interface HostedWebSocketRouteState {
@@ -286,6 +288,11 @@ interface HostedWebSocketRouteState {
   serverConnected: boolean;
   serverMessageHandler: ((message: string | Buffer) => any) | null;
   url: string;
+}
+
+interface RouteBridgeInstallOptions {
+  interceptFetch?: boolean;
+  interceptWebSocket?: boolean;
 }
 
 type WebSocketEventMap = {
@@ -912,6 +919,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private fileChooserInterceptionPromise: Promise<void> | null = null;
   private readonly pendingFileChoosers: PendingFileChooserState[] = [];
   private routeInterceptorsInstalled = false;
+  private websocketRouteBridgeInstalled = false;
   private routePumpStarted = false;
   private readonly routeHandlers: RouteHandlerEntry[] = [];
   private readonly websocketRouteHandlers: WebSocketRouteHandlerEntry[] = [];
@@ -5902,15 +5910,20 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private async installRouteInterceptors(): Promise<void> {
     if (!this.routeInterceptorsInstalled) {
       if (!this.adapter.setRequestInterceptor) {
-        await this.addInitScript(installRouteBridge);
-        await this.evaluate(installRouteBridge);
-        await Promise.all(this.frames().map((frame) => frame.evaluate(installRouteBridge).catch(() => {})));
+        await this.installRouteBridge({
+          interceptFetch: true,
+          interceptWebSocket: true
+        });
       }
       this.routeInterceptorsInstalled = true;
     }
 
+    if (this.needsWebSocketRouteBridge()) {
+      await this.installWebSocketRouteBridge();
+    }
+
     await this.syncRouteInterception();
-    if (!this.adapter.setRequestInterceptor) {
+    if (!this.adapter.setRequestInterceptor || this.needsWebSocketRouteBridge()) {
       this.startRoutePump();
     }
   }
@@ -5938,6 +5951,27 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       return;
     }
     await this.syncRouteInterception();
+  }
+
+  private needsWebSocketRouteBridge(): boolean {
+    return this.websocketRouteHandlers.length > 0 || this.browserContext?._hasWebSocketRoutes() || false;
+  }
+
+  private async installWebSocketRouteBridge(): Promise<void> {
+    if (this.websocketRouteBridgeInstalled) {
+      return;
+    }
+    await this.installRouteBridge({
+      interceptFetch: false,
+      interceptWebSocket: true
+    });
+    this.websocketRouteBridgeInstalled = true;
+  }
+
+  private async installRouteBridge(options: RouteBridgeInstallOptions): Promise<void> {
+    await this.addInitScript(installRouteBridge, options);
+    await this.evaluate(installRouteBridge, options);
+    await Promise.all(this.frames().map((frame) => frame.evaluate(installRouteBridge, options).catch(() => {})));
   }
 
   private startRoutePump(): void {
@@ -6896,6 +6930,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       close: async (options = {}) => {
         state.commands.push({
           kind: "close",
+          wasClean: true,
           ...(options.code !== undefined ? { code: options.code } : {}),
           ...(options.reason !== undefined ? { reason: options.reason } : {})
         });
@@ -7761,11 +7796,13 @@ function base64ToUint8Array(value: string): Uint8Array {
   return bytes;
 }
 
-function installRouteBridge(): void {
+function installRouteBridge(options: RouteBridgeInstallOptions = {}): void {
   const globalState = globalThis as typeof globalThis & {
     __roxyRouteBridgeLocal?: {
       installed?: boolean;
+      fetchInstalled?: boolean;
       originalFetch?: typeof globalThis.fetch;
+      webSocketInstalled?: boolean;
       originalWebSocket?: typeof globalThis.WebSocket;
     };
   };
@@ -7806,13 +7843,48 @@ function installRouteBridge(): void {
     websocketOpenResults: {}
   });
   const localState = globalState.__roxyRouteBridgeLocal ?? (globalState.__roxyRouteBridgeLocal = {});
-  if (localState.installed) {
-    return;
-  }
-
   localState.installed = true;
   localState.originalFetch ??= globalThis.fetch.bind(globalThis);
   localState.originalWebSocket ??= globalThis.WebSocket;
+
+  const normalizeProtocols = (protocols?: string | string[]): string[] => {
+    if (protocols === undefined) {
+      return [];
+    }
+    return Array.isArray(protocols) ? [...protocols] : [protocols];
+  };
+
+  const bytesToBase64 = (value: Uint8Array): string => {
+    let binary = "";
+    for (const byte of value) {
+      binary += String.fromCharCode(byte);
+    }
+    return btoa(binary);
+  };
+
+  const base64ToBytes = (value: string): Uint8Array => {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  };
+
+  const serializeWebSocketPayload = (
+    data: string | ArrayBufferLike | Blob | ArrayBufferView
+  ): string => {
+    if (typeof data === "string") {
+      return data;
+    }
+    if (ArrayBuffer.isView(data)) {
+      return new TextDecoder().decode(data);
+    }
+    if (data instanceof ArrayBuffer) {
+      return new TextDecoder().decode(new Uint8Array(data));
+    }
+    return String(data);
+  };
 
   const headersToObject = (headers: Headers): Record<string, string> => {
     const normalized: Record<string, string> = {};
@@ -7833,76 +7905,79 @@ function installRouteBridge(): void {
     }
   };
 
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = new Request(input, init);
-    const url = request.url;
-    if (url.startsWith("data:")) {
-      return localState.originalFetch!(input, init);
-    }
+  if (options.interceptFetch && !localState.fetchInstalled) {
+    localState.fetchInstalled = true;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const url = request.url;
+      if (url.startsWith("data:")) {
+        return localState.originalFetch!(input, init);
+      }
 
-    const method = request.method.toUpperCase();
-    const postDataBufferBase64 =
-      method === "GET" || method === "HEAD"
-        ? null
-        : await request.clone().arrayBuffer().then((buffer) => uint8ArrayToBase64(new Uint8Array(buffer))).catch(() => null);
-    const postData =
-      postDataBufferBase64 === null ? null : new TextDecoder().decode(base64ToUint8Array(postDataBufferBase64));
-    const requestId = `request:${++bridge.requestNextId}`;
-    bridge.requestCalls.push({
-      id: requestId,
-      url,
-      method,
-      headers: headersToObject(request.headers),
-      postData,
-      ...(postDataBufferBase64 !== null ? { postDataBufferBase64 } : {}),
-      isNavigationRequest: false,
-      resourceType: "fetch"
-    });
-
-    const decision = await waitForDecision(requestId);
-    if (decision.action === "abort") {
-      throw new Error(decision.errorCode ?? "Request aborted");
-    }
-    if (decision.action === "fulfill") {
-      return new Response(decision.body, {
-        headers: decision.headers,
-        status: decision.status,
-        statusText: decision.statusText
+      const method = request.method.toUpperCase();
+      const postDataBufferBase64 =
+        method === "GET" || method === "HEAD"
+          ? null
+          : await request.clone().arrayBuffer().then((buffer) => bytesToBase64(new Uint8Array(buffer))).catch(() => null);
+      const postData =
+        postDataBufferBase64 === null ? null : new TextDecoder().decode(base64ToBytes(postDataBufferBase64));
+      const requestId = `request:${++bridge.requestNextId}`;
+      bridge.requestCalls.push({
+        id: requestId,
+        url,
+        method,
+        headers: headersToObject(request.headers),
+        postData,
+        ...(postDataBufferBase64 !== null ? { postDataBufferBase64 } : {}),
+        isNavigationRequest: false,
+        resourceType: "fetch"
       });
-    }
 
-    const continuedMethod = decision.method.toUpperCase();
-    const continuedBodyBytes = decision.postDataBufferBase64
-      ? base64ToUint8Array(decision.postDataBufferBase64)
-      : null;
-    const continuedBodyBuffer = continuedBodyBytes
-      ? (() => {
-          const buffer = new Uint8Array(continuedBodyBytes.byteLength);
-          buffer.set(continuedBodyBytes);
-          return buffer.buffer;
-        })()
-      : null;
-    const continuedBody =
-      continuedMethod === "GET" || continuedMethod === "HEAD"
-        ? undefined
-        : continuedBodyBuffer
-          ? new Blob([continuedBodyBuffer])
-          : decision.postData ?? undefined;
-    return localState.originalFetch!(decision.url, {
-      ...(continuedBody !== undefined ? { body: continuedBody } : {}),
-      cache: "no-store",
-      credentials: request.credentials,
-      headers: decision.headers,
-      integrity: request.integrity,
-      keepalive: request.keepalive,
-      method: continuedMethod,
-      mode: request.mode,
-      redirect: request.redirect,
-      referrer: request.referrer,
-      referrerPolicy: request.referrerPolicy,
-      signal: request.signal
-    });
-  }) as typeof globalThis.fetch;
+      const decision = await waitForDecision(requestId);
+      if (decision.action === "abort") {
+        throw new Error(decision.errorCode ?? "Request aborted");
+      }
+      if (decision.action === "fulfill") {
+        return new Response(decision.body, {
+          headers: decision.headers,
+          status: decision.status,
+          statusText: decision.statusText
+        });
+      }
+
+      const continuedMethod = decision.method.toUpperCase();
+      const continuedBodyBytes = decision.postDataBufferBase64
+        ? base64ToBytes(decision.postDataBufferBase64)
+        : null;
+      const continuedBodyBuffer = continuedBodyBytes
+        ? (() => {
+            const buffer = new Uint8Array(continuedBodyBytes.byteLength);
+            buffer.set(continuedBodyBytes);
+            return buffer.buffer;
+          })()
+        : null;
+      const continuedBody =
+        continuedMethod === "GET" || continuedMethod === "HEAD"
+          ? undefined
+          : continuedBodyBuffer
+            ? new Blob([continuedBodyBuffer])
+            : decision.postData ?? undefined;
+      return localState.originalFetch!(decision.url, {
+        ...(continuedBody !== undefined ? { body: continuedBody } : {}),
+        cache: "no-store",
+        credentials: request.credentials,
+        headers: decision.headers,
+        integrity: request.integrity,
+        keepalive: request.keepalive,
+        method: continuedMethod,
+        mode: request.mode,
+        redirect: request.redirect,
+        referrer: request.referrer,
+        referrerPolicy: request.referrerPolicy,
+        signal: request.signal
+      });
+    }) as typeof globalThis.fetch;
+  }
 
   class RoxyInterceptedWebSocket extends EventTarget {
     static readonly CONNECTING = 0;
@@ -7924,12 +7999,12 @@ function installRouteBridge(): void {
     private readonly _protocolsArg: string | string[] | undefined;
     private _nativeSocket: globalThis.WebSocket | null = null;
 
-    constructor(url: string | URL, protocols?: string | string[]) {
-      super();
-      this.url = String(url);
-      this._protocolsArg = protocols;
-      this._socketId = `websocket:${++bridge.websocketOpenNextId}`;
-      void this._initialize(normalizeWebSocketProtocols(protocols));
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super();
+        this.url = String(url);
+        this._protocolsArg = protocols;
+        this._socketId = `websocket:${++bridge.websocketOpenNextId}`;
+        void this._initialize(normalizeProtocols(protocols));
     }
 
     close(code?: number, reason?: string): void {
@@ -7944,6 +8019,7 @@ function installRouteBridge(): void {
       bridge.websocketEventCalls.push({
         id: this._socketId,
         kind: "close",
+        wasClean: true,
         ...(code !== undefined ? { code } : {}),
         ...(reason !== undefined ? { reason } : {})
       });
@@ -7965,7 +8041,7 @@ function installRouteBridge(): void {
       bridge.websocketEventCalls.push({
         id: this._socketId,
         kind: "message",
-        message: serializePageWebSocketData(data)
+        message: serializeWebSocketPayload(data)
       });
     }
 
@@ -8022,7 +8098,8 @@ function installRouteBridge(): void {
         "close",
         new CloseEvent("close", {
           ...(command.code !== undefined ? { code: command.code } : {}),
-          ...(command.reason !== undefined ? { reason: command.reason } : {})
+          ...(command.reason !== undefined ? { reason: command.reason } : {}),
+          ...(command.wasClean !== undefined ? { wasClean: command.wasClean } : {})
         })
       );
     }
@@ -8067,7 +8144,10 @@ function installRouteBridge(): void {
     }
   };
 
-  globalThis.WebSocket = RoxyInterceptedWebSocket as unknown as typeof globalThis.WebSocket;
+  if (options.interceptWebSocket && !localState.webSocketInstalled) {
+    localState.webSocketInstalled = true;
+    globalThis.WebSocket = RoxyInterceptedWebSocket as unknown as typeof globalThis.WebSocket;
+  }
 }
 
 function serializeBindingError(error: unknown): {
