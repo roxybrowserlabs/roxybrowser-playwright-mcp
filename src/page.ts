@@ -928,6 +928,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       throw new Error("Page is not attached to a browser context.");
     },
     pages: () => [],
+    addInitScript: async () => {
+      throw new Error("Page is not attached to a browser context.");
+    },
     addCookies: async () => {
       throw new Error("Page is not attached to a browser context.");
     },

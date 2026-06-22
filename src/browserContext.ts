@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoxyAPIRequestContext } from "./apiRequestContext.js";
@@ -7,6 +7,7 @@ import { RoxyBrowserContextClockDelegate } from "./browserContextClock.js";
 import { RoxyClock } from "./clock.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import { RoxyPage } from "./page.js";
+import { serializePageFunction } from "./evaluation.js";
 import type { RouteHandlerEntry, RouteMatcher } from "./routeHandler.js";
 import { urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
@@ -16,6 +17,7 @@ import type {
   ProtocolPageAdapter
 } from "./protocol/adapter.js";
 import type { BrowserContext, Clock, Dialog, Page, Request, Response } from "./types/api.js";
+import type { Disposable, PageFunction } from "./types/api.js";
 import type {
   BrowserContextEventListener,
   BrowserContextEventMap,
@@ -51,6 +53,11 @@ interface WebSocketRouteHandlerEntry {
   handler: (websocketroute: import("./types/api.js").WebSocketRoute) => Promise<any> | any;
 }
 
+interface ContextInitScriptEntry {
+  source: string;
+  disposablesByPage: WeakMap<RoxyPage, Disposable>;
+}
+
 export class RoxyBrowserContext implements BrowserContext {
   private readonly pageSet = new Set<RoxyPage>();
   private readonly pageByAdapter = new Map<ProtocolPageAdapter, RoxyPage>();
@@ -62,6 +69,7 @@ export class RoxyBrowserContext implements BrowserContext {
   private readonly pageEventDisposers = new WeakMap<RoxyPage, Array<() => void>>();
   private readonly routeHandlers: RouteHandlerEntry[] = [];
   private readonly websocketRouteHandlers: WebSocketRouteHandlerEntry[] = [];
+  private readonly initScripts = new Set<ContextInitScriptEntry>();
   private readonly routeMatcherIds = new WeakMap<object, string>();
   private readonly disposeAdapterPageListener: (() => void) | null;
   private closed = false;
@@ -93,6 +101,32 @@ export class RoxyBrowserContext implements BrowserContext {
     const page = await this.registerPage(pageAdapter);
     this.emitPageEventOnce(page);
     return page;
+  }
+
+  async addInitScript<Arg>(
+    script: PageFunction<Arg, any> | { path?: string; content?: string },
+    arg?: Arg
+  ): Promise<Disposable> {
+    const source = await evaluationScript(script, arg as any);
+    const entry: ContextInitScriptEntry = {
+      source,
+      disposablesByPage: new WeakMap<RoxyPage, Disposable>()
+    };
+    this.initScripts.add(entry);
+    await Promise.all(Array.from(this.pageSet, async (page) => {
+      const disposable = await page.addInitScript(source);
+      entry.disposablesByPage.set(page, disposable);
+    }));
+    return {
+      dispose: async () => {
+        if (!this.initScripts.delete(entry)) {
+          return;
+        }
+        await Promise.all(Array.from(this.pageSet, async (page) => {
+          await entry.disposablesByPage.get(page)?.dispose();
+        }));
+      }
+    };
   }
 
   async addCookies(cookies: ReadonlyArray<{
@@ -454,6 +488,10 @@ export class RoxyBrowserContext implements BrowserContext {
     this.attachPageEventBubbling(page);
 
     try {
+      for (const entry of this.initScripts) {
+        const disposable = await page.addInitScript(entry.source);
+        entry.disposablesByPage.set(page, disposable);
+      }
       await page._ensurePlaywrightBuiltinsInstalled();
       await this.clockDelegate.attachPage(page);
       if (this.options.recordVideo) {
@@ -747,4 +785,29 @@ function isClosedPageRegistrationError(error: unknown): boolean {
     || message.includes("connection closed")
     || message.includes("target closed")
   );
+}
+
+async function evaluationScript<Arg>(
+  script: string | ((arg: Arg) => unknown) | { path?: string; content?: string },
+  arg?: Arg
+): Promise<string> {
+  if (typeof script === "function") {
+    const source = serializePageFunction(script as unknown as (arg: unknown) => unknown);
+    const argString = Object.is(arg, undefined) ? "undefined" : JSON.stringify(arg);
+    return `(${source})(${argString})`;
+  }
+  if (arg !== undefined) {
+    throw new Error("Cannot evaluate a string with arguments");
+  }
+  if (typeof script === "string") {
+    return script;
+  }
+  if (script.content !== undefined) {
+    return script.content;
+  }
+  if (script.path !== undefined) {
+    const source = await readFile(script.path, "utf8");
+    return `${source}\n//# sourceURL=${script.path.replace(/\n/g, "")}`;
+  }
+  throw new Error("Either path or content property must be present");
 }

@@ -163,6 +163,7 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
     frameId: string | null;
     isMultiple: boolean;
   }): Promise<void>;
+  initScriptDisposables: Array<{ dispose: ReturnType<typeof vi.fn> }>;
 } {
   const locatorAdapter = createLocatorAdapterStub();
   const elementHandleAdapter = createElementHandleAdapterStub();
@@ -170,6 +171,7 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
   const fileChooserOpenedListeners = new Set<
     NonNullable<ProtocolPageAdapter["onFileChooserOpened"]> extends (listener: infer T) => () => void ? T : never
   >();
+  const initScriptDisposables: Array<{ dispose: ReturnType<typeof vi.fn> }> = [];
 
   return {
     goto: vi.fn(
@@ -224,7 +226,13 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
     title: vi.fn(async () => "Example title"),
     content: vi.fn(async () => "<html></html>"),
     setContent: vi.fn(async () => {}),
-    addInitScript: vi.fn(async () => {}),
+    addInitScript: vi.fn(async () => {
+      const disposable = {
+        dispose: vi.fn(async () => {})
+      };
+      initScriptDisposables.push(disposable);
+      return disposable;
+    }),
     evaluate: vi.fn(async <TResult>() => ({ ok: true } as TResult)),
     addScriptTag: vi.fn(async () => elementHandleAdapter),
     addStyleTag: vi.fn(async () => elementHandleAdapter),
@@ -343,6 +351,7 @@ export function createPageAdapterStub(): ProtocolPageAdapter & {
       for (const listener of Array.from(fileChooserOpenedListeners)) {
         await listener(payload);
       }
-    }
+    },
+    initScriptDisposables
   };
 }

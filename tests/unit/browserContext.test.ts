@@ -111,6 +111,46 @@ describe("RoxyBrowserContext", () => {
     expect(page.context()).toBe(context);
   });
 
+  it("applies browser context init scripts to existing and future pages like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const firstPageAdapter = createPageAdapterStub();
+    const secondPageAdapter = createPageAdapterStub();
+    adapter.newPage = vi
+      .fn()
+      .mockResolvedValueOnce(firstPageAdapter)
+      .mockResolvedValueOnce(secondPageAdapter);
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const firstPage = await context.newPage();
+    const disposable = await context.addInitScript(() => {
+      window["injected"] = 123;
+    });
+    const secondPage = await context.newPage();
+
+    expect(firstPage).toBeInstanceOf(RoxyPage);
+    expect(secondPage).toBeInstanceOf(RoxyPage);
+    expect(
+      vi.mocked(firstPageAdapter.addInitScript).mock.calls.some(([source]) => source.includes('window["injected"] = 123'))
+    ).toBe(true);
+    expect(
+      vi.mocked(secondPageAdapter.addInitScript).mock.calls.some(([source]) => source.includes('window["injected"] = 123'))
+    ).toBe(true);
+
+    await disposable.dispose();
+
+    expect(firstPageAdapter.initScriptDisposables.some((entry) => entry.dispose.mock.calls.length === 1)).toBe(true);
+    expect(secondPageAdapter.initScriptDisposables.some((entry) => entry.dispose.mock.calls.length === 1)).toBe(true);
+  });
+
   it("emits popup events for discovered pages and wires opener()", async () => {
     const adapter = createBrowserContextAdapterStub();
     const openerAdapter = createPageAdapterStub();

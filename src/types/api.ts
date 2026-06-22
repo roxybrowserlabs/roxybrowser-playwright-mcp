@@ -206,6 +206,10 @@ export interface APIRequestFetchOptions extends APIRequestOptions {
 export interface BrowserContext {
   clock: Clock;
   request: APIRequestContext;
+  addInitScript<Arg>(
+    script: PageFunction<Arg, any> | { path?: string; content?: string },
+    arg?: Arg
+  ): Promise<Disposable>;
   addCookies(cookies: ReadonlyArray<{
     name: string;
     value: string;
