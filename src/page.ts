@@ -6661,9 +6661,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         return buffer ? Buffer.from(buffer) : null;
       },
       postDataJSON: () =>
-        parsePostData(
+        parseObservedRequestPostData(
           deserializeSerializedPostData(current().postData, current().postDataBufferBase64 ?? null)
-            .text
+            .text,
+          current().headers
         ),
       redirectedFrom: () => currentObserved()?.request.redirectedFrom() ?? null,
       redirectedTo: () => currentObserved()?.request.redirectedTo() ?? null,

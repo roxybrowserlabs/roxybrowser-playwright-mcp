@@ -3480,6 +3480,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
       this.flushPendingResponseEvent(event.requestId);
       const request = this.requestMetadata.get(event.requestId);
+      if (request?.type === "Document" && request.frameId) {
+        this.loadingFrameIds.delete(request.frameId);
+        this.updateFrameLifecycleState(request.frameId, {
+          loadFired: true
+        });
+        if (this.isMainFrameId(request.frameId)) {
+          this.domContentLoaded = true;
+        }
+        this.loadFired = this.loadingFrameIds.size === 0;
+      }
       if (request?.isPreflight || request?.isFavicon) {
         this.ensureResponseBodyState(event.requestId).resolveReady();
         onRequestSettled(event.requestId);
@@ -3553,6 +3563,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         resourceType: toPlaywrightResourceType(request?.type),
         url: request?.url ?? "unknown://request"
       });
+      this.flushWaiters();
     });
 
     const popupFallbackBridgeSource = this.installPopupFallbackBridge();
@@ -3932,14 +3943,23 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         document.close();
       }`,
       { html }
-    );
-    await this.evaluateFunction<void>(HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE);
+    ).catch((error) => {
+      if (!isSetContentEvaluationInterruption(error)) {
+        throw error;
+      }
+    });
 
     if (waitUntil !== "commit") {
       await this.waitForLoadState(waitUntil, options.timeout, undefined, {
         skipDocumentReadyStateSync: true
       });
     }
+
+    await this.evaluateFunction<void>(HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE).catch((error) => {
+      if (!isSetContentEvaluationInterruption(error)) {
+        throw error;
+      }
+    });
   }
 
   async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {
@@ -8027,7 +8047,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         ) {
           throw error;
         }
-        return;
+        if (isIgnorableFetchInterceptionError(error)) {
+          return;
+        }
       }
       return;
     }
@@ -11166,6 +11188,28 @@ function isDetachedNavigationSessionError(error: unknown): boolean {
     || message.includes("Session with given id not found")
     || message.includes("WebSocket is not open")
     || message.includes("Target page, context or browser has been closed")
+  );
+}
+
+function isIgnorableFetchInterceptionError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  return (
+    message.includes("Invalid Interception Id") ||
+    message.includes("No resource with given identifier found") ||
+    message.includes("Session with given id not found") ||
+    message.includes("Target closed") ||
+    message.includes("Target page, context or browser has been closed") ||
+    message.includes("WebSocket connection closed") ||
+    message.includes("WebSocket is not open")
+  );
+}
+
+function isSetContentEvaluationInterruption(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  return (
+    message.includes("Execution context was destroyed") ||
+    message.includes("Cannot find context with specified id") ||
+    message.includes("Frame execution context is not available")
   );
 }
 
