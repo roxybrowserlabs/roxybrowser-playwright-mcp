@@ -1389,7 +1389,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           return false;
         }
         if (!options.url) {
-          return navigationObserved || current.toString() !== initialUrl;
+          return navigationObserved || sawCrossDocumentNavigation || current.toString() !== initialUrl;
         }
         return this.matchesURL(current, options.url);
       };
@@ -4210,12 +4210,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           : this.mainFrame();
         if (targetFrame instanceof RoxyFrame && navigation.url) {
           const currentSnapshot = targetFrame.snapshotState();
+          let shouldEmitNavigation = true;
           if (currentSnapshot.url !== navigation.url) {
             targetFrame.setSnapshot({
               ...currentSnapshot,
               url: navigation.url,
               ...(frameId ? { nativeFrameId: currentSnapshot.nativeFrameId ?? frameId } : {})
             });
+          } else if (
+            frameId &&
+            currentSnapshot.nativeFrameId === undefined
+          ) {
+            targetFrame.setSnapshot({
+              ...currentSnapshot,
+              nativeFrameId: frameId
+            });
+          } else if (!this.eventObservations.has("framenavigated")) {
+            shouldEmitNavigation = false;
+          }
+          if (shouldEmitNavigation) {
             this.emit("framenavigated", targetFrame);
           }
         }

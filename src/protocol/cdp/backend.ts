@@ -2236,6 +2236,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     Array<{ name: string; value: string }>
   >();
   private readonly fulfilledRequestIds = new Set<string>();
+  private readonly failedRouteErrorTexts = new Map<string, string>();
   private readonly ignoredRequestIds = new Set<string>();
   private readonly pausedFetchRequestIds = new Set<string>();
   private readonly continuedRequestHeaders = new Map<string, Array<{ name: string; value: string }>>();
@@ -3382,6 +3383,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.flushPendingRequestEvent(requestId);
         this.requestExtraInfoHeaders.delete(requestId);
         this.responseExtraInfoDiscardCounts.delete(requestId);
+        this.failedRouteErrorTexts.delete(requestId);
         this.requestMetadata.delete(requestId);
         this.continuedRequestUrls.delete(requestId);
       }
@@ -3495,6 +3497,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         onRequestSettled(event.requestId);
         return;
       }
+      const failureErrorText = this.failedRouteErrorTexts.get(event.requestId) ?? event.errorText;
       if (this.fulfilledRequestIds.has(event.requestId)) {
         this.ensureResponseBodyState(event.requestId).resolveReady();
         this.fulfilledRequestIds.delete(event.requestId);
@@ -3513,15 +3516,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (request?.responseStatus === 204) {
         if (request.type === "Document" && request.frameId && this.isMainFrameId(request.frameId)) {
           this.ensureResponseBodyState(event.requestId).markFailed(
-            new Error(formatNavigationFailureMessage(event.errorText || "Navigation failed.", request.url))
+            new Error(formatNavigationFailureMessage(failureErrorText || "Navigation failed.", request.url))
           );
           this.rejectNavigationFailureCaptures(
-            new Error(formatNavigationFailureMessage(event.errorText || "Navigation failed.", request.url)),
+            new Error(formatNavigationFailureMessage(failureErrorText || "Navigation failed.", request.url)),
             request.url
           );
           onRequestSettled(event.requestId);
           this.emit("requestfailed", {
-            errorText: event.errorText,
+            errorText: failureErrorText,
             ...(request.frameId ? { frameId: request.frameId } : {}),
             isNavigationRequest: request.isNavigationRequest ?? false,
             method: request.method,
@@ -3545,17 +3548,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         return;
       }
       this.ensureResponseBodyState(event.requestId).markFailed(
-        new Error(formatNavigationFailureMessage(event.errorText || "Network loading failed.", request?.url))
+        new Error(formatNavigationFailureMessage(failureErrorText || "Network loading failed.", request?.url))
       );
       if (request?.type === "Document" && request.frameId && this.isMainFrameId(request.frameId)) {
         this.rejectNavigationFailureCaptures(
-          new Error(formatNavigationFailureMessage(event.errorText || "Navigation failed.", request.url)),
+          new Error(formatNavigationFailureMessage(failureErrorText || "Navigation failed.", request.url)),
           request.url
         );
       }
       onRequestSettled(event.requestId);
       this.emit("requestfailed", {
-        errorText: event.errorText,
+        errorText: failureErrorText,
         ...(request?.frameId ? { frameId: request.frameId } : {}),
         isNavigationRequest: request?.isNavigationRequest ?? false,
         method: request?.method ?? "UNKNOWN",
@@ -8031,6 +8034,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           errorReason: cdpErrorReasonForRoute(decision.errorCode)
         })
       );
+      const failedRequestId = event.networkId ?? event.requestId;
+      this.failedRouteErrorTexts.set(
+        failedRequestId,
+        cdpFailureTextForRoute(decision.errorCode)
+      );
     } finally {
       this.pausedFetchRequestIds.delete(event.requestId);
     }
@@ -10193,6 +10201,39 @@ function cdpErrorReasonForRoute(errorCode?: string): FetchErrorReason {
       return "BlockedByResponse";
     default:
       return "Failed";
+  }
+}
+
+function cdpFailureTextForRoute(errorCode?: string): string {
+  switch ((errorCode ?? "failed").toLowerCase()) {
+    case "aborted":
+      return "net::ERR_ABORTED";
+    case "timedout":
+      return "net::ERR_TIMED_OUT";
+    case "accessdenied":
+      return "net::ERR_ACCESS_DENIED";
+    case "connectionclosed":
+      return "net::ERR_CONNECTION_CLOSED";
+    case "connectionreset":
+      return "net::ERR_CONNECTION_RESET";
+    case "connectionrefused":
+      return "net::ERR_CONNECTION_REFUSED";
+    case "connectionaborted":
+      return "net::ERR_CONNECTION_ABORTED";
+    case "connectionfailed":
+      return "net::ERR_CONNECTION_FAILED";
+    case "namenotresolved":
+      return "net::ERR_NAME_NOT_RESOLVED";
+    case "internetdisconnected":
+      return "net::ERR_INTERNET_DISCONNECTED";
+    case "addressunreachable":
+      return "net::ERR_ADDRESS_UNREACHABLE";
+    case "blockedbyclient":
+      return "net::ERR_BLOCKED_BY_CLIENT";
+    case "blockedbyresponse":
+      return "net::ERR_BLOCKED_BY_RESPONSE";
+    default:
+      return "net::ERR_FAILED";
   }
 }
 
