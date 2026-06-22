@@ -99,12 +99,15 @@ async function pollLocatorText(locator: LocatorLike, expected: TextExpectation):
   const deadline = Date.now() + DEFAULT_EXPECT_TIMEOUT_MS;
   let actual = await readLocatorText(locator, expected);
   const page = typeof locator.page === "function" ? locator.page() : null;
+  let closeRejected = false;
   const closePromise =
     typeof page?.waitForEvent === "function"
       ? page.waitForEvent("close", { timeout: 0 }).then(() => {
+          closeRejected = true;
           throw new Error("Target page, context or browser has been closed");
         })
       : null;
+  closePromise?.catch(() => {});
 
   while (!passTextExpectation(actual, expected) && Date.now() < deadline) {
     try {
@@ -126,6 +129,10 @@ async function pollLocatorText(locator: LocatorLike, expected: TextExpectation):
       }
       throw error;
     }
+  }
+
+  if (closeRejected) {
+    await closePromise;
   }
 
   return {

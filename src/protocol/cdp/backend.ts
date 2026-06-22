@@ -230,6 +230,7 @@ const PAGE_PAPER_FORMATS: Record<string, { width: number; height: number }> = {
   a6: { width: 4.13, height: 5.83 }
 };
 const DEBUG_POPUP_RESOLVE = process.env.ROXY_DEBUG_POPUP_RESOLVE === "1";
+const DEBUG_PAGE_CLOSE = process.env.ROXY_DEBUG_PAGE_CLOSE === "1";
 
 const UNIT_TO_PIXELS: Record<string, number> = {
   px: 1,
@@ -1116,6 +1117,7 @@ class CdpBrowserSession implements ProtocolBrowserSession {
 
 class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Map<string, ProtocolPageAdapter>();
+  private readonly pageSessionIds = new Map<string, string>();
   private readonly initializingPages = new Map<string, CdpPageAdapter>();
   private readonly pendingPages = new Map<string, Promise<ProtocolPageAdapter>>();
   private readonly initScripts = new Set<{
@@ -1455,7 +1457,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       targetId?: string;
     }) => {
       if (event.targetId) {
-        void this.handleTargetDetached(event.targetId);
+        void this.handleTargetDetached(event.targetId, event.sessionId);
       }
     });
     this.state.browserClient.Target.targetDestroyed?.((event: {
@@ -1536,6 +1538,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       emitPage: !this.manuallyCreatedTargetIds.has(targetInfo.targetId),
       sessionId: event.sessionId
     });
+    this.pageSessionIds.set(targetInfo.targetId, event.sessionId);
     if (targetInfo.openerId) {
       this.cancelNextSyntheticPopup(targetInfo.openerId);
     }
@@ -1586,12 +1589,24 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     }
   }
 
-  private async handleTargetDetached(targetId: string): Promise<void> {
+  private async handleTargetDetached(targetId: string, sessionId?: string): Promise<void> {
+    const attachedSessionId = this.pageSessionIds.get(targetId);
+    if (attachedSessionId && sessionId && attachedSessionId !== sessionId) {
+      return;
+    }
     this.markTargetDetached(targetId);
     const page = (
       this.pages.get(targetId)
       ?? this.initializingPages.get(targetId)
     ) as (ProtocolPageAdapter & { didClose?: () => void }) | undefined;
+    if (DEBUG_PAGE_CLOSE) {
+      console.error("[roxy-page-close] browser-context-target-detached", JSON.stringify({
+        targetId,
+        sessionId,
+        attachedSessionId,
+        hasPage: Boolean(page)
+      }));
+    }
     page?.didClose?.();
   }
 
@@ -1682,6 +1697,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
               this.initializingPages.delete(closedTargetId);
               this.pages.delete(closedTargetId);
               this.pendingPages.delete(closedTargetId);
+              this.pageSessionIds.delete(closedTargetId);
               this.manuallyCreatedTargetIds.delete(closedTargetId);
               this.creatingPageTargetIds.delete(closedTargetId);
               this.detachedTargetIds.delete(closedTargetId);
@@ -3804,6 +3820,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async reload(options: PageGotoOptions = {}): Promise<PageResponse | null> {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
+    const navigationClient = this.navigationClient();
     await this.interruptPendingNavigations(this.currentUrl);
     const capture = this.beginNavigationResponseCapture();
     const failureCapture = this.beginNavigationFailureCapture(this.currentUrl, "page.reload");
@@ -3812,9 +3829,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     try {
       await this.raceNavigationFailure(
         withTimeout(
-          (this.options.client.Page as typeof this.options.client.Page & {
-            reload(): Promise<void>;
-          }).reload(),
+          retryOnDetachedNavigationSession(() => {
+            return (navigationClient.Page as typeof navigationClient.Page & {
+              reload(): Promise<void>;
+            }).reload();
+          }),
           options.timeout,
           "Timed out while reloading page."
         ),
@@ -6063,6 +6082,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     return this.pointerActionModifiers ?? this.pressedKeyboardModifiers;
   }
 
+  private navigationClient(): CdpClient {
+    const mainFrameId = this.mainFrameId;
+    const sessionId =
+      (mainFrameId ? this.defaultExecutionContextSessionByFrameId.get(mainFrameId) : undefined)
+      ?? (mainFrameId ? this.frameSessionIds.get(mainFrameId) : undefined);
+    return sessionId
+      ? createSessionTargetClient(this.options.browserClient, sessionId)
+      : this.options.client;
+  }
+
   private async withPointerActionModifiers<TResult>(
     modifiers: KeyboardModifier[] | undefined,
     action: () => Promise<TResult>
@@ -6084,7 +6113,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   private async enqueuePointerAction<TResult>(action: () => Promise<TResult>): Promise<TResult> {
-    return this.options.pointerActionScheduler.enqueue(action);
+    return this.raceWithClose(this.options.pointerActionScheduler.enqueue(action));
   }
 
   private attachCoverageListener(
@@ -7632,14 +7661,15 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     delta: -1 | 1,
     options: PageGotoOptions
   ): Promise<PageResponse | null> {
-    const pageDomain = this.options.client.Page as typeof this.options.client.Page & {
+    const navigationClient = this.navigationClient();
+    const pageDomain = navigationClient.Page as typeof navigationClient.Page & {
       getNavigationHistory(): Promise<{
         currentIndex: number;
         entries: Array<{ id: number; url: string }>;
       }>;
       navigateToHistoryEntry(options: { entryId: number }): Promise<void>;
     };
-    const history = await retryOnNotAttachedToActivePage(() => {
+    const history = await retryOnDetachedNavigationSession(() => {
       return pageDomain.getNavigationHistory();
     });
     const nextEntry = history.entries[history.currentIndex + delta];
@@ -7661,7 +7691,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     try {
       await this.raceNavigationFailure(
         withTimeout(
-          retryOnNotAttachedToActivePage(() => {
+          retryOnDetachedNavigationSession(() => {
             return pageDomain.navigateToHistoryEntry({ entryId: nextEntry.id });
           }),
           options.timeout,
@@ -11105,7 +11135,7 @@ async function retryOnNotAttachedToActivePage<TResult>(
       return await run();
     } catch (error) {
       lastError = error;
-      if (!isNotAttachedToActivePageError(error) || attempt === attempts - 1) {
+      if (!isDetachedNavigationSessionError(error) || attempt === attempts - 1) {
         throw error;
       }
       await delay(50);
@@ -11119,6 +11149,23 @@ function isNotAttachedToActivePageError(error: unknown): boolean {
   return (
     error instanceof Error &&
     /Not attached to an active page/i.test(error.message)
+  );
+}
+
+async function retryOnDetachedNavigationSession<TResult>(
+  run: () => Promise<TResult>,
+  attempts = 5
+): Promise<TResult> {
+  return retryOnNotAttachedToActivePage(run, attempts);
+}
+
+function isDetachedNavigationSessionError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  return (
+    isNotAttachedToActivePageError(error)
+    || message.includes("Session with given id not found")
+    || message.includes("WebSocket is not open")
+    || message.includes("Target page, context or browser has been closed")
   );
 }
 
