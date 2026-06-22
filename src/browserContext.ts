@@ -26,6 +26,8 @@ import type {
   PageConsoleMessage
 } from "./types/events.js";
 import type { BrowserContextOptions, BrowserName, RecordVideoOptions } from "./types/options.js";
+import type { Route } from "./types/api.js";
+import type { RoutedRequestCall, RoutedRequestDecision } from "./protocol/routing.js";
 
 const DEFAULT_CONTEXT_EVENT_TIMEOUT_MS = 30_000;
 const BUBBLED_PAGE_EVENTS = [
@@ -724,11 +726,158 @@ export class RoxyBrowserContext implements BrowserContext {
   }
 
   private async installRouteInterceptorsOnPages(): Promise<void> {
+    if (this.adapter.setRequestInterceptor) {
+      await this.adapter.setRequestInterceptor((call) => this.dispatchContextRoutedRequest(call));
+      return;
+    }
     await Promise.all(Array.from(this.pageSet, async (page) => page._ensureRouteInterceptorsInstalled()));
   }
 
   private async syncRouteInterceptionOnPages(): Promise<void> {
+    if (this.adapter.setRequestInterceptor) {
+      await this.adapter.setRequestInterceptor(
+        this._hasRequestRoutes() ? (call) => this.dispatchContextRoutedRequest(call) : null
+      );
+      return;
+    }
     await Promise.all(Array.from(this.pageSet, async (page) => page._syncRouteInterceptionForContext()));
+  }
+
+  private async dispatchContextRoutedRequest(call: RoutedRequestCall): Promise<RoutedRequestDecision> {
+    let requestState: RoutedRequestCall = {
+      ...call,
+      headers: { ...call.headers }
+    };
+
+    const request = {
+      allHeaders: async () => ({ ...requestState.headers }),
+      existingResponse: () => null,
+      failure: () => null,
+      frame: () => {
+        throw new Error("Request.frame is not available for context-level protocol interception.");
+      },
+      headers: () => ({ ...requestState.headers }),
+      headersArray: async () => Object.entries(requestState.headers).map(([name, value]) => ({ name, value })),
+      headerValue: async (name: string) => {
+        const found = Object.entries(requestState.headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
+        return found?.[1] ?? null;
+      },
+      isNavigationRequest: () => Boolean(requestState.isNavigationRequest),
+      method: () => requestState.method,
+      postData: () => requestState.postData,
+      postDataBuffer: () =>
+        requestState.postDataBufferBase64 ? Buffer.from(requestState.postDataBufferBase64, "base64") : null,
+      postDataJSON: () => {
+        if (!requestState.postData) {
+          return null;
+        }
+        try {
+          return JSON.parse(requestState.postData);
+        } catch {
+          return null;
+        }
+      },
+      redirectedFrom: () => null,
+      redirectedTo: () => null,
+      resourceType: () => requestState.resourceType ?? "other",
+      response: async () => null,
+      serviceWorker: () => null,
+      sizes: async () => ({
+        requestBodySize: 0,
+        requestHeadersSize: 0,
+        responseBodySize: 0,
+        responseHeadersSize: 0
+      }),
+      timing: () => ({
+        startTime: 0,
+        domainLookupStart: -1,
+        domainLookupEnd: -1,
+        connectStart: -1,
+        secureConnectionStart: -1,
+        connectEnd: -1,
+        requestStart: 0,
+        responseStart: -1,
+        responseEnd: -1
+      }),
+      url: () => requestState.url
+    } satisfies Request;
+
+    for (let index = this.routeHandlers.length - 1; index >= 0; index -= 1) {
+      const entry = this.routeHandlers[index];
+      if (!entry || !this._matchesRouteMatcher(requestState.url, entry.matcher)) {
+        continue;
+      }
+      const liveIndex = this._findLiveContextRouteHandlerIndex(entry);
+      if (liveIndex === -1) {
+        continue;
+      }
+      this._consumeContextRouteHandler(entry, liveIndex);
+
+      let handled = false;
+      let decision: RoutedRequestDecision | null = null;
+      const route: Route = {
+        abort: async (errorCode?: string) => {
+          if (handled) {
+            throw new Error("Route is already handled!");
+          }
+          handled = true;
+          decision = {
+            action: "abort",
+            ...(errorCode !== undefined ? { errorCode } : {})
+          };
+        },
+        continue: async (options) => {
+          if (handled) {
+            throw new Error("Route is already handled!");
+          }
+          handled = true;
+          requestState = applyContextRouteOverrides(requestState, options);
+          decision = {
+            action: "continue",
+            headers: { ...requestState.headers },
+            method: requestState.method,
+            postData: requestState.postData,
+            ...(requestState.postDataBufferBase64 !== undefined
+              ? { postDataBufferBase64: requestState.postDataBufferBase64 }
+              : {}),
+            url: requestState.url
+          };
+        },
+        fallback: async (options) => {
+          if (handled) {
+            throw new Error("Route is already handled!");
+          }
+          handled = true;
+          requestState = applyContextRouteOverrides(requestState, options);
+        },
+        fetch: async () => {
+          throw new Error("Route.fetch is not supported for context-level protocol interception yet.");
+        },
+        fulfill: async () => {
+          throw new Error("Route.fulfill is not supported for context-level protocol interception yet.");
+        },
+        request: () => request
+      };
+
+      await entry.handler(route, request);
+      if (decision) {
+        return decision;
+      }
+      if (handled) {
+        continue;
+      }
+    }
+
+    return {
+      action: "continue",
+      headers: { ...requestState.headers },
+      method: requestState.method,
+      postData: requestState.postData,
+      ...(requestState.postDataBufferBase64 !== undefined
+        ? { postDataBufferBase64: requestState.postDataBufferBase64 }
+        : {}),
+      url: requestState.url
+    };
   }
 
   private async stopRouteHandlers(
@@ -813,4 +962,46 @@ async function evaluationScript<Arg>(
     return `${source}\n//# sourceURL=${script.path.replace(/\n/g, "")}`;
   }
   throw new Error("Either path or content property must be present");
+}
+
+function applyContextRouteOverrides(
+  request: RoutedRequestCall,
+  options?: {
+    headers?: { [key: string]: string } | Array<{ name: string; value: string }>;
+    method?: string;
+    postData?: string | Buffer | unknown;
+    url?: string;
+  }
+): RoutedRequestCall {
+  if (!options) {
+    return request;
+  }
+  const headers =
+    options.headers === undefined
+      ? request.headers
+      : Array.isArray(options.headers)
+        ? Object.fromEntries(options.headers.map((header) => [header.name, header.value]))
+        : { ...options.headers };
+  const postData =
+    options.postData === undefined
+      ? request.postData
+      : Buffer.isBuffer(options.postData)
+        ? options.postData.toString("utf8")
+        : typeof options.postData === "string"
+          ? options.postData
+          : JSON.stringify(options.postData);
+  return {
+    ...request,
+    headers,
+    method: options.method ?? request.method,
+    postData,
+    ...(Buffer.isBuffer(options.postData)
+      ? { postDataBufferBase64: options.postData.toString("base64") }
+      : options.postData === undefined
+        ? request.postDataBufferBase64 !== undefined
+          ? { postDataBufferBase64: request.postDataBufferBase64 }
+          : {}
+        : {}),
+    url: options.url ?? request.url
+  };
 }

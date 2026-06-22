@@ -113,6 +113,9 @@ export interface ProtocolBrowserSession {
 export interface ProtocolBrowserContextAdapter {
   newPage(): Promise<ProtocolPageAdapter>;
   addInitScript?(source: string, arg?: unknown): Promise<Disposable>;
+  setRequestInterceptor?(
+    handler: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null
+  ): Promise<void>;
   addCookies?(cookies: ReadonlyArray<{
     name: string;
     value: string;

@@ -141,6 +141,7 @@ const CDP_CAPABILITIES: ProtocolCapabilities = {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
 const REQUEST_EXTRA_INFO_FALLBACK_MS = 250;
+const POPUP_FALLBACK_BINDING_NAME = "__roxyOnPopupOpenedFallback";
 const HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE = `() => {
   const hydrate = (root) => {
     for (const template of Array.from(root.querySelectorAll('template[shadowrootmode]'))) {
@@ -1126,6 +1127,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly manuallyCreatedTargetIds = new Set<string>();
   private readonly creatingPageTargetIds = new Set<string>();
   private pendingManualPageCreations = 0;
+  private requestInterceptor:
+    | ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>)
+    | null = null;
+  private requestInterceptionEnabled = false;
   private readonly pageListeners = new Set<
     (
       page: ProtocolPageAdapter,
@@ -1353,6 +1358,19 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     };
   }
 
+  async setRequestInterceptor(
+    handler: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null
+  ): Promise<void> {
+    this.requestInterceptor = handler;
+    const shouldEnable = Boolean(handler);
+    this.requestInterceptionEnabled = shouldEnable;
+    await Promise.all(
+      Array.from(this.pages.values(), async (page) => {
+        await page.setRequestInterceptor?.(handler);
+      })
+    );
+  }
+
   async close(): Promise<void> {
     if (this.closing) {
       return;
@@ -1545,35 +1563,6 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     if (this.closing || !this.matchesTargetInfo(targetInfo)) {
       return;
     }
-    if (
-      this.pages.has(targetInfo.targetId)
-      || this.pendingPages.has(targetInfo.targetId)
-      || this.detachedTargetIds.has(targetInfo.targetId)
-    ) {
-      return;
-    }
-
-    const isPendingManualPage =
-      this.pendingManualPageCreations > 0 &&
-      !targetInfo.openerId &&
-      (!targetInfo.url || targetInfo.url === "about:blank");
-    if (isPendingManualPage) {
-      return;
-    }
-
-    const pagePromise = this.getOrCreatePage(targetInfo.targetId, {
-      fallbackUrl: targetInfo.url ?? "about:blank",
-      hasWindowOpener: targetInfo.canAccessOpener ?? true,
-      openerTargetId: targetInfo.openerId ?? null,
-      emitPage: true
-    });
-    this.pendingPages.set(targetInfo.targetId, pagePromise);
-    void pagePromise.catch(() => {});
-    void pagePromise.finally(() => {
-      if (this.pendingPages.get(targetInfo.targetId) === pagePromise) {
-        this.pendingPages.delete(targetInfo.targetId);
-      }
-    });
   }
 
   private async handleTargetDetached(targetId: string): Promise<void> {
@@ -1645,6 +1634,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
             client,
             targetId,
             contextOptions: this.options,
+            initialRequestInterceptor: this.requestInterceptionEnabled
+              ? this.requestInterceptor
+              : null,
             onWindowOpen: (url) => {
               this.queueSyntheticPopup(targetId, url);
             },
@@ -1696,6 +1688,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       pageWithMetadata.__roxyOpenerTargetId = options.openerTargetId ?? null;
       if (options.openerTargetId) {
         this.cancelNextSyntheticPopup(options.openerTargetId);
+      }
+      if (this.requestInterceptionEnabled) {
+        await page.setRequestInterceptor?.(this.requestInterceptor);
       }
       for (const entry of this.initScripts) {
         try {
@@ -2091,6 +2086,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly screencastOverlays = new Map<string, CdpScreencastOverlayState>();
   private readonly stateWaiters = new Set<StateWaiter>();
   private readonly eventListeners = new Map<RawPageEventName, Set<RawPageEventListener<RawPageEventName>>>();
+  private popupFallbackBindingInstalled = false;
   private readonly fileChooserOpenedListeners = new Set<(payload: {
     element: ProtocolElementHandleReference;
     frameId: string | null;
@@ -2350,6 +2346,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client: CdpClient;
     targetId: string;
     contextOptions: BrowserContextOptions;
+    initialRequestInterceptor?: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null;
     onWindowOpen?: (url: string) => void;
     pointerActionScheduler: CdpPointerActionScheduler;
     initialNavigationFrameUnavailable?: boolean;
@@ -2372,6 +2369,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       client: CdpClient;
       targetId: string;
       contextOptions: BrowserContextOptions;
+      initialRequestInterceptor?: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null;
       onWindowOpen?: (url: string) => void;
       pointerActionScheduler: CdpPointerActionScheduler;
       initialNavigationFrameUnavailable?: boolean;
@@ -2379,6 +2377,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       onClosed: (targetId: string) => void;
     }
   ) {
+    this.requestInterceptor = options.initialRequestInterceptor ?? null;
+    this.requestInterceptionEnabled = Boolean(options.initialRequestInterceptor);
     this.closePromise = new Promise<void>((resolve) => {
       this.resolveClosePromise = resolve;
     });
@@ -2470,6 +2470,21 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           type: event.type
         })
       );
+    });
+    client.on("Runtime.bindingCalled", (event: {
+      executionContextId?: number;
+      name?: string;
+      payload?: string;
+    }) => {
+      if (event.name !== POPUP_FALLBACK_BINDING_NAME || !event.payload) {
+        return;
+      }
+      try {
+        const payload = JSON.parse(event.payload) as { url?: string };
+        this.options.onWindowOpen?.(payload.url ?? "about:blank");
+      } catch {
+        this.options.onWindowOpen?.("about:blank");
+      }
     });
     client.on("Page.windowOpen", (event: {
       url?: string;
@@ -3458,17 +3473,75 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       initializeCommand(client.Log?.enable?.().catch(() => {})),
       initializeCommand(client.DOM.enable({})),
       initializeCommand(client.Network.enable({})),
+      ...(this.requestInterceptionEnabled
+        ? [
+            initializeCommand(client.Network.setCacheDisabled({ cacheDisabled: true }).catch(() => {})),
+            initializeCommand(client.Fetch.enable({
+              patterns: [
+                {
+                  urlPattern: "*",
+                  requestStage: "Request"
+                }
+              ]
+            }).catch(() => {}))
+          ]
+        : []),
       initializeCommand(client.Target?.setAutoAttach?.({
         autoAttach: true,
         waitForDebuggerOnStart: true,
         flatten: true
       }).catch(() => {})),
-      initializeCommand(this.options.resumeOnInitialized?.())
+      initializeCommand(this.installPopupFallbackBridge())
     ]);
     await this.applyContextOptions();
+    await initializeCommand(this.options.resumeOnInitialized?.());
     await this.syncLifecycleStateFromDocument();
     this.maybeResolveInitialAboutBlankLifecycle();
     this.maybeArmNetworkIdleTimer();
+  }
+
+  private async installPopupFallbackBridge(): Promise<void> {
+    if (this.popupFallbackBindingInstalled) {
+      return;
+    }
+    const runtimeClient = this.options.client as CdpClient & {
+      Runtime: CdpRuntimeClient & {
+        addBinding?(params: { name: string }): Promise<unknown>;
+      };
+    };
+    await runtimeClient.Runtime.addBinding?.({
+      name: POPUP_FALLBACK_BINDING_NAME
+    }).catch(() => {});
+    if (typeof this.options.client.Page.addScriptToEvaluateOnNewDocument !== "function") {
+      return;
+    }
+    await this.addInitScript(`
+      (() => {
+        const globalState = globalThis as typeof globalThis & {
+          ${POPUP_FALLBACK_BINDING_NAME}?: (payload: string) => void;
+          __roxyPopupOpenFallbackInstalled?: boolean;
+        };
+        if (globalState.__roxyPopupOpenFallbackInstalled) {
+          return;
+        }
+        const binding = globalState.${POPUP_FALLBACK_BINDING_NAME};
+        if (typeof binding !== "function") {
+          return;
+        }
+        const originalWindowOpen = globalThis.open.bind(globalThis);
+        globalState.open = (...args: Parameters<typeof globalThis.open>) => {
+          const popup = originalWindowOpen(...args);
+          try {
+            binding(JSON.stringify({
+              url: typeof args[0] === "string" && args[0] ? args[0] : "about:blank"
+            }));
+          } catch {}
+          return popup;
+        };
+        globalState.__roxyPopupOpenFallbackInstalled = true;
+      })();
+    `);
+    this.popupFallbackBindingInstalled = true;
   }
 
   private handleNetworkResponseReceived(
