@@ -871,6 +871,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private readonly internalDisposers = new Map<PageEventName, () => void>();
   private readonly activeDialogs = new Set<Dialog>();
   private closed = false;
+  private closePromise: Promise<void> | null = null;
   private closeReason: string | undefined;
   private defaultTimeoutMs = DEFAULT_EVENT_TIMEOUT_MS;
   private defaultNavigationTimeoutMs = DEFAULT_EVENT_TIMEOUT_MS;
@@ -2765,6 +2766,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;
   async close(options: PageCloseOptions = {}): Promise<void> {
+    if (!options.runBeforeUnload && this.closePromise) {
+      await this.closePromise;
+      return;
+    }
+
     if (this.isClosed() && !options.runBeforeUnload) {
       return;
     }
@@ -2775,22 +2781,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
 
     this.closeReason = options.reason;
-    const currentPick = this.pickLocatorState;
-    this.pickLocatorState = null;
-    currentPick?.reject(this.createClosedError());
-    this.closed = true;
-    try {
+    this.closePromise = (async () => {
       await this.dismissActiveDialogsForClose();
       await this.finalizeVideoRecording();
-      await this.adapter.close(options);
-      this.emit("close", this as unknown as PageEventMap["close"]);
+      await this.adapter.close(options).catch(() => {});
+      await this.handleAdapterClosed();
+    })();
+    try {
+      await this.closePromise;
     } finally {
-      this.activeDialogs.clear();
-      for (const dispose of this.internalDisposers.values()) {
-        dispose();
-      }
-      this.internalDisposers.clear();
-      this.browserContext?.detachPage(this);
+      this.closePromise = null;
     }
   }
 
@@ -2907,6 +2907,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (stopRecording) {
       void stopRecording().catch(() => {});
     }
+    this.activeDialogs.clear();
+    this.emit("close", this as unknown as PageEventMap["close"]);
     for (const dispose of this.internalDisposers.values()) {
       dispose();
     }
