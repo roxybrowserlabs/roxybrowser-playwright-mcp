@@ -2598,9 +2598,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client.Page.frameNavigated((event) => {
       this.upsertNativeFrame(event.frame);
       this.loadingFrameIds.add(event.frame.id);
+      const existingNetworkIdleState = this.frameNetworkIdleStates.get(event.frame.id);
       this.clearFrameNetworkIdleTimer(event.frame.id);
       this.frameNetworkIdleStates.set(event.frame.id, {
-        activeRequests: 0,
+        activeRequests: existingNetworkIdleState?.activeRequests ?? 0,
         idleReached: false
       });
       this.updateFrameLifecycleState(event.frame.id, {
@@ -3834,7 +3835,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             }
             throw error;
           }),
-          failureCapture
+          failureCapture,
+          { includeCommittedInterruption: waitUntil !== "networkidle" }
         );
         if (loadStateResult === COMMITTED_NAVIGATION_INTERRUPTED) {
           return capture.lastResponse;
@@ -8373,9 +8375,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private async raceNavigationFailure<T>(
     promise: Promise<T>,
-    capture: NavigationFailureCapture
+    capture: NavigationFailureCapture,
+    options: { includeCommittedInterruption?: boolean } = {}
   ): Promise<T | typeof COMMITTED_NAVIGATION_INTERRUPTED> {
     const failure = (capture as NavigationFailureCapture & { promise: Promise<never> }).promise;
+    if (options.includeCommittedInterruption === false) {
+      return Promise.race([promise, failure]);
+    }
     const committedPromise = (capture as NavigationFailureCapture & {
       committedPromise: Promise<typeof COMMITTED_NAVIGATION_INTERRUPTED>;
     }).committedPromise;
