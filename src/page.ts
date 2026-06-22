@@ -1400,7 +1400,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
         if (waitUntil !== "commit") {
           const targetFrameId =
-            frameObject && frameObject instanceof RoxyFrame
+            frameObject && frameObject instanceof RoxyFrame && frameObject.snapshotState().parentId !== null
               ? frameObject.snapshotState().nativeFrameId ?? frameObject.snapshotState().id
               : undefined;
           activeLoadStateWait ??= this.adapter.waitForLoadState(

@@ -513,6 +513,12 @@ interface CdpCoverageRange {
   startOffset: number;
 }
 
+interface CdpFrameNetworkIdleState {
+  activeRequests: number;
+  idleReached: boolean;
+  idleTimer?: ReturnType<typeof setTimeout>;
+}
+
 interface CdpJsCoverageState {
   enabled: boolean;
   eventListeners: Array<{
@@ -2244,6 +2250,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private readonly responseBodies = new Map<string, ResponseBodyState>();
   private readonly responseBodyRequestIds = new Map<string, string>();
   private readonly workerRequestAliases = new Map<string, string>();
+  private readonly frameNetworkIdleStates = new Map<string, CdpFrameNetworkIdleState>();
   private readonly navigationResponseCaptures = new Set<NavigationResponseCapture>();
   private readonly navigationFailureCaptures = new Set<NavigationFailureCapture>();
   private pageExtraHTTPHeaders: Record<string, string> | undefined;
@@ -2591,6 +2598,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client.Page.frameNavigated((event) => {
       this.upsertNativeFrame(event.frame);
       this.loadingFrameIds.add(event.frame.id);
+      this.clearFrameNetworkIdleTimer(event.frame.id);
+      this.frameNetworkIdleStates.set(event.frame.id, {
+        activeRequests: 0,
+        idleReached: false
+      });
       this.updateFrameLifecycleState(event.frame.id, {
         domContentLoaded: false,
         loadFired: false
@@ -2643,6 +2655,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           loadFired: true
         });
         this.loadFired = this.loadingFrameIds.size === 0;
+        this.maybeArmFrameNetworkIdleTimer(event.frameId);
         this.maybeArmNetworkIdleTimer();
       }
       this.flushWaiters();
@@ -2775,11 +2788,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             requestId: string;
             type?: string;
           };
-          if (requestEvent.request.url.startsWith("data:")) {
-            this.ignoredRequestIds.add(requestEvent.requestId);
-            return;
-          }
-          const pageOwnedRequest = this.requestMetadata.get(requestEvent.requestId);
+	          if (requestEvent.request.url.startsWith("data:")) {
+	            this.ignoredRequestIds.add(requestEvent.requestId);
+	            return;
+	          }
+	          if (isNetworkIdleIgnoredRequestUrl(requestEvent.request.url)) {
+	            return;
+	          }
+	          const pageOwnedRequest = this.requestMetadata.get(requestEvent.requestId);
           if (
             pageOwnedRequest
             && !requestEvent.redirectResponse
@@ -2823,10 +2839,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           const requestHeaders = continuedHeaders
             ? applyCdpHeaderOverrides(normalizeHeaderRecord(requestEvent.request.headers), continuedHeaders)
             : mapCdpHeaders(requestEvent.request.headers);
-          this.activeRequests += 1;
-          this.networkIdleReached = false;
-          this.clearNetworkIdleTimer();
-          this.requestMetadata.set(scopedRequestId, {
+	          this.activeRequests += 1;
+	          this.networkIdleReached = false;
+	          this.clearNetworkIdleTimer();
+	          if (workerFrameId) {
+	            this.markFrameNetworkBusy(workerFrameId);
+	          }
+	          this.requestMetadata.set(scopedRequestId, {
             ...(workerFrameId ? { frameId: workerFrameId } : {}),
             isNavigationRequest: false,
             method: requestEvent.request.method,
@@ -3223,6 +3242,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.ignoredRequestIds.add(event.requestId);
         return;
       }
+      if (isNetworkIdleIgnoredRequestUrl(event.request.url)) {
+        return;
+      }
       const isFavicon = isFaviconRequestUrl(event.request.url);
       const isNavigationRequest =
         event.requestId === requestEvent.loaderId && requestEvent.type === "Document";
@@ -3246,6 +3268,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.options.initialNavigationFrameUnavailable && isNavigationRequest
           ? undefined
           : requestEvent.frameId;
+      if (frameId) {
+        this.markFrameNetworkBusy(frameId);
+      }
       this.requestMetadata.set(event.requestId, {
         ...(isFavicon ? { isFavicon: true } : {}),
         isNavigationRequest,
@@ -3380,12 +3405,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const onRequestSettled = (requestId?: string) => {
       this.activeRequests = Math.max(0, this.activeRequests - 1);
       if (requestId) {
+        const frameId = this.requestMetadata.get(requestId)?.frameId;
         this.flushPendingRequestEvent(requestId);
         this.requestExtraInfoHeaders.delete(requestId);
         this.responseExtraInfoDiscardCounts.delete(requestId);
         this.failedRouteErrorTexts.delete(requestId);
         this.requestMetadata.delete(requestId);
         this.continuedRequestUrls.delete(requestId);
+        if (frameId) {
+          this.markFrameNetworkRequestSettled(frameId);
+        }
       }
       this.maybeArmNetworkIdleTimer();
     };
@@ -7658,6 +7687,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private resetNavigationState(): void {
     this.loadingFrameIds.clear();
     this.frameLifecycleStates.clear();
+    for (const frameId of Array.from(this.frameNetworkIdleStates.keys())) {
+      this.clearFrameNetworkIdleTimer(frameId);
+    }
+    this.frameNetworkIdleStates.clear();
     this.domContentLoaded = false;
     this.loadFired = false;
     this.networkIdleReached = false;
@@ -7677,6 +7710,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.requestMetadata.delete(requestId);
       this.activeRequests = Math.max(0, this.activeRequests - 1);
     }
+    this.clearFrameNetworkIdleTimer(frameId);
+    this.frameNetworkIdleStates.delete(frameId);
+    this.recalculateNetworkIdle();
     this.maybeArmNetworkIdleTimer();
   }
 
@@ -7771,6 +7807,78 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.networkIdleTimer = undefined;
       this.flushWaiters();
     }, NETWORK_IDLE_MS);
+  }
+
+  private ensureFrameNetworkIdleState(frameId: string): CdpFrameNetworkIdleState {
+    const existing = this.frameNetworkIdleStates.get(frameId);
+    if (existing) {
+      return existing;
+    }
+    const created: CdpFrameNetworkIdleState = {
+      activeRequests: 0,
+      idleReached: false
+    };
+    this.frameNetworkIdleStates.set(frameId, created);
+    return created;
+  }
+
+  private clearFrameNetworkIdleTimer(frameId: string): void {
+    const state = this.frameNetworkIdleStates.get(frameId);
+    if (!state?.idleTimer) {
+      return;
+    }
+    clearTimeout(state.idleTimer);
+    state.idleTimer = undefined;
+  }
+
+  private markFrameNetworkBusy(frameId: string): void {
+    const state = this.ensureFrameNetworkIdleState(frameId);
+    state.activeRequests += 1;
+    state.idleReached = false;
+    this.clearFrameNetworkIdleTimer(frameId);
+    this.recalculateNetworkIdle();
+  }
+
+  private markFrameNetworkRequestSettled(frameId: string): void {
+    const state = this.ensureFrameNetworkIdleState(frameId);
+    state.activeRequests = Math.max(0, state.activeRequests - 1);
+    this.maybeArmFrameNetworkIdleTimer(frameId);
+  }
+
+  private maybeArmFrameNetworkIdleTimer(frameId: string): void {
+    const state = this.ensureFrameNetworkIdleState(frameId);
+    if (state.activeRequests !== 0 || state.idleTimer) {
+      return;
+    }
+    state.idleTimer = setTimeout(() => {
+      state.idleReached = true;
+      state.idleTimer = undefined;
+      this.recalculateNetworkIdle();
+    }, NETWORK_IDLE_MS);
+  }
+
+  private isFrameSubtreeNetworkIdle(frameId: string): boolean {
+    const state = this.frameNetworkIdleStates.get(frameId);
+    if (!state?.idleReached) {
+      return false;
+    }
+    for (const frame of this.nativeFrames.values()) {
+      if (frame.parentId === frameId && !this.isFrameSubtreeNetworkIdle(frame.id)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private recalculateNetworkIdle(): void {
+    const mainFrameId = this.mainFrameId;
+    if (!mainFrameId) {
+      this.networkIdleReached = this.activeRequests === 0;
+      this.flushWaiters();
+      return;
+    }
+    this.networkIdleReached = this.isFrameSubtreeNetworkIdle(mainFrameId);
+    this.flushWaiters();
   }
 
   private emitResponseReceived(
@@ -10161,6 +10269,10 @@ function cdpHeaderValue(headers: Record<string, string>, name: string): string |
     }
   }
   return undefined;
+}
+
+function isNetworkIdleIgnoredRequestUrl(url: string): boolean {
+  return url.startsWith("ws://") || url.startsWith("wss://");
 }
 
 function normalizeHeaderRecord(
