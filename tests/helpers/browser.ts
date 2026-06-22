@@ -61,9 +61,11 @@ function isRetriableLaunchError(error: unknown): boolean {
 
 async function closeForTest(label: string, close: () => Promise<void>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const closePromise = close();
+  void closePromise.catch(() => {});
   try {
     await Promise.race([
-      close(),
+      closePromise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           reject(new Error(`${label} timed out after ${TEST_CLOSE_TIMEOUT_MS}ms.`));

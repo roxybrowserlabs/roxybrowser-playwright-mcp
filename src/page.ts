@@ -1275,6 +1275,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       };
       let latestNavigationResponse: Response | null = null;
       let navigationObserved = false;
+      let sawCrossDocumentNavigation = false;
+      let activeLoadStateWait: Promise<void> | null = null;
       const timer =
         timeout === 0
           ? null
@@ -1289,8 +1291,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
                 )
               );
             }, timeout);
+      const scheduleFinishNavigation = () => {
+        void finishNavigation().catch((error) => {
+          if (settled) {
+            return;
+          }
+          cleanup();
+          rejectWithApiStack(error);
+        });
+      };
       const interval = setInterval(() => {
-        void checkForMatch();
+        scheduleFinishNavigation();
       }, 50);
       let settled = false;
       let resolveNavigationResponse: (() => void) | null = null;
@@ -1316,7 +1327,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
             ) {
               latestNavigationResponse = publicResponse;
               resolveNavigationResponse?.();
-              void checkForMatch();
+              scheduleFinishNavigation();
             }
           }
         },
@@ -1340,8 +1351,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       };
 
       const closeListener = (() => {
-        cleanup();
-        rejectWithApiStack(new Error("Navigation failed because page was closed!"));
+        if (!settled) {
+          cleanup();
+          rejectWithApiStack(new Error("Navigation failed because page was closed!"));
+        }
       }) as PageEventListener<"close">;
 
       const frameDetachedListener = ((detachedFrame: Frame) => {
@@ -1376,12 +1389,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           return false;
         }
         if (!options.url) {
-          return navigationObserved || latestNavigationResponse !== null || current.toString() !== initialUrl;
+          return navigationObserved || current.toString() !== initialUrl;
         }
         return this.matchesURL(current, options.url);
       };
 
-      const checkForMatch = async () => {
+      const finishNavigation = async () => {
         if (!matchesUrl()) {
           return;
         }
@@ -1390,11 +1403,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
             frameObject && frameObject instanceof RoxyFrame
               ? frameObject.snapshotState().nativeFrameId ?? frameObject.snapshotState().id
               : undefined;
-          await this.adapter.waitForLoadState(
+          activeLoadStateWait ??= this.adapter.waitForLoadState(
             waitUntil,
             this.remainingTimeout(start, timeout),
             targetFrameId
           );
+          await activeLoadStateWait;
           if (!latestNavigationResponse) {
             const responseGraceDeadline = Date.now() + Math.min(500, this.remainingTimeout(start, timeout));
             while (!latestNavigationResponse && Date.now() < responseGraceDeadline) {
@@ -1407,6 +1421,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           }
         }
         cleanup();
+        if (!sawCrossDocumentNavigation) {
+          resolve(null);
+          return;
+        }
         resolve(frameObject && latestNavigationResponse
           ? responseWithFrame(latestNavigationResponse, frameObject)
           : latestNavigationResponse);
@@ -1421,19 +1439,33 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           return;
         }
         navigationObserved = true;
-        void checkForMatch();
+        const nextUrl = currentNavigationUrl();
+        if (nextUrl !== initialUrl.split("#")[0] || this.tryParseUrl(nextUrl)?.pathname !== this.tryParseUrl(initialUrl)?.pathname) {
+          sawCrossDocumentNavigation = latestNavigationResponse !== null;
+        }
+        if (waitUntil === "commit" && matchesUrl()) {
+          cleanup();
+          resolve(sawCrossDocumentNavigation
+            ? (frameObject && latestNavigationResponse ? responseWithFrame(latestNavigationResponse, frameObject) : latestNavigationResponse)
+            : null);
+          return;
+        }
+        scheduleFinishNavigation();
       }) as PageEventListener<"framenavigated">;
 
       const responseListener = (async (response: Response) => {
         if (isLikelyNavigationResponse(response)) {
           latestNavigationResponse = response;
+          if (response.request().isNavigationRequest() || response.request().resourceType() === "document") {
+            sawCrossDocumentNavigation = true;
+          }
           resolveNavigationResponse?.();
         }
         if (waitUntil === "commit" && matchesUrl()) {
           cleanup();
-          resolve(frameObject && latestNavigationResponse
-            ? responseWithFrame(latestNavigationResponse, frameObject)
-            : latestNavigationResponse);
+          resolve(sawCrossDocumentNavigation
+            ? (frameObject && latestNavigationResponse ? responseWithFrame(latestNavigationResponse, frameObject) : latestNavigationResponse)
+            : null);
         }
       }) as PageEventListener<"response">;
 
@@ -1441,7 +1473,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.addInternalListener("close", closeListener);
       this.addInternalListener("framedetached", frameDetachedListener);
       this.addInternalListener("framenavigated", frameNavigatedListener);
-      void checkForMatch();
+      if (matchesUrl()) {
+        scheduleFinishNavigation();
+      }
     });
 
     return navigationPromise;
