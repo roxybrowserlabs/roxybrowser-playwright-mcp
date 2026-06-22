@@ -138,6 +138,51 @@ describe("RoxyBrowserContext", () => {
 
     expect(firstPage).toBeInstanceOf(RoxyPage);
     expect(secondPage).toBeInstanceOf(RoxyPage);
+    expect(adapter.addInitScript).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(adapter.addInitScript).mock.calls.some(([source]) => source.includes('window["injected"] = 123'))
+    ).toBe(true);
+    expect(
+      vi.mocked(firstPageAdapter.addInitScript).mock.calls.some(([source]) => source.includes('window["injected"] = 123'))
+    ).toBe(false);
+    expect(
+      vi.mocked(secondPageAdapter.addInitScript).mock.calls.some(([source]) => source.includes('window["injected"] = 123'))
+    ).toBe(false);
+
+    await disposable.dispose();
+
+    const contextDisposable = await vi.mocked(adapter.addInitScript).mock.results[0]!.value;
+    expect(contextDisposable.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to page-level browser context init scripts when the adapter does not support them", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    delete adapter.addInitScript;
+    const firstPageAdapter = createPageAdapterStub();
+    const secondPageAdapter = createPageAdapterStub();
+    adapter.newPage = vi
+      .fn()
+      .mockResolvedValueOnce(firstPageAdapter)
+      .mockResolvedValueOnce(secondPageAdapter);
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const firstPage = await context.newPage();
+    const disposable = await context.addInitScript(() => {
+      window["injected"] = 123;
+    });
+    const secondPage = await context.newPage();
+
+    expect(firstPage).toBeInstanceOf(RoxyPage);
+    expect(secondPage).toBeInstanceOf(RoxyPage);
     expect(
       vi.mocked(firstPageAdapter.addInitScript).mock.calls.some(([source]) => source.includes('window["injected"] = 123'))
     ).toBe(true);

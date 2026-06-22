@@ -108,6 +108,9 @@ export class RoxyBrowserContext implements BrowserContext {
     arg?: Arg
   ): Promise<Disposable> {
     const source = await evaluationScript(script, arg as any);
+    if (this.adapter.addInitScript) {
+      return this.adapter.addInitScript(source);
+    }
     const entry: ContextInitScriptEntry = {
       source,
       disposablesByPage: new WeakMap<RoxyPage, Disposable>()

@@ -304,4 +304,60 @@ describe("page popup contract e2e", () => {
       expect(await popup.evaluate(() => !!window.opener)).toBe(false);
     });
   });
+
+  it("inherits context routes for popups opened by window.open like Playwright", async () => {
+    await withPage(async (page, context) => {
+      await page.goto(fixture.server.EMPTY_PAGE);
+      let intercepted = false;
+      await context.route("**/empty.html", async (route) => {
+        intercepted = true;
+        await route.continue();
+      });
+
+      await Promise.all([
+        page.waitForEvent("popup"),
+        page.evaluate((url) => {
+          window.__popup = window.open(url);
+        }, fixture.server.EMPTY_PAGE)
+      ]);
+
+      expect(intercepted).toBe(true);
+    });
+  });
+
+  it("inherits browser context addInitScript in in-process popups like Playwright", async () => {
+    await withPage(async (page, context) => {
+      await context.addInitScript(() => {
+        window["injected"] = 123;
+      });
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      const injected = await page.evaluate(() => {
+        const popup = window.open("about:blank");
+        return popup?.["injected"];
+      });
+
+      expect(injected).toBe(123);
+    });
+  });
+
+  it("inherits browser context addInitScript in cross-process popups like Playwright", async () => {
+    await withPage(async (page, context) => {
+      await context.addInitScript(() => {
+        window["injected"] = 123;
+      });
+      await page.goto(fixture.server.EMPTY_PAGE);
+
+      const [popup] = await Promise.all([
+        page.waitForEvent("popup"),
+        page.evaluate((url) => {
+          window.open(url);
+        }, fixture.server.CROSS_PROCESS_PREFIX + "/title.html")
+      ]);
+
+      expect(await popup.evaluate("injected")).toBe(123);
+      await popup.reload();
+      expect(await popup.evaluate("injected")).toBe(123);
+    });
+  });
 });

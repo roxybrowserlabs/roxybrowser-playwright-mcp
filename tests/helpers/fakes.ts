@@ -49,9 +49,13 @@ export function createBrowserContextAdapterStub(): ProtocolBrowserContextAdapter
   const pageListeners = new Set<
     (page: ProtocolPageAdapter, opener?: ProtocolPageAdapter | null) => void | Promise<void>
   >();
+  const initScriptDisposable = {
+    dispose: vi.fn(async () => {})
+  };
 
   return {
     newPage: vi.fn(),
+    addInitScript: vi.fn(async () => initScriptDisposable),
     onPage: vi.fn((listener) => {
       pageListeners.add(listener);
       return () => {

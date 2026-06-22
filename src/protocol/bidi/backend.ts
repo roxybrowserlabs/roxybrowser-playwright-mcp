@@ -767,6 +767,11 @@ class BidiBrowserSession implements ProtocolBrowserSession {
 
 class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Set<BidiPageAdapter>();
+  private readonly initScripts = new Set<{
+    source: string;
+    pageDisposables: WeakMap<BidiPageAdapter, Disposable>;
+    scriptId: string | undefined;
+  }>();
 
   constructor(
     private readonly client: BidiProtocolClient,
@@ -790,8 +795,55 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     page = await BidiPageAdapter.create(this.client, response.context, this.options, () => {
       this.pages.delete(page);
     });
+    for (const entry of this.initScripts) {
+      if (entry.scriptId) {
+        continue;
+      }
+      const disposable = await page.addInitScript(entry.source);
+      entry.pageDisposables.set(page, disposable);
+    }
     this.pages.add(page);
     return page;
+  }
+
+  async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {
+    const entry = {
+      source,
+      pageDisposables: new WeakMap<BidiPageAdapter, Disposable>(),
+      scriptId: undefined as string | undefined
+    };
+    this.initScripts.add(entry);
+    try {
+      if (this.userContext) {
+        const result = await this.client.scriptAddPreloadScript({
+          functionDeclaration: `() => { return ${source} }`,
+          userContexts: [this.userContext]
+        });
+        entry.scriptId = (result as { script?: string }).script;
+      } else {
+        await Promise.all(Array.from(this.pages, async (page) => {
+          const disposable = await page.addInitScript(source);
+          entry.pageDisposables.set(page, disposable);
+        }));
+      }
+    } catch (error) {
+      this.initScripts.delete(entry);
+      throw error;
+    }
+
+    return {
+      dispose: async () => {
+        if (!this.initScripts.delete(entry)) {
+          return;
+        }
+        await Promise.all(Array.from(this.pages, async (page) => {
+          await entry.pageDisposables.get(page)?.dispose();
+        }));
+        if (entry.scriptId) {
+          await this.client.scriptRemovePreloadScript({ script: entry.scriptId }).catch(() => {});
+        }
+      }
+    };
   }
 
   async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {

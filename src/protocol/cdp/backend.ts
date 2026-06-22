@@ -1109,6 +1109,17 @@ class CdpBrowserSession implements ProtocolBrowserSession {
 class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Map<string, ProtocolPageAdapter>();
   private readonly pendingPages = new Map<string, Promise<ProtocolPageAdapter>>();
+  private readonly initScripts = new Set<{
+    source: string;
+    disposablesByPage: WeakMap<ProtocolPageAdapter, Disposable>;
+  }>();
+  private readonly pendingSyntheticPopupsByOpener = new Map<
+    string,
+    Array<{
+      timer: ReturnType<typeof setTimeout>;
+      url: string;
+    }>
+  >();
   private readonly detachedTargetIds = new Set<string>();
   private readonly pendingTargetDetachWaiters = new Map<string, Set<() => void>>();
   private readonly pointerActionScheduler = new CdpPointerActionScheduler();
@@ -1320,12 +1331,40 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     );
   }
 
+  async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {
+    const entry = {
+      source,
+      disposablesByPage: new WeakMap<ProtocolPageAdapter, Disposable>()
+    };
+    this.initScripts.add(entry);
+    await Promise.all(Array.from(this.pages.values(), async (page) => {
+      const disposable = await page.addInitScript(source);
+      entry.disposablesByPage.set(page, disposable);
+    }));
+    return {
+      dispose: async () => {
+        if (!this.initScripts.delete(entry)) {
+          return;
+        }
+        await Promise.all(Array.from(this.pages.values(), async (page) => {
+          await entry.disposablesByPage.get(page)?.dispose();
+        }));
+      }
+    };
+  }
+
   async close(): Promise<void> {
     if (this.closing) {
       return;
     }
 
     this.closing = true;
+    for (const entries of this.pendingSyntheticPopupsByOpener.values()) {
+      for (const entry of entries) {
+        clearTimeout(entry.timer);
+      }
+    }
+    this.pendingSyntheticPopupsByOpener.clear();
     if (this.targetPollTimer) {
       clearInterval(this.targetPollTimer);
       this.targetPollTimer = null;
@@ -1385,6 +1424,11 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       if (event.targetId) {
         void this.handleTargetDetached(event.targetId);
       }
+    });
+    this.state.browserClient.Target.targetDestroyed?.((event: {
+      targetId: string;
+    }) => {
+      void this.handleTargetDetached(event.targetId);
     });
 
     await this.state.browserClient.Target.setAutoAttach?.({
@@ -1501,6 +1545,35 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     if (this.closing || !this.matchesTargetInfo(targetInfo)) {
       return;
     }
+    if (
+      this.pages.has(targetInfo.targetId)
+      || this.pendingPages.has(targetInfo.targetId)
+      || this.detachedTargetIds.has(targetInfo.targetId)
+    ) {
+      return;
+    }
+
+    const isPendingManualPage =
+      this.pendingManualPageCreations > 0 &&
+      !targetInfo.openerId &&
+      (!targetInfo.url || targetInfo.url === "about:blank");
+    if (isPendingManualPage) {
+      return;
+    }
+
+    const pagePromise = this.getOrCreatePage(targetInfo.targetId, {
+      fallbackUrl: targetInfo.url ?? "about:blank",
+      hasWindowOpener: targetInfo.canAccessOpener ?? true,
+      openerTargetId: targetInfo.openerId ?? null,
+      emitPage: true
+    });
+    this.pendingPages.set(targetInfo.targetId, pagePromise);
+    void pagePromise.catch(() => {});
+    void pagePromise.finally(() => {
+      if (this.pendingPages.get(targetInfo.targetId) === pagePromise) {
+        this.pendingPages.delete(targetInfo.targetId);
+      }
+    });
   }
 
   private async handleTargetDetached(targetId: string): Promise<void> {
@@ -1572,6 +1645,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
             client,
             targetId,
             contextOptions: this.options,
+            onWindowOpen: (url) => {
+              this.queueSyntheticPopup(targetId, url);
+            },
             pointerActionScheduler: this.pointerActionScheduler,
             initialNavigationFrameUnavailable: Boolean(options.openerTargetId),
             ...(options.sessionId
@@ -1618,6 +1694,20 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       };
       pageWithMetadata.__roxyTargetId = targetId;
       pageWithMetadata.__roxyOpenerTargetId = options.openerTargetId ?? null;
+      if (options.openerTargetId) {
+        this.cancelNextSyntheticPopup(options.openerTargetId);
+      }
+      for (const entry of this.initScripts) {
+        try {
+          const disposable = await page.addInitScript(entry.source);
+          entry.disposablesByPage.set(page, disposable);
+        } catch (error) {
+          if (isPageClosedInitializationError(error)) {
+            break;
+          }
+          throw error;
+        }
+      }
       this.pages.set(targetId, page);
 
       if (options.emitPage && !this.creatingPageTargetIds.has(targetId)) {
@@ -1684,6 +1774,56 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     for (const listener of Array.from(this.pageListeners)) {
       await listener(page, opener, hasWindowOpener);
     }
+  }
+
+  private queueSyntheticPopup(openerTargetId: string, url: string): void {
+    const queue = this.pendingSyntheticPopupsByOpener.get(openerTargetId) ?? [];
+    const entry = {
+      timer: setTimeout(() => {
+        void this.emitSyntheticPopup(openerTargetId, url);
+      }, 500),
+      url
+    };
+    queue.push(entry);
+    this.pendingSyntheticPopupsByOpener.set(openerTargetId, queue);
+  }
+
+  private cancelNextSyntheticPopup(openerTargetId: string): void {
+    const queue = this.pendingSyntheticPopupsByOpener.get(openerTargetId);
+    if (!queue?.length) {
+      return;
+    }
+    const entry = queue.shift();
+    if (entry) {
+      clearTimeout(entry.timer);
+    }
+    if (queue.length === 0) {
+      this.pendingSyntheticPopupsByOpener.delete(openerTargetId);
+    }
+  }
+
+  private async emitSyntheticPopup(openerTargetId: string, url: string): Promise<void> {
+    const queue = this.pendingSyntheticPopupsByOpener.get(openerTargetId);
+    if (queue?.length) {
+      queue.shift();
+      if (queue.length === 0) {
+        this.pendingSyntheticPopupsByOpener.delete(openerTargetId);
+      }
+    }
+    if (this.closing) {
+      return;
+    }
+    const opener = await this.resolveKnownPage(openerTargetId);
+    if (!opener) {
+      return;
+    }
+    const page = createTransientClosedPageAdapter(url) as ProtocolPageAdapter & {
+      __roxyOpenerTargetId?: string | null;
+      __roxyTargetId?: string;
+    };
+    page.__roxyTargetId = `synthetic-popup:${openerTargetId}:${Date.now()}`;
+    page.__roxyOpenerTargetId = openerTargetId;
+    await this.emitPage(page, opener, true);
   }
 
   private waitForTargetDetached(targetId: string): Promise<void> {
@@ -2210,6 +2350,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client: CdpClient;
     targetId: string;
     contextOptions: BrowserContextOptions;
+    onWindowOpen?: (url: string) => void;
     pointerActionScheduler: CdpPointerActionScheduler;
     initialNavigationFrameUnavailable?: boolean;
     resumeOnInitialized?: () => Promise<void>;
@@ -2231,6 +2372,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       client: CdpClient;
       targetId: string;
       contextOptions: BrowserContextOptions;
+      onWindowOpen?: (url: string) => void;
       pointerActionScheduler: CdpPointerActionScheduler;
       initialNavigationFrameUnavailable?: boolean;
       resumeOnInitialized?: () => Promise<void>;
@@ -2328,6 +2470,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           type: event.type
         })
       );
+    });
+    client.on("Page.windowOpen", (event: {
+      url?: string;
+      windowFeatures: string[];
+    }) => {
+      this.options.onWindowOpen?.(event.url ?? "about:blank");
     });
 
     client.Page.frameNavigated((event) => {
