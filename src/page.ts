@@ -5306,7 +5306,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     })();
   }
 
-  private async drainBindingCalls(): Promise<void> {
+  private async drainBindingCalls(): Promise<number> {
     await this.refreshFrameSnapshots().catch(() => {});
     const calls: ExposedBindingCall[] = [];
     const drain = async (targetFrame: RoxyFrame | null): Promise<void> => {
@@ -5379,10 +5379,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         });
       }
     }
+
+    return calls.length;
   }
 
   async flushExposedBindingCallsForInternalUse(): Promise<void> {
-    await this.drainBindingCalls().catch(() => {});
+    while (true) {
+      const drained = await this.drainBindingCalls().catch(() => 0);
+      if (!drained) {
+        return;
+      }
+    }
   }
 
   private createBindingSource(frameId: string | null): BindingSource {
