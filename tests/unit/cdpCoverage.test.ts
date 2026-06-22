@@ -132,8 +132,58 @@ async function createCdpPageClients() {
 
 describe("CDP coverage", () => {
   afterEach(() => {
+    vi.useRealTimers();
     chromeRemoteInterfaceMock.mockReset();
     chromeRemoteInterfaceMock.Version.mockReset();
+  });
+
+  it("still cleans up the spawned browser connection when client.close hangs", async () => {
+    vi.useFakeTimers();
+
+    const unregisterTestBrowserProcess = vi.fn();
+    const adapter = new CdpBrowserAdapterFactory().create({
+      browserName: "chromium",
+      protocol: "cdp",
+      wsEndpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    }) as {
+      close(): Promise<void>;
+      state?: {
+        browserClient: {
+          close(): Promise<void>;
+        };
+        version: {
+          Browser: string;
+        };
+        connection: {
+          browserWsEndpoint: string;
+          host: string;
+          port: number;
+          unregisterTestBrowserProcess?: () => void;
+        };
+      };
+    };
+
+    adapter.state = {
+      browserClient: {
+        close: vi.fn(() => new Promise<void>(() => {}))
+      },
+      version: {
+        Browser: "Chrome/123.0.0.0"
+      },
+      connection: {
+        browserWsEndpoint: "ws://127.0.0.1:9222/devtools/browser/example",
+        host: "127.0.0.1",
+        port: 9222,
+        unregisterTestBrowserProcess
+      }
+    };
+
+    const closePromise = adapter.close();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(closePromise).resolves.toBeUndefined();
+    expect(unregisterTestBrowserProcess).toHaveBeenCalledTimes(1);
+    expect(adapter.state).toBeUndefined();
   });
 
   it("dispatches requestGC through HeapProfiler.collectGarbage", async () => {

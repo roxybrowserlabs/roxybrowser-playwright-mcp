@@ -138,6 +138,7 @@ const CDP_CAPABILITIES: ProtocolCapabilities = {
   supportsTracing: true
 };
 
+const CDP_CLIENT_CLOSE_TIMEOUT_MS = 1_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
 const REQUEST_EXTRA_INFO_FALLBACK_MS = 250;
@@ -1079,9 +1080,14 @@ export class CdpBrowserAdapter implements ProtocolBrowserAdapter {
       return;
     }
 
-    await safelyCloseClient(this.state.browserClient);
-    await cleanupConnection(this.state.connection);
+    const state = this.state;
     this.state = undefined;
+
+    try {
+      await safelyCloseClient(state.browserClient);
+    } finally {
+      await cleanupConnection(state.connection);
+    }
   }
 }
 
@@ -10084,8 +10090,29 @@ function cdpErrorReasonForRoute(errorCode?: string): FetchErrorReason {
 
 async function safelyCloseClient(client: CdpClient): Promise<void> {
   try {
-    await client.close();
+    await withCloseTimeout(
+      Promise.resolve().then(() => client.close()),
+      CDP_CLIENT_CLOSE_TIMEOUT_MS
+    );
   } catch {}
+}
+
+async function withCloseTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`Timed out after ${timeoutMs}ms.`));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function resolveUrl(url: string, baseURL?: string): string {
