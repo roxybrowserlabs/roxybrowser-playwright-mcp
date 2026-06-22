@@ -1109,6 +1109,7 @@ class CdpBrowserSession implements ProtocolBrowserSession {
 
 class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Map<string, ProtocolPageAdapter>();
+  private readonly initializingPages = new Map<string, CdpPageAdapter>();
   private readonly pendingPages = new Map<string, Promise<ProtocolPageAdapter>>();
   private readonly initScripts = new Set<{
     source: string;
@@ -1389,6 +1390,8 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     }
     await this.targetDiscoveryReady.catch(() => {});
 
+    const pendingPages = Array.from(this.pendingPages.values());
+
     await Promise.all(
       Array.from(this.pages.values()).map(async (page) => {
         await page.close();
@@ -1407,6 +1410,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         }
       }
     }
+
+    await Promise.allSettled(pendingPages);
+    this.pendingPages.clear();
+    this.initializingPages.clear();
   }
 
   private async initializeTargetDiscovery(): Promise<void> {
@@ -1567,7 +1574,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
   private async handleTargetDetached(targetId: string): Promise<void> {
     this.markTargetDetached(targetId);
-    const page = this.pages.get(targetId) as (ProtocolPageAdapter & { didClose?: () => void }) | undefined;
+    const page = (
+      this.pages.get(targetId)
+      ?? this.initializingPages.get(targetId)
+    ) as (ProtocolPageAdapter & { didClose?: () => void }) | undefined;
     page?.didClose?.();
   }
 
@@ -1634,11 +1644,16 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
             client,
             targetId,
             contextOptions: this.options,
+            contextInitScripts: Array.from(this.initScripts, (entry) => entry.source),
             initialRequestInterceptor: this.requestInterceptionEnabled
               ? this.requestInterceptor
               : null,
-            onWindowOpen: (url) => {
+            suppressClosedInitScriptErrors: true,
+            onWindowOpenFallback: (url) => {
               this.queueSyntheticPopup(targetId, url);
+            },
+            onPageConstructed: (page) => {
+              this.initializingPages.set(targetId, page);
             },
             pointerActionScheduler: this.pointerActionScheduler,
             initialNavigationFrameUnavailable: Boolean(options.openerTargetId),
@@ -1650,6 +1665,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
                 }
               : {}),
             onClosed: (closedTargetId) => {
+              this.initializingPages.delete(closedTargetId);
               this.pages.delete(closedTargetId);
               this.pendingPages.delete(closedTargetId);
               this.manuallyCreatedTargetIds.delete(closedTargetId);
@@ -1667,9 +1683,13 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
               })
             ]);
       } catch (error) {
+        const hasPendingSyntheticPopup = options.openerTargetId
+          ? this.hasPendingSyntheticPopup(options.openerTargetId)
+          : false;
         const shouldCreateClosedPopupFallback =
           options.emitPage &&
           Boolean(options.openerTargetId) &&
+          (hasPendingSyntheticPopup || options.hasWindowOpener === true) &&
           isPageClosedInitializationError(error);
 
         if (!shouldCreateClosedPopupFallback && (!options.emitPage || options.client)) {
@@ -1684,6 +1704,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         __roxyOpenerTargetId?: string | null;
         __roxyTargetId?: string;
       };
+      this.initializingPages.delete(targetId);
       pageWithMetadata.__roxyTargetId = targetId;
       pageWithMetadata.__roxyOpenerTargetId = options.openerTargetId ?? null;
       if (options.openerTargetId) {
@@ -1797,6 +1818,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     }
   }
 
+  private hasPendingSyntheticPopup(openerTargetId: string): boolean {
+    return (this.pendingSyntheticPopupsByOpener.get(openerTargetId)?.length ?? 0) > 0;
+  }
+
   private async emitSyntheticPopup(openerTargetId: string, url: string): Promise<void> {
     const queue = this.pendingSyntheticPopupsByOpener.get(openerTargetId);
     if (queue?.length) {
@@ -1869,6 +1894,7 @@ function isClosedCdpConnectionError(error: unknown): boolean {
     message.includes("target page, context or browser has been closed")
     || message.includes("target closed")
     || message.includes("session closed")
+    || message.includes("session with given id not found")
     || message.includes("connection closed")
     || message.includes("websocket is not open")
   );
@@ -2346,20 +2372,31 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client: CdpClient;
     targetId: string;
     contextOptions: BrowserContextOptions;
+    contextInitScripts?: string[];
     initialRequestInterceptor?: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null;
-    onWindowOpen?: (url: string) => void;
+    suppressClosedInitScriptErrors?: boolean;
+    onWindowOpenFallback?: (url: string) => void;
+    onPageConstructed?: (page: CdpPageAdapter) => void;
     pointerActionScheduler: CdpPointerActionScheduler;
     initialNavigationFrameUnavailable?: boolean;
     resumeOnInitialized?: () => Promise<void>;
     onClosed: (targetId: string) => void;
   }): Promise<CdpPageAdapter> {
     const page = new CdpPageAdapter(options);
-    await Promise.race([
-      page.initialize(),
-      page.closePromise.then(() => {
-        throw page.createClosedError();
-      })
-    ]);
+    options.onPageConstructed?.(page);
+    try {
+      await Promise.race([
+        page.initialize(),
+        page.closePromise.then(() => {
+          throw page.createClosedError();
+        })
+      ]);
+    } catch (error) {
+      if (page.closed && isPageClosedInitializationError(error)) {
+        throw error;
+      }
+      throw error;
+    }
     return page;
   }
 
@@ -2369,8 +2406,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       client: CdpClient;
       targetId: string;
       contextOptions: BrowserContextOptions;
+      contextInitScripts?: string[];
       initialRequestInterceptor?: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null;
-      onWindowOpen?: (url: string) => void;
+      suppressClosedInitScriptErrors?: boolean;
+      onWindowOpenFallback?: (url: string) => void;
+      onPageConstructed?: (page: CdpPageAdapter) => void;
       pointerActionScheduler: CdpPointerActionScheduler;
       initialNavigationFrameUnavailable?: boolean;
       resumeOnInitialized?: () => Promise<void>;
@@ -2481,16 +2521,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
       try {
         const payload = JSON.parse(event.payload) as { url?: string };
-        this.options.onWindowOpen?.(payload.url ?? "about:blank");
+        this.options.onWindowOpenFallback?.(payload.url ?? "about:blank");
       } catch {
-        this.options.onWindowOpen?.("about:blank");
+        this.options.onWindowOpenFallback?.("about:blank");
       }
-    });
-    client.on("Page.windowOpen", (event: {
-      url?: string;
-      windowFeatures: string[];
-    }) => {
-      this.options.onWindowOpen?.(event.url ?? "about:blank");
     });
 
     client.Page.frameNavigated((event) => {
@@ -3461,6 +3495,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
     });
 
+    const popupFallbackBridgeSource = this.installPopupFallbackBridge();
     await Promise.all([
       initializeCommand(client.Page.enable()),
       initializeCommand(client.Page.getFrameTree?.().then((response) => {
@@ -3491,36 +3526,48 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         waitForDebuggerOnStart: true,
         flatten: true
       }).catch(() => {})),
-      initializeCommand(this.installPopupFallbackBridge())
+      ...((this.options.contextInitScripts ?? []).map((source) =>
+        initializeCommand(this.addInitScript(source).then(() => {}).catch((error) => {
+          if (isClosedCdpConnectionError(error)) {
+            return;
+          }
+          throw error;
+        }))
+      )),
+      initializeCommand(popupFallbackBridgeSource.then(() => {})),
+      initializeCommand(this.options.resumeOnInitialized?.())
     ]);
-    await this.applyContextOptions();
-    await initializeCommand(this.options.resumeOnInitialized?.());
     await this.syncLifecycleStateFromDocument();
     this.maybeResolveInitialAboutBlankLifecycle();
     this.maybeArmNetworkIdleTimer();
+    await this.applyContextOptions();
   }
 
-  private async installPopupFallbackBridge(): Promise<void> {
+  private async installPopupFallbackBridge(): Promise<string | null> {
     if (this.popupFallbackBindingInstalled) {
-      return;
+      return null;
     }
     const runtimeClient = this.options.client as CdpClient & {
       Runtime: CdpRuntimeClient & {
         addBinding?(params: { name: string }): Promise<unknown>;
       };
     };
-    await runtimeClient.Runtime.addBinding?.({
-      name: POPUP_FALLBACK_BINDING_NAME
-    }).catch(() => {});
-    if (typeof this.options.client.Page.addScriptToEvaluateOnNewDocument !== "function") {
-      return;
+    try {
+      await runtimeClient.Runtime.addBinding?.({
+        name: POPUP_FALLBACK_BINDING_NAME
+      });
+    } catch (error) {
+      if (isClosedCdpConnectionError(error)) {
+        return null;
+      }
+      throw error;
     }
-    await this.addInitScript(`
+    if (typeof this.options.client.Page.addScriptToEvaluateOnNewDocument !== "function") {
+      return null;
+    }
+    const installSource = `
       (() => {
-        const globalState = globalThis as typeof globalThis & {
-          ${POPUP_FALLBACK_BINDING_NAME}?: (payload: string) => void;
-          __roxyPopupOpenFallbackInstalled?: boolean;
-        };
+        const globalState = globalThis;
         if (globalState.__roxyPopupOpenFallbackInstalled) {
           return;
         }
@@ -3529,7 +3576,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           return;
         }
         const originalWindowOpen = globalThis.open.bind(globalThis);
-        globalState.open = (...args: Parameters<typeof globalThis.open>) => {
+        globalState.open = (...args) => {
           const popup = originalWindowOpen(...args);
           try {
             binding(JSON.stringify({
@@ -3540,8 +3587,26 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         };
         globalState.__roxyPopupOpenFallbackInstalled = true;
       })();
-    `);
+    `;
+    try {
+      await this.addInitScript(installSource);
+    } catch (error) {
+      if (isClosedCdpConnectionError(error)) {
+        return null;
+      }
+      throw error;
+    }
     this.popupFallbackBindingInstalled = true;
+    return installSource;
+  }
+
+  private async evaluateInitScriptInCurrentDocument(source: string): Promise<void> {
+    const runtimeClient = this.options.client as CdpRuntimeClient;
+    await this.raceWithClose(runtimeClient.send("Runtime.evaluate", {
+      expression: `(() => { ${source}\n})();`,
+      awaitPromise: true,
+      returnByValue: false
+    }));
   }
 
   private handleNetworkResponseReceived(
@@ -3811,8 +3876,25 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {
-    const result = await this.options.client.Page.addScriptToEvaluateOnNewDocument({
-      source
+    let result: { identifier?: string };
+    try {
+      result = await this.raceWithClose(this.options.client.Page.addScriptToEvaluateOnNewDocument({
+        source,
+        runImmediately: true
+      })) as { identifier?: string };
+    } catch (error) {
+      if (this.options.suppressClosedInitScriptErrors && isClosedCdpConnectionError(error)) {
+        return {
+          dispose: async () => {}
+        };
+      }
+      throw error;
+    }
+    await this.evaluateInitScriptInCurrentDocument(source).catch((error) => {
+      if (isClosedCdpConnectionError(error)) {
+        return;
+      }
+      throw error;
     });
     const identifier = (result as { identifier?: string }).identifier;
     return {

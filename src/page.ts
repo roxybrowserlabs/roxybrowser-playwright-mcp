@@ -1504,6 +1504,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       throw new Error("state: expected one of (load|domcontentloaded|networkidle|commit)");
     }
     await this.adapter.waitForLoadState(state, options.timeout ?? this.defaultNavigationTimeoutMs);
+    if (this.isClosed()) {
+      return;
+    }
     await this.reinstallExposedBindings();
     await this.installRouteInterceptors();
     await this.refreshFrameSnapshots();

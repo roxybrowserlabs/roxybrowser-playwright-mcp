@@ -444,7 +444,8 @@ export class RoxyBrowserContext implements BrowserContext {
     openerAdapter: ProtocolPageAdapter | null,
     hasWindowOpener: boolean
   ): Promise<void> {
-    const page = await this.registerPage(pageAdapter);
+    const pageRegistration = this.registerPage(pageAdapter);
+    const page = this.pageByAdapter.get(pageAdapter) ?? await pageRegistration;
     const resolvedOpenerAdapter =
       openerAdapter ?? await this.resolvePageAdapterByTargetId(this.openerTargetIdOf(pageAdapter));
     const opener = resolvedOpenerAdapter
@@ -463,6 +464,7 @@ export class RoxyBrowserContext implements BrowserContext {
     page.setOpener(hasWindowOpener ? opener : null);
     this.emitPageEventOnce(page);
     opener.emitPopup(page);
+    await pageRegistration;
   }
 
   private async registerPage(pageAdapter: ProtocolPageAdapter): Promise<RoxyPage> {
@@ -491,19 +493,38 @@ export class RoxyBrowserContext implements BrowserContext {
     this.pageByAdapter.set(pageAdapter, page);
     this.adapterByPage.set(page, pageAdapter);
     this.attachPageEventBubbling(page);
-
     try {
       for (const entry of this.initScripts) {
         const disposable = await page.addInitScript(entry.source);
         entry.disposablesByPage.set(page, disposable);
       }
-      await page._ensurePlaywrightBuiltinsInstalled();
-      await this.clockDelegate.attachPage(page);
+      await page._ensurePlaywrightBuiltinsInstalled().catch((error) => {
+        if (isClosedPageRegistrationError(error)) {
+          return;
+        }
+        throw error;
+      });
+      await this.clockDelegate.attachPage(page).catch((error) => {
+        if (isClosedPageRegistrationError(error)) {
+          return;
+        }
+        throw error;
+      });
       if (this.options.recordVideo) {
-        await this.enableRecordVideo(page, this.options.recordVideo);
+        await this.enableRecordVideo(page, this.options.recordVideo).catch((error) => {
+          if (isClosedPageRegistrationError(error)) {
+            return;
+          }
+          throw error;
+        });
       }
       if (this._hasRouteInterception()) {
-        await page._ensureRouteInterceptorsInstalled();
+        await page._ensureRouteInterceptorsInstalled().catch((error) => {
+          if (isClosedPageRegistrationError(error)) {
+            return;
+          }
+          throw error;
+        });
       }
       return page;
     } catch (error) {
@@ -936,6 +957,8 @@ function isClosedPageRegistrationError(error: unknown): boolean {
     || message.includes("session closed")
     || message.includes("connection closed")
     || message.includes("target closed")
+    || message.includes("websocket connection closed")
+    || message.includes("write epipe")
   );
 }
 
