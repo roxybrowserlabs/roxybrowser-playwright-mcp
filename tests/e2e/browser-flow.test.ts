@@ -77,4 +77,45 @@ describe("browser e2e", () => {
       await browser.close();
     }
   });
+
+  it("applies optional context human defaults without requiring per-call human options", async () => {
+    const browser = await chromium.launch({
+      headless: true,
+      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
+        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
+        : {})
+    });
+
+    try {
+      const context = await browser.newContext({
+        human: {
+          enabled: true,
+          hoverBeforeClickMs: 0,
+          clickHoldMs: 0,
+          typingDelayMs: 0,
+          typingVarianceMs: 0
+        }
+      });
+
+      try {
+        const page = await context.newPage();
+
+        try {
+          await page.goto(fixture.url, { waitUntil: "load" });
+          await page.fill("#name", "");
+          await page.type("#name", "ContextHuman");
+          await page.press("#name", "Enter");
+          await page.getByRole("button", { name: "Send" }).click();
+
+          expect(await page.locator("#status").textContent()).toBe("clicked:ContextHuman");
+        } finally {
+          await page.close();
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await browser.close();
+    }
+  });
 });

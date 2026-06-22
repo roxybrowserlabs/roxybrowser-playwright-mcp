@@ -2421,6 +2421,40 @@ describe("RoxyPage", () => {
     expect(pressSpy).toHaveBeenCalledWith("input", "Enter", { human: { enabled: false }, delay: 8 });
   });
 
+  it("forwards optional human overrides through all page pointer actions", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const hoverSpy = vi.spyOn(page.mainFrame(), "hover").mockResolvedValue(undefined);
+    const dblclickSpy = vi.spyOn(page.mainFrame(), "dblclick").mockResolvedValue(undefined);
+    const tapSpy = vi.spyOn(page.mainFrame(), "tap").mockResolvedValue(undefined);
+    const checkSpy = vi.spyOn(page.mainFrame(), "check").mockResolvedValue(undefined);
+    const uncheckSpy = vi.spyOn(page.mainFrame(), "uncheck").mockResolvedValue(undefined);
+    const setCheckedSpy = vi.spyOn(page.mainFrame(), "setChecked").mockResolvedValue(undefined);
+
+    await page.hover("button", { human: { enabled: false }, timeout: 22 });
+    await page.dblclick("button", { human: { enabled: false }, delay: 6 });
+    await page.tap("button", { human: { enabled: false }, trial: true });
+    await page.check("input", { human: { enabled: false }, trial: true });
+    await page.uncheck("input", { human: { enabled: false }, trial: true });
+    await page.setChecked("input", true, { human: { enabled: false }, trial: true });
+
+    expect(hoverSpy).toHaveBeenCalledWith("button", { human: { enabled: false }, timeout: 22 });
+    expect(dblclickSpy).toHaveBeenCalledWith("button", { human: { enabled: false }, delay: 6 });
+    expect(tapSpy).toHaveBeenCalledWith("button", { human: { enabled: false }, trial: true });
+    expect(checkSpy).toHaveBeenCalledWith("input", { human: { enabled: false }, trial: true });
+    expect(uncheckSpy).toHaveBeenCalledWith("input", { human: { enabled: false }, trial: true });
+    expect(setCheckedSpy).toHaveBeenCalledWith("input", true, { human: { enabled: false }, trial: true });
+  });
+
   it("waitForSelector parses chained selectors and returns an element handle", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
