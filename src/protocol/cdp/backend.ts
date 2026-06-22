@@ -142,6 +142,7 @@ const CDP_CLIENT_CLOSE_TIMEOUT_MS = 1_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
 const REQUEST_EXTRA_INFO_FALLBACK_MS = 250;
+const POPUP_ATTACH_MATCH_WINDOW_MS = 1_000;
 const POPUP_FALLBACK_BINDING_NAME = "__roxyOnPopupOpenedFallback";
 const HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE = `() => {
   const hydrate = (root) => {
@@ -1128,6 +1129,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       url: string;
     }>
   >();
+  private readonly recentAttachedPopupsByOpener = new Map<string, number[]>();
   private readonly detachedTargetIds = new Set<string>();
   private readonly pendingTargetDetachWaiters = new Map<string, Set<() => void>>();
   private readonly pointerActionScheduler = new CdpPointerActionScheduler();
@@ -1522,6 +1524,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       this.creatingPageTargetIds.add(targetInfo.targetId);
       this.manuallyCreatedTargetIds.add(targetInfo.targetId);
     }
+    if (targetInfo.openerId && !this.hasPendingSyntheticPopup(targetInfo.openerId)) {
+      this.noteAttachedPopup(targetInfo.openerId);
+    }
 
     const pagePromise = this.getOrCreatePage(targetInfo.targetId, {
       client: createSessionTargetClient(this.state.browserClient, event.sessionId),
@@ -1531,6 +1536,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       emitPage: !this.manuallyCreatedTargetIds.has(targetInfo.targetId),
       sessionId: event.sessionId
     });
+    if (targetInfo.openerId) {
+      this.cancelNextSyntheticPopup(targetInfo.openerId);
+    }
     this.pendingPages.set(targetInfo.targetId, pagePromise);
     void pagePromise.catch(() => {});
     void pagePromise.finally(() => {
@@ -1799,6 +1807,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   }
 
   private queueSyntheticPopup(openerTargetId: string, url: string): void {
+    if (this.consumeRecentlyAttachedPopup(openerTargetId)) {
+      return;
+    }
     const queue = this.pendingSyntheticPopupsByOpener.get(openerTargetId) ?? [];
     const entry = {
       timer: setTimeout(() => {
@@ -1881,6 +1892,33 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     for (const waiter of waiters) {
       waiter();
     }
+  }
+
+  private noteAttachedPopup(openerTargetId: string): void {
+    const now = Date.now();
+    const queue = this.recentAttachedPopupsByOpener.get(openerTargetId) ?? [];
+    queue.push(now);
+    this.recentAttachedPopupsByOpener.set(
+      openerTargetId,
+      queue.filter((timestamp) => now - timestamp <= POPUP_ATTACH_MATCH_WINDOW_MS)
+    );
+  }
+
+  private consumeRecentlyAttachedPopup(openerTargetId: string): boolean {
+    const now = Date.now();
+    const queue = (this.recentAttachedPopupsByOpener.get(openerTargetId) ?? [])
+      .filter((timestamp) => now - timestamp <= POPUP_ATTACH_MATCH_WINDOW_MS);
+    if (!queue.length) {
+      this.recentAttachedPopupsByOpener.delete(openerTargetId);
+      return false;
+    }
+    queue.shift();
+    if (queue.length) {
+      this.recentAttachedPopupsByOpener.set(openerTargetId, queue);
+    } else {
+      this.recentAttachedPopupsByOpener.delete(openerTargetId);
+    }
+    return true;
   }
 }
 
@@ -3533,7 +3571,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         flatten: true
       }).catch(() => {})),
       ...((this.options.contextInitScripts ?? []).map((source) =>
-        initializeCommand(this.addInitScript(source).then(() => {}).catch((error) => {
+        initializeCommand(this.installInitScript(source, {
+          evaluateInCurrentDocument: true
+        }).then(() => {}).catch((error) => {
           if (isClosedCdpConnectionError(error)) {
             return;
           }
@@ -3595,7 +3635,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       })();
     `;
     try {
-      await this.addInitScript(installSource);
+      await this.installInitScript(installSource, {
+        evaluateInCurrentDocument: true
+      });
     } catch (error) {
       if (isClosedCdpConnectionError(error)) {
         return null;
@@ -3882,11 +3924,23 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {
+    return this.installInitScript(source);
+  }
+
+  private async installInitScript(
+    source: string,
+    options: {
+      evaluateInCurrentDocument?: boolean;
+      runImmediately?: boolean;
+    } = {}
+  ): Promise<Disposable> {
     let result: { identifier?: string };
     try {
       result = await this.raceWithClose(this.options.client.Page.addScriptToEvaluateOnNewDocument({
         source,
-        runImmediately: true
+        ...(options.runImmediately !== undefined
+          ? { runImmediately: options.runImmediately }
+          : {})
       })) as { identifier?: string };
     } catch (error) {
       if (this.options.suppressClosedInitScriptErrors && isClosedCdpConnectionError(error)) {
@@ -3896,12 +3950,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
       throw error;
     }
-    await this.evaluateInitScriptInCurrentDocument(source).catch((error) => {
-      if (isClosedCdpConnectionError(error)) {
-        return;
-      }
-      throw error;
-    });
+    if (options.evaluateInCurrentDocument) {
+      await this.evaluateInitScriptInCurrentDocument(source).catch((error) => {
+        if (isClosedCdpConnectionError(error)) {
+          return;
+        }
+        throw error;
+      });
+    }
     const identifier = (result as { identifier?: string }).identifier;
     return {
       dispose: async () => {

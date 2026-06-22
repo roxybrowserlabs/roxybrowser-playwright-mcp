@@ -86,7 +86,7 @@ export class RoxyBrowserContext implements BrowserContext {
     private readonly options: BrowserContextOptions = {},
     browserName: BrowserName = "chromium"
   ) {
-    this.clockDelegate = new RoxyBrowserContextClockDelegate(browserName);
+    this.clockDelegate = new RoxyBrowserContextClockDelegate(this, browserName);
     this.clock = new RoxyClock(this.clockDelegate);
     this.disposeAdapterPageListener =
       this.adapter.onPage?.((pageAdapter, openerAdapter, hasWindowOpener) =>
@@ -955,6 +955,7 @@ function isClosedPageRegistrationError(error: unknown): boolean {
     message.includes("target page, context or browser has been closed")
     || message.includes("browser context has been closed")
     || message.includes("session closed")
+    || message.includes("session with given id not found")
     || message.includes("connection closed")
     || message.includes("target closed")
     || message.includes("websocket connection closed")

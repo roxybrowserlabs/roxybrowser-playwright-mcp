@@ -43,9 +43,9 @@ class ClockHost {
 }
 
 async function createClockHarness() {
-  const delegate = new RoxyBrowserContextClockDelegate();
-  const clock = new RoxyClock(delegate);
   const host = new ClockHost();
+  const delegate = new RoxyBrowserContextClockDelegate(host);
+  const clock = new RoxyClock(delegate);
   await delegate.attachPage(host);
   return {
     delegate,

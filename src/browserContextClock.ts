@@ -11,6 +11,13 @@ export interface ClockScriptHost {
   flushExposedBindingCallsForInternalUse?(): Promise<void>;
 }
 
+interface ClockInitScriptHost {
+  addInitScript<Arg>(
+    script: PageFunction<Arg, unknown> | { path?: string; content?: string },
+    arg?: Arg
+  ): Promise<Disposable>;
+}
+
 type ClockLogType =
   | "fastForward"
   | "install"
@@ -97,24 +104,16 @@ export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
   private readonly attachedPages = new Set<ClockScriptHost>();
   private readonly registrations: ClockRegistration[] = [];
 
-  constructor(private readonly browserName: "chromium" | "firefox" = "chromium") {}
+  constructor(
+    private readonly initScriptHost: ClockInitScriptHost,
+    private readonly browserName: "chromium" | "firefox" = "chromium"
+  ) {}
 
   async attachPage(page: ClockScriptHost): Promise<void> {
     this.attachedPages.add(page);
 
     if (!this.registrations.length) {
       return;
-    }
-
-    for (const registration of this.registrations) {
-      await page.addInitScript(registration.script, registration.arg);
-    }
-
-    for (const registration of this.registrations) {
-      if (!registration.evaluateOnAttach) {
-        continue;
-      }
-      await page.evaluate(registration.script, registration.arg);
     }
 
     await page.evaluate(CLOCK_WARMUP_SOURCE);
@@ -168,10 +167,10 @@ export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
       script: CLOCK_BOOTSTRAP_SOURCE
     };
     this.registrations.push(registration);
+    await this.initScriptHost.addInitScript(registration.script, registration.arg);
 
     await Promise.all(
       Array.from(this.attachedPages).map(async (page) => {
-        await page.addInitScript(registration.script, registration.arg);
         await page.evaluate(registration.script, registration.arg);
       })
     );
@@ -190,12 +189,7 @@ export class RoxyBrowserContextClockDelegate implements RoxyClockDelegate {
       script: CLOCK_LOG_SOURCE
     };
     this.registrations.push(logRegistration);
-
-    await Promise.all(
-      Array.from(this.attachedPages).map(async (page) => {
-        await page.addInitScript(logRegistration.script, logRegistration.arg);
-      })
-    );
+    await this.initScriptHost.addInitScript(logRegistration.script, logRegistration.arg);
 
     await Promise.all(
       Array.from(this.attachedPages).map(async (page) => {
