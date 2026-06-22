@@ -445,7 +445,7 @@ export class RoxyBrowserContext implements BrowserContext {
     hasWindowOpener: boolean
   ): Promise<void> {
     const pageRegistration = this.registerPage(pageAdapter);
-    const page = this.pageByAdapter.get(pageAdapter) ?? await pageRegistration;
+    const page = await pageRegistration;
     const resolvedOpenerAdapter =
       openerAdapter ?? await this.resolvePageAdapterByTargetId(this.openerTargetIdOf(pageAdapter));
     const opener = resolvedOpenerAdapter
