@@ -3547,23 +3547,47 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const currentSnapshot = currentFrame?.snapshotState() ?? frame;
     if (currentSnapshot.parentId === null) {
       const previousUrl = this.mainFrame().url();
-      const response = await this.adapter.goto(url, {
-        ...options,
-        timeout: options.timeout ?? this.defaultNavigationTimeoutMs
+      const navigationResponsePromise = this.waitForNavigationInFrame(null, {
+        url,
+        ...options
       });
-      await this.reinstallExposedBindings();
-      await this.waitForFileChooserInterceptionIfPending();
-      await this.refreshFrameSnapshots();
-      const currentUrl = this.adapter.url();
-      const mainFrame = this.mainFrame();
-      if (currentUrl !== previousUrl && mainFrame instanceof RoxyFrame && mainFrame.url() !== currentUrl) {
-        mainFrame.setSnapshot({
-          ...mainFrame.snapshotState(),
-          url: currentUrl
+      const safeNavigationResponsePromise = navigationResponsePromise.then(
+        (response) => ({ ok: true as const, response }),
+        (error) => ({ ok: false as const, error })
+      );
+      let usedNavigationResponsePromise = false;
+      try {
+        const response = await this.adapter.goto(url, {
+          ...options,
+          timeout: options.timeout ?? this.defaultNavigationTimeoutMs
         });
-        this.emit("framenavigated", mainFrame);
+        await this.reinstallExposedBindings();
+        await this.waitForFileChooserInterceptionIfPending();
+        await this.refreshFrameSnapshots();
+        const currentUrl = this.adapter.url();
+        const mainFrame = this.mainFrame();
+        if (currentUrl !== previousUrl && mainFrame instanceof RoxyFrame && mainFrame.url() !== currentUrl) {
+          mainFrame.setSnapshot({
+            ...mainFrame.snapshotState(),
+            url: currentUrl
+          });
+          this.emit("framenavigated", mainFrame);
+        }
+        const publicResponse = this.toPublicResponse(response);
+        if (publicResponse) {
+          return publicResponse;
+        }
+        usedNavigationResponsePromise = true;
+        const navigationResult = await safeNavigationResponsePromise;
+        if (!navigationResult.ok) {
+          throw navigationResult.error;
+        }
+        return navigationResult.response;
+      } finally {
+        if (!usedNavigationResponsePromise) {
+          void safeNavigationResponsePromise;
+        }
       }
-      return this.toPublicResponse(response);
     }
 
     await this.refreshFrameSnapshots().catch(() => {});
