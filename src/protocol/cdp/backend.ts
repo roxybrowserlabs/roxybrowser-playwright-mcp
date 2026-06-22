@@ -2015,6 +2015,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   >();
   private readonly fulfilledRequestIds = new Set<string>();
   private readonly ignoredRequestIds = new Set<string>();
+  private readonly pausedFetchRequestIds = new Set<string>();
   private readonly continuedRequestHeaders = new Map<string, Array<{ name: string; value: string }>>();
   private readonly continuedRequestUrls = new Map<string, string>();
   private readonly responseBodies = new Map<string, ResponseBodyState>();
@@ -4429,8 +4430,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       return;
     }
     this.requestInterceptionEnabled = shouldEnable;
-    await this.options.client.Network.setCacheDisabled({ cacheDisabled: shouldEnable }).catch(() => {});
     if (shouldEnable) {
+      await this.options.client.Network.setCacheDisabled({ cacheDisabled: true }).catch(() => {});
       await this.options.client.Fetch.enable({
         patterns: [
           {
@@ -4441,7 +4442,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
       return;
     }
-    await this.options.client.Fetch.disable().catch(() => {});
+    void (async () => {
+      await Promise.all(
+        Array.from(this.pausedFetchRequestIds, async (requestId) => {
+          await this.options.client.Fetch.continueRequest({
+            requestId
+          }).catch(() => {});
+        })
+      );
+      await this.options.client.Network.setCacheDisabled({ cacheDisabled: false }).catch(() => {});
+      await this.options.client.Fetch.disable().catch(() => {});
+    })();
   }
 
   async query(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter | null> {
@@ -7519,90 +7530,95 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       return;
     }
 
+    this.pausedFetchRequestIds.add(event.requestId);
     const bodyBuffer = postDataBufferFromCdpEntries(event.request.postDataEntries) ??
       (event.request.postData
       ? Buffer.from(event.request.postData, "utf8")
       : null);
-    const decision = await this.requestInterceptor({
-      id: event.requestId,
-      ...(event.networkId ? { requestId: event.networkId } : {}),
-      headers: normalizeHeaderRecord(event.request.headers),
-      isNavigationRequest: event.resourceType === "Document",
-      method: event.request.method,
-      ...(event.request.postData !== undefined ? { postData: event.request.postData } : { postData: null }),
-      ...(bodyBuffer ? { postDataBufferBase64: bodyBuffer.toString("base64") } : {}),
-      resourceType: toPlaywrightResourceType(event.resourceType),
-      url: event.request.url
-    });
+    try {
+      const decision = await this.requestInterceptor({
+        id: event.requestId,
+        ...(event.networkId ? { requestId: event.networkId } : {}),
+        headers: normalizeHeaderRecord(event.request.headers),
+        isNavigationRequest: event.resourceType === "Document",
+        method: event.request.method,
+        ...(event.request.postData !== undefined ? { postData: event.request.postData } : { postData: null }),
+        ...(bodyBuffer ? { postDataBufferBase64: bodyBuffer.toString("base64") } : {}),
+        resourceType: toPlaywrightResourceType(event.resourceType),
+        url: event.request.url
+      });
 
-    if (decision.action === "continue") {
-      const headers = cdpContinueRequestHeaders(decision.headers);
-      if (event.networkId) {
-        this.continuedRequestHeaders.set(event.networkId, headers);
-        if (decision.url !== event.request.url) {
-          this.continuedRequestUrls.set(event.networkId, decision.url);
-        } else {
-          this.continuedRequestUrls.delete(event.networkId);
+      if (decision.action === "continue") {
+        const headers = cdpContinueRequestHeaders(decision.headers);
+        if (event.networkId) {
+          this.continuedRequestHeaders.set(event.networkId, headers);
+          if (decision.url !== event.request.url) {
+            this.continuedRequestUrls.set(event.networkId, decision.url);
+          } else {
+            this.continuedRequestUrls.delete(event.networkId);
+          }
+          const metadata = this.requestMetadata.get(event.networkId);
+          if (metadata) {
+            metadata.url = decision.url;
+          }
         }
-        const metadata = this.requestMetadata.get(event.networkId);
-        if (metadata) {
-          metadata.url = decision.url;
-        }
+        await this.sendFetchCommandMayFail(() =>
+          this.options.client.Fetch.continueRequest({
+            requestId: event.requestId,
+            ...(decision.url !== event.request.url ? { url: decision.url } : {}),
+            ...(decision.method !== event.request.method ? { method: decision.method } : {}),
+            ...(decision.postData !== null
+              ? {
+                  postData: Buffer.from(
+                    decision.postDataBufferBase64 ?? Buffer.from(decision.postData, "utf8").toString("base64"),
+                    "base64"
+                  ).toString("base64")
+                }
+              : {}),
+            headers
+          })
+        );
+        return;
       }
+
+      if (decision.action === "fulfill") {
+        const routedRequestId = event.networkId ?? event.requestId;
+        const fulfilledBody = Buffer.from(
+          decision.bodyBufferBase64 ?? Buffer.from(decision.body, "utf8").toString("base64"),
+          "base64"
+        );
+        const responseBodyState = this.ensureResponseBodyState(routedRequestId);
+        responseBodyState.fulfilledBody = fulfilledBody;
+        responseBodyState.expectedLength = fulfilledBody.byteLength;
+        responseBodyState.url = decision.url;
+        this.fulfilledRequestIds.add(routedRequestId);
+        this.fulfilledDocumentResponseHeaders.set(
+          routedRequestId,
+          mapCdpHeaders(decision.headers, "\n")
+        );
+        await this.sendFetchCommandMayFail(() =>
+          this.options.client.Fetch.fulfillRequest({
+            requestId: event.requestId,
+            body: fulfilledBody.toString("base64"),
+            responseCode: decision.status,
+            responseHeaders: splitSetCookieHeader(
+              Object.entries(decision.headers).map(([name, value]) => ({ name, value }))
+            ),
+            responsePhrase: decision.statusText
+          })
+        );
+        return;
+      }
+
       await this.sendFetchCommandMayFail(() =>
-        this.options.client.Fetch.continueRequest({
+        this.options.client.Fetch.failRequest({
           requestId: event.requestId,
-          ...(decision.url !== event.request.url ? { url: decision.url } : {}),
-          ...(decision.method !== event.request.method ? { method: decision.method } : {}),
-          ...(decision.postData !== null
-            ? {
-                postData: Buffer.from(
-                  decision.postDataBufferBase64 ?? Buffer.from(decision.postData, "utf8").toString("base64"),
-                  "base64"
-                ).toString("base64")
-              }
-            : {}),
-          headers
+          errorReason: cdpErrorReasonForRoute(decision.errorCode)
         })
       );
-      return;
+    } finally {
+      this.pausedFetchRequestIds.delete(event.requestId);
     }
-
-    if (decision.action === "fulfill") {
-      const routedRequestId = event.networkId ?? event.requestId;
-      const fulfilledBody = Buffer.from(
-        decision.bodyBufferBase64 ?? Buffer.from(decision.body, "utf8").toString("base64"),
-        "base64"
-      );
-      const responseBodyState = this.ensureResponseBodyState(routedRequestId);
-      responseBodyState.fulfilledBody = fulfilledBody;
-      responseBodyState.expectedLength = fulfilledBody.byteLength;
-      responseBodyState.url = decision.url;
-      this.fulfilledRequestIds.add(routedRequestId);
-      this.fulfilledDocumentResponseHeaders.set(
-        routedRequestId,
-        mapCdpHeaders(decision.headers, "\n")
-      );
-      await this.sendFetchCommandMayFail(() =>
-        this.options.client.Fetch.fulfillRequest({
-          requestId: event.requestId,
-          body: fulfilledBody.toString("base64"),
-          responseCode: decision.status,
-          responseHeaders: splitSetCookieHeader(
-            Object.entries(decision.headers).map(([name, value]) => ({ name, value }))
-          ),
-          responsePhrase: decision.statusText
-        })
-      );
-      return;
-    }
-
-    await this.sendFetchCommandMayFail(() =>
-      this.options.client.Fetch.failRequest({
-        requestId: event.requestId,
-        errorReason: cdpErrorReasonForRoute(decision.errorCode)
-      })
-    );
   }
 
   private async sendFetchCommandMayFail(command: () => Promise<void>): Promise<void> {

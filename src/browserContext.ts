@@ -697,6 +697,9 @@ export class RoxyBrowserContext implements BrowserContext {
     if (behavior === "ignoreErrors") {
       for (const entry of entries) {
         entry.ignoreExceptions = true;
+        for (const invocation of entry.activeInvocations) {
+          invocation.resolve();
+        }
       }
       return;
     }

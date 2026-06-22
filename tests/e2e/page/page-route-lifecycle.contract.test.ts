@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { chromium } from "../../../src/index.js";
 import { withPage } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
 
@@ -39,6 +40,45 @@ describe("page route lifecycle contract e2e", () => {
     await fixture.close();
   });
 
+  it("page.close does not wait for active route handlers on the owning context like Playwright", async () => {
+    const browser = await chromium.launch({
+      headless: true,
+      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
+        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
+        : {})
+    });
+
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        try {
+          let routeCallback!: () => void;
+          const routePromise = new Promise<void>((resolve) => {
+            routeCallback = resolve;
+          });
+
+          await context.route(/.*/, async (route) => {
+            routeCallback();
+          });
+          await page.route(/.*/, async (route) => {
+            await route.fallback();
+          });
+
+          void page.goto(fixture.server.EMPTY_PAGE).catch(() => {});
+          await routePromise;
+          await withTimeout(page.close(), "page.close", 1000);
+        } finally {
+          await page.close().catch(() => {});
+        }
+      } finally {
+        await context.close().catch(() => {});
+      }
+    } finally {
+      await browser.close().catch(() => {});
+    }
+  });
+
   it("page.close does not wait for active route handlers like Playwright", async () => {
     await withPage(async (page) => {
       let secondHandlerCalled = false;
@@ -62,6 +102,43 @@ describe("page route lifecycle contract e2e", () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       expect(secondHandlerCalled).toBe(false);
+    });
+  });
+
+  it("page.unroute does not wait for pending handlers to complete like Playwright", async () => {
+    await withPage(async (page) => {
+      let secondHandlerCalled = false;
+      await page.route(/.*/, async (route) => {
+        secondHandlerCalled = true;
+        await route.continue();
+      });
+
+      let routeCallback!: () => void;
+      const routePromise = new Promise<void>((resolve) => {
+        routeCallback = resolve;
+      });
+      let continueRouteCallback!: () => void;
+      const routeBarrier = new Promise<void>((resolve) => {
+        continueRouteCallback = resolve;
+      });
+
+      const handler = async (route: Parameters<typeof page.route>[1] extends infer T
+        ? T extends (...args: any[]) => any
+          ? Parameters<T>[0]
+          : never
+        : never) => {
+        routeCallback();
+        await routeBarrier;
+        await route.fallback();
+      };
+
+      await page.route(/.*/, handler as never);
+      const navigationPromise = page.goto(fixture.server.EMPTY_PAGE);
+      await routePromise;
+      await withTimeout(page.unroute(/.*/, handler as never), "page.unroute", 1000);
+      continueRouteCallback();
+      await navigationPromise;
+      expect(secondHandlerCalled).toBe(true);
     });
   });
 
@@ -140,6 +217,49 @@ describe("page route lifecycle contract e2e", () => {
       void page.evaluate(() => fetch("/")).catch(() => {});
       await routePromise;
       await withTimeout(page.unrouteAll({ behavior: "wait" }), "page.unrouteAll", 6000);
+    });
+  });
+
+  it("page.unrouteAll ignores pending handler errors without waiting like Playwright", async () => {
+    await withPage(async (page) => {
+      let secondHandlerCalled = false;
+      await page.route(/.*/, async () => {
+        secondHandlerCalled = true;
+      });
+
+      let routeCallback!: () => void;
+      const routePromise = new Promise<void>((resolve) => {
+        routeCallback = resolve;
+      });
+      let continueRouteCallback!: () => void;
+      const routeBarrier = new Promise<void>((resolve) => {
+        continueRouteCallback = resolve;
+      });
+
+      await page.route(/.*/, async () => {
+        routeCallback();
+        await routeBarrier;
+        throw new Error("Handler error");
+      });
+
+      const navigationPromise = page.goto(fixture.server.EMPTY_PAGE).catch((error) => error);
+      await routePromise;
+
+      let didUnroute = false;
+      const unroutePromise = withTimeout(
+        page.unrouteAll({ behavior: "ignoreErrors" }).then(() => {
+          didUnroute = true;
+        }),
+        "page.unrouteAll",
+        1000
+      );
+      await unroutePromise;
+      expect(didUnroute).toBe(true);
+
+      continueRouteCallback();
+      await navigationPromise;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(secondHandlerCalled).toBe(false);
     });
   });
 });
