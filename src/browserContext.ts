@@ -1,10 +1,12 @@
+import { STATUS_CODES } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoxyAPIRequestContext } from "./apiRequestContext.js";
+import { createApiResponse, fetchWithRetries, RoxyAPIRequestContext } from "./apiRequestContext.js";
 import { RoxyBrowserContextClockDelegate } from "./browserContextClock.js";
 import { RoxyClock } from "./clock.js";
+import { TimeoutError } from "./errors.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import { RoxyPage } from "./page.js";
 import { serializePageFunction } from "./evaluation.js";
@@ -27,6 +29,7 @@ import type {
 } from "./types/events.js";
 import type { BrowserContextOptions, BrowserName, RecordVideoOptions } from "./types/options.js";
 import type { Route } from "./types/api.js";
+import type { PageResponse } from "./types/events.js";
 import type { RoutedRequestCall, RoutedRequestDecision } from "./protocol/routing.js";
 
 const DEFAULT_CONTEXT_EVENT_TIMEOUT_MS = 30_000;
@@ -730,6 +733,21 @@ export class RoxyBrowserContext implements BrowserContext {
     }
   }
 
+  _buildRouteFulfillDecision(
+    request: RoutedRequestCall,
+    options: {
+      body?: string | Buffer;
+      contentType?: string;
+      headers?: { [key: string]: string };
+      json?: unknown;
+      path?: string;
+      response?: import("./types/api.js").APIResponse | Response | PageResponse;
+      status?: number;
+    }
+  ): Promise<Extract<RoutedRequestDecision, { action: "fulfill" }>> {
+    return buildFulfillDecision(request, options);
+  }
+
   _matchesRouteMatcher(url: string, matcher: RouteMatcher): boolean {
     if (url.startsWith("data:")) {
       return false;
@@ -767,64 +785,20 @@ export class RoxyBrowserContext implements BrowserContext {
   private async dispatchContextRoutedRequest(call: RoutedRequestCall): Promise<RoutedRequestDecision> {
     let requestState: RoutedRequestCall = {
       ...call,
-      headers: { ...call.headers }
+      headers: normalizeHeaderRecord(call.headers)
     };
 
-    const request = {
-      allHeaders: async () => ({ ...requestState.headers }),
-      existingResponse: () => null,
-      failure: () => null,
-      frame: () => {
-        throw new Error("Request.frame is not available for context-level protocol interception.");
-      },
-      headers: () => ({ ...requestState.headers }),
-      headersArray: async () => Object.entries(requestState.headers).map(([name, value]) => ({ name, value })),
-      headerValue: async (name: string) => {
-        const found = Object.entries(requestState.headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
-        return found?.[1] ?? null;
-      },
-      isNavigationRequest: () => Boolean(requestState.isNavigationRequest),
-      method: () => requestState.method,
-      postData: () => requestState.postData,
-      postDataBuffer: () =>
-        requestState.postDataBufferBase64 ? Buffer.from(requestState.postDataBufferBase64, "base64") : null,
-      postDataJSON: () => {
-        if (!requestState.postData) {
-          return null;
-        }
-        try {
-          return JSON.parse(requestState.postData);
-        } catch {
-          return null;
-        }
-      },
-      redirectedFrom: () => null,
-      redirectedTo: () => null,
-      resourceType: () => requestState.resourceType ?? "other",
-      response: async () => null,
-      serviceWorker: () => null,
-      sizes: async () => ({
-        requestBodySize: 0,
-        requestHeadersSize: 0,
-        responseBodySize: 0,
-        responseHeadersSize: 0
-      }),
-      timing: () => ({
-        startTime: 0,
-        domainLookupStart: -1,
-        domainLookupEnd: -1,
-        connectStart: -1,
-        secureConnectionStart: -1,
-        connectEnd: -1,
-        requestStart: 0,
-        responseStart: -1,
-        responseEnd: -1
-      }),
-      url: () => requestState.url
-    } satisfies Request;
+    let routedResponse: Response | null = null;
+    let routedFailure: { errorText: string } | null = null;
+    const request = createContextRouteRequest(
+      () => requestState,
+      () => routedResponse,
+      () => routedFailure
+    );
+    const handlers = [...this.routeHandlers];
 
-    for (let index = this.routeHandlers.length - 1; index >= 0; index -= 1) {
-      const entry = this.routeHandlers[index];
+    for (let index = handlers.length - 1; index >= 0; index -= 1) {
+      const entry = handlers[index];
       if (!entry || !this._matchesRouteMatcher(requestState.url, entry.matcher)) {
         continue;
       }
@@ -834,69 +808,147 @@ export class RoxyBrowserContext implements BrowserContext {
       }
       this._consumeContextRouteHandler(entry, liveIndex);
 
-      let handled = false;
-      let decision: RoutedRequestDecision | null = null;
+      type RouteOutcome =
+        | { kind: "fallback" }
+        | { kind: "finish"; decision: RoutedRequestDecision };
+      let routeOutcome: RouteOutcome | null = null;
+      let routeHandled = false;
+      let resolveRouteHandled!: (value: RouteOutcome) => void;
+      const routeHandledPromise = new Promise<RouteOutcome>((resolve) => {
+        resolveRouteHandled = resolve;
+      });
+
+      const ensureRouteIsUnhandled = () => {
+        if (routeHandled) {
+          throw new Error("Route is already handled!");
+        }
+      };
+
+      const reportRouteHandled = (outcome: RouteOutcome) => {
+        routeOutcome ??= outcome;
+        resolveRouteHandled(routeOutcome);
+      };
+
       const route: Route = {
         abort: async (errorCode?: string) => {
-          if (handled) {
-            throw new Error("Route is already handled!");
-          }
-          handled = true;
-          decision = {
-            action: "abort",
-            ...(errorCode !== undefined ? { errorCode } : {})
-          };
+          ensureRouteIsUnhandled();
+          routeHandled = true;
+          routedFailure = { errorText: errorCode ?? "failed" };
+          reportRouteHandled({
+            kind: "finish",
+            decision: {
+              action: "abort",
+              ...(errorCode !== undefined ? { errorCode } : {})
+            }
+          });
         },
         continue: async (options) => {
-          if (handled) {
-            throw new Error("Route is already handled!");
-          }
-          handled = true;
+          ensureRouteIsUnhandled();
+          routeHandled = true;
           requestState = applyContextRouteOverrides(requestState, options);
-          decision = {
-            action: "continue",
-            headers: { ...requestState.headers },
-            method: requestState.method,
-            postData: requestState.postData,
-            ...(requestState.postDataBufferBase64 !== undefined
-              ? { postDataBufferBase64: requestState.postDataBufferBase64 }
-              : {}),
-            url: requestState.url
-          };
+          reportRouteHandled({
+            kind: "finish",
+            decision: {
+              action: "continue",
+              headers: { ...requestState.headers },
+              method: requestState.method,
+              ...serializePostDataFields(
+                requestState.postData,
+                deserializeSerializedPostData(
+                  requestState.postData,
+                  requestState.postDataBufferBase64 ?? null
+                ).buffer
+              ),
+              url: requestState.url
+            }
+          });
         },
         fallback: async (options) => {
-          if (handled) {
-            throw new Error("Route is already handled!");
-          }
-          handled = true;
+          ensureRouteIsUnhandled();
+          routeHandled = true;
           requestState = applyContextRouteOverrides(requestState, options);
+          reportRouteHandled({ kind: "fallback" });
         },
-        fetch: async () => {
-          throw new Error("Route.fetch is not supported for context-level protocol interception yet.");
+        fetch: async (options) => {
+          ensureRouteIsUnhandled();
+          const fetchedRequest = applyContextRouteOverrides(requestState, options);
+          const response = await fetchContextRouteRequest(fetchedRequest, options);
+          routedResponse = createRoutedResponse(await responseDataFromResponse(response), request);
+          return response;
         },
-        fulfill: async () => {
-          throw new Error("Route.fulfill is not supported for context-level protocol interception yet.");
+        fulfill: async (options = {}) => {
+          ensureRouteIsUnhandled();
+          const decision = await this._buildRouteFulfillDecision(requestState, options);
+          routeHandled = true;
+          routedResponse = createRoutedResponse(
+            {
+              body: decision.body,
+              ...(decision.bodyBufferBase64 != null
+                ? { bodyBufferBase64: decision.bodyBufferBase64 }
+                : {}),
+              headers: { ...decision.headers },
+              status: decision.status,
+              statusText: decision.statusText,
+              url: decision.url
+            },
+            request
+          );
+          reportRouteHandled({
+            kind: "finish",
+            decision
+          });
         },
         request: () => request
       };
 
-      await entry.handler(route, request);
-      if (decision) {
-        return decision;
+      let resolveInvocation!: () => void;
+      const invocation = {
+        complete: new Promise<void>((resolve) => {
+          resolveInvocation = resolve;
+        }),
+        resolve: () => {
+          resolveInvocation();
+        }
+      };
+      entry.activeInvocations.add(invocation);
+      let resolvedOutcome: RouteOutcome | null = null;
+      try {
+        const [handledOutcome] = await Promise.all([
+          routeHandledPromise,
+          Promise.resolve().then(() => entry.handler(route, request))
+        ]);
+        resolvedOutcome = handledOutcome;
+      } catch (error) {
+        if (!entry.ignoreExceptions) {
+          throw error;
+        }
+        resolvedOutcome = routeOutcome;
+      } finally {
+        invocation.resolve();
+        entry.activeInvocations.delete(invocation);
       }
-      if (handled) {
+
+      if (!resolvedOutcome) {
         continue;
       }
+      if (resolvedOutcome.kind === "fallback") {
+        continue;
+      }
+
+      return resolvedOutcome.decision;
     }
 
     return {
       action: "continue",
       headers: { ...requestState.headers },
       method: requestState.method,
-      postData: requestState.postData,
-      ...(requestState.postDataBufferBase64 !== undefined
-        ? { postDataBufferBase64: requestState.postDataBufferBase64 }
-        : {}),
+      ...serializePostDataFields(
+        requestState.postData,
+        deserializeSerializedPostData(
+          requestState.postData,
+          requestState.postDataBufferBase64 ?? null
+        ).buffer
+      ),
       url: requestState.url
     };
   }
@@ -1006,26 +1058,451 @@ function applyContextRouteOverrides(
       : Array.isArray(options.headers)
         ? Object.fromEntries(options.headers.map((header) => [header.name, header.value]))
         : { ...options.headers };
-  const postData =
-    options.postData === undefined
-      ? request.postData
-      : Buffer.isBuffer(options.postData)
-        ? options.postData.toString("utf8")
-        : typeof options.postData === "string"
-          ? options.postData
-          : JSON.stringify(options.postData);
+  const normalizedPostData = options.postData !== undefined
+    ? normalizeSerializedPostData(options.postData)
+    : deserializeSerializedPostData(request.postData, request.postDataBufferBase64 ?? null);
   return {
     ...request,
     headers,
     method: options.method ?? request.method,
-    postData,
-    ...(Buffer.isBuffer(options.postData)
-      ? { postDataBufferBase64: options.postData.toString("base64") }
-      : options.postData === undefined
-        ? request.postDataBufferBase64 !== undefined
-          ? { postDataBufferBase64: request.postDataBufferBase64 }
-          : {}
-        : {}),
+    ...serializePostDataFields(normalizedPostData.text, normalizedPostData.buffer),
     url: options.url ?? request.url
   };
+}
+
+function normalizeSerializedPostData(value: string | Buffer | unknown): {
+  buffer: Buffer | null;
+  text: string | null;
+} {
+  if (value === undefined || value === null) {
+    return { buffer: null, text: null };
+  }
+  if (typeof value === "string") {
+    return {
+      buffer: Buffer.from(value, "utf8"),
+      text: value
+    };
+  }
+  if (Buffer.isBuffer(value)) {
+    return {
+      buffer: Buffer.from(value),
+      text: value.toString("utf8")
+    };
+  }
+
+  const text = JSON.stringify(value);
+  return {
+    buffer: Buffer.from(text, "utf8"),
+    text
+  };
+}
+
+function deserializeSerializedPostData(
+  text: string | null,
+  base64: string | null
+): {
+  buffer: Buffer | null;
+  text: string | null;
+} {
+  if (base64 !== null) {
+    const buffer = Buffer.from(base64, "base64");
+    return {
+      buffer,
+      text: text ?? buffer.toString("utf8")
+    };
+  }
+  if (text === null) {
+    return { buffer: null, text: null };
+  }
+  return {
+    buffer: Buffer.from(text, "utf8"),
+    text
+  };
+}
+
+function serializePostDataFields(
+  text: string | null,
+  buffer: Buffer | null
+): {
+  postData: string | null;
+  postDataBufferBase64?: string;
+} {
+  return {
+    postData: text,
+    ...(buffer ? { postDataBufferBase64: buffer.toString("base64") } : {})
+  };
+}
+
+function createContextRouteRequest(
+  current: () => RoutedRequestCall,
+  currentResponse: () => Response | null,
+  currentFailure: () => { errorText: string } | null
+): Request {
+  return {
+    allHeaders: async () => ({ ...current().headers }),
+    existingResponse: () => currentResponse(),
+    failure: () => currentFailure(),
+    frame: () => {
+      throw new Error("Request.frame is not available for context-level protocol interception.");
+    },
+    headers: () => ({ ...current().headers }),
+    headersArray: async () =>
+      Object.entries(current().headers).map(([name, value]) => ({ name, value })),
+    headerValue: async (name: string) => current().headers[name.toLowerCase()] ?? null,
+    isNavigationRequest: () => current().isNavigationRequest ?? false,
+    method: () => current().method,
+    postData: () => deserializeSerializedPostData(
+      current().postData,
+      current().postDataBufferBase64 ?? null
+    ).text,
+    postDataBuffer: () => {
+      const buffer = deserializeSerializedPostData(
+        current().postData,
+        current().postDataBufferBase64 ?? null
+      ).buffer;
+      return buffer ? Buffer.from(buffer) : null;
+    },
+    postDataJSON: () => {
+      const { text } = deserializeSerializedPostData(
+        current().postData,
+        current().postDataBufferBase64 ?? null
+      );
+      if (text === null) {
+        return null;
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    redirectedFrom: () => null,
+    redirectedTo: () => null,
+    resourceType: () => current().resourceType ?? "fetch",
+    response: async () => currentResponse(),
+    serviceWorker: () => null,
+    sizes: async () => {
+      const response = currentResponse();
+      const requestBody = deserializeSerializedPostData(
+        current().postData,
+        current().postDataBufferBase64 ?? null
+      ).buffer;
+      const responseHeaders = response ? await response.allHeaders() : {};
+      return {
+        requestBodySize: requestBody?.byteLength ?? 0,
+        requestHeadersSize: headerSize(current().headers),
+        responseBodySize: response ? await measureResponseBodySize(response) : 0,
+        responseHeadersSize: headerSize(responseHeaders)
+      };
+    },
+    timing: () => ({
+      startTime: Date.now(),
+      domainLookupStart: -1,
+      domainLookupEnd: -1,
+      connectStart: -1,
+      secureConnectionStart: -1,
+      connectEnd: -1,
+      requestStart: 0,
+      responseStart: -1,
+      responseEnd: -1
+    }),
+    url: () => current().url
+  };
+}
+
+async function fetchContextRouteRequest(
+  request: RoutedRequestCall,
+  options?: {
+    headers?: { [key: string]: string };
+    maxRedirects?: number;
+    maxRetries?: number;
+    method?: string;
+    postData?: string | Buffer | unknown;
+    timeout?: number;
+    url?: string;
+  }
+): Promise<import("./types/api.js").APIResponse> {
+  const fetchRequest = applyContextRouteOverrides(request, options);
+  const requestBody = deserializeSerializedPostData(
+    fetchRequest.postData,
+    fetchRequest.postDataBufferBase64 ?? null
+  ).buffer;
+  const headers = { ...fetchRequest.headers };
+  if (options?.postData !== undefined && headers["content-type"] === undefined) {
+    if (Buffer.isBuffer(options.postData)) {
+      headers["content-type"] = "application/octet-stream";
+    } else if (
+      typeof options.postData === "object" &&
+      options.postData !== null &&
+      !Buffer.isBuffer(options.postData)
+    ) {
+      headers["content-type"] = "application/json";
+    }
+  }
+  const controller = new AbortController();
+  const timeout = options?.timeout ?? DEFAULT_CONTEXT_EVENT_TIMEOUT_MS;
+  const timeoutHandle =
+    timeout > 0
+      ? setTimeout(() => controller.abort(new TimeoutError(`route.fetch: Timeout ${timeout}ms exceeded`)), timeout)
+      : null;
+
+  try {
+    const response = await fetchWithRetries(fetchRequest.url, {
+      allowGetOrHeadBody: true,
+      ...(!requestBody ? {} : { body: requestBody }),
+      headers,
+      method: fetchRequest.method,
+      signal: controller.signal,
+      ...(options?.maxRedirects !== undefined ? { maxRedirects: options.maxRedirects } : {}),
+      ...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {})
+    });
+    return createApiResponse(response);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+function bufferToText(value: string | Buffer): string {
+  return Buffer.isBuffer(value) ? value.toString("utf8") : value;
+}
+
+function normalizeHeaderRecord(
+  headers: Record<string, string>
+): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    normalized[name.toLowerCase()] = value;
+  }
+  return normalized;
+}
+
+function hasExplicitHeader(
+  headers: Record<string, string> | undefined,
+  name: string
+): boolean {
+  if (!headers) {
+    return false;
+  }
+  return Object.keys(headers).some((headerName) => headerName.toLowerCase() === name.toLowerCase());
+}
+
+function statusTextForCode(status: number): string {
+  return STATUS_CODES[status] ?? "Unknown";
+}
+
+function inferMimeType(path: string): string {
+  if (path.endsWith(".html")) return "text/html";
+  if (path.endsWith(".json")) return "application/json";
+  if (path.endsWith(".txt")) return "text/plain";
+  if (path.endsWith(".css")) return "text/css";
+  if (path.endsWith(".js")) return "application/javascript";
+  if (path.endsWith(".svg")) return "image/svg+xml";
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+  if (path.endsWith(".webp")) return "image/webp";
+  return "application/octet-stream";
+}
+
+function headerSize(headers: Record<string, string>): number {
+  return Object.entries(headers).reduce(
+    (size, [name, value]) => size + Buffer.byteLength(`${name}: ${value}\r\n`, "utf8"),
+    2
+  );
+}
+
+async function measureResponseBodySize(response: Response): Promise<number> {
+  const body = await response.body();
+  return body ? body.length : 0;
+}
+
+function createRoutedResponse(
+  data: {
+    body: string;
+    bodyBufferBase64?: string;
+    headers: Record<string, string>;
+    status: number;
+    statusText: string;
+    url: string;
+  },
+  request: Request
+): Response {
+  const body = data.bodyBufferBase64 !== undefined
+    ? Buffer.from(data.bodyBufferBase64, "base64")
+    : Buffer.from(data.body, "utf8");
+  return {
+    allHeaders: async () => ({ ...data.headers }),
+    body: async () => Buffer.from(body),
+    finished: async () => null,
+    frame: () => {
+      throw new Error("Response.frame is not available for context-level protocol interception.");
+    },
+    fromServiceWorker: () => false,
+    headerValue: async (name: string) => data.headers[name.toLowerCase()] ?? null,
+    headerValues: async (name: string) => {
+      const value = data.headers[name.toLowerCase()];
+      return value === undefined ? [] : [value];
+    },
+    headers: () => ({ ...data.headers }),
+    headersArray: async () =>
+      Object.entries(data.headers).map(([name, value]) => ({ name, value })),
+    httpVersion: async () => "HTTP/1.1",
+    json: async () => JSON.parse(body.toString("utf8")),
+    ok: () => data.status >= 200 && data.status <= 299,
+    request: () => request,
+    securityDetails: async () => null,
+    serverAddr: async () => null,
+    status: () => data.status,
+    statusText: () => data.statusText,
+    text: async () => body.toString("utf8"),
+    url: () => data.url
+  };
+}
+
+async function responseDataFromResponse(
+  response: Response | import("./types/api.js").APIResponse
+): Promise<{
+  body: string;
+  bodyBufferBase64?: string;
+  headers: Record<string, string>;
+  status: number;
+  statusText: string;
+  url: string;
+}> {
+  const bodyBuffer = await responseBodyBuffer(response);
+  return {
+    body: bodyBuffer.toString("utf8"),
+    ...(bodyBuffer.length ? { bodyBufferBase64: bodyBuffer.toString("base64") } : {}),
+    headers: normalizeHeaderRecord(await responseHeadersRecord(response)),
+    status: getResponseStatus(response),
+    statusText: getResponseStatusText(response),
+    url: response.url()
+  };
+}
+
+async function responseHeadersRecord(
+  response: import("./types/api.js").APIResponse | Response | PageResponse
+): Promise<Record<string, string>> {
+  if ("allHeaders" in response && typeof response.allHeaders === "function") {
+    return response.allHeaders();
+  }
+  if (typeof response.headers === "function") {
+    return response.headers();
+  }
+  return Object.fromEntries(response.headers.map((header) => [header.name, header.value]));
+}
+
+function getResponseStatus(
+  response: import("./types/api.js").APIResponse | Response | PageResponse
+): number {
+  return typeof response.status === "function" ? response.status() : response.status;
+}
+
+function getResponseStatusText(
+  response: import("./types/api.js").APIResponse | Response | PageResponse
+): string {
+  return typeof response.statusText === "function" ? response.statusText() : response.statusText;
+}
+
+async function responseBodyBuffer(
+  response: import("./types/api.js").APIResponse | Response | PageResponse
+): Promise<Buffer> {
+  if ("body" in response && typeof response.body === "function") {
+    return response.body();
+  }
+  return Buffer.from(await response.text(), "utf8");
+}
+
+async function buildFulfillDecision(
+  request: RoutedRequestCall,
+  options: {
+    body?: string | Buffer;
+    contentType?: string;
+    headers?: { [key: string]: string };
+    json?: unknown;
+    path?: string;
+    response?: import("./types/api.js").APIResponse | Response | PageResponse;
+    status?: number;
+  }
+): Promise<Extract<RoutedRequestDecision, { action: "fulfill" }>> {
+  if (options.json !== undefined && options.body !== undefined) {
+    throw new Error("Can specify either body or json parameters");
+  }
+
+  const responseHeaders = options.response ? await responseHeadersRecord(options.response) : {};
+  const headers = normalizeHeaderRecord({
+    ...responseHeaders,
+    ...(options.headers ?? {})
+  });
+
+  let body = "";
+  let bodyBuffer: Buffer | null = null;
+  if (options.path) {
+    bodyBuffer = await readFile(options.path);
+    body = bodyBuffer.toString("utf8");
+    if (!hasExplicitHeader(options.headers, "content-type")) {
+      headers["content-type"] = inferMimeType(options.path);
+    }
+  } else if (options.json !== undefined) {
+    body = JSON.stringify(options.json);
+    bodyBuffer = Buffer.from(body, "utf8");
+    if (!("content-type" in headers) && !options.contentType) {
+      headers["content-type"] = "application/json";
+    }
+  } else if (options.body !== undefined) {
+    body = bufferToText(options.body);
+    bodyBuffer = Buffer.isBuffer(options.body)
+      ? Buffer.from(options.body)
+      : Buffer.from(body, "utf8");
+  } else if (options.response) {
+    bodyBuffer = await responseBodyBuffer(options.response);
+    body = bodyBuffer.toString("utf8");
+  }
+
+  if (options.contentType && !options.path) {
+    headers["content-type"] = options.contentType;
+  }
+  if (bodyBuffer !== null && !hasExplicitHeader(options.headers, "content-length")) {
+    headers["content-length"] = String(bodyBuffer.byteLength);
+  }
+  maybeAddCorsHeaders(request, headers);
+
+  const inheritedStatus = options.response ? getResponseStatus(options.response) : undefined;
+  const inheritedStatusText = options.response ? getResponseStatusText(options.response) : undefined;
+  const status = options.status ?? inheritedStatus ?? 200;
+  return {
+    action: "fulfill",
+    body,
+    ...(bodyBuffer ? { bodyBufferBase64: bodyBuffer.toString("base64") } : {}),
+    headers,
+    status,
+    statusText: inheritedStatusText ?? statusTextForCode(status),
+    url: request.url
+  };
+}
+
+function maybeAddCorsHeaders(request: RoutedRequestCall, headers: Record<string, string>): void {
+  const origin = request.headers.origin;
+  if (!origin) {
+    return;
+  }
+  let requestUrl: URL;
+  try {
+    requestUrl = new URL(request.url);
+  } catch {
+    return;
+  }
+  if (!requestUrl.protocol.startsWith("http")) {
+    return;
+  }
+  if (requestUrl.origin === origin.trim()) {
+    return;
+  }
+  if (Object.keys(headers).some((name) => name.toLowerCase() === "access-control-allow-origin")) {
+    return;
+  }
+  headers["access-control-allow-origin"] = origin;
+  headers["access-control-allow-credentials"] = "true";
+  headers.vary = "Origin";
 }

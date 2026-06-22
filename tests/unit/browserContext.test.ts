@@ -373,6 +373,53 @@ describe("RoxyBrowserContext", () => {
     });
   });
 
+  it("does not chain browser-context fulfill after fallback like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+    let failed = false;
+
+    await context.route("**/empty.html", async () => {
+      failed = true;
+    });
+    await context.route("**/empty.html", async (route) => {
+      await route.fulfill({
+        body: "fulfilled",
+        contentType: "text/plain",
+        status: 200
+      });
+    });
+    await context.route("**/empty.html", async (route) => {
+      await route.fallback();
+    });
+
+    const decision = await (page as any).dispatchRoutedRequest({
+      id: "request:context-fallback-fulfill",
+      url: "https://example.com/empty.html",
+      method: "GET",
+      headers: {},
+      postData: null
+    });
+
+    expect(decision).toMatchObject({
+      action: "fulfill",
+      body: "fulfilled",
+      status: 200,
+      url: "https://example.com/empty.html"
+    });
+    expect(failed).toBe(false);
+  });
+
   it("prefers page request routes over browser-context routes like Playwright", async () => {
     const adapter = createBrowserContextAdapterStub();
     adapter.newPage = async () => createPageAdapterStub();

@@ -11,6 +11,28 @@ function launchBrowser() {
   });
 }
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs: number
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 describe("browser context route contract e2e", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;
 
@@ -106,6 +128,165 @@ describe("browser context route contract e2e", () => {
       }
     } finally {
       await browser.close();
+    }
+  });
+
+  it("context.unroute does not wait for pending handlers to complete like Playwright", async () => {
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        try {
+          let secondHandlerCalled = false;
+          await context.route(/.*/, async (route) => {
+            secondHandlerCalled = true;
+            await route.continue();
+          });
+
+          let routeCallback!: () => void;
+          const routePromise = new Promise<void>((resolve) => {
+            routeCallback = resolve;
+          });
+          let continueRouteCallback!: () => void;
+          const routeBarrier = new Promise<void>((resolve) => {
+            continueRouteCallback = resolve;
+          });
+          const handler = async (route: Parameters<typeof context.route>[1] extends infer T
+            ? T extends (...args: any[]) => any
+              ? Parameters<T>[0]
+              : never
+            : never) => {
+            routeCallback();
+            await routeBarrier;
+            await route.fallback();
+          };
+
+          await context.route(/.*/, handler as never);
+          const navigationPromise = page.goto(fixture.server.EMPTY_PAGE);
+          await routePromise;
+          await withTimeout(context.unroute(/.*/, handler as never), "context.unroute", 1000);
+          continueRouteCallback();
+          await navigationPromise;
+
+          expect(secondHandlerCalled).toBe(true);
+        } finally {
+          await page.close().catch(() => {});
+        }
+      } finally {
+        await context.close().catch(() => {});
+      }
+    } finally {
+      await browser.close().catch(() => {});
+    }
+  });
+
+  it("context.unrouteAll removes all handlers like Playwright", async () => {
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        try {
+          await context.route("**/*", (route) => route.abort());
+          await context.route("**/empty.html", (route) => route.abort());
+
+          await context.unrouteAll();
+
+          const response = await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+          expect(response?.ok()).toBe(true);
+        } finally {
+          await page.close().catch(() => {});
+        }
+      } finally {
+        await context.close().catch(() => {});
+      }
+    } finally {
+      await browser.close().catch(() => {});
+    }
+  });
+
+  it("context.unrouteAll ignores pending handler errors without waiting like Playwright", async () => {
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        try {
+          let secondHandlerCalled = false;
+          await context.route(/.*/, async () => {
+            secondHandlerCalled = true;
+          });
+
+          let routeCallback!: () => void;
+          const routePromise = new Promise<void>((resolve) => {
+            routeCallback = resolve;
+          });
+          let continueRouteCallback!: () => void;
+          const routeBarrier = new Promise<void>((resolve) => {
+            continueRouteCallback = resolve;
+          });
+
+          await context.route(/.*/, async () => {
+            routeCallback();
+            await routeBarrier;
+            throw new Error("Handler error");
+          });
+
+          const navigationPromise = page.goto(fixture.server.EMPTY_PAGE).catch((error) => error);
+          await routePromise;
+
+          let didUnroute = false;
+          await withTimeout(
+            context.unrouteAll({ behavior: "ignoreErrors" }).then(() => {
+              didUnroute = true;
+            }),
+            "context.unrouteAll",
+            1000
+          );
+          expect(didUnroute).toBe(true);
+
+          continueRouteCallback();
+          await navigationPromise;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          expect(secondHandlerCalled).toBe(false);
+        } finally {
+          await page.close().catch(() => {});
+        }
+      } finally {
+        await context.close().catch(() => {});
+      }
+    } finally {
+      await browser.close().catch(() => {});
+    }
+  });
+
+  it("context.close does not wait for active route handlers on owned pages like Playwright", async () => {
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        let routeCallback!: () => void;
+        const routePromise = new Promise<void>((resolve) => {
+          routeCallback = resolve;
+        });
+
+        await page.route(/.*/, async () => {
+          routeCallback();
+        });
+        await page.route(/.*/, async (route) => {
+          await route.fallback();
+        });
+
+        void page.goto(fixture.server.EMPTY_PAGE).catch(() => {});
+        await routePromise;
+        await withTimeout(context.close(), "context.close", 1000);
+      } finally {
+        await context.close().catch(() => {});
+      }
+    } finally {
+      await browser.close().catch(() => {});
     }
   });
 
