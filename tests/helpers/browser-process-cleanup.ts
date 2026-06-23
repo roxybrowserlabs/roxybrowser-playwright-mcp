@@ -1,10 +1,14 @@
 import { execFile, spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   cleanupRegisteredTestBrowserProcesses,
   cleanupRegisteredTestBrowserProcessesSync
 } from "../../src/processCleanup.js";
 
 process.env.ROXY_TEST_BROWSER_CLEANUP = "1";
+
+const TEST_BROWSER_PROCESS_REGISTRY_ENV = "ROXY_TEST_BROWSER_PROCESS_REGISTRY";
 
 const TEST_BROWSER_PROFILE_MARKERS = [
   "roxybrowser-bidi-",
@@ -31,6 +35,14 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
     cleanupPromise = undefined;
   });
   await cleanupPromise;
+}
+
+export async function cleanupCurrentWorkerTestBrowserProcesses(): Promise<void> {
+  await cleanupRegisteredTestBrowserProcesses();
+}
+
+export function cleanupCurrentWorkerTestBrowserProcessesSync(): void {
+  cleanupRegisteredTestBrowserProcessesSync();
 }
 
 export async function cleanupLocalTestBrowserProcessesWithTimeout(): Promise<void> {
@@ -98,25 +110,40 @@ export function installLocalTestBrowserProcessCleanupHooks(): void {
   state.__roxyBrowserProcessCleanupHooksInstalled = true;
 
   process.once("exit", () => {
-    cleanupLocalTestBrowserProcessesSync();
+    cleanupCurrentWorkerTestBrowserProcessesSync();
   });
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
-      cleanupLocalTestBrowserProcessesSync();
+      cleanupCurrentWorkerTestBrowserProcessesSync();
       scheduleProcessExit(signal === "SIGINT" ? 130 : 143);
     });
   }
 
   process.once("uncaughtException", (error) => {
-    cleanupLocalTestBrowserProcessesSync();
+    cleanupCurrentWorkerTestBrowserProcessesSync();
     scheduleThrow(error);
   });
 
   process.once("unhandledRejection", (reason) => {
-    cleanupLocalTestBrowserProcessesSync();
+    cleanupCurrentWorkerTestBrowserProcessesSync();
     scheduleThrow(reason);
   });
+}
+
+export function configureCurrentWorkerTestBrowserCleanup(): string {
+  const existingRegistryPath = process.env[TEST_BROWSER_PROCESS_REGISTRY_ENV];
+  if (existingRegistryPath) {
+    return existingRegistryPath;
+  }
+
+  const workerId = process.env.VITEST_POOL_ID ?? "main";
+  const registryPath = join(
+    tmpdir(),
+    `roxybrowser-test-browser-processes-${workerId}-${process.pid}.jsonl`
+  );
+  process.env[TEST_BROWSER_PROCESS_REGISTRY_ENV] = registryPath;
+  return registryPath;
 }
 
 export function collectLocalTestBrowserProcessTreePids(

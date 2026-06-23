@@ -1,6 +1,9 @@
 import { chromium } from "../../src/index.js";
 import type { Browser, BrowserContext, Page, ResolvedAriaRef } from "../../src/types/api.js";
-import { cleanupLocalTestBrowserProcessesWithTimeout } from "./browser-process-cleanup.js";
+import {
+  cleanupCurrentWorkerTestBrowserProcesses,
+  configureCurrentWorkerTestBrowserCleanup
+} from "./browser-process-cleanup.js";
 
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
 const TEST_LAUNCH_RETRIES = 3;
@@ -12,6 +15,7 @@ export type SnapshotPage = Page & {
 export async function withPage<T>(
   run: (page: SnapshotPage, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
+  configureCurrentWorkerTestBrowserCleanup();
   const browser = await launchTestBrowser();
 
   try {
@@ -30,7 +34,7 @@ export async function withPage<T>(
     }
   } finally {
     await closeForTest("browser.close", () => browser.close()).catch(() => {});
-    await cleanupLocalTestBrowserProcessesWithTimeout();
+    await cleanupCurrentWorkerTestBrowserProcesses();
   }
 }
 
@@ -49,7 +53,7 @@ async function launchTestBrowser(): Promise<Browser> {
       if (!isRetriableLaunchError(error) || attempt === TEST_LAUNCH_RETRIES - 1) {
         throw error;
       }
-      await cleanupLocalTestBrowserProcessesWithTimeout();
+      await cleanupCurrentWorkerTestBrowserProcesses();
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
