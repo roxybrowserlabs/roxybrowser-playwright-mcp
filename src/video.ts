@@ -2,6 +2,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Readable, Writable } from "node:stream";
+import { registerTestBrowserProcessForCleanup } from "./processCleanup.js";
 import type { Video } from "./types/api.js";
 
 const VIDEO_RECORDING_FPS = 25;
@@ -45,6 +46,7 @@ export class RoxyVideo implements Video {
 
 export class ScreencastFrameRecorder {
   private process: ChildProcessByStdio<Writable, null, Readable> | null = null;
+  private unregisterProcessCleanup: (() => void) | null = null;
   private stderr = "";
   private stopped = false;
   private firstFrameTimestamp = 0;
@@ -160,9 +162,14 @@ export class ScreencastFrameRecorder {
         stdio: ["pipe", "ignore", "pipe"]
       });
       this.process = process;
+      this.unregisterProcessCleanup = registerTestBrowserProcessForCleanup(process);
 
       process.once("spawn", () => {
         resolve();
+      });
+      process.once("exit", () => {
+        this.unregisterProcessCleanup?.();
+        this.unregisterProcessCleanup = null;
       });
       process.once("error", (error) => {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -239,11 +246,14 @@ export class ScreencastFrameRecorder {
 
     const process = this.process;
     this.process = null;
+    const unregisterProcessCleanup = this.unregisterProcessCleanup;
+    this.unregisterProcessCleanup = null;
 
     await new Promise<void>((resolve, reject) => {
       const finish = (error?: Error) => {
         process.removeListener("exit", handleExit);
         process.removeListener("error", handleError);
+        unregisterProcessCleanup?.();
         if (error) {
           reject(error);
           return;
