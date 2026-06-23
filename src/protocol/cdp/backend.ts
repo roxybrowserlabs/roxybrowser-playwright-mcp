@@ -1750,6 +1750,11 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         await page.setRequestInterceptor?.(this.requestInterceptor);
       }
       for (const entry of this.initScripts) {
+        const installedDisposable = (page as CdpPageAdapter).takeContextInitScriptDisposable(entry.source);
+        if (installedDisposable) {
+          entry.disposablesByPage.set(page, installedDisposable);
+          continue;
+        }
         try {
           const disposable = await page.addInitScript(entry.source);
           entry.disposablesByPage.set(page, disposable);
@@ -2193,6 +2198,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       | RawPageEventMap["requestfailed"]
     >
   >();
+  private readonly contextInitScriptDisposables = new Map<string, Disposable[]>();
   private readonly requestMetadata = new Map<
     string,
     {
@@ -2520,6 +2526,18 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.emit("close", undefined);
     this.resolveCloseSignal();
     this.options.onClosed(this.options.targetId);
+  }
+
+  takeContextInitScriptDisposable(source: string): Disposable | undefined {
+    const disposables = this.contextInitScriptDisposables.get(source);
+    if (!disposables?.length) {
+      return undefined;
+    }
+    const disposable = disposables.shift();
+    if (!disposables.length) {
+      this.contextInitScriptDisposables.delete(source);
+    }
+    return disposable;
   }
 
   private async initialize(): Promise<void> {
@@ -3633,7 +3651,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       ...((this.options.contextInitScripts ?? []).map((source) =>
         initializeCommand(this.installInitScript(source, {
           evaluateInCurrentDocument: true
-        }).then(() => {}).catch((error) => {
+        }).then((disposable) => {
+          const disposables = this.contextInitScriptDisposables.get(source) ?? [];
+          disposables.push(disposable);
+          this.contextInitScriptDisposables.set(source, disposables);
+        }).catch((error) => {
           if (isClosedCdpConnectionError(error)) {
             return;
           }
