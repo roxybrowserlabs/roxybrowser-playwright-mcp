@@ -2233,6 +2233,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }>
   >();
   private readonly pendingResponseFallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly servedFromCacheRequestIds = new Set<string>();
   private readonly pendingRequestEvents = new Map<string, CdpPendingRequestEvent[]>();
   private readonly requestExtraInfoHeaders = new Map<
     string,
@@ -3427,6 +3428,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         const frameId = this.requestMetadata.get(requestId)?.frameId;
         this.flushPendingRequestEvent(requestId);
         this.requestExtraInfoHeaders.delete(requestId);
+        this.servedFromCacheRequestIds.delete(requestId);
         this.responseExtraInfoDiscardCounts.delete(requestId);
         this.failedRouteErrorTexts.delete(requestId);
         this.requestMetadata.delete(requestId);
@@ -3456,12 +3458,19 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         return;
       }
       const fromCache = Boolean(event.response.fromDiskCache || event.response.fromPrefetchCache);
+      if (fromCache) {
+        this.servedFromCacheRequestIds.add(event.requestId);
+      }
       if (this.runAfterPendingRequestEvent(event.requestId, () => {
         this.handleNetworkResponseReceived(responseEvent, fromCache);
       })) {
         return;
       }
       this.handleNetworkResponseReceived(responseEvent, fromCache);
+    });
+
+    client.Network.requestServedFromCache?.((event: { requestId: string }) => {
+      this.servedFromCacheRequestIds.add(event.requestId);
     });
 
     client.Network.responseReceivedExtraInfo?.((event) => {
@@ -3758,6 +3767,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     },
     fromCache: boolean
   ): void {
+    fromCache = fromCache || this.servedFromCacheRequestIds.has(responseEvent.requestId);
     if (responseEvent.hasExtraInfo && !fromCache) {
       const extraInfoHeaders = this.shiftResponseExtraInfoHeaders(responseEvent.requestId);
       if (extraInfoHeaders) {
