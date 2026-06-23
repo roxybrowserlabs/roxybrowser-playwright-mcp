@@ -5419,7 +5419,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     while (true) {
       const drained = await this.drainBindingCalls().catch(() => 0);
       if (!drained) {
-        return;
+        // Exposed callbacks can enqueue their binding payloads on a later macrotask.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const settled = await this.drainBindingCalls().catch(() => 0);
+        if (!settled) {
+          return;
+        }
       }
     }
   }
