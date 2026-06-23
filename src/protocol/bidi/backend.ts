@@ -767,7 +767,6 @@ class BidiBrowserSession implements ProtocolBrowserSession {
 
 class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Set<BidiPageAdapter>();
-  private defaultPage: BidiPageAdapter | undefined;
   private readonly initScripts = new Set<{
     source: string;
     pageDisposables: WeakMap<BidiPageAdapter, Disposable>;
@@ -781,13 +780,6 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   ) {}
 
   async newPage(): Promise<ProtocolPageAdapter> {
-    if (this.userContext === undefined) {
-      const existingPage = await this.takeExistingTopLevelPage();
-      if (existingPage) {
-        return existingPage;
-      }
-    }
-
     const response = await this.client.browsingContextCreate(
       this.userContext
         ? {
@@ -795,7 +787,9 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
             userContext: this.userContext
           }
         : {
-            type: "window"
+            // Reuse the already-open RoxyBrowser window, but create a new tab
+            // instead of hijacking the internal start page or opening a second window.
+            type: "tab"
           }
     );
 
@@ -812,54 +806,6 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     }
     this.pages.add(page);
     return page;
-  }
-
-  private async takeExistingTopLevelPage(): Promise<ProtocolPageAdapter | undefined> {
-    if (this.defaultPage) {
-      return this.defaultPage;
-    }
-
-    const topLevelContext = await this.waitForExistingTopLevelContext();
-
-    if (!topLevelContext) {
-      return undefined;
-    }
-
-    let page!: BidiPageAdapter;
-    page = await BidiPageAdapter.create(this.client, topLevelContext.context, this.options, () => {
-      if (this.defaultPage === page) {
-        this.defaultPage = undefined;
-      }
-      this.pages.delete(page);
-    });
-    for (const entry of this.initScripts) {
-      if (entry.scriptId) {
-        continue;
-      }
-      const disposable = await page.addInitScript(entry.source);
-      entry.pageDisposables.set(page, disposable);
-    }
-    this.pages.add(page);
-    this.defaultPage = page;
-    return page;
-  }
-
-  private async waitForExistingTopLevelContext(): Promise<{ context: string } | undefined> {
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      const tree = await this.client.browsingContextGetTree({});
-      const topLevelContext = tree.contexts.find((context) => {
-        const candidate = context as { context?: string; parent?: string | null };
-        return typeof candidate.context === "string" && !candidate.parent;
-      }) as { context: string } | undefined;
-
-      if (topLevelContext) {
-        return topLevelContext;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-
-    return undefined;
   }
 
   async addInitScript(source: string, _arg?: unknown): Promise<Disposable> {
@@ -913,7 +859,6 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
 
   async close(): Promise<void> {
     this.pages.clear();
-    this.defaultPage = undefined;
     if (!this.userContext) {
       return;
     }

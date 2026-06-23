@@ -14,6 +14,7 @@ export default defineConfig({
     include: ["tests/e2e/bidi/**/*.test.ts"],
     fileParallelism: true,
     maxWorkers: 1,
+    isolate: false,
     globalSetup: [
       "tests/helpers/browser-process-cleanup.global-setup.ts",
       "tests/helpers/bidi.global-setup.ts"

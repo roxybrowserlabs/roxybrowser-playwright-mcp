@@ -107,17 +107,22 @@ export async function openBidiBrowser(): Promise<Browser> {
   await cleanupStaleBidiTestArtifacts();
 
   const session = await openWorkerScopedRoxyBrowserSession();
-  const browserKey = `${session.dirId}:${session.endpoint}:${BIDI_SESSION_ID ?? ""}`;
-  const browser = await firefox.connect({
-    browserName: "firefox",
-    protocol: "bidi",
-    wsEndpoint: session.endpoint,
-    ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
-    human: bidiHumanOptions()
-  });
-
   state.roxyProfileDirId = session.dirId;
   state.roxyProfileWasCreated = Boolean(session.created);
+  const browserKey = `${session.dirId}:${session.endpoint}:${BIDI_SESSION_ID ?? ""}`;
+  let browser: Browser | undefined;
+  try {
+    browser = await firefox.connect({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: session.endpoint,
+      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
+      human: bidiHumanOptions()
+    });
+  } catch (error) {
+    await cleanupStaleBidiTestArtifacts();
+    throw error;
+  }
 
   if (shouldReuseBidiBrowser()) {
     state.browser = browser;
