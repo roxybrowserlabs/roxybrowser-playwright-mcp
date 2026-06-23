@@ -1185,7 +1185,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       return;
     }
 
-    await new Promise<void>((resolve, reject) => {
+    const waiterPromise = new Promise<void>((resolve, reject) => {
       const timer = timeout === 0
         ? null
         : setTimeout(() => {
@@ -1217,6 +1217,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       this.stateWaiters.add(waiter);
       this.flushWaiters();
     });
+    await waiterPromise;
   }
 
   async ariaSnapshot(options: AriaSnapshotOptions = {}): Promise<string> {
@@ -2187,18 +2188,30 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   private async setCheckedLocator(locator: BidiLocatorState, checked: boolean, options?: ClickOptions): Promise<void> {
+    if (await this.checkedStateLocator(locator) === checked) {
+      return;
+    }
+    if (!checked) {
+      const role = await this.runLocatorOperation<string | null>(locator, {
+        operation: "getAttribute",
+        name: "role"
+      }).catch(() => null);
+      const type = await this.runLocatorOperation<string | null>(locator, {
+        operation: "getAttribute",
+        name: "type"
+      }).catch(() => null);
+      if ((role ?? "").toLowerCase() === "radio" || (type ?? "").toLowerCase() === "radio") {
+        throw new Error("Cannot uncheck radio button");
+      }
+    }
+    if (options?.trial) {
+      return;
+    }
     await this.runLocatorOperation<boolean>(locator, {
       operation: "check",
       checked,
       ...(options?.force !== undefined ? { force: options.force } : {})
     });
-    if (await this.checkedStateLocator(locator) === checked) {
-      return;
-    }
-    if (options?.trial) {
-      return;
-    }
-    await this.clickLocator(locator, options, "follow-label");
     if (await this.checkedStateLocator(locator) !== checked) {
       throw new Error("Clicking the checkbox did not change its state");
     }
@@ -2364,18 +2377,33 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     checked: boolean,
     options?: ClickOptions
   ): Promise<void> {
-    await this.runSelectorOperation<boolean>({
-      operation: "check",
-      reference,
-      checked
-    });
     if (await this.checkedStateReference(reference) === checked) {
       return;
+    }
+    if (!checked) {
+      const role = await this.runSelectorOperation<string | null>({
+        operation: "getAttribute",
+        reference,
+        name: "role"
+      }).catch(() => null);
+      const type = await this.runSelectorOperation<string | null>({
+        operation: "getAttribute",
+        reference,
+        name: "type"
+      }).catch(() => null);
+      if ((role ?? "").toLowerCase() === "radio" || (type ?? "").toLowerCase() === "radio") {
+        throw new Error("Cannot uncheck radio button");
+      }
     }
     if (options?.trial) {
       return;
     }
-    await this.clickReference(reference, options);
+    await this.runSelectorOperation<boolean>({
+      operation: "check",
+      reference,
+      checked,
+      ...(options?.force !== undefined ? { force: options.force } : {})
+    });
     if (await this.checkedStateReference(reference) !== checked) {
       throw new Error("Clicking the checkbox did not change its state");
     }
@@ -2627,6 +2655,24 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   private async runSelectorOperation<TResult>(payload: SelectorRuntimePayload): Promise<TResult> {
     return this.evaluateFunction<TResult>(SELECTOR_RUNTIME_SOURCE, payload);
+  }
+
+  async frameSnapshots(): Promise<Array<{
+    id: string;
+    name: string;
+    ownerElementChain: LocatorSelector[];
+    parentId: string | null;
+    referenceChain: LocatorSelector[];
+    url: string;
+  }>> {
+    return [{
+      id: "main",
+      name: "",
+      ownerElementChain: [],
+      parentId: null,
+      referenceChain: [],
+      url: this.currentUrl
+    }];
   }
 
   private setScreencastOverlay(
@@ -3131,7 +3177,15 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     if (waitUntil !== "commit") {
-      await this.waitForPendingLoadState(waitUntil, options.timeout, previousUrl);
+      const fallbackState = { cancelled: false };
+      try {
+        await Promise.race([
+          this.waitForPendingLoadState(waitUntil, options.timeout, previousUrl),
+          this.waitForUrlChangeWithReadyState(waitUntil, previousUrl, options.timeout ?? 30_000, fallbackState)
+        ]);
+      } finally {
+        fallbackState.cancelled = true;
+      }
     }
 
     const currentUrl = this.url();
@@ -3211,6 +3265,50 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     this.loadFired = false;
     this.sameDocumentNavigation = false;
     this.allowSameDocumentNavigationToResolveWaiters = false;
+  }
+
+  private async waitForUrlChangeWithReadyState(
+    state: NonNullable<PageGotoOptions["waitUntil"]>,
+    previousUrl: string,
+    timeout: number,
+    cancelSignal?: { cancelled: boolean }
+  ): Promise<void> {
+    const deadline = timeout === 0 ? Number.POSITIVE_INFINITY : Date.now() + timeout;
+    while (this.currentUrl === previousUrl) {
+      if (cancelSignal?.cancelled || this.closed) {
+        return;
+      }
+      if (Date.now() > deadline) {
+        throw new TimeoutError(`page.waitForLoadState: Timeout ${timeout}ms exceeded.`);
+      }
+      await delay(50);
+    }
+
+    if (state === "commit") {
+      return;
+    }
+
+    while (true) {
+      if (cancelSignal?.cancelled || this.closed) {
+        return;
+      }
+      if (this.isStateSatisfied(state)) {
+        return;
+      }
+      if (await this.isCurrentDocumentReadyFor(state)) {
+        if (state === "domcontentloaded") {
+          this.domContentLoaded = true;
+        } else {
+          this.domContentLoaded = true;
+          this.loadFired = true;
+        }
+        return;
+      }
+      if (Date.now() > deadline) {
+        throw new TimeoutError(`page.waitForLoadState: Timeout ${timeout}ms exceeded.`);
+      }
+      await delay(50);
+    }
   }
 
   private beginNavigationResponseCapture(): NavigationResponseCapture {

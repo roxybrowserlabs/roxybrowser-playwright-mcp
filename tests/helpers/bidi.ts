@@ -104,7 +104,9 @@ export async function openBidiBrowser(): Promise<Browser> {
     return state.browser;
   }
 
-  await cleanupStaleBidiTestArtifacts();
+  if (!shouldReuseBidiBrowser()) {
+    await cleanupStaleBidiTestArtifacts();
+  }
 
   const session = await openWorkerScopedRoxyBrowserSession();
   state.roxyProfileDirId = session.dirId;
@@ -189,6 +191,7 @@ async function cleanupStaleBidiTestArtifacts(): Promise<void> {
   const deleteProfile = state.roxyProfileWasCreated;
   state.roxyProfileDirId = undefined;
   state.roxyProfileWasCreated = false;
+  const hadTrackedArtifacts = Boolean(dirId);
   if (dirId) {
     await closeRoxyBrowserFirefoxBidiProfile({
       apiPort: ROXYBROWSER_API_PORT,
@@ -198,7 +201,9 @@ async function cleanupStaleBidiTestArtifacts(): Promise<void> {
       deleteProfile
     });
   }
-  await cleanupCurrentWorkerTestBrowserProcesses();
+  if (hadTrackedArtifacts || !shouldReuseBidiBrowser()) {
+    await cleanupCurrentWorkerTestBrowserProcesses();
+  }
 }
 
 export async function cleanupExternalBidiTestState(): Promise<void> {
@@ -306,4 +311,13 @@ async function closeForTest(label: string, close: () => Promise<void>): Promise<
       clearTimeout(timer);
     }
   }
+}
+
+export function __resetBidiTestStateForUnitTests(): void {
+  const state = globalThis as typeof globalThis & {
+    __roxyBidiTestCleanupHooksInstalled?: boolean;
+    __roxyBidiTestState?: BidiTestState;
+  };
+  state.__roxyBidiTestState = undefined;
+  state.__roxyBidiTestCleanupHooksInstalled = undefined;
 }

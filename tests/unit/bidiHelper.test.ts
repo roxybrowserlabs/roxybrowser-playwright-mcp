@@ -64,9 +64,18 @@ describe("bidi helper cleanup", () => {
     events.length = 0;
     vi.clearAllMocks();
     vi.resetModules();
+    delete (globalThis as typeof globalThis & {
+      __roxyBidiTestState?: unknown;
+      __roxyBidiTestCleanupHooksInstalled?: boolean;
+    }).__roxyBidiTestState;
+    delete (globalThis as typeof globalThis & {
+      __roxyBidiTestState?: unknown;
+      __roxyBidiTestCleanupHooksInstalled?: boolean;
+    }).__roxyBidiTestCleanupHooksInstalled;
     process.env.ROXYBROWSER_API_TOKEN = "test-token";
     delete process.env.ROXY_BIDI_REUSE_BROWSER;
     delete process.env.ROXY_BIDI_WS_ENDPOINT;
+    delete process.env.VITEST_POOL_ID;
   });
 
   it("reuses a worker-scoped RoxyBrowser profile by default and cleans it up after worker teardown", async () => {
@@ -115,12 +124,13 @@ describe("bidi helper cleanup", () => {
     expect(openRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(2);
     expect(connect).toHaveBeenCalledTimes(2);
     expect(events.filter((event) => event === "browser.close")).toHaveLength(2);
-    expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(3);
-    expect(cleanupCurrentWorkerTestBrowserProcesses).toHaveBeenCalledTimes(3);
+    expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(2);
+    expect(cleanupCurrentWorkerTestBrowserProcesses).toHaveBeenCalledTimes(4);
 
     await cleanupExternalBidiTestState();
 
     expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(2);
+    expect(cleanupCurrentWorkerTestBrowserProcesses).toHaveBeenCalledTimes(5);
   });
 
   it("uses a worker-specific remark/name when opening a managed RoxyBrowser profile", async () => {

@@ -1885,7 +1885,21 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         if (isInputElement(firstElement) && firstElement.type.toLowerCase() === "radio" && !desired) {
           throw new Error("Cannot uncheck radio button");
         }
-        checkedState(firstElement);
+        if (checkedState(firstElement) === desired) {
+          return true;
+        }
+        if (payload.force === false && !isVisible(firstElement)) {
+          throw new Error("Element is not visible.");
+        }
+        if ("click" in firstElement && typeof firstElement.click === "function") {
+          firstElement.click();
+        } else {
+          firstElement.dispatchEvent(new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            composed: true
+          }));
+        }
         return true;
       }
     case "selectOption":
