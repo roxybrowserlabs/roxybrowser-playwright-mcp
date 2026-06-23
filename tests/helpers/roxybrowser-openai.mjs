@@ -140,8 +140,8 @@ export class RoxyClient {
     :param dirIds: 窗口id列表, 必填，指定要删除的浏览器窗口列表
     :res 返回值参考文档
     */
-    browser_delete(workspaceId,dirid) {
-        return this._post("/browser/delete",{"workspaceId":workspaceId,"dirIds":[dirid]})
+    browser_delete(workspaceId,dirid,isSoftDelete = false) {
+        return this._post("/browser/delete",{"workspaceId":workspaceId,"dirIds":[dirid],"isSoftDelete":isSoftDelete})
     }
 
     /*

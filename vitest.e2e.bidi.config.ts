@@ -12,12 +12,8 @@ if (existsSync(envPath)) {
 export default defineConfig({
   test: {
     include: ["tests/e2e/bidi/**/*.test.ts"],
-    // A single externally provided Firefox BiDi endpoint can only service one
-    // active client session at a time, so run the suite in a single worker.
-    fileParallelism: false,
-    // Keep a single module graph across files so the shared RoxyBrowser BiDi
-    // connection cache in tests/helpers/bidi.ts is actually reused.
-    isolate: false,
+    fileParallelism: true,
+    maxWorkers: 1,
     globalSetup: [
       "tests/helpers/browser-process-cleanup.global-setup.ts",
       "tests/helpers/bidi.global-setup.ts"

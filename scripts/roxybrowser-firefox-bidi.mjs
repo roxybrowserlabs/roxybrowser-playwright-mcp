@@ -9,13 +9,11 @@ if (existsSync(envPath)) {
   loadEnvFile(envPath);
 }
 
-let cachedProfileDirId;
-
 const ROXYBROWSER_OPERATION_TIMEOUT_MS = Number(
   process.env.ROXYBROWSER_OPERATION_TIMEOUT_MS ?? process.env.ROXY_OPERATION_TIMEOUT_MS ?? 15000
 );
 
-export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
+export async function openRoxyBrowserFirefoxBidiProfile(options = {}) {
   const apiPort = options.apiPort ?? process.env.ROXYBROWSER_API_PORT ?? process.env.ROXY_API_PORT ?? "50000";
   const apiToken = options.apiToken ?? process.env.ROXYBROWSER_API_TOKEN ?? process.env.ROXY_API_TOKEN;
   const workspaceIdEnv = options.workspaceId ?? process.env.ROXYBROWSER_WORKSPACE_ID;
@@ -26,6 +24,8 @@ export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
   const coreVersion = options.coreVersion ?? process.env.ROXYBROWSER_CORE_VERSION ?? "146";
   const windowRemark = options.windowRemark ?? process.env.ROXYBROWSER_WINDOW_REMARK ?? "firefox bidi e2e";
   const debug = Boolean(options.debug ?? process.env.ROXYBROWSER_DEBUG === "1");
+  const createNewProfile = options.createNewProfile === true;
+  let createdProfile = false;
 
   if (!apiToken) {
     throw new Error("Missing ROXYBROWSER_API_TOKEN or ROXY_API_TOKEN.");
@@ -56,20 +56,19 @@ export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
     }
   }
 
-  const listResponse = await client.browser_list(
-    workspaceId,
-    {
-      ...(projectId ? { projectIds: String(projectId) } : {}),
-      page_size: 100
-    }
-  );
-  const profiles = extractRows(listResponse.data);
-
-  let selectedProfile = cachedProfileDirId ? { dirId: cachedProfileDirId } : null;
+  let selectedProfile = null;
 
   if (profileId) {
     selectedProfile = { dirId: profileId };
-  } else if (!selectedProfile) {
+  } else if (!createNewProfile) {
+    const listResponse = await client.browser_list(
+      workspaceId,
+      {
+        ...(projectId ? { projectIds: String(projectId) } : {}),
+        page_size: 100
+      }
+    );
+    const profiles = extractRows(listResponse.data);
     const desiredRemark = String(windowRemark).trim();
     const desiredCoreType = String(coreType).trim().toLowerCase();
     const desiredCoreVersion = String(coreVersion).trim();
@@ -118,6 +117,7 @@ export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
     if (!dirId) {
       throw new Error("Create response did not include data.dirId.");
     }
+    createdProfile = true;
 
     const detailResponse = await client.browser_detail(workspaceId, dirId);
     selectedProfile = firstRecord(detailResponse.data) ?? { dirId };
@@ -128,7 +128,6 @@ export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
   }
 
   const dirId = selectedProfile.dirId;
-  cachedProfileDirId = dirId;
   const openResponse = await withTimeout(
     client.browser_open(dirId, []),
     ROXYBROWSER_OPERATION_TIMEOUT_MS,
@@ -137,7 +136,11 @@ export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
   const endpoint = extractBidiCandidate(openResponse.data, dirId);
 
   if (endpoint) {
-    return endpoint;
+    return {
+      dirId,
+      endpoint,
+      created: createdProfile
+    };
   }
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -148,12 +151,21 @@ export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
     );
     const connectionEndpoint = extractBidiCandidate(connectionInfo.data, dirId);
     if (connectionEndpoint) {
-      return connectionEndpoint;
+      return {
+        dirId,
+        endpoint: connectionEndpoint,
+        created: createdProfile
+      };
     }
     await delay(250 * (attempt + 1));
   }
 
   throw new Error("RoxyBrowser profile open response did not include a verified Firefox BiDi endpoint.");
+}
+
+export async function resolveRoxyBrowserFirefoxBidiEndpoint(options = {}) {
+  const session = await openRoxyBrowserFirefoxBidiProfile(options);
+  return session.endpoint;
 }
 
 export async function closeRoxyBrowserFirefoxBidiProfile(options = {}) {
@@ -172,12 +184,46 @@ export async function closeRoxyBrowserFirefoxBidiProfile(options = {}) {
 
   const client = new RoxyClient(apiPort, apiToken);
   const dirIds = new Set();
+  const explicitDirId = options.dirId;
+  const deleteProfile = options.deleteProfile === true;
+  let resolvedWorkspaceId = parseNumber(workspaceIdEnv);
 
+  if (explicitDirId) {
+    dirIds.add(explicitDirId);
+  }
   if (profileId) {
     dirIds.add(profileId);
   }
-  if (cachedProfileDirId) {
-    dirIds.add(cachedProfileDirId);
+
+  if (deleteProfile && !resolvedWorkspaceId) {
+    const workspaceResponse = await client.workspace_project().catch(() => undefined);
+    const workspaceRows = extractRows(workspaceResponse?.data);
+    const workspace =
+      workspaceRows.find((row) => row.id ?? row.workspaceId) ?? workspaceRows[0];
+    resolvedWorkspaceId = workspace?.id ?? workspace?.workspaceId;
+  }
+
+  if (dirIds.size > 0) {
+    for (const dirId of dirIds) {
+      await withTimeout(
+        client.browser_close(dirId),
+        ROXYBROWSER_OPERATION_TIMEOUT_MS,
+        `RoxyBrowser profile ${dirId} did not close`
+      ).catch(() => {});
+      await withTimeout(
+        waitForRoxyBrowserProfileToClose(client, dirId),
+        ROXYBROWSER_OPERATION_TIMEOUT_MS,
+        `RoxyBrowser profile ${dirId} close confirmation timed out`
+      ).catch(() => {});
+      if (deleteProfile && resolvedWorkspaceId) {
+        await withTimeout(
+          client.browser_delete(resolvedWorkspaceId, dirId),
+          ROXYBROWSER_OPERATION_TIMEOUT_MS,
+          `RoxyBrowser profile ${dirId} did not delete`
+        ).catch(() => {});
+      }
+    }
+    return;
   }
 
   const workspaceResponse = await client.workspace_project().catch(() => undefined);
@@ -225,8 +271,6 @@ export async function closeRoxyBrowserFirefoxBidiProfile(options = {}) {
     }
   }
 
-  cachedProfileDirId = undefined;
-
   for (const dirId of dirIds) {
     await withTimeout(
       client.browser_close(dirId),
@@ -238,6 +282,13 @@ export async function closeRoxyBrowserFirefoxBidiProfile(options = {}) {
       ROXYBROWSER_OPERATION_TIMEOUT_MS,
       `RoxyBrowser profile ${dirId} close confirmation timed out`
     ).catch(() => {});
+    if (deleteProfile && workspaceId) {
+      await withTimeout(
+        client.browser_delete(workspaceId, dirId),
+        ROXYBROWSER_OPERATION_TIMEOUT_MS,
+        `RoxyBrowser profile ${dirId} did not delete`
+      ).catch(() => {});
+    }
   }
 }
 

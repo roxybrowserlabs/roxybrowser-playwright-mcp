@@ -5,7 +5,7 @@ export default defineConfig({
     include: ["tests/e2e/**/*.test.ts"],
     exclude: ["tests/e2e/bidi/**/*.test.ts"],
     fileParallelism: true,
-    maxWorkers: 10,
+    maxWorkers: 6,
     globalSetup: ["tests/helpers/browser-process-cleanup.global-setup.ts"],
     setupFiles: [
       "tests/helpers/browser-process-cleanup.setup.ts",

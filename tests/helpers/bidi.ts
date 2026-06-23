@@ -2,20 +2,14 @@ import { firefox } from "../../src/index.js";
 import type { Browser, BrowserContext, Page } from "../../src/types/api.js";
 import {
   closeRoxyBrowserFirefoxBidiProfile,
-  resolveRoxyBrowserFirefoxBidiEndpoint
+  openRoxyBrowserFirefoxBidiProfile
 } from "../../scripts/roxybrowser-firefox-bidi.mjs";
 import {
-  toBidiWsEndpoint
-} from "./roxybrowser.js";
-import {
-  cleanupLocalTestBrowserProcessesSync,
-  cleanupLocalTestBrowserProcessesWithTimeout
+  cleanupCurrentWorkerTestBrowserProcesses,
+  cleanupCurrentWorkerTestBrowserProcessesSync,
+  configureCurrentWorkerTestBrowserCleanup
 } from "./browser-process-cleanup.js";
 
-const FIREFOX_EXECUTABLE =
-  process.env.ROXY_BIDI_EXECUTABLE_PATH
-  ?? process.env.ROXY_EXECUTABLE_PATH;
-const BIDI_WS_ENDPOINT = process.env.ROXY_BIDI_WS_ENDPOINT;
 const BIDI_SESSION_ID = process.env.ROXY_BIDI_SESSION_ID;
 const ROXYBROWSER_API_PORT = process.env.ROXYBROWSER_API_PORT ?? process.env.ROXY_API_PORT ?? "50000";
 const ROXYBROWSER_API_TOKEN = process.env.ROXYBROWSER_API_TOKEN ?? process.env.ROXY_API_TOKEN;
@@ -26,22 +20,15 @@ const ROXYBROWSER_PROFILE_NAME = process.env.ROXYBROWSER_PROFILE_NAME ?? "RoxyBr
 const ROXYBROWSER_PROFILE_MATCH = process.env.ROXYBROWSER_PROFILE_MATCH ?? "firefox";
 const ROXYBROWSER_CORE_VERSION = process.env.ROXYBROWSER_CORE_VERSION ?? "146";
 const ROXYBROWSER_DEBUG = process.env.ROXYBROWSER_DEBUG === "1";
-const USE_ROXYBROWSER_API = process.env.ROXY_BIDI_USE_ROXYBROWSER_API === "1";
-const REUSE_BIDI_BROWSER = process.env.ROXY_BIDI_REUSE_BROWSER === "1";
-const KEEP_BIDI_BROWSER_OPEN =
-  process.env.ROXY_BIDI_KEEP_BROWSER_OPEN === "1" && Boolean(BIDI_WS_ENDPOINT);
+const REUSE_BIDI_BROWSER = process.env.ROXY_BIDI_REUSE_BROWSER !== "0";
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
 const SIGNAL_EXIT_GRACE_MS = Number(process.env.ROXY_TEST_BROWSER_SIGNAL_EXIT_GRACE_MS ?? 20_000);
 
 interface BidiTestState {
-  usesExternalBidiEndpoint: boolean;
-  usesManagedRoxyBrowserProfile: boolean;
-  externalBidiBrowser: Browser | undefined;
-  externalBidiBrowserKey: string | undefined;
-  cachedRoxyBrowserEndpoint: string | undefined;
-  sharedBidiBrowser: Browser | undefined;
-  sharedBidiBrowserKind: "external" | "local" | undefined;
-  sharedBidiBrowserKey: string | undefined;
+  browser: Browser | undefined;
+  browserKey: string | undefined;
+  roxyProfileDirId: string | undefined;
+  roxyProfileWasCreated: boolean;
 }
 
 function bidiTestState(): BidiTestState {
@@ -49,16 +36,24 @@ function bidiTestState(): BidiTestState {
     __roxyBidiTestState?: BidiTestState;
   };
   state.__roxyBidiTestState ??= {
-    usesExternalBidiEndpoint: false,
-    usesManagedRoxyBrowserProfile: false,
-    externalBidiBrowser: undefined,
-    externalBidiBrowserKey: undefined,
-    cachedRoxyBrowserEndpoint: undefined,
-    sharedBidiBrowser: undefined,
-    sharedBidiBrowserKind: undefined,
-    sharedBidiBrowserKey: undefined
+    browser: undefined,
+    browserKey: undefined,
+    roxyProfileDirId: undefined,
+    roxyProfileWasCreated: false
   };
   return state.__roxyBidiTestState;
+}
+
+function workerLabel(): string {
+  return process.env.VITEST_POOL_ID ?? "main";
+}
+
+function workerWindowRemark(): string {
+  return `firefox bidi e2e worker-${workerLabel()}`;
+}
+
+function workerProfileName(): string {
+  return `${ROXYBROWSER_PROFILE_NAME} [worker ${workerLabel()}]`;
 }
 
 function bidiHumanOptions() {
@@ -70,128 +65,66 @@ function bidiHumanOptions() {
   };
 }
 
-export async function openBidiBrowser(): Promise<Browser> {
-  const state = bidiTestState();
-  const usesConfiguredBidiEndpoint = Boolean(BIDI_WS_ENDPOINT);
-  const usingManagedRoxyBrowserProfile = !usesConfiguredBidiEndpoint && USE_ROXYBROWSER_API && Boolean(ROXYBROWSER_API_TOKEN);
-  const configuredExternalBrowserKey = usesConfiguredBidiEndpoint
-    ? `${toBidiWsEndpoint(BIDI_WS_ENDPOINT)}#${BIDI_SESSION_ID ?? ""}`
-    : undefined;
-
-  if (state.sharedBidiBrowser && state.sharedBidiBrowserKind === "external") {
-    if (
-      configuredExternalBrowserKey
-      && state.sharedBidiBrowserKey === configuredExternalBrowserKey
-    ) {
-      state.usesExternalBidiEndpoint = true;
-      state.usesManagedRoxyBrowserProfile = false;
-      return state.sharedBidiBrowser;
-    }
-
-    if (usingManagedRoxyBrowserProfile && state.usesManagedRoxyBrowserProfile) {
-      state.usesExternalBidiEndpoint = true;
-      return state.sharedBidiBrowser;
-    }
+function assertRoxyBrowserBidiEnvironment(): void {
+  if (!ROXYBROWSER_API_TOKEN) {
+    throw new Error(
+      "BiDi e2e now requires RoxyBrowser. Set ROXYBROWSER_API_TOKEN or ROXY_API_TOKEN."
+    );
   }
-
-  if (state.sharedBidiBrowser && state.sharedBidiBrowserKind === "local") {
-    state.usesExternalBidiEndpoint = false;
-    state.usesManagedRoxyBrowserProfile = false;
-    return state.sharedBidiBrowser;
-  }
-
-  if (state.sharedBidiBrowser) {
-    await closeSharedBidiBrowser();
-  }
-
-  if (usesConfiguredBidiEndpoint) {
-    if (!shouldKeepConfiguredExternalBidiBrowserOpen()) {
-      await cleanupStaleBidiTestArtifacts();
-    }
-
-    const roxyBrowserEndpoint = toBidiWsEndpoint(BIDI_WS_ENDPOINT);
-    const browserKey = `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`;
-    state.usesExternalBidiEndpoint = true;
-    state.usesManagedRoxyBrowserProfile = false;
-    state.externalBidiBrowserKey = browserKey;
-    state.externalBidiBrowser = await firefox.connect({
-      browserName: "firefox",
-      protocol: "bidi",
-      wsEndpoint: roxyBrowserEndpoint,
-      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
-      human: bidiHumanOptions()
-    });
-    state.sharedBidiBrowser = state.externalBidiBrowser;
-    state.sharedBidiBrowserKind = "external";
-    state.sharedBidiBrowserKey = browserKey;
-    return state.sharedBidiBrowser;
-  }
-
-  if (usingManagedRoxyBrowserProfile) {
-    await cleanupStaleBidiTestArtifacts();
-    const roxyBrowserEndpoint = await resolveRoxyBrowserBidiEndpoint();
-    if (!roxyBrowserEndpoint) {
-      throw new Error("Unable to resolve a managed RoxyBrowser Firefox BiDi endpoint.");
-    }
-
-    const browserKey = `${roxyBrowserEndpoint}#${BIDI_SESSION_ID ?? ""}`;
-    state.usesExternalBidiEndpoint = true;
-    state.usesManagedRoxyBrowserProfile = true;
-    state.externalBidiBrowserKey = browserKey;
-    state.externalBidiBrowser = await firefox.connect({
-      browserName: "firefox",
-      protocol: "bidi",
-      wsEndpoint: roxyBrowserEndpoint,
-      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
-      human: bidiHumanOptions()
-    });
-    state.sharedBidiBrowser = state.externalBidiBrowser;
-    state.sharedBidiBrowserKind = "external";
-    state.sharedBidiBrowserKey = browserKey;
-    return state.sharedBidiBrowser;
-  }
-
-  await cleanupStaleBidiTestArtifacts();
-
-  state.sharedBidiBrowser = await firefox.launch({
-    headless: true,
-    ...(FIREFOX_EXECUTABLE ? { executablePath: FIREFOX_EXECUTABLE } : {}),
-    human: bidiHumanOptions()
-  });
-  state.usesExternalBidiEndpoint = false;
-  state.usesManagedRoxyBrowserProfile = false;
-  state.sharedBidiBrowserKind = "local";
-  state.sharedBidiBrowserKey = undefined;
-  return state.sharedBidiBrowser;
 }
 
-async function resolveRoxyBrowserBidiEndpoint(): Promise<string | undefined> {
-  const state = bidiTestState();
-  if (!USE_ROXYBROWSER_API || !ROXYBROWSER_API_TOKEN) {
-    return undefined;
-  }
-
-  if (state.cachedRoxyBrowserEndpoint) {
-    return state.cachedRoxyBrowserEndpoint;
-  }
-
-  state.cachedRoxyBrowserEndpoint = await resolveRoxyBrowserFirefoxBidiEndpoint({
+async function openWorkerScopedRoxyBrowserSession(): Promise<{ dirId: string; endpoint: string; created?: boolean }> {
+  assertRoxyBrowserBidiEnvironment();
+  return openRoxyBrowserFirefoxBidiProfile({
     apiPort: ROXYBROWSER_API_PORT,
     apiToken: ROXYBROWSER_API_TOKEN,
     workspaceId: ROXYBROWSER_WORKSPACE_ID,
     projectId: ROXYBROWSER_PROJECT_ID,
-    profileId: ROXYBROWSER_PROFILE_ID,
-    profileName: ROXYBROWSER_PROFILE_NAME,
+    ...(ROXYBROWSER_PROFILE_ID ? { profileId: ROXYBROWSER_PROFILE_ID } : { createNewProfile: true }),
+    profileName: workerProfileName(),
     profileMatch: ROXYBROWSER_PROFILE_MATCH,
     coreType: "Firefox",
     coreVersion: ROXYBROWSER_CORE_VERSION,
-    windowRemark: "firefox bidi e2e",
+    windowRemark: workerWindowRemark(),
     debug: ROXYBROWSER_DEBUG,
     os: process.env.ROXYBROWSER_OS ?? "macOS",
     osVersion: process.env.ROXYBROWSER_OS_VERSION
   });
+}
 
-  return state.cachedRoxyBrowserEndpoint;
+function shouldReuseBidiBrowser(): boolean {
+  return REUSE_BIDI_BROWSER;
+}
+
+export async function openBidiBrowser(): Promise<Browser> {
+  configureCurrentWorkerTestBrowserCleanup();
+  const state = bidiTestState();
+
+  if (shouldReuseBidiBrowser() && state.browser) {
+    return state.browser;
+  }
+
+  await cleanupStaleBidiTestArtifacts();
+
+  const session = await openWorkerScopedRoxyBrowserSession();
+  const browserKey = `${session.dirId}:${session.endpoint}:${BIDI_SESSION_ID ?? ""}`;
+  const browser = await firefox.connect({
+    browserName: "firefox",
+    protocol: "bidi",
+    wsEndpoint: session.endpoint,
+    ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
+    human: bidiHumanOptions()
+  });
+
+  state.roxyProfileDirId = session.dirId;
+  state.roxyProfileWasCreated = Boolean(session.created);
+
+  if (shouldReuseBidiBrowser()) {
+    state.browser = browser;
+    state.browserKey = browserKey;
+  }
+
+  return browser;
 }
 
 export async function withBidiPage<T>(
@@ -202,15 +135,15 @@ export async function withBidiPage<T>(
   let context: BrowserContext | undefined;
 
   try {
-    context = await browser.newContext({});
+    context = await browser.newContext({ reuseDefaultUserContext: true });
   } catch (error) {
     if (!isRecoverableBidiBrowserError(error)) {
       throw error;
     }
 
-    await resetExternalBidiBrowserState();
+    await cleanupExternalBidiTestState();
     browser = await openBidiBrowser();
-    context = await browser.newContext({});
+    context = await browser.newContext({ reuseDefaultUserContext: true });
   }
 
   try {
@@ -224,66 +157,10 @@ export async function withBidiPage<T>(
   } finally {
     await closeForTest("context.close", () => context.close()).catch(() => {});
     if (!shouldReuseBrowser) {
-      await closeSharedBidiBrowser();
-      await closeExternalBidiBrowser();
+      await closeForTest("browser.close", () => browser.close()).catch(() => {});
       await cleanupStaleBidiTestArtifacts();
     }
   }
-}
-
-function shouldKeepConfiguredExternalBidiBrowserOpen(): boolean {
-  return Boolean(BIDI_WS_ENDPOINT) && KEEP_BIDI_BROWSER_OPEN;
-}
-
-function shouldReuseBidiBrowser(): boolean {
-  return REUSE_BIDI_BROWSER || shouldKeepConfiguredExternalBidiBrowserOpen();
-}
-
-async function closeExternalBidiBrowser(): Promise<void> {
-  const state = bidiTestState();
-  const browser = state.externalBidiBrowser;
-  state.usesExternalBidiEndpoint = false;
-  state.externalBidiBrowser = undefined;
-  state.externalBidiBrowserKey = undefined;
-
-  if (!browser) {
-    return;
-  }
-
-  await closeForTest("browser.close", () => browser.close()).catch(() => {});
-  await delay(250);
-}
-
-async function closeSharedBidiBrowser(): Promise<void> {
-  const state = bidiTestState();
-  const browser = state.sharedBidiBrowser;
-  const browserKind = state.sharedBidiBrowserKind;
-  state.sharedBidiBrowser = undefined;
-  state.sharedBidiBrowserKind = undefined;
-  state.sharedBidiBrowserKey = undefined;
-
-  if (!browser) {
-    return;
-  }
-
-  if (browserKind === "external") {
-    state.externalBidiBrowser = browser;
-  }
-  await closeForTest("browser.close", () => browser.close()).catch(() => {});
-  if (browserKind === "external") {
-    state.externalBidiBrowser = undefined;
-    state.externalBidiBrowserKey = undefined;
-  }
-  await delay(250);
-}
-
-async function resetExternalBidiBrowserState(): Promise<void> {
-  await cleanupExternalBidiTestState();
-  await delay(500);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isClosedBidiConnectionError(error: unknown): boolean {
@@ -303,27 +180,32 @@ function isRecoverableBidiBrowserError(error: unknown): boolean {
 
 async function cleanupStaleBidiTestArtifacts(): Promise<void> {
   const state = bidiTestState();
-  state.usesManagedRoxyBrowserProfile = false;
-  state.cachedRoxyBrowserEndpoint = undefined;
-  await closeRoxyBrowserFirefoxBidiProfile({
-    apiPort: ROXYBROWSER_API_PORT,
-    apiToken: ROXYBROWSER_API_TOKEN,
-    workspaceId: ROXYBROWSER_WORKSPACE_ID,
-    projectId: ROXYBROWSER_PROJECT_ID,
-    profileId: ROXYBROWSER_PROFILE_ID,
-    coreType: "Firefox",
-    coreVersion: ROXYBROWSER_CORE_VERSION,
-    windowRemark: "firefox bidi e2e"
-  });
-  await cleanupLocalTestBrowserProcessesWithTimeout();
+  const dirId = state.roxyProfileDirId;
+  const deleteProfile = state.roxyProfileWasCreated;
+  state.roxyProfileDirId = undefined;
+  state.roxyProfileWasCreated = false;
+  if (dirId) {
+    await closeRoxyBrowserFirefoxBidiProfile({
+      apiPort: ROXYBROWSER_API_PORT,
+      apiToken: ROXYBROWSER_API_TOKEN,
+      workspaceId: ROXYBROWSER_WORKSPACE_ID,
+      dirId,
+      deleteProfile
+    });
+  }
+  await cleanupCurrentWorkerTestBrowserProcesses();
 }
 
 export async function cleanupExternalBidiTestState(): Promise<void> {
   const state = bidiTestState();
-  state.usesExternalBidiEndpoint = false;
-  await closeSharedBidiBrowser();
-  await closeExternalBidiBrowser();
-  state.cachedRoxyBrowserEndpoint = undefined;
+  const browser = state.browser;
+  state.browser = undefined;
+  state.browserKey = undefined;
+
+  if (browser) {
+    await closeForTest("browser.close", () => browser.close()).catch(() => {});
+  }
+
   await cleanupStaleBidiTestArtifacts();
 }
 
@@ -332,13 +214,11 @@ export async function cleanupBidiTestStateAfterTest(): Promise<void> {
     return;
   }
 
-  if (!shouldKeepConfiguredExternalBidiBrowserOpen()) {
-    await delay(0);
-  }
+  await delay(0);
 }
 
 export async function cleanupLocalBidiTestProcesses(): Promise<void> {
-  await cleanupLocalTestBrowserProcessesWithTimeout();
+  await cleanupCurrentWorkerTestBrowserProcesses();
 }
 
 export function installBidiTestCleanupHooks(): void {
@@ -351,7 +231,7 @@ export function installBidiTestCleanupHooks(): void {
   state.__roxyBidiTestCleanupHooksInstalled = true;
 
   process.once("exit", () => {
-    cleanupLocalTestBrowserProcessesSync();
+    cleanupCurrentWorkerTestBrowserProcessesSync();
   });
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -399,6 +279,10 @@ export function installBidiTestCleanupHooks(): void {
         }, 0);
       });
   });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function closeForTest(label: string, close: () => Promise<void>): Promise<void> {
