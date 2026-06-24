@@ -9,3 +9,4 @@ playwright-report/
 .env
 .build
 sessions/
+.reasonix

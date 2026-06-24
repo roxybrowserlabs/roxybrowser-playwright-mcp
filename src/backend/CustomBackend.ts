@@ -1,13 +1,13 @@
 import { BrowserServerBackend } from 'playwright/lib/mcp/browserServerBackend';
 import { extraToolToMcp } from './helpers.js';
 import { isBrowserSessionReadyForTools, notConnectedToolResult } from './utils.js';
-import { BROWSER_CONNECT_ROXY, BROWSER_CLICK } from '../tools/index.js';
+import { BROWSER_CONNECT_ROXY } from '../tools/index.js';
 import type { BrowserContextFactory, } from 'playwright/lib/mcp/browser/browserContextFactory';
 import type { Config } from 'playwright/lib/mcp/browser/config';
 import type { McpTool, ToolDefinition, ToolResult, ToolContext } from './types.js';
 
 /** 从 Playwright 官方 MCP 中排除的工具名 */
-const EXCLUDED_PLAYWRIGHT_TOOL_NAMES = new Set(['browser_install', 'browser_close', 'browser_click']);
+const EXCLUDED_PLAYWRIGHT_TOOL_NAMES = new Set(['browser_install', 'browser_close']);
 
 export class CustomBackend extends BrowserServerBackend {
   declare protected _context: ToolContext;
@@ -15,7 +15,7 @@ export class CustomBackend extends BrowserServerBackend {
 
   constructor(config: Config, factory: BrowserContextFactory) {
     super(config, factory);
-    this._extraTools = [BROWSER_CONNECT_ROXY, BROWSER_CLICK];
+    this._extraTools = [BROWSER_CONNECT_ROXY];
   }
 
   async listTools(): Promise<McpTool[]> {

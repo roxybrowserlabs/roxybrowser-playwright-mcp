@@ -7,27 +7,32 @@ export const BROWSER_CONNECT_ROXY = defineExtraTool(
     name: 'browser_connect_roxy',
     title: 'Connect to RoxyBrowser',
     description:
-      'Connect to RoxyBrowser using CDP WebSocket endpoint (e.g. from RoxyChrome).',
+      'Connect to a remote browser using a WebSocket endpoint. Supports Chrome (via CDP) and Firefox (via BiDi).',
     inputSchema: z.object({
-      cdpEndpoint: z
+      endpoint: z
         .string()
         .describe(
-          'CDP WebSocket URL from RoxyBrowser, e.g. ws://127.0.0.1:59305/devtools/browser/...'
+          'WebSocket URL to connect to. For Chrome, use a CDP endpoint like ws://127.0.0.1:PORT/devtools/browser/.... For Firefox, use a BiDi WebSocket endpoint.'
         ),
+      browserCore: z
+        .enum(['Chrome', 'Firefox'])
+        .optional()
+        .default('Chrome')
+        .describe('Browser engine to connect to. Defaults to "Chrome".'),
     }),
     type: 'destructive',
   },
   async (context, args) => {
-    const { cdpEndpoint } = args;
+    const { endpoint, browserCore } = args;
     await context.closeBrowserContext();
-    const factory = new DynamicCdpContextFactory(context.config, cdpEndpoint);
+    const factory = new DynamicCdpContextFactory(context.config, endpoint, browserCore);
     context._browserContextFactory = factory;
     await context.ensureTab();
     return {
       content: [
         {
           type: 'text',
-          text: `### Result\nSuccessfully connected to RoxyBrowser at ${cdpEndpoint}\nSubsequent browser actions will run in this window.`,
+          text: `### Result\nSuccessfully connected to ${browserCore} at ${endpoint}\nSubsequent browser actions will run in this window.`,
         },
       ],
     };
