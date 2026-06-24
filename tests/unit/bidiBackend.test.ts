@@ -744,6 +744,10 @@ class FakeWebSocket {
       listener(event);
     }
   }
+
+  emitForTest(type: string, event?: unknown): void {
+    this.emit(type, event);
+  }
 }
 
 const fakeWebSockets: FakeWebSocket[] = [];
@@ -796,6 +800,29 @@ describe("WebSocketBidiClient", () => {
         message: "ready"
       }
     });
+  });
+
+  it("includes websocket details when the BiDi connection handshake fails", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new WebSocketBidiClient({
+      browserName: "firefox",
+      webSocketUrl: "ws://127.0.0.1:9222/session"
+    });
+    const socket = fakeWebSockets[0]!;
+
+    const connected = client.connect();
+    socket.emitForTest("error", {
+      type: "error",
+      message: "ECONNREFUSED",
+      target: {
+        url: "ws://127.0.0.1:9222/session",
+        readyState: FakeWebSocket.CONNECTING
+      }
+    });
+
+    await expect(connected).rejects.toThrow(
+      "Failed to establish a WebDriver BiDi connection to ws://127.0.0.1:9222/session: ECONNREFUSED; socket(url=ws://127.0.0.1:9222/session)"
+    );
   });
 
   it("rejects protocol errors for matching commands", async () => {

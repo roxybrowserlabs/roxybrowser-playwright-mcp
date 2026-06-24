@@ -160,6 +160,7 @@ export class McpRuntime {
 
   async snapshot(args: BrowserSnapshotToolArgs = {}): Promise<BrowserSnapshot> {
     const session = this.requireConnected();
+    this.tabs = await session.listTabs();
     const activeTab = this.requireActiveTab();
     const requestKey = this.snapshotRequestKey(args);
 
@@ -169,17 +170,27 @@ export class McpRuntime {
       ...(args.target ? { target: this.resolveSnapshotTarget(args.target) } : {})
     };
     const snapshot = await session.snapshot(request);
+    const refreshedTabs = await session.listTabs();
+    this.tabs = refreshedTabs;
+    const currentActiveTab =
+      refreshedTabs.find((tab) => tab.active)
+      ?? refreshedTabs.find((tab) => tab.id === activeTab.id)
+      ?? activeTab;
     this.snapshotCache = {
-      tabId: activeTab.id,
+      tabId: currentActiveTab.id,
       requestKey,
       text: snapshot.text,
       refs: { ...snapshot.refs },
-      title: snapshot.title,
-      url: snapshot.url,
+      title: currentActiveTab.title || snapshot.title,
+      url: currentActiveTab.url || snapshot.url,
       ...(snapshot.console ? { console: { ...snapshot.console } } : {}),
       ...(snapshot.consoleLink ? { consoleLink: snapshot.consoleLink } : {})
     };
-    return snapshot;
+    return {
+      ...snapshot,
+      title: currentActiveTab.title || snapshot.title,
+      url: currentActiveTab.url || snapshot.url
+    };
   }
 
   async click(

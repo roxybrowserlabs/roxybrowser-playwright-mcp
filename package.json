@@ -1,12 +1,13 @@
 {
   "name": "@roxybrowser/playwright",
-  "version": "2.0.1",
+  "version": "2.0.2-beta.0",
   "description": "MCP server for RoxyBrowser automation - manage browser instances and get CDP endpoints",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "roxybrowser-openapi-mcp": "./dist/bin/roxybrowser-mcp.js"
+    "roxybrowser-openapi-mcp": "./dist/bin/roxybrowser-mcp.js",
+    "roxybrowser-mcp": "./dist/bin/roxybrowser-mcp.js"
   },
   "author": "RoxyBrowser",
   "exports": {
@@ -56,6 +57,10 @@
     "example:probe-bidi-http": "pnpm build && node ./examples/probe-firefox-bidi-http.mjs",
     "example:launch-bidi": "pnpm build && node ./examples/launch-firefox-bidi.mjs",
     "example:page-events": "pnpm build && node ./examples/page-events-and-screenshot.mjs",
+    "mcp:stdio": "pnpm build && node ./dist/bin/roxybrowser-mcp.js",
+    "mcp:http": "pnpm build && node ./dist/bin/roxybrowser-mcp.js --transport http",
+    "inspector": "pnpm build && node ./node_modules/@modelcontextprotocol/inspector/client/bin/start.js -- node ./dist/bin/roxybrowser-mcp.js",
+    "inspector:http": "pnpm build && node ./node_modules/@modelcontextprotocol/inspector/client/bin/start.js --transport http --server-url http://127.0.0.1:3333/mcp",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "publish:release": "npm run clean && npm version patch --no-git-tag-version && npm run build && npm publish",
@@ -68,15 +73,16 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/inspector": "^0.22.0",
     "@playwright/mcp": "0.0.76",
     "@types/chrome-remote-interface": "^0.34.0",
     "@types/node": "^24.1.0",
-    "@vitest/coverage-v8": "^4.1.6",
+    "@vitest/coverage-v8": "^4.1.9",
     "jsdom": "^29.1.1",
     "playwright": "1.61.0-alpha-1781023400000",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
-    "vitest": "^4.1.6",
+    "vitest": "^4.1.9",
     "webdriver-bidi-protocol": "^0.4.2"
   }
 }

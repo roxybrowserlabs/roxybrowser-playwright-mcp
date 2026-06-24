@@ -83,3 +83,88 @@ and `browser_evaluate`, support a shared output directory.
 - If a tool receives a relative `filename`, it will be resolved inside the output directory.
 - If a tool receives an absolute `filename`, it will be used as-is.
 - If no output directory is configured, the default is `.roxybrowser-mcp` under the current working directory, or the system temp directory when the cwd is not writable.
+
+You can also set `outputDir` directly when creating the MCP server or transports:
+
+```ts
+import {
+  createRoxyBrowserMcpInMemory,
+  createRoxyBrowserMcpServer,
+  startRoxyBrowserMcpHttp,
+  startRoxyBrowserMcpStdio
+} from "@roxybrowser/playwright/mcp";
+
+const outputDir = "/absolute/path/to/output";
+
+createRoxyBrowserMcpServer({
+  outputDir
+});
+
+await createRoxyBrowserMcpInMemory({
+  outputDir
+});
+
+await startRoxyBrowserMcpHttp({
+  port: 3000,
+  outputDir
+});
+
+await startRoxyBrowserMcpStdio({
+  outputDir
+});
+```
+
+## MCP inspector workflow
+
+This repo includes [`@modelcontextprotocol/inspector`](https://github.com/modelcontextprotocol/inspector) as a dev dependency so we can debug the Playwright MCP server locally.
+
+### Local stdio inspector
+
+Use the inspector to spawn the built MCP server over `stdio`:
+
+```bash
+pnpm inspector
+```
+
+That command will:
+
+- build the TypeScript sources into `dist/`
+- start the MCP Inspector UI on `http://127.0.0.1:6274`
+- launch `node ./dist/bin/roxybrowser-mcp.js` as the inspected MCP server
+
+This is the fastest loop when you want to manually exercise tools from the inspector UI.
+
+### Local HTTP inspector
+
+If you want to keep the MCP server running separately and connect the inspector over Streamable HTTP:
+
+Terminal 1:
+
+```bash
+pnpm mcp:http
+```
+
+Terminal 2:
+
+```bash
+pnpm inspector:http
+```
+
+By default the HTTP server listens on `http://127.0.0.1:3333/mcp`.
+
+### MCP server CLI options
+
+The bundled `roxybrowser-mcp` launcher supports both transports:
+
+```bash
+node ./dist/bin/roxybrowser-mcp.js --transport stdio
+node ./dist/bin/roxybrowser-mcp.js --transport http --port 3333 --host 127.0.0.1 --path /mcp
+```
+
+Optional flags:
+
+- `--output-dir /absolute/path`
+- `--snapshot-mode full`
+- `--snapshot-mode none`
+
+Note: in the currently installed inspector version, the `mcp-inspector` CLI wrapper itself has a local dependency compatibility issue in this workspace, so the reliable path here is the inspector UI flow above via `client/bin/start.js`.

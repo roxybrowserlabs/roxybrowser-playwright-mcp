@@ -1960,6 +1960,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
   private responseDataCollector: string | undefined;
   private activeTabId: string | undefined;
+  private ownsSession = false;
 
   private constructor(private readonly client: BidiProtocolClient) {}
 
@@ -1981,10 +1982,11 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
     const client = await getBidiClientFactory()({
       browserName: "firefox",
-      webSocketUrl: args.endpoint
+      webSocketUrl: normalizeFirefoxBidiEndpoint(args.endpoint)
     });
 
     const session = new BidiConnectedBrowserSession(client);
+    session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint);
     await session.initialize();
     const tabs = await session.refreshTabs();
     if (tabs.length === 0) {
@@ -2053,11 +2055,13 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
   async snapshot(request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
     const tabId = await this.getActiveTabId();
-    const result = await evaluateBiDi<AriaSnapshotResult>(
-      this.client,
-      tabId,
-      ARIA_SNAPSHOT_EVALUATE_SOURCE,
-      toAriaSnapshotPayload(request)
+    const result = await retryUntilReady(() =>
+      evaluateBiDi<AriaSnapshotResult>(
+        this.client,
+        tabId,
+        ARIA_SNAPSHOT_EVALUATE_SOURCE,
+        toAriaSnapshotPayload(request)
+      )
     );
     return toBrowserSnapshot(result, request, {
       console: this.consoleSummary(tabId),
@@ -2287,7 +2291,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       await this.client.networkRemoveDataCollector({ collector: this.responseDataCollector }).catch(() => {});
       this.responseDataCollector = undefined;
     }
-    await this.client.sessionEnd({}).catch(() => {});
+    if (this.ownsSession) {
+      await this.client.sessionEnd({}).catch(() => {});
+    }
     this.client.close();
   }
 
@@ -2906,6 +2912,62 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const lineRange = fromLine === state.logLine ? `#L${fromLine}` : `#L${fromLine}-L${state.logLine}`;
     return `${relativePath}${lineRange}`;
   }
+}
+
+function normalizeFirefoxBidiEndpoint(endpoint: string): string {
+  const url = new URL(endpoint);
+  if (url.pathname === "/" || url.pathname === "") {
+    url.pathname = "/session";
+  }
+  return url.toString();
+}
+
+async function ensureMcpBiDiSession(
+  client: BidiProtocolClient,
+  endpoint: string
+): Promise<boolean> {
+  await client.sessionStatus({});
+
+  if (isSessionSpecificFirefoxBidiEndpoint(endpoint)) {
+    return false;
+  }
+
+  try {
+    await client.browsingContextGetTree({});
+    return false;
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error);
+    if (
+      !message.includes("session does not exist")
+      && !message.includes("invalid session id")
+      && !message.includes("not active")
+    ) {
+      throw error;
+    }
+  }
+
+  try {
+    await client.sessionNew({
+      capabilities: {
+        alwaysMatch: {
+          acceptInsecureCerts: true
+        }
+      }
+    });
+    return true;
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error);
+    if (message.includes("Maximum number of active sessions")) {
+      throw new Error(
+        "Maximum number of active BiDi sessions. Reuse an existing one with sessionId or close the current session first."
+      );
+    }
+    throw error;
+  }
+}
+
+function isSessionSpecificFirefoxBidiEndpoint(endpoint: string): boolean {
+  return /^\/session\/[^/]+$/.test(new URL(endpoint).pathname);
 }
 
 export async function connectBrowserSession(

@@ -123,11 +123,13 @@ export class WebSocketBidiClient implements BidiProtocolClient {
   private readonly eventListeners = new Map<string, Set<BidiEventListener>>();
   private readonly pendingCommands = new Map<number, PendingCommand>();
   private readonly socket: WebSocketLike;
+  private readonly webSocketUrl: string;
 
   constructor(options: BidiClientFactoryOptions) {
     this.capabilities = {
       browserName: options.browserName
     };
+    this.webSocketUrl = options.webSocketUrl;
     this.socket = new globalThis.WebSocket(options.webSocketUrl) as WebSocketLike;
     this.socket.addEventListener("message", (event) => this.handleMessage(event.data));
     this.socket.addEventListener("close", () => this.handleClose());
@@ -143,7 +145,7 @@ export class WebSocketBidiClient implements BidiProtocolClient {
       this.socket.addEventListener(
         "error",
         (event) => {
-          reject(new Error(`Failed to establish a WebDriver BiDi connection: ${String(event)}`));
+          reject(new Error(formatBidiConnectError(event, this.webSocketUrl)));
         },
         { once: true }
       );
@@ -381,6 +383,65 @@ export class WebSocketBidiClient implements BidiProtocolClient {
     }
     this.pendingCommands.clear();
   }
+}
+
+function formatBidiConnectError(event: unknown, webSocketUrl: string): string {
+  const details = extractBidiConnectErrorDetails(event);
+  return details
+    ? `Failed to establish a WebDriver BiDi connection to ${webSocketUrl}: ${details}`
+    : `Failed to establish a WebDriver BiDi connection to ${webSocketUrl}.`;
+}
+
+function extractBidiConnectErrorDetails(event: unknown): string | undefined {
+  if (event instanceof Error) {
+    return event.message;
+  }
+
+  if (!event || typeof event !== "object") {
+    return typeof event === "string" ? event : undefined;
+  }
+
+  const candidate = event as {
+    message?: unknown;
+    type?: unknown;
+    error?: unknown;
+    target?: { url?: unknown; readyState?: unknown } | null;
+    currentTarget?: { url?: unknown; readyState?: unknown } | null;
+  };
+
+  const parts: string[] = [];
+  if (typeof candidate.message === "string" && candidate.message) {
+    parts.push(candidate.message);
+  }
+  if (typeof candidate.error === "string" && candidate.error) {
+    parts.push(candidate.error);
+  } else if (candidate.error instanceof Error && candidate.error.message) {
+    parts.push(candidate.error.message);
+  }
+
+  const socketLike = candidate.target ?? candidate.currentTarget;
+  if (socketLike && typeof socketLike === "object") {
+    const socketParts: string[] = [];
+    if (typeof socketLike.url === "string" && socketLike.url) {
+      socketParts.push(`url=${socketLike.url}`);
+    }
+    if (typeof socketLike.readyState === "number") {
+      socketParts.push(`readyState=${socketLike.readyState}`);
+    }
+    if (socketParts.length > 0) {
+      parts.push(`socket(${socketParts.join(", ")})`);
+    }
+  }
+
+  if (parts.length > 0) {
+    return parts.join("; ");
+  }
+
+  if (typeof candidate.type === "string" && candidate.type) {
+    return `event type=${candidate.type}`;
+  }
+
+  return undefined;
 }
 
 export type BidiClientFactory = (

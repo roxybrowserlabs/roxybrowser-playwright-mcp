@@ -5,7 +5,8 @@ import { PassThrough } from "node:stream";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createRoxyBrowserMcpInMemory, createRoxyBrowserMcpServer, startRoxyBrowserMcpHttp, startRoxyBrowserMcpStdio } from "../../src/mcp/index.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { resetBidiClientFactoryForTests, setBidiClientFactoryForTests } from "../../src/protocol/bidi/client.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   BrowserSessionFactory,
   BrowserNetworkRequest,
@@ -242,6 +243,76 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   async close(): Promise<void> {}
 }
 
+class SwitchingActiveTabSession extends FakeConnectedBrowserSession {
+  private snapshotCount = 0;
+
+  override async listTabs(): Promise<BrowserTab[]> {
+    const tabs = await super.listTabs();
+    return tabs.map((tab, index) => ({
+      ...tab,
+      active: index === 1
+    }));
+  }
+
+  override async snapshot(_request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
+    this.snapshotCount += 1;
+    const activeTab = (await this.listTabs()).find((tab) => tab.active);
+    return {
+      title: activeTab?.title ?? "",
+      url: activeTab?.url ?? "",
+      text: `- document "snapshot-${this.snapshotCount}" [ref=e1]`,
+      refs: {
+        e1: `${activeTab?.id ?? "tab"}:node-1`
+      }
+    };
+  }
+}
+
+class MismatchedSnapshotMetadataSession extends FakeConnectedBrowserSession {
+  override async listTabs(): Promise<BrowserTab[]> {
+    const tabs = await super.listTabs();
+    return tabs.map((tab, index) => ({
+      ...tab,
+      active: index === 1
+    }));
+  }
+
+  override async snapshot(_request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
+    return {
+      title: "",
+      url: "about:blank",
+      text: "",
+      refs: {}
+    };
+  }
+}
+
+class NotReadyThenReadySnapshotSession extends FakeConnectedBrowserSession {
+  private attempts = 0;
+
+  override async snapshot(_request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
+    this.attempts += 1;
+    if (this.attempts === 1) {
+      return {
+        title: "",
+        url: "about:blank",
+        text: "",
+        refs: {}
+      };
+    }
+
+    const activeTab = (await this.listTabs()).find((tab) => tab.active) ?? (await this.listTabs())[0];
+    return {
+      title: activeTab?.title ?? "",
+      url: activeTab?.url ?? "",
+      text: `- button "Ready" [ref=e1]`,
+      refs: {
+        e1: `${activeTab?.id ?? "tab"}:node-1`
+      }
+    };
+  }
+}
+
 const fakeSessionFactory: BrowserSessionFactory = async (
   args: RoxyBrowserConnectArgs
 ) => new FakeConnectedBrowserSession(args);
@@ -269,6 +340,7 @@ afterEach(async () => {
       await callback();
     }
   }
+  resetBidiClientFactoryForTests();
 });
 
 describe("MCP server", () => {
@@ -794,6 +866,70 @@ describe("MCP server", () => {
       expect(capturedSession).toBeDefined();
       expect(capturedSession!.clickCalls[0]!.target).toEqual({ selector: "button.primary" });
     });
+
+    it("creates a Firefox BiDi session when a root websocket endpoint has no active session", async () => {
+      const sessionNew = vi.fn(async () => ({
+        sessionId: "created-session",
+        capabilities: { browserName: "firefox" }
+      }));
+      const createBidiClient = vi.fn(async () => ({
+        capabilities: { browserName: "firefox" },
+        close: vi.fn(),
+        on: vi.fn(),
+        removeListener: vi.fn(),
+        sessionStatus: vi.fn(async () => ({})),
+        sessionEnd: vi.fn(async () => ({})),
+        browsingContextGetTree: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("invalid session id: session does not exist"))
+          .mockResolvedValue({
+            contexts: [
+              {
+                context: "tab-1",
+                url: "about:blank",
+                children: []
+              }
+            ]
+          }),
+        sessionNew,
+        browsingContextActivate: vi.fn(async () => ({})),
+        browsingContextCreate: vi.fn(async () => ({ context: "tab-1" })),
+        browsingContextNavigate: vi.fn(async () => ({})),
+        sessionSubscribe: vi.fn(async () => ({})),
+        networkAddDataCollector: vi.fn(async () => ({ collector: "collector-1" })),
+        networkRemoveDataCollector: vi.fn(async () => ({})),
+        scriptAddPreloadScript: vi.fn(async () => ({ script: "script-1" })),
+        scriptRemovePreloadScript: vi.fn(async () => ({}))
+      }));
+
+      setBidiClientFactoryForTests(createBidiClient);
+
+      const bundle = await createRoxyBrowserMcpInMemory();
+      cleanupCallbacks.push(async () => bundle.close());
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+
+      const result = await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: {
+          endpoint: "ws://127.0.0.1:63631",
+          browser: "firefox"
+        }
+      });
+
+      expect(createBidiClient).toHaveBeenCalledWith({
+        browserName: "firefox",
+        webSocketUrl: "ws://127.0.0.1:63631/session"
+      });
+      expect(sessionNew).toHaveBeenCalledWith({
+        capabilities: {
+          alwaysMatch: {
+            acceptInsecureCerts: true
+          }
+        }
+      });
+    });
   });
 
   describe("snapshotMode", () => {
@@ -864,6 +1000,68 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(textFromResult(result)).toContain("### Snapshot");
+    });
+
+    it("uses the latest active tab metadata when rendering browser_snapshot", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => {
+          const session = new SwitchingActiveTabSession(args);
+          await session.newTab("https://www.baidu.com/");
+          return session;
+        }
+      });
+      cleanupCallbacks.push(async () => bundle.close());
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { endpoint: "ws://snapshot-active.invalid/devtools/browser/1" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_snapshot",
+        arguments: {}
+      });
+
+      expect(result.isError).toBeUndefined();
+      const text = textFromResult(result);
+      expect(text).toContain("(current)");
+      expect(text).toContain("(https://www.baidu.com/)");
+      expect(text).toContain("- Page URL: https://www.baidu.com/");
+      expect(text).not.toContain("- Page URL: about:blank");
+    });
+
+    it("prefers active tab header metadata over stale snapshot url/title", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => {
+          const session = new MismatchedSnapshotMetadataSession(args);
+          await session.newTab("https://www.baidu.com/");
+          return session;
+        }
+      });
+      cleanupCallbacks.push(async () => bundle.close());
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { endpoint: "ws://snapshot-mismatch.invalid/devtools/browser/1" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_snapshot",
+        arguments: {}
+      });
+
+      expect(result.isError).toBeUndefined();
+      const text = textFromResult(result);
+      expect(text).toContain("- Page URL: https://www.baidu.com/");
+      expect(text).toContain("- Page Title: ws://snapshot-mismatch.invalid/devtools/browser/1 tab-2");
+      expect(text).not.toContain("- Page URL: about:blank");
+      expect(text).not.toContain("- Page Title: (untitled)");
     });
   });
 
