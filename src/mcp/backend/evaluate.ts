@@ -1,9 +1,9 @@
 import { writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { defineTool, textResult } from "../tool.js";
-import { resolveOutputFilePath } from "../output.js";
+import { defineTool } from "./tool.js";
 
 const evaluate = defineTool({
+  capability: "core",
   schema: {
     name: "browser_evaluate",
     title: "Evaluate JavaScript",
@@ -13,19 +13,19 @@ const evaluate = defineTool({
       target: z.string().optional().describe("Exact target element reference from the page snapshot, or a unique element selector"),
       function: z.string().describe("() => { /* code */ } or (element) => { /* code */ } when element is provided"),
       filename: z.string().optional().describe("Filename to save the result to. If not provided, result is returned as text.")
-    })
+    }),
+    type: "action"
   },
-  handle: async (args, runtime) => {
-    const result = await runtime.evaluate(args.function, args.target);
+  handle: async (context, params, response) => {
+    const result = await context.runtime.evaluate(params.function, params.target);
     const text = JSON.stringify(result, null, 2) ?? "undefined";
-    if (args.filename) {
-      const resolvedFilename = await resolveOutputFilePath(args.filename, {
-        outputDir: runtime.getOutputDir()
-      });
+    if (params.filename) {
+      const resolvedFilename = await context.resolveOutputFile(params.filename);
       await writeFile(resolvedFilename, text);
-      return textResult(`Saved evaluation result to "${resolvedFilename}".`);
+      response.addTextResult(`Saved evaluation result to "${resolvedFilename}".`);
+      return;
     }
-    return textResult(text);
+    response.addTextResult(text);
   }
 });
 

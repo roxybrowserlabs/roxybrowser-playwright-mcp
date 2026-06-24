@@ -298,6 +298,7 @@ describe("MCP server", () => {
       "browser_hover",
       "browser_navigate",
       "browser_navigate_back",
+      "browser_navigate_forward",
       "browser_network_request",
       "browser_network_requests",
       "browser_press_key",
@@ -374,7 +375,6 @@ describe("MCP server", () => {
     await client.callTool({
       name: "roxy_browser_connect",
       arguments: {
-        protocol: "cdp",
         endpoint: "ws://drop-paths.invalid/devtools/browser/1"
       }
     });
@@ -410,12 +410,11 @@ describe("MCP server", () => {
     const connected = await client.callTool({
       name: "roxy_browser_connect",
       arguments: {
-        protocol: "cdp",
         endpoint: "ws://session-one.invalid/devtools/browser/1"
       }
     });
     expect(connected.isError).toBeUndefined();
-    expect(textFromResult(connected)).toContain("Connected to chromium via cdp.");
+    expect(textFromResult(connected)).toContain("Connected to chrome via cdp.");
 
     // Click with a valid aria-ref — should succeed and return a new snapshot
     const clicked = await client.callTool({
@@ -450,7 +449,6 @@ describe("MCP server", () => {
     await client.callTool({
       name: "roxy_browser_connect",
       arguments: {
-        protocol: "cdp",
         endpoint: "ws://snapshot-args.invalid/devtools/browser/1"
       }
     });
@@ -501,7 +499,6 @@ describe("MCP server", () => {
     await client.callTool({
       name: "roxy_browser_connect",
       arguments: {
-        protocol: "cdp",
         endpoint: "ws://snapshot-output.invalid/devtools/browser/1"
       }
     });
@@ -534,10 +531,7 @@ describe("MCP server", () => {
     await client.connect(bundle.clientTransport);
     await client.callTool({
       name: "roxy_browser_connect",
-      arguments: {
-        protocol: "bidi",
-        endpoint: "ws://session-two.invalid"
-      }
+      arguments: { browser: "firefox", endpoint: "ws://session-two.invalid" }
     });
 
     const invalidSelect = await client.callTool({
@@ -593,14 +587,12 @@ describe("MCP server", () => {
     await clientOne.callTool({
       name: "roxy_browser_connect",
       arguments: {
-        protocol: "cdp",
         endpoint: "ws://client-one.invalid/devtools/browser/1"
       }
     });
     await clientTwo.callTool({
       name: "roxy_browser_connect",
       arguments: {
-        protocol: "cdp",
         endpoint: "ws://client-two.invalid/devtools/browser/1"
       }
     });
@@ -655,7 +647,6 @@ describe("MCP server", () => {
       await client.callTool({
         name: "roxy_browser_connect",
         arguments: {
-          protocol: "cdp",
           endpoint: "ws://click-test.invalid/devtools/browser/1"
         }
       });
@@ -762,7 +753,7 @@ describe("MCP server", () => {
       await client.connect(bundle.clientTransport);
       await client.callTool({
         name: "roxy_browser_connect",
-        arguments: { protocol: "cdp", endpoint: "ws://hover-test.invalid/devtools/browser/1" }
+        arguments: { endpoint: "ws://hover-test.invalid/devtools/browser/1" }
       });
 
       await client.callTool({
@@ -792,7 +783,7 @@ describe("MCP server", () => {
       await client.connect(bundle.clientTransport);
       await client.callTool({
         name: "roxy_browser_connect",
-        arguments: { protocol: "cdp", endpoint: "ws://selector-test.invalid/devtools/browser/1" }
+        arguments: { endpoint: "ws://selector-test.invalid/devtools/browser/1" }
       });
 
       await client.callTool({
@@ -818,7 +809,7 @@ describe("MCP server", () => {
       await client.connect(bundle.clientTransport);
       await client.callTool({
         name: "roxy_browser_connect",
-        arguments: { protocol: "cdp", endpoint: "ws://snapshot-mode.invalid/devtools/browser/1" }
+        arguments: { endpoint: "ws://snapshot-mode.invalid/devtools/browser/1" }
       });
       return client;
     }
@@ -889,7 +880,7 @@ describe("MCP server", () => {
     await client.connect(bundle.clientTransport);
     await client.callTool({
       name: "roxy_browser_connect",
-      arguments: { protocol: "cdp", endpoint: "ws://tools-test.invalid/devtools/browser/1" }
+      arguments: { endpoint: "ws://tools-test.invalid/devtools/browser/1" }
     });
     return { client, getSession: () => capturedSession! };
   }
@@ -917,13 +908,13 @@ describe("MCP server", () => {
       const client = createClient();
       cleanupCallbacks.push(async () => client.close());
       await client.connect(bundle.clientTransport);
-      await client.callTool({ name: "roxy_browser_connect", arguments: { protocol: "cdp", endpoint: "ws://x.invalid/1" } });
+      await client.callTool({ name: "roxy_browser_connect", arguments: { endpoint: "ws://x.invalid/1" } });
 
       const result = await client.callTool({ name: "browser_navigate", arguments: { url: "https://example.com" } });
 
       expect(result.isError).toBeUndefined();
       const text = textFromResult(result);
-      expect(text).toContain("Navigated to");
+      expect(text).toContain("await page.goto('https://example.com');");
       expect(text).not.toContain("### Snapshot");
     });
 
@@ -1119,7 +1110,7 @@ describe("MCP server", () => {
       await client.connect(bundle.clientTransport);
       await client.callTool({
         name: "roxy_browser_connect",
-        arguments: { protocol: "cdp", endpoint: "ws://x.invalid/1" }
+        arguments: { endpoint: "ws://x.invalid/1" }
       });
 
       const result = await client.callTool({
@@ -1176,7 +1167,7 @@ describe("MCP server", () => {
       await client.connect(bundle.clientTransport);
       await client.callTool({
         name: "roxy_browser_connect",
-        arguments: { protocol: "cdp", endpoint: "ws://x.invalid/1" }
+        arguments: { endpoint: "ws://x.invalid/1" }
       });
 
       const relativeFilename = "images/screen.png";
@@ -1210,7 +1201,7 @@ describe("MCP server", () => {
       await client.connect(bundle.clientTransport);
       await client.callTool({
         name: "roxy_browser_connect",
-        arguments: { protocol: "cdp", endpoint: "ws://x.invalid/1" }
+        arguments: { endpoint: "ws://x.invalid/1" }
       });
 
       const result = await client.callTool({

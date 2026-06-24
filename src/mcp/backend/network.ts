@@ -1,12 +1,12 @@
 import { writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { defineTool, textResult } from "../tool.js";
+import { defineTool } from "./tool.js";
 import type { BrowserNetworkRequest } from "../types.js";
-import { resolveOutputFilePath } from "../output.js";
 
 const requestParts = ["request-headers", "request-body", "response-headers", "response-body"] as const;
 
 const networkRequests = defineTool({
+  capability: "core",
   schema: {
     name: "browser_network_requests",
     title: "List network requests",
@@ -15,10 +15,11 @@ const networkRequests = defineTool({
       static: z.boolean().default(false).describe("Whether to include successful static resources like images, fonts, scripts, etc. Defaults to false."),
       filter: z.string().optional().describe('Only return requests whose URL matches this regexp (e.g. "/api/.*user").'),
       filename: z.string().optional().describe("Filename to save the network requests to. If not provided, requests are returned as text.")
-    })
+    }),
+    type: "readOnly"
   },
-  handle: async (args, runtime) => {
-    const requests = await runtime.networkRequests();
+  handle: async (context, args, response) => {
+    const requests = await context.runtime.networkRequests();
     const filter = args.filter ? new RegExp(args.filter) : undefined;
     const lines: string[] = [];
     let hiddenStaticCount = 0;
@@ -37,17 +38,17 @@ const networkRequests = defineTool({
     }
     const text = lines.join("\n");
     if (args.filename) {
-      const resolvedFilename = await resolveOutputFilePath(args.filename, {
-        outputDir: runtime.getOutputDir()
-      });
+      const resolvedFilename = await context.resolveOutputFile(args.filename);
       await writeFile(resolvedFilename, text);
-      return textResult(`Saved network requests to "${resolvedFilename}".`);
+      response.addTextResult(`Saved network requests to "${resolvedFilename}".`);
+      return;
     }
-    return textResult(text);
+    response.addTextResult(text);
   }
 });
 
 const networkRequest = defineTool({
+  capability: "core",
   schema: {
     name: "browser_network_request",
     title: "Show network request details",
@@ -56,22 +57,23 @@ const networkRequest = defineTool({
       index: z.number().int().min(1).describe("1-based index of the request, as printed by browser_network_requests."),
       part: z.enum(requestParts).optional().describe("Return only this part of the request. Omit to return full details."),
       filename: z.string().optional().describe("Filename to save the result to. If not provided, output is returned as text.")
-    })
+    }),
+    type: "readOnly"
   },
-  handle: async (args, runtime) => {
-    const request = await runtime.networkRequest(args.index);
+  handle: async (context, args, response) => {
+    const request = await context.runtime.networkRequest(args.index);
     if (!request) {
-      return textResult(`Request #${args.index} not found. Use browser_network_requests to see available indexes.`, true);
+      response.addError(`Request #${args.index} not found. Use browser_network_requests to see available indexes.`);
+      return;
     }
     const text = args.part ? renderRequestPart(request, args.part) : renderRequestDetails(request);
     if (args.filename) {
-      const resolvedFilename = await resolveOutputFilePath(args.filename, {
-        outputDir: runtime.getOutputDir()
-      });
+      const resolvedFilename = await context.resolveOutputFile(args.filename);
       await writeFile(resolvedFilename, text);
-      return textResult(`Saved network request to "${resolvedFilename}".`);
+      response.addTextResult(`Saved network request to "${resolvedFilename}".`);
+      return;
     }
-    return textResult(text);
+    response.addTextResult(text);
   }
 });
 

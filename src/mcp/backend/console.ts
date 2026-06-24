@@ -1,9 +1,9 @@
 import { writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { defineTool, textResult } from "../tool.js";
-import { resolveOutputFilePath } from "../output.js";
+import { defineTool } from "./tool.js";
 
 const consoleMessages = defineTool({
+  capability: "core",
   schema: {
     name: "browser_console_messages",
     title: "Get console messages",
@@ -12,10 +12,11 @@ const consoleMessages = defineTool({
       level: z.enum(["error", "warning", "info", "debug"]).default("info").describe('Level of the console messages to return. Each level includes the messages of more severe levels. Defaults to "info".'),
       all: z.boolean().optional().describe("Return all console messages since the beginning of the session, not just since the last navigation. Defaults to false."),
       filename: z.string().optional().describe("Filename to save the console messages to. If not provided, messages are returned as text.")
-    })
+    }),
+    type: "readOnly"
   },
-  handle: async (args, runtime) => {
-    const messages = await runtime.consoleMessages(args.level, args.all);
+  handle: async (context, params, response) => {
+    const messages = await context.runtime.consoleMessages(params.level, params.all);
     const errors = messages.filter((message) => message.type === "error" || message.type === "assert").length;
     const warnings = messages.filter((message) => message.type === "warning").length;
     const text = [
@@ -23,14 +24,13 @@ const consoleMessages = defineTool({
       "",
       ...messages.map((message) => message.formattedText)
     ].join("\n");
-    if (args.filename) {
-      const resolvedFilename = await resolveOutputFilePath(args.filename, {
-        outputDir: runtime.getOutputDir()
-      });
+    if (params.filename) {
+      const resolvedFilename = await context.resolveOutputFile(params.filename);
       await writeFile(resolvedFilename, text);
-      return textResult(`Saved console messages to "${resolvedFilename}".`);
+      response.addTextResult(`Saved console messages to "${resolvedFilename}".`);
+      return;
     }
-    return textResult(text);
+    response.addTextResult(text);
   }
 });
 

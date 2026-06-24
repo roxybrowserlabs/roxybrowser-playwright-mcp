@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { defineTool, textResult } from "../tool.js";
-import { formatSnapshot } from "../format.js";
+import { defineTool } from "./tool.js";
 
 const handleDialog = defineTool({
+  capability: "core",
   schema: {
     name: "browser_handle_dialog",
     title: "Handle a dialog",
@@ -10,12 +10,15 @@ const handleDialog = defineTool({
     inputSchema: z.object({
       accept: z.boolean().describe("Whether to accept the dialog."),
       promptText: z.string().optional().describe("The text of the prompt in case of a prompt dialog.")
-    })
+    }),
+    type: "action"
   },
-  handle: async (args, runtime) => {
-    const snap = await runtime.handleDialog(args.accept, args.promptText);
-    if (!snap) return textResult(args.accept ? "Accepted dialog." : "Dismissed dialog.");
-    return textResult(formatSnapshot(snap));
+  handle: async (context, params, response) => {
+    const snapshot = await context.runtime.handleDialog(params.accept, params.promptText);
+    response.setIncludeSnapshot();
+    if (!snapshot) {
+      response.addTextResult(params.accept ? "Accepted dialog." : "Dismissed dialog.");
+    }
   }
 });
 

@@ -181,9 +181,8 @@ async function createRoxyMcpClient(cleanupCallbacks: Array<() => Promise<void>>)
 
 async function connectRoxyToCdp(roxyClient: Client, cdpEndpoint: string): Promise<void> {
   const connectResult = await callTool(roxyClient, "roxy_browser_connect", {
-    protocol: "cdp",
     endpoint: cdpEndpoint,
-    browser: "chromium"
+    browser: "chrome"
   });
   assertToolSucceeded("Roxy MCP roxy_browser_connect", connectResult);
 }

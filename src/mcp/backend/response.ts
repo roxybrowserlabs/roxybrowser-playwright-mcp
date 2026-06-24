@@ -7,6 +7,7 @@ export class Response {
   private readonly results: string[] = [];
   private readonly errors: string[] = [];
   private readonly code: string[] = [];
+  private readonly images: Array<{ data: string; mimeType: "image/png" | "image/jpeg" }> = [];
   private includeSnapshot: "none" | "full" = "none";
   private fullSnapshot:
     | {
@@ -34,6 +35,10 @@ export class Response {
 
   addCode(code: string): void {
     this.code.push(code);
+  }
+
+  addImageResult(data: string, mimeType: "image/png" | "image/jpeg"): void {
+    this.images.push({ data, mimeType });
   }
 
   setClose(): void {
@@ -109,7 +114,14 @@ export class Response {
     }
 
     return {
-      content: [{ type: "text", text: sections.join("\n") }],
+      content: [
+        { type: "text", text: sections.join("\n") },
+        ...this.images.map((image) => ({
+          type: "image" as const,
+          data: image.data,
+          mimeType: image.mimeType
+        }))
+      ],
       ...(this.isClose ? { isClose: true } : {}),
       ...(this.errors.length ? { isError: true } : {})
     };

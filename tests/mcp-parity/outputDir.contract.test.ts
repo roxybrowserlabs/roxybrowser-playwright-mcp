@@ -162,9 +162,8 @@ async function preparePageWithPlaywright(cdpEndpoint: string, url: string): Prom
 
 async function connectRoxyToCdp(roxyClient: Client, cdpEndpoint: string): Promise<void> {
   const connectResult = await callTool(roxyClient, "roxy_browser_connect", {
-    protocol: "cdp",
     endpoint: cdpEndpoint,
-    browser: "chromium"
+    browser: "chrome"
   });
   if (connectResult.isError) {
     throw new Error(textFromResult(connectResult));
