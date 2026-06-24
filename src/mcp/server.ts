@@ -34,7 +34,8 @@ export function createRoxyBrowserMcpServer(
   options: CreateRoxyBrowserMcpServerOptions = {}
 ): RoxyBrowserMcpServerBundle {
   const runtimeManager = new McpRuntimeManager(options.sessionFactory, {
-    ...(options.snapshotMode !== undefined ? { snapshotMode: options.snapshotMode } : {})
+    ...(options.snapshotMode !== undefined ? { snapshotMode: options.snapshotMode } : {}),
+    ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {})
   });
   const server = new McpServer({
     name: options.serverInfo?.name ?? "roxybrowser-mcp",
@@ -75,6 +76,7 @@ export function createRoxyBrowserMcpServer(
         try {
           const runtime = runtimeManager.getRuntime(extra.sessionId);
           const context = new Context(runtime, {
+            ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {}),
             ...(options.snapshotMode !== undefined
               ? {
                   snapshot: {

@@ -164,6 +164,7 @@ export interface CreateRoxyBrowserMcpServerOptions {
     version?: string;
   };
   snapshotMode?: SnapshotMode;
+  outputDir?: string;
 }
 
 export interface StartRoxyBrowserMcpHttpOptions extends CreateRoxyBrowserMcpServerOptions {

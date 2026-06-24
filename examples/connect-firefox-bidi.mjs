@@ -14,7 +14,7 @@ import { createExampleFixture } from "./helpers/fixture.mjs";
 // 3. Run this example:
 //    pnpm example:connect-bidi
 
-const wsEndpoint = process.env.ROXY_BIDI_WS_ENDPOINT || "ws://127.0.0.1:59150";
+const wsEndpoint = process.env.ROXY_BIDI_WS_ENDPOINT || "ws://127.0.0.1:62471";
 
 async function closeQuietly(resource, label) {
   if (!resource) {

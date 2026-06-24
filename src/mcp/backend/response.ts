@@ -90,11 +90,12 @@ export class Response {
         ...(this.fullSnapshot.boxes !== undefined ? { boxes: this.fullSnapshot.boxes } : {})
       });
       if (this.fullSnapshot.filename) {
-        await writeFile(this.fullSnapshot.filename, snapshot.text);
+        const resolvedFilename = await this.context.resolveOutputFile(this.fullSnapshot.filename);
+        await writeFile(resolvedFilename, snapshot.text);
         if (sections.length) {
           sections.push("");
         }
-        sections.push("### Result", `Saved snapshot to "${this.fullSnapshot.filename}".`);
+        sections.push("### Result", `Saved snapshot to "${resolvedFilename}".`);
       } else {
         const tabs = await this.context.runtime.listTabs();
         if (sections.length) {

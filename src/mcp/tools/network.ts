@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { defineTool, textResult } from "../tool.js";
 import type { BrowserNetworkRequest } from "../types.js";
+import { resolveOutputFilePath } from "../output.js";
 
 const requestParts = ["request-headers", "request-body", "response-headers", "response-body"] as const;
 
@@ -36,8 +37,11 @@ const networkRequests = defineTool({
     }
     const text = lines.join("\n");
     if (args.filename) {
-      await writeFile(args.filename, text);
-      return textResult(`Saved network requests to "${args.filename}".`);
+      const resolvedFilename = await resolveOutputFilePath(args.filename, {
+        outputDir: runtime.getOutputDir()
+      });
+      await writeFile(resolvedFilename, text);
+      return textResult(`Saved network requests to "${resolvedFilename}".`);
     }
     return textResult(text);
   }
@@ -61,8 +65,11 @@ const networkRequest = defineTool({
     }
     const text = args.part ? renderRequestPart(request, args.part) : renderRequestDetails(request);
     if (args.filename) {
-      await writeFile(args.filename, text);
-      return textResult(`Saved network request to "${args.filename}".`);
+      const resolvedFilename = await resolveOutputFilePath(args.filename, {
+        outputDir: runtime.getOutputDir()
+      });
+      await writeFile(resolvedFilename, text);
+      return textResult(`Saved network request to "${resolvedFilename}".`);
     }
     return textResult(text);
   }

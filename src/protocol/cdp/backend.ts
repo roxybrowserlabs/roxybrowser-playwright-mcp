@@ -516,7 +516,7 @@ interface CdpCoverageRange {
 interface CdpFrameNetworkIdleState {
   activeRequests: number;
   idleReached: boolean;
-  idleTimer?: ReturnType<typeof setTimeout>;
+  idleTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 interface CdpJsCoverageState {
@@ -2627,7 +2627,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.clearFrameNetworkIdleTimer(event.frame.id);
       this.frameNetworkIdleStates.set(event.frame.id, {
         activeRequests: existingNetworkIdleState?.activeRequests ?? 0,
-        idleReached: false
+        idleReached: false,
+        idleTimer: undefined
       });
       this.updateFrameLifecycleState(event.frame.id, {
         domContentLoaded: false,
@@ -7890,7 +7891,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
     const created: CdpFrameNetworkIdleState = {
       activeRequests: 0,
-      idleReached: false
+      idleReached: false,
+      idleTimer: undefined
     };
     this.frameNetworkIdleStates.set(frameId, created);
     return created;

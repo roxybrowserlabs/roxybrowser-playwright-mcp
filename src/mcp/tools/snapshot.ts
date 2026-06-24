@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { defineTool, textResult } from "../tool.js";
 import { formatSnapshot, formatTabs } from "../format.js";
+import { resolveOutputFilePath } from "../output.js";
 
 const snapshot = defineTool({
   schema: {
@@ -41,8 +42,11 @@ const snapshot = defineTool({
   handle: async (args, runtime) => {
     const snap = await runtime.snapshot(args);
     if (args.filename) {
-      await writeFile(args.filename, snap.text);
-      return textResult(`Saved snapshot to "${args.filename}".`);
+      const resolvedFilename = await resolveOutputFilePath(args.filename, {
+        outputDir: runtime.getOutputDir()
+      });
+      await writeFile(resolvedFilename, snap.text);
+      return textResult(`Saved snapshot to "${resolvedFilename}".`);
     }
     const tabs = await runtime.listTabs();
     const prefix = tabs.length > 1 ? `${formatTabs(tabs)}\n` : "";

@@ -17,6 +17,7 @@ import type {
 } from "./types.js";
 import { resolveHumanizationOptions, jitter } from "../human/profile.js";
 import type { HumanizationOptions } from "../types/options.js";
+import { configuredOutputDir } from "./output.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -45,12 +46,20 @@ export class McpRuntime {
   private snapshotCache: SnapshotCacheEntry | undefined;
   private pendingFileUploadTarget: ClickTarget | undefined;
   private readonly snapshotMode: SnapshotMode;
+  private readonly outputDir: string;
 
   constructor(
     private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession,
-    options: { snapshotMode?: SnapshotMode } = {}
+    options: { snapshotMode?: SnapshotMode; outputDir?: string } = {}
   ) {
     this.snapshotMode = options.snapshotMode ?? "full";
+    this.outputDir = configuredOutputDir({
+      ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {})
+    });
+  }
+
+  getOutputDir(): string {
+    return this.outputDir;
   }
 
   async connect(args: Parameters<BrowserSessionFactory>[0]): Promise<{
@@ -612,7 +621,7 @@ export class McpRuntimeManager {
 
   constructor(
     private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"],
-    private readonly options: { snapshotMode?: SnapshotMode } = {}
+    private readonly options: { snapshotMode?: SnapshotMode; outputDir?: string } = {}
   ) {}
 
   getRuntime(sessionId = "default"): McpRuntime {
@@ -622,7 +631,8 @@ export class McpRuntimeManager {
     }
 
     const runtime = new McpRuntime(this.sessionFactory, {
-      ...(this.options.snapshotMode !== undefined ? { snapshotMode: this.options.snapshotMode } : {})
+      ...(this.options.snapshotMode !== undefined ? { snapshotMode: this.options.snapshotMode } : {}),
+      ...(this.options.outputDir !== undefined ? { outputDir: this.options.outputDir } : {})
     });
     this.runtimes.set(sessionId, runtime);
     return runtime;

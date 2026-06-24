@@ -1,13 +1,14 @@
 {
   "name": "@roxybrowser/playwright",
-  "version": "0.1.0",
-  "description": "Playwright-style automation API with humanized behavior and protocol-agnostic adapters.",
+  "version": "2.0.1",
+  "description": "MCP server for RoxyBrowser automation - manage browser instances and get CDP endpoints",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "roxybrowser-mcp": "./dist/bin/roxybrowser-mcp.js"
+    "roxybrowser-openapi-mcp": "./dist/bin/roxybrowser-mcp.js"
   },
+  "author": "RoxyBrowser",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,10 +19,25 @@
       "import": "./dist/mcp/index.js"
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roxybrowserlabs/roxybrowser-mcp-server.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "roxybrowser",
+    "browser-automation",
+    "cdp",
+    "chrome-devtools-protocol"
+  ],
   "files": [
     "dist",
-    "README.md",
-    "docs"
+    "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -41,11 +57,14 @@
     "example:launch-bidi": "pnpm build && node ./examples/launch-firefox-bidi.mjs",
     "example:page-events": "pnpm build && node ./examples/page-events-and-screenshot.mjs",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "publish:release": "npm run clean && npm version patch --no-git-tag-version && npm run build && npm publish",
+    "publish:beta": "npm version prerelease --preid=beta --no-git-tag-version && npm run build && npm publish --tag beta"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "chrome-remote-interface": "^0.33.3",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

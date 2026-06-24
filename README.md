@@ -70,3 +70,16 @@ Useful environment variables:
 - `ROXY_EXECUTABLE_PATH=/absolute/path/to/browser`
 - `ROXY_HEADLESS=false`
 - `ROXY_CDP_WS_ENDPOINT=ws://127.0.0.1:9222/devtools/browser/<id>`
+- `ROXY_MCP_OUTPUT_DIR=/absolute/path/to/output`
+
+## MCP output directory
+
+The MCP tools that save files, such as `browser_snapshot`, `browser_take_screenshot`,
+`browser_network_requests`, `browser_network_request`, `browser_console_messages`,
+and `browser_evaluate`, support a shared output directory.
+
+- Set `ROXY_MCP_OUTPUT_DIR` to choose the default directory for MCP-generated files.
+- `PLAYWRIGHT_MCP_OUTPUT_DIR` is also recognized for compatibility with Playwright MCP.
+- If a tool receives a relative `filename`, it will be resolved inside the output directory.
+- If a tool receives an absolute `filename`, it will be used as-is.
+- If no output directory is configured, the default is `.roxybrowser-mcp` under the current working directory, or the system temp directory when the cwd is not writable.

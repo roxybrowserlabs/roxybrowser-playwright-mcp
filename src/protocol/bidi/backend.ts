@@ -4337,11 +4337,7 @@ interface BidiConnectionResult {
 
 async function launchFirefoxBidi(options: BrowserConnectOptions): Promise<FirefoxLaunchResult> {
   const userDataDir = await mkdtemp(join(tmpdir(), "roxybrowser-bidi-"));
-  const executableCandidates = resolveFirefoxExecutableCandidates(
-    options,
-    currentPlatform(),
-    await resolvePlaywrightFirefoxExecutablePath()
-  );
+  const executableCandidates = resolveFirefoxExecutableCandidates(options, currentPlatform());
   let lastError: unknown;
 
   for (const executable of executableCandidates) {
@@ -4630,7 +4626,6 @@ export function buildFirefoxLaunchArgs(
 export function resolveFirefoxExecutableCandidates(
   options: Pick<BrowserConnectOptions, "executablePath">,
   platform = currentPlatform(),
-  playwrightExecutablePath?: string,
   fileExistsFn: (path: string) => boolean = fileExists
 ): string[] {
   if (options.executablePath) {
@@ -4638,17 +4633,14 @@ export function resolveFirefoxExecutableCandidates(
   }
 
   return filterExistingFirefoxExecutableCandidates(
-    defaultFirefoxExecutableCandidates(platform, playwrightExecutablePath),
+    defaultFirefoxExecutableCandidates(platform),
     platform,
     fileExistsFn
   );
 }
 
-function defaultFirefoxExecutableCandidates(
-  platform: string,
-  playwrightExecutablePath?: string
-): string[] {
-  const candidates = playwrightExecutablePath ? [playwrightExecutablePath] : [];
+function defaultFirefoxExecutableCandidates(platform: string): string[] {
+  const candidates: string[] = [];
   switch (platform) {
     case "darwin":
       candidates.push(
@@ -4692,16 +4684,6 @@ function fileExists(path: string): boolean {
 
 function currentPlatform(): string {
   return process.platform;
-}
-
-async function resolvePlaywrightFirefoxExecutablePath(): Promise<string | undefined> {
-  try {
-    const playwright = await import("playwright");
-    const executablePath = playwright.firefox?.executablePath?.();
-    return typeof executablePath === "string" && executablePath ? executablePath : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function isSelectOptionRetryResult(value: string[] | SelectOptionRetryResult): value is SelectOptionRetryResult {

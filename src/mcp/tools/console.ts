@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { defineTool, textResult } from "../tool.js";
+import { resolveOutputFilePath } from "../output.js";
 
 const consoleMessages = defineTool({
   schema: {
@@ -23,8 +24,11 @@ const consoleMessages = defineTool({
       ...messages.map((message) => message.formattedText)
     ].join("\n");
     if (args.filename) {
-      await writeFile(args.filename, text);
-      return textResult(`Saved console messages to "${args.filename}".`);
+      const resolvedFilename = await resolveOutputFilePath(args.filename, {
+        outputDir: runtime.getOutputDir()
+      });
+      await writeFile(resolvedFilename, text);
+      return textResult(`Saved console messages to "${resolvedFilename}".`);
     }
     return textResult(text);
   }

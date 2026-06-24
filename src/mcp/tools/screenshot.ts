@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { defineTool, textResult } from "../tool.js";
+import { resolveOutputFilePath } from "../output.js";
 
 const takeScreenshot = defineTool({
   schema: {
@@ -21,19 +22,35 @@ const takeScreenshot = defineTool({
   },
   handle: async (args, runtime) => {
     const target = args.target;
+    const fileType = args.type;
     const result = await runtime.takeScreenshot({
-      type: args.type,
+      type: fileType,
       ...(args.fullPage !== undefined ? { fullPage: args.fullPage } : {}),
       ...(target !== undefined ? { target } : {})
     });
-    if (args.filename) {
-      await writeFile(args.filename, Buffer.from(result.data, "base64"));
-      return textResult(`Screenshot saved to "${args.filename}".`);
+    const requestedFilename = args.filename?.trim();
+    const resolvedFilename = await resolveOutputFilePath(
+      requestedFilename || createDefaultScreenshotFilename(fileType),
+      {
+        outputDir: runtime.getOutputDir()
+      }
+    );
+    await writeFile(resolvedFilename, Buffer.from(result.data, "base64"));
+
+    if (requestedFilename) {
+      return textResult(`Screenshot saved to "${resolvedFilename}".`);
     }
     return {
-      content: [{ type: "image", data: result.data, mimeType: result.mimeType }]
+      content: [
+        { type: "text", text: resolvedFilename },
+        { type: "image", data: result.data, mimeType: result.mimeType }
+      ]
     };
   }
 });
+
+function createDefaultScreenshotFilename(type: "png" | "jpeg"): string {
+  return `page-${new Date().toISOString().replaceAll(":", "-")}.${type}`;
+}
 
 export default [takeScreenshot];

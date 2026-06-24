@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { defineTool, textResult } from "../tool.js";
+import { resolveOutputFilePath } from "../output.js";
 
 const evaluate = defineTool({
   schema: {
@@ -18,8 +19,11 @@ const evaluate = defineTool({
     const result = await runtime.evaluate(args.function, args.target);
     const text = JSON.stringify(result, null, 2) ?? "undefined";
     if (args.filename) {
-      await writeFile(args.filename, text);
-      return textResult(`Saved evaluation result to "${args.filename}".`);
+      const resolvedFilename = await resolveOutputFilePath(args.filename, {
+        outputDir: runtime.getOutputDir()
+      });
+      await writeFile(resolvedFilename, text);
+      return textResult(`Saved evaluation result to "${resolvedFilename}".`);
     }
     return textResult(text);
   }
