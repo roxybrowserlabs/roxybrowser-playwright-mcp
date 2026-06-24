@@ -14,6 +14,7 @@ export async function createRoxyBrowserMcpInMemory(
 
   return {
     server: bundle.server,
+    runtimeManager: bundle.runtimeManager,
     serverTransport,
     clientTransport,
     close: async () => {

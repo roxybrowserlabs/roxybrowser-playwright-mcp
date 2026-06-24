@@ -4626,14 +4626,20 @@ export function buildFirefoxLaunchArgs(
 export function resolveFirefoxExecutableCandidates(
   options: Pick<BrowserConnectOptions, "executablePath">,
   platform = currentPlatform(),
+  playwrightFirefoxExecutablePath?: string,
   fileExistsFn: (path: string) => boolean = fileExists
 ): string[] {
   if (options.executablePath) {
     return [options.executablePath];
   }
 
+  const candidates = [
+    ...(playwrightFirefoxExecutablePath ? [playwrightFirefoxExecutablePath] : []),
+    ...defaultFirefoxExecutableCandidates(platform)
+  ];
+
   return filterExistingFirefoxExecutableCandidates(
-    defaultFirefoxExecutableCandidates(platform),
+    candidates,
     platform,
     fileExistsFn
   );

@@ -899,7 +899,28 @@ describe("MCP server", () => {
         networkAddDataCollector: vi.fn(async () => ({ collector: "collector-1" })),
         networkRemoveDataCollector: vi.fn(async () => ({})),
         scriptAddPreloadScript: vi.fn(async () => ({ script: "script-1" })),
-        scriptRemovePreloadScript: vi.fn(async () => ({}))
+        scriptRemovePreloadScript: vi.fn(async () => ({})),
+        scriptEvaluate: vi.fn(async (params: { expression: string }) => {
+          if (params.expression.includes("document.title")) {
+            return {
+              type: "success",
+              result: {
+                value: "tab title"
+              }
+            };
+          }
+          return {
+            type: "success",
+            result: {
+              value: {
+                refs: {},
+                text: "- heading \"Ready\" [ref=e1]",
+                title: "tab title",
+                url: "https://example.test/"
+              }
+            }
+          };
+        })
       }));
 
       setBidiClientFactoryForTests(createBidiClient);
@@ -929,6 +950,79 @@ describe("MCP server", () => {
           }
         }
       });
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("passes a provided Firefox BiDi session id through the MCP connect tool", async () => {
+      const createBidiClient = vi.fn(async () => ({
+        capabilities: { browserName: "firefox" },
+        close: vi.fn(),
+        on: vi.fn(),
+        removeListener: vi.fn(),
+        sessionStatus: vi.fn(async () => ({})),
+        sessionEnd: vi.fn(async () => ({})),
+        browsingContextGetTree: vi.fn(async () => ({
+          contexts: [
+            {
+              context: "tab-1",
+              url: "https://example.test/",
+              children: []
+            }
+          ]
+        })),
+        browsingContextActivate: vi.fn(async () => ({})),
+        browsingContextCreate: vi.fn(async () => ({ context: "tab-1" })),
+        browsingContextNavigate: vi.fn(async () => ({})),
+        sessionSubscribe: vi.fn(async () => ({})),
+        networkAddDataCollector: vi.fn(async () => ({ collector: "collector-1" })),
+        networkRemoveDataCollector: vi.fn(async () => ({})),
+        scriptAddPreloadScript: vi.fn(async () => ({ script: "script-1" })),
+        scriptRemovePreloadScript: vi.fn(async () => ({})),
+        scriptEvaluate: vi.fn(async (params: { expression: string }) => {
+          if (params.expression.includes("document.title")) {
+            return {
+              type: "success",
+              result: {
+                value: "tab title"
+              }
+            };
+          }
+          return {
+            type: "success",
+            result: {
+              value: {
+                refs: {},
+                text: "- heading \"Ready\" [ref=e1]",
+                title: "tab title",
+                url: "https://example.test/"
+              }
+            }
+          };
+        })
+      }));
+
+      setBidiClientFactoryForTests(createBidiClient);
+
+      const bundle = await createRoxyBrowserMcpInMemory();
+      cleanupCallbacks.push(async () => bundle.close());
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+
+      const result = await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: {
+          endpoint: "ws://127.0.0.1:63631",
+          browser: "firefox",
+          sessionId: "existing-bidi-session"
+        }
+      });
+
+      expect(createBidiClient).toHaveBeenCalledWith({
+        browserName: "firefox",
+        webSocketUrl: "ws://127.0.0.1:63631/session/existing-bidi-session"
+      });
+      expect(result.isError).toBeUndefined();
     });
   });
 
@@ -1000,6 +1094,30 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       expect(textFromResult(result)).toContain("### Snapshot");
+    });
+
+    it("keeps snapshot content after browser_tabs new followed by browser_snapshot", async () => {
+      const client = await setupClient({ snapshotMode: "none" });
+
+      const newTabResult = await client.callTool({
+        name: "browser_tabs",
+        arguments: {
+          action: "new",
+          url: "http://localhost:3000/"
+        }
+      });
+      expect(newTabResult.isError).toBeUndefined();
+
+      const snapshotResult = await client.callTool({
+        name: "browser_snapshot",
+        arguments: {}
+      });
+
+      expect(snapshotResult.isError).toBeUndefined();
+      const text = textFromResult(snapshotResult);
+      expect(text).toContain("### Snapshot");
+      expect(text).toContain("button");
+      expect(text).not.toContain("```yaml\n\n```");
     });
 
     it("uses the latest active tab metadata when rendering browser_snapshot", async () => {

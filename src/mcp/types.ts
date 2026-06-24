@@ -10,6 +10,7 @@ export interface RoxyBrowserConnectArgs {
   protocol: RoxyMcpProtocol;
   endpoint: string;
   browser?: "chromium" | "firefox";
+  sessionId?: string;
 }
 
 export interface BrowserTab {
@@ -203,6 +204,7 @@ export interface RoxyBrowserMcpStdioBundle {
 
 export interface RoxyBrowserMcpInMemoryBundle {
   server: McpServer;
+  runtimeManager: import("./runtime.js").McpRuntimeManager;
   serverTransport: InMemoryTransport;
   clientTransport: InMemoryTransport;
   close(): Promise<void>;

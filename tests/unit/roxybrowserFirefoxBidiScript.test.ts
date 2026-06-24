@@ -7,7 +7,7 @@ describe("roxybrowser firefox bidi cleanup script", () => {
     delete process.env.ROXYBROWSER_API_TOKEN;
   });
 
-  it("opens a Firefox bidi profile and returns dirId/endpoint/created metadata", async () => {
+  it("opens a Firefox bidi profile and returns dirId/endpoint/sessionId/created metadata", async () => {
     process.env.ROXYBROWSER_API_TOKEN = "token";
 
     const browserDetail = vi.fn(async (_workspaceId: number, dirId: string) => ({
@@ -30,7 +30,7 @@ describe("roxybrowser firefox bidi cleanup script", () => {
 
       browser_detail = browserDetail;
       browser_open = vi.fn(async (dirId: string) => ({
-        data: { dirId, ws: "ws://127.0.0.1:9222/session" }
+        data: { dirId, ws: "ws://127.0.0.1:9222/session/existing-bidi-session" }
       }));
       browser_close = vi.fn(async () => ({ code: 0 }));
       browser_connection_info = vi.fn(async () => ({ data: [] }));
@@ -48,7 +48,8 @@ describe("roxybrowser firefox bidi cleanup script", () => {
 
     expect(session).toEqual({
       dirId: "worker-profile",
-      endpoint: "ws://127.0.0.1:9222/session",
+      endpoint: "ws://127.0.0.1:9222/session/existing-bidi-session",
+      sessionId: "existing-bidi-session",
       created: false
     });
   });

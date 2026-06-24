@@ -10,7 +10,8 @@ const connect = defineTool({
     description: "Attach to an existing browser and seed the active tab snapshot.",
     inputSchema: z.object({
       endpoint: z.string().min(1),
-      browser: z.enum(["chrome", "firefox"]).default("chrome")
+      browser: z.enum(["chrome", "firefox"]).default("chrome"),
+      sessionId: z.string().min(1).optional()
     }),
     type: "action"
   },
@@ -19,7 +20,8 @@ const connect = defineTool({
     const result = await context.runtime.connect({
       protocol,
       endpoint: params.endpoint,
-      browser: params.browser === "chrome" ? "chromium" : params.browser
+      browser: params.browser === "chrome" ? "chromium" : params.browser,
+      ...(params.sessionId ? { sessionId: params.sessionId } : {})
     });
     response.addTextResult(
       formatConnectResult({

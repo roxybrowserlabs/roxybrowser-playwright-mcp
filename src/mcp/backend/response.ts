@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { formatSnapshot, formatTabs } from "../format.js";
+import type { BrowserSnapshot } from "../types.js";
 import type { Context } from "./context.js";
 
 export class Response {
@@ -81,7 +82,10 @@ export class Response {
     }
 
     if (this.includeSnapshot === "full") {
-      const snapshot = await this.context.runtime.snapshot();
+      const snapshot = await reconcileSnapshotWithTabs(
+        this.context,
+        await this.context.runtime.snapshot()
+      );
       if (sections.length) {
         sections.push("");
       }
@@ -89,11 +93,29 @@ export class Response {
     }
 
     if (this.fullSnapshot) {
-      const snapshot = await this.context.runtime.snapshot({
+      let snapshot = await reconcileSnapshotWithTabs(
+        this.context,
+        await this.context.runtime.snapshot({
         ...(this.fullSnapshot.target !== undefined ? { target: this.fullSnapshot.target } : {}),
         ...(this.fullSnapshot.depth !== undefined ? { depth: this.fullSnapshot.depth } : {}),
         ...(this.fullSnapshot.boxes !== undefined ? { boxes: this.fullSnapshot.boxes } : {})
-      });
+        })
+      );
+      if (
+        !this.fullSnapshot.filename
+        && snapshot.text.trim().length === 0
+        && snapshot.url
+        && snapshot.url !== "about:blank"
+      ) {
+        snapshot = await reconcileSnapshotWithTabs(
+          this.context,
+          await this.context.runtime.snapshot({
+            ...(this.fullSnapshot.target !== undefined ? { target: this.fullSnapshot.target } : {}),
+            ...(this.fullSnapshot.depth !== undefined ? { depth: this.fullSnapshot.depth } : {}),
+            ...(this.fullSnapshot.boxes !== undefined ? { boxes: this.fullSnapshot.boxes } : {})
+          })
+        );
+      }
       if (this.fullSnapshot.filename) {
         const resolvedFilename = await this.context.resolveOutputFile(this.fullSnapshot.filename);
         await writeFile(resolvedFilename, snapshot.text);
@@ -126,4 +148,21 @@ export class Response {
       ...(this.errors.length ? { isError: true } : {})
     };
   }
+}
+
+async function reconcileSnapshotWithTabs(
+  context: Context,
+  snapshot: BrowserSnapshot
+): Promise<BrowserSnapshot> {
+  const tabs = await context.runtime.listTabs();
+  const activeTab = tabs.find((tab) => tab.active);
+  if (!activeTab) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    title: activeTab.title || snapshot.title,
+    url: activeTab.url || snapshot.url
+  };
 }

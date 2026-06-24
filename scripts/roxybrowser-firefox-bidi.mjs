@@ -136,9 +136,15 @@ export async function openRoxyBrowserFirefoxBidiProfile(options = {}) {
   const endpoint = extractBidiCandidate(openResponse.data, dirId);
 
   if (endpoint) {
+    const sessionId = extractSessionId(openResponse.data, endpoint);
+    if (debug) {
+      console.log("[roxybrowser-bidi] openResponse data:", JSON.stringify(openResponse.data, null, 2));
+      console.log("[roxybrowser-bidi] derived endpoint/sessionId:", JSON.stringify({ endpoint, sessionId }, null, 2));
+    }
     return {
       dirId,
       endpoint,
+      ...(sessionId ? { sessionId } : {}),
       created: createdProfile
     };
   }
@@ -151,9 +157,15 @@ export async function openRoxyBrowserFirefoxBidiProfile(options = {}) {
     );
     const connectionEndpoint = extractBidiCandidate(connectionInfo.data, dirId);
     if (connectionEndpoint) {
+      const sessionId = extractSessionId(connectionInfo.data, connectionEndpoint);
+      if (debug) {
+        console.log("[roxybrowser-bidi] connectionInfo data:", JSON.stringify(connectionInfo.data, null, 2));
+        console.log("[roxybrowser-bidi] derived endpoint/sessionId:", JSON.stringify({ endpoint: connectionEndpoint, sessionId }, null, 2));
+      }
       return {
         dirId,
         endpoint: connectionEndpoint,
+        ...(sessionId ? { sessionId } : {}),
         created: createdProfile
       };
     }
@@ -387,6 +399,61 @@ function toBidiWsEndpoint(endpoint) {
   }
 
   return url.toString();
+}
+
+function extractSessionId(data, endpoint) {
+  const explicit = firstStringByKeys(data, ["sessionId", "bidiSessionId"]);
+  if (explicit) {
+    return explicit;
+  }
+
+  const candidates = Array.isArray(data)
+    ? data
+    : data && typeof data === "object" && Array.isArray(data.rows)
+      ? data.rows
+      : [data];
+
+  for (const candidate of candidates) {
+    const candidateSessionId = firstStringByKeys(candidate, ["sessionId", "bidiSessionId"]);
+    if (candidateSessionId) {
+      return candidateSessionId;
+    }
+
+    const candidateEndpoint = firstStringByKeys(candidate, ["ws", "webSocketUrl", "wsEndpoint"]);
+    const parsedSessionId = parseSessionIdFromEndpoint(candidateEndpoint);
+    if (parsedSessionId) {
+      return parsedSessionId;
+    }
+  }
+
+  return parseSessionIdFromEndpoint(endpoint);
+}
+
+function firstStringByKeys(value, keys) {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function parseSessionIdFromEndpoint(endpoint) {
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    return undefined;
+  }
+
+  try {
+    return new URL(endpoint).pathname.match(/^\/session\/([^/]+)$/)?.[1];
+  } catch {
+    return undefined;
+  }
 }
 
 function delay(ms) {

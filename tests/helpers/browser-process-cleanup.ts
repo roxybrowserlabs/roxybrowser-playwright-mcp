@@ -38,11 +38,15 @@ export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
 }
 
 export async function cleanupCurrentWorkerTestBrowserProcesses(): Promise<void> {
-  await cleanupRegisteredTestBrowserProcesses();
+  if (typeof cleanupRegisteredTestBrowserProcesses === "function") {
+    await cleanupRegisteredTestBrowserProcesses();
+  }
 }
 
 export function cleanupCurrentWorkerTestBrowserProcessesSync(): void {
-  cleanupRegisteredTestBrowserProcessesSync();
+  if (typeof cleanupRegisteredTestBrowserProcessesSync === "function") {
+    cleanupRegisteredTestBrowserProcessesSync();
+  }
 }
 
 export async function cleanupLocalTestBrowserProcessesWithTimeout(): Promise<void> {
@@ -66,7 +70,9 @@ export async function cleanupLocalTestBrowserProcessesWithTimeout(): Promise<voi
 }
 
 async function cleanupLocalTestBrowserProcessesOnce(): Promise<void> {
-  await cleanupRegisteredTestBrowserProcesses();
+  if (typeof cleanupRegisteredTestBrowserProcesses === "function") {
+    await cleanupRegisteredTestBrowserProcesses();
+  }
 
   const stdout = await execFileText("ps", ["-eo", "pid=,ppid=,command="]).catch(() => "");
   const processTree = collectLocalTestBrowserProcessTree(stdout, process.pid);
@@ -78,7 +84,9 @@ export function cleanupLocalTestBrowserProcessesSync(): void {
     return;
   }
 
-  cleanupRegisteredTestBrowserProcessesSync();
+  if (typeof cleanupRegisteredTestBrowserProcessesSync === "function") {
+    cleanupRegisteredTestBrowserProcessesSync();
+  }
 
   const result = spawnSync("ps", ["-eo", "pid=,ppid=,command="], {
     encoding: "utf8"

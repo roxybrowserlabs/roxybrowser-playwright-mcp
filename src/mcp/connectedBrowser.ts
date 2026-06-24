@@ -9,6 +9,10 @@ import {
 import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../vendor/playwright/ariaSnapshotEvaluate.js";
 import type { BidiProtocolClient } from "../protocol/bidi/client.js";
 import { getBidiClientFactory } from "../protocol/bidi/client.js";
+import {
+  parseSerializedEvaluationResult,
+  wrapWithSerializedEvaluationResult
+} from "../protocol/evaluationSerializer.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
 import type {
@@ -653,7 +657,7 @@ async function evaluateBiDi<TResult>(
       ? `(${functionSource})()`
       : `(${functionSource})(${JSON.stringify(arg)})`;
   const response = (await client.scriptEvaluate({
-    expression,
+    expression: wrapWithSerializedEvaluationResult(expression),
     target: {
       context: contextId
     },
@@ -661,7 +665,7 @@ async function evaluateBiDi<TResult>(
     resultOwnership: "none"
   })) as {
     type: string;
-    result?: { value?: TResult };
+    result?: BidiRemoteValue;
     exceptionDetails?: { text?: string };
   };
 
@@ -669,7 +673,7 @@ async function evaluateBiDi<TResult>(
     throw new Error(response.exceptionDetails?.text || "BiDi runtime evaluation failed.");
   }
 
-  return response.result?.value as TResult;
+  return parseSerializedEvaluationResult<TResult>(extractBiDiValue(response.result));
 }
 
 async function evaluateBiDiRef(
@@ -709,6 +713,31 @@ async function evaluateBiDiRef(
     ...(response.result?.value?.sharedId !== undefined ? { sharedId: response.result.value.sharedId } : {}),
     ...(response.result?.value?.handle !== undefined ? { handle: response.result.value.handle } : {})
   };
+}
+
+type BidiRemoteValue = {
+  type: string;
+  value?: unknown;
+};
+
+function extractBiDiValue<TResult>(value: BidiRemoteValue | undefined): TResult {
+  if (!value) {
+    return undefined as TResult;
+  }
+
+  if (value.type === "array" && Array.isArray(value.value)) {
+    return value.value.map((entry) => extractBiDiValue(entry as BidiRemoteValue)) as TResult;
+  }
+
+  if (value.type === "object" && Array.isArray(value.value)) {
+    const obj: Record<string, unknown> = {};
+    for (const [key, val] of value.value as Array<[string, BidiRemoteValue]>) {
+      obj[key] = extractBiDiValue(val);
+    }
+    return obj as TResult;
+  }
+
+  return value.value as TResult;
 }
 
 function toAriaSnapshotPayload(request: BrowserSnapshotRequest = {}): {
@@ -1982,11 +2011,11 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
     const client = await getBidiClientFactory()({
       browserName: "firefox",
-      webSocketUrl: normalizeFirefoxBidiEndpoint(args.endpoint)
+      webSocketUrl: normalizeFirefoxBidiEndpoint(args.endpoint, args.sessionId)
     });
 
     const session = new BidiConnectedBrowserSession(client);
-    session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint);
+    session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint, args.sessionId);
     await session.initialize();
     const tabs = await session.refreshTabs();
     if (tabs.length === 0) {
@@ -2914,8 +2943,12 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 }
 
-function normalizeFirefoxBidiEndpoint(endpoint: string): string {
+function normalizeFirefoxBidiEndpoint(endpoint: string, sessionId?: string): string {
   const url = new URL(endpoint);
+  if (sessionId) {
+    url.pathname = `/session/${sessionId}`;
+    return url.toString();
+  }
   if (url.pathname === "/" || url.pathname === "") {
     url.pathname = "/session";
   }
@@ -2924,11 +2957,12 @@ function normalizeFirefoxBidiEndpoint(endpoint: string): string {
 
 async function ensureMcpBiDiSession(
   client: BidiProtocolClient,
-  endpoint: string
+  endpoint: string,
+  sessionId?: string
 ): Promise<boolean> {
   await client.sessionStatus({});
 
-  if (isSessionSpecificFirefoxBidiEndpoint(endpoint)) {
+  if (sessionId || isSessionSpecificFirefoxBidiEndpoint(endpoint)) {
     return false;
   }
 

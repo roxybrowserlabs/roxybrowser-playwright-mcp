@@ -105,6 +105,11 @@ export class McpRuntime {
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     this.tabs = await session.newTab(url);
+    if (this.snapshotMode === "none") {
+      return {
+        tabs: this.tabs
+      };
+    }
     const snapshot = this.tabs.some((tab) => tab.active)
       ? await this.snapshot()
       : undefined;
@@ -128,6 +133,11 @@ export class McpRuntime {
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     this.tabs = await session.selectTab(tab.id);
+    if (this.snapshotMode === "none") {
+      return {
+        tabs: this.tabs
+      };
+    }
     const snapshot = await this.snapshot();
     return {
       tabs: this.tabs,
@@ -145,6 +155,11 @@ export class McpRuntime {
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     this.tabs = await session.closeTab(tab.id);
+    if (this.snapshotMode === "none") {
+      return {
+        tabs: this.tabs
+      };
+    }
     const snapshot = this.tabs.some((candidate) => candidate.active)
       ? await this.snapshot()
       : undefined;
@@ -160,22 +175,13 @@ export class McpRuntime {
 
   async snapshot(args: BrowserSnapshotToolArgs = {}): Promise<BrowserSnapshot> {
     const session = this.requireConnected();
-    this.tabs = await session.listTabs();
-    const activeTab = this.requireActiveTab();
     const requestKey = this.snapshotRequestKey(args);
-
     const request: BrowserSnapshotRequest = {
       ...(args.boxes !== undefined ? { boxes: args.boxes } : {}),
       ...(args.depth !== undefined ? { depth: args.depth } : {}),
       ...(args.target ? { target: this.resolveSnapshotTarget(args.target) } : {})
     };
-    const snapshot = await session.snapshot(request);
-    const refreshedTabs = await session.listTabs();
-    this.tabs = refreshedTabs;
-    const currentActiveTab =
-      refreshedTabs.find((tab) => tab.active)
-      ?? refreshedTabs.find((tab) => tab.id === activeTab.id)
-      ?? activeTab;
+    const { activeTab, currentActiveTab, snapshot } = await this.captureStableSnapshot(session, request);
     this.snapshotCache = {
       tabId: currentActiveTab.id,
       requestKey,
@@ -191,6 +197,53 @@ export class McpRuntime {
       title: currentActiveTab.title || snapshot.title,
       url: currentActiveTab.url || snapshot.url
     };
+  }
+
+  private async captureStableSnapshot(
+    session: ReturnType<McpRuntime["requireConnected"]>,
+    request: BrowserSnapshotRequest
+  ): Promise<{
+    activeTab: BrowserTab;
+    currentActiveTab: BrowserTab;
+    snapshot: BrowserSnapshot;
+  }> {
+    let lastAttempt:
+      | {
+          activeTab: BrowserTab;
+          currentActiveTab: BrowserTab;
+          snapshot: BrowserSnapshot;
+        }
+      | undefined;
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      this.tabs = await session.listTabs();
+      const activeTab = this.requireActiveTab();
+      const snapshot = await session.snapshot(request);
+      const refreshedTabs = await session.listTabs();
+      this.tabs = refreshedTabs;
+      const currentActiveTab =
+        refreshedTabs.find((tab) => tab.active)
+        ?? refreshedTabs.find((tab) => tab.id === activeTab.id)
+        ?? activeTab;
+      const captured = {
+        activeTab,
+        currentActiveTab,
+        snapshot
+      };
+      lastAttempt = captured;
+
+      if (snapshot.text.trim().length > 0 || currentActiveTab.url === "about:blank") {
+        return captured;
+      }
+
+      await delay(150 * (attempt + 1));
+    }
+
+    if (!lastAttempt) {
+      throw new McpToolError("action_failed", "Unable to capture page snapshot.");
+    }
+
+    return lastAttempt;
   }
 
   async click(
