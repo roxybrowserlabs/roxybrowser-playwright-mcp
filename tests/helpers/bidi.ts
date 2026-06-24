@@ -29,6 +29,7 @@ interface BidiTestState {
   browserKey: string | undefined;
   roxyProfileDirId: string | undefined;
   roxyProfileWasCreated: boolean;
+  cleanupPromise: Promise<void> | undefined;
 }
 
 function bidiTestState(): BidiTestState {
@@ -39,7 +40,8 @@ function bidiTestState(): BidiTestState {
     browser: undefined,
     browserKey: undefined,
     roxyProfileDirId: undefined,
-    roxyProfileWasCreated: false
+    roxyProfileWasCreated: false,
+    cleanupPromise: undefined
   };
   return state.__roxyBidiTestState;
 }
@@ -99,6 +101,7 @@ function shouldReuseBidiBrowser(): boolean {
 export async function openBidiBrowser(): Promise<Browser> {
   configureCurrentWorkerTestBrowserCleanup();
   const state = bidiTestState();
+  await state.cleanupPromise;
 
   if (shouldReuseBidiBrowser() && state.browser) {
     return state.browser;
@@ -123,7 +126,20 @@ export async function openBidiBrowser(): Promise<Browser> {
     });
   } catch (error) {
     await cleanupStaleBidiTestArtifacts();
-    throw error;
+    const message = String(error instanceof Error ? error.message : error);
+    if (!message.includes("Maximum number of active BiDi sessions")) {
+      throw error;
+    }
+    const retriedSession = await openWorkerScopedRoxyBrowserSession();
+    state.roxyProfileDirId = retriedSession.dirId;
+    state.roxyProfileWasCreated = Boolean(retriedSession.created);
+    browser = await firefox.connect({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: retriedSession.endpoint,
+      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
+      human: bidiHumanOptions()
+    });
   }
 
   if (shouldReuseBidiBrowser()) {
@@ -187,23 +203,36 @@ function isRecoverableBidiBrowserError(error: unknown): boolean {
 
 async function cleanupStaleBidiTestArtifacts(): Promise<void> {
   const state = bidiTestState();
-  const dirId = state.roxyProfileDirId;
-  const deleteProfile = state.roxyProfileWasCreated;
-  state.roxyProfileDirId = undefined;
-  state.roxyProfileWasCreated = false;
-  const hadTrackedArtifacts = Boolean(dirId);
-  if (dirId) {
-    await closeRoxyBrowserFirefoxBidiProfile({
-      apiPort: ROXYBROWSER_API_PORT,
-      apiToken: ROXYBROWSER_API_TOKEN,
-      workspaceId: ROXYBROWSER_WORKSPACE_ID,
-      dirId,
-      deleteProfile
-    });
-  }
-  if (hadTrackedArtifacts || !shouldReuseBidiBrowser()) {
-    await cleanupCurrentWorkerTestBrowserProcesses();
-  }
+  const runCleanup = async () => {
+    const dirId = state.roxyProfileDirId;
+    const deleteProfile = state.roxyProfileWasCreated;
+    state.roxyProfileDirId = undefined;
+    state.roxyProfileWasCreated = false;
+    const hadTrackedArtifacts = Boolean(dirId);
+    if (dirId) {
+      await closeRoxyBrowserFirefoxBidiProfile({
+        apiPort: ROXYBROWSER_API_PORT,
+        apiToken: ROXYBROWSER_API_TOKEN,
+        workspaceId: ROXYBROWSER_WORKSPACE_ID,
+        dirId,
+        deleteProfile
+      });
+    }
+    if (hadTrackedArtifacts || !shouldReuseBidiBrowser()) {
+      await cleanupCurrentWorkerTestBrowserProcesses();
+    }
+    if (hadTrackedArtifacts) {
+      await delay(250);
+    }
+  };
+
+  const cleanup = (state.cleanupPromise ?? Promise.resolve()).then(runCleanup, runCleanup);
+  state.cleanupPromise = cleanup.finally(() => {
+    if (state.cleanupPromise === cleanup) {
+      state.cleanupPromise = undefined;
+    }
+  });
+  await state.cleanupPromise;
 }
 
 export async function cleanupExternalBidiTestState(): Promise<void> {

@@ -42,8 +42,10 @@ export interface SelectorRuntimePayload {
     | "boundingBox"
     | "check"
     | "checkedState"
+    | "checkedStateDetails"
     | "count"
     | "createHandle"
+    | "domClick"
     | "dispatchEvent"
     | "evaluate"
     | "evaluateAll"
@@ -1438,6 +1440,26 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
     return isChecked(element);
   };
+  const checkedStateDetails = (element: Element): { matches: boolean; isRadio: boolean } => {
+    if (isInputElement(element)) {
+      const type = element.type.toLowerCase();
+      if (type !== "checkbox" && type !== "radio") {
+        throw new Error("Not a checkbox or radio button");
+      }
+      return {
+        matches: element.checked,
+        isRadio: type === "radio"
+      };
+    }
+    const role = (element.getAttribute("role") ?? "").toLowerCase();
+    if (!checkboxLikeRoles.has(role)) {
+      throw new Error("Not a checkbox or radio button");
+    }
+    return {
+      matches: isChecked(element),
+      isRadio: false
+    };
+  };
   const inputValue = (element: Element): string => {
     if (
       isInputElement(element) ||
@@ -1846,6 +1868,14 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         }
         return checkedState(firstElement);
       }
+    case "checkedStateDetails":
+      {
+        const firstElement = resolveRetargetedElement("follow-label");
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
+        }
+        return checkedStateDetails(firstElement);
+      }
     case "isDisabled":
       {
         const firstElement = resolveSingleElement();
@@ -1890,6 +1920,14 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         }
         if (payload.force === false && !isVisible(firstElement)) {
           throw new Error("Element is not visible.");
+        }
+        return true;
+      }
+    case "domClick":
+      {
+        const firstElement = resolveRetargetedElement("follow-label");
+        if (!firstElement) {
+          throw new Error(payload.missingMessage ?? "No element found.");
         }
         if ("click" in firstElement && typeof firstElement.click === "function") {
           firstElement.click();

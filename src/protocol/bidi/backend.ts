@@ -214,6 +214,11 @@ interface ScreencastActionAnnotationState {
   };
 }
 
+interface CheckedStateDetails {
+  matches: boolean;
+  isRadio: boolean;
+}
+
 interface LocatorPayload {
   operation:
     | "actionPoint"
@@ -1742,6 +1747,12 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     options?: ClickOptions,
     movePointer = true
   ): Promise<void> {
+    if (options?.trial) {
+      if (movePointer) {
+        await this.performMousePointerActions([this.mousePointerMove(point)]);
+      }
+      return;
+    }
     const button = options?.button ?? "left";
     const clickCount = options?.clickCount ?? 1;
     const delayMs = options?.delay ?? 0;
@@ -1760,15 +1771,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       return;
     }
 
-    const promises: Array<Promise<void>> = [];
     if (movePointer) {
-      promises.push(this.performMousePointerActions([this.mousePointerMove(point)]));
+      await this.performMousePointerActions([this.mousePointerMove(point)]);
     }
     for (let index = 0; index < clickCount; index += 1) {
-      promises.push(this.performMousePointerActions([this.mousePointerDown(button)]));
-      promises.push(this.performMousePointerActions([this.mousePointerUp(button)]));
+      await this.performMousePointerActions([this.mousePointerDown(button)]);
+      await this.performMousePointerActions([this.mousePointerUp(button)]);
     }
-    await Promise.all(promises);
   }
 
   private mousePointerMove(point: ActionPoint): BidiMouseAction {
@@ -2188,30 +2197,33 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   private async setCheckedLocator(locator: BidiLocatorState, checked: boolean, options?: ClickOptions): Promise<void> {
-    if (await this.checkedStateLocator(locator) === checked) {
+    const initialState = await this.checkedStateDetailsLocator(locator);
+    if (initialState.matches === checked) {
       return;
     }
-    if (!checked) {
-      const role = await this.runLocatorOperation<string | null>(locator, {
-        operation: "getAttribute",
-        name: "role"
-      }).catch(() => null);
-      const type = await this.runLocatorOperation<string | null>(locator, {
-        operation: "getAttribute",
-        name: "type"
-      }).catch(() => null);
-      if ((role ?? "").toLowerCase() === "radio" || (type ?? "").toLowerCase() === "radio") {
-        throw new Error("Cannot uncheck radio button");
-      }
+    if (!checked && initialState.isRadio) {
+      throw new Error("Cannot uncheck radio button");
     }
+    await this.clickLocator(locator, options);
     if (options?.trial) {
       return;
     }
-    await this.runLocatorOperation<boolean>(locator, {
-      operation: "check",
-      checked,
-      ...(options?.force !== undefined ? { force: options.force } : {})
-    });
+    if (await this.checkedStateLocator(locator) !== checked) {
+      await this.runSelectorOperation<boolean>({
+        operation: "domClick",
+        reference: {
+          chain: locator.chain,
+          ...(locator.pick ? { pick: locator.pick } : {})
+        }
+      });
+    }
+    if (await this.checkedStateLocator(locator) !== checked) {
+      await this.runLocatorOperation<boolean>(locator, {
+        operation: "check",
+        checked,
+        ...(options?.force !== undefined ? { force: options.force } : {})
+      });
+    }
     if (await this.checkedStateLocator(locator) !== checked) {
       throw new Error("Clicking the checkbox did not change its state");
     }
@@ -2220,6 +2232,12 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   private async checkedStateLocator(locator: BidiLocatorState): Promise<boolean> {
     return this.runLocatorOperation<boolean>(locator, {
       operation: "checkedState"
+    });
+  }
+
+  private async checkedStateDetailsLocator(locator: BidiLocatorState): Promise<CheckedStateDetails> {
+    return this.runLocatorOperation<CheckedStateDetails>(locator, {
+      operation: "checkedStateDetails"
     });
   }
 
@@ -2377,33 +2395,31 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     checked: boolean,
     options?: ClickOptions
   ): Promise<void> {
-    if (await this.checkedStateReference(reference) === checked) {
+    const initialState = await this.checkedStateDetailsReference(reference);
+    if (initialState.matches === checked) {
       return;
     }
-    if (!checked) {
-      const role = await this.runSelectorOperation<string | null>({
-        operation: "getAttribute",
-        reference,
-        name: "role"
-      }).catch(() => null);
-      const type = await this.runSelectorOperation<string | null>({
-        operation: "getAttribute",
-        reference,
-        name: "type"
-      }).catch(() => null);
-      if ((role ?? "").toLowerCase() === "radio" || (type ?? "").toLowerCase() === "radio") {
-        throw new Error("Cannot uncheck radio button");
-      }
+    if (!checked && initialState.isRadio) {
+      throw new Error("Cannot uncheck radio button");
     }
+    await this.clickReference(reference, options);
     if (options?.trial) {
       return;
     }
-    await this.runSelectorOperation<boolean>({
-      operation: "check",
-      reference,
-      checked,
-      ...(options?.force !== undefined ? { force: options.force } : {})
-    });
+    if (await this.checkedStateReference(reference) !== checked) {
+      await this.runSelectorOperation<boolean>({
+        operation: "domClick",
+        reference
+      });
+    }
+    if (await this.checkedStateReference(reference) !== checked) {
+      await this.runSelectorOperation<boolean>({
+        operation: "check",
+        reference,
+        checked,
+        ...(options?.force !== undefined ? { force: options.force } : {})
+      });
+    }
     if (await this.checkedStateReference(reference) !== checked) {
       throw new Error("Clicking the checkbox did not change its state");
     }
@@ -2412,6 +2428,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   private async checkedStateReference(reference: ProtocolElementHandleReference): Promise<boolean> {
     return this.runSelectorOperation<boolean>({
       operation: "checkedState",
+      reference
+    });
+  }
+
+  private async checkedStateDetailsReference(reference: ProtocolElementHandleReference): Promise<CheckedStateDetails> {
+    return this.runSelectorOperation<CheckedStateDetails>({
+      operation: "checkedStateDetails",
       reference
     });
   }

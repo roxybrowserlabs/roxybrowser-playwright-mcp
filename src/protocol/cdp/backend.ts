@@ -577,10 +577,16 @@ interface ScreencastActionAnnotationState {
   };
 }
 
+interface CheckedStateDetails {
+  matches: boolean;
+  isRadio: boolean;
+}
+
 interface LocatorPayload {
   operation:
     | "actionPoint"
     | "checkedState"
+    | "checkedStateDetails"
     | "fill"
     | "focus"
     | "isVisible"
@@ -3817,23 +3823,33 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     const waitUntil = verifyLifecycle("waitUntil", options.waitUntil ?? "load");
     const targetUrl = resolveUrl(url, this.options.contextOptions.baseURL);
     const referer = this.resolveNavigationReferer(options, targetUrl);
+    const navigationClient = this.navigationClient();
     await this.interruptPendingNavigations(targetUrl);
     const capture = this.beginNavigationResponseCapture();
     const failureCapture = this.beginNavigationFailureCapture(targetUrl, "page.goto");
     failureCapture.allowCommittedRedirectTimeout = waitUntil === "networkidle";
     this.resetNavigationState();
+    this.allowSameDocumentNavigationToResolveWaiters = true;
 
     try {
       const navigationResult = await this.raceNavigationFailure(
         withTimeout(
-          this.options.client.Page.navigate({
-            url: targetUrl,
-            ...(referer !== undefined
-              ? {
-                  referrer: referer,
-                  referrerPolicy: "unsafeUrl"
-                }
-              : {})
+          retryOnDetachedNavigationSession(() => {
+            return (navigationClient.Page as typeof navigationClient.Page & {
+              navigate(params: {
+                url: string;
+                referrer?: string;
+                referrerPolicy?: string;
+              }): Promise<{ errorText?: string; loaderId?: string }>;
+            }).navigate({
+              url: targetUrl,
+              ...(referer !== undefined
+                ? {
+                    referrer: referer,
+                    referrerPolicy: "unsafeUrl"
+                  }
+                : {})
+            });
           }),
           options.timeout,
           `page.goto: Timeout ${options.timeout}ms exceeded.\n` +
@@ -3852,9 +3868,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
       if (navigationResult.loaderId) {
         failureCapture.expectedLoaderId = navigationResult.loaderId;
+        failureCapture.committed = true;
       }
       this.currentUrl = targetUrl;
-      failureCapture.committed = true;
 
       if (waitUntil !== "commit") {
         const loadStateResult = await this.raceNavigationFailure(
@@ -5719,6 +5735,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
           await this.dispatchMouseMove(actionPoint);
           await this.resolveActionPoint(locator, options, true);
+          if (options?.trial) {
+            return;
+          }
           void this.showScreencastAction("click", actionPoint).catch(() => {});
           for (let index = 0; index < clickCount; index += 1) {
             await this.dispatchMouseDown(actionPoint, button, index + 1);
@@ -5759,6 +5778,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       await this.enqueuePointerAction(async () => {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
+          if (options?.trial) {
+            return;
+          }
           void this.showScreencastAction("click", actionPoint).catch(() => {});
           for (let index = 0; index < clickCount; index += 1) {
             await this.dispatchMouseDown(actionPoint, button, index + 1);
@@ -5878,17 +5900,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   private async setCheckedLocator(locator: CdpLocatorState, checked: boolean, options?: ClickOptions): Promise<void> {
-    await this.runLocatorOperation<boolean>(locator, {
-      operation: "check",
-      checked
-    });
-    if (await this.checkedStateLocator(locator) === checked) {
+    const initialState = await this.checkedStateDetailsLocator(locator);
+    if (initialState.matches === checked) {
       return;
     }
+    if (!checked && initialState.isRadio) {
+      throw new Error("Cannot uncheck radio button");
+    }
+    await this.clickLocator(locator, options);
     if (options?.trial) {
       return;
     }
-    await this.clickLocator(locator, options);
     if (await this.checkedStateLocator(locator) !== checked) {
       throw new Error(`Clicking the checkbox did not change its state`);
     }
@@ -5897,6 +5919,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private async checkedStateLocator(locator: CdpLocatorState): Promise<boolean> {
     return this.runLocatorOperation<boolean>(locator, {
       operation: "checkedState"
+    });
+  }
+
+  private async checkedStateDetailsLocator(locator: CdpLocatorState): Promise<CheckedStateDetails> {
+    return this.runLocatorOperation<CheckedStateDetails>(locator, {
+      operation: "checkedStateDetails"
     });
   }
 
@@ -6548,6 +6576,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
           await this.dispatchMouseMove(actionPoint);
           await this.resolveActionPointReference(reference, options, true);
+          if (options?.trial) {
+            return;
+          }
           void this.showScreencastAction("click", actionPoint).catch(() => {});
           for (let index = 0; index < clickCount; index += 1) {
             await this.dispatchMouseDown(actionPoint, button, index + 1);
@@ -6588,6 +6619,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       await this.enqueuePointerAction(async () => {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
+          if (options?.trial) {
+            return;
+          }
           void this.showScreencastAction("click", actionPoint).catch(() => {});
           for (let index = 0; index < clickCount; index += 1) {
             await this.dispatchMouseDown(actionPoint, button, index + 1);
@@ -6615,18 +6649,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     checked: boolean,
     options?: ClickOptions
   ): Promise<void> {
-    await this.runSelectorOperation<boolean>({
-      operation: "check",
-      reference,
-      checked
-    });
-    if (await this.checkedStateReference(reference) === checked) {
+    const initialState = await this.checkedStateDetailsReference(reference);
+    if (initialState.matches === checked) {
       return;
     }
+    if (!checked && initialState.isRadio) {
+      throw new Error("Cannot uncheck radio button");
+    }
+    await this.clickReference(reference, options);
     if (options?.trial) {
       return;
     }
-    await this.clickReference(reference, options);
     if (await this.checkedStateReference(reference) !== checked) {
       throw new Error(`Clicking the checkbox did not change its state`);
     }
@@ -6635,6 +6668,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private async checkedStateReference(reference: ProtocolElementHandleReference): Promise<boolean> {
     return this.runSelectorOperation<boolean>({
       operation: "checkedState",
+      reference
+    });
+  }
+
+  private async checkedStateDetailsReference(reference: ProtocolElementHandleReference): Promise<CheckedStateDetails> {
+    return this.runSelectorOperation<CheckedStateDetails>({
+      operation: "checkedStateDetails",
       reference
     });
   }

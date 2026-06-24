@@ -12,7 +12,7 @@ if (existsSync(envPath)) {
 export default defineConfig({
   test: {
     include: ["tests/e2e/bidi/**/*.test.ts"],
-    fileParallelism: true,
+    fileParallelism: false,
     maxWorkers: 1,
     isolate: false,
     globalSetup: [
