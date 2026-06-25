@@ -103,7 +103,7 @@ describe("RoxyBrowserType", () => {
     expect(bidiFactory.create).not.toHaveBeenCalled();
   });
 
-  it("connects firefox to an existing BiDi websocket endpoint", async () => {
+  it("connects firefox over connect() using the bidi factory", async () => {
     const cdpFactory: ProtocolBrowserAdapterFactory = {
       create: vi.fn()
     };
@@ -117,21 +117,45 @@ describe("RoxyBrowserType", () => {
       bidi: bidiFactory
     });
 
-    const browser = await browserType.connect({
-      wsEndpoint: "ws://127.0.0.1:9222",
-      protocol: "bidi",
-      sessionId: "existing-bidi-session"
-    });
+    // Roxy intentionally diverges from Playwright: connect() dispatches on
+    // browserName so it serves both families via one entry point (chromium→cdp,
+    // firefox→bidi). See the divergence comment on RoxyBrowserType.connect().
+    const browser = await browserType.connect("ws://127.0.0.1:9222");
 
     expect(bidiFactory.create).toHaveBeenCalledWith({
       browserName: "firefox",
       protocol: "bidi",
-      wsEndpoint: "ws://127.0.0.1:9222",
-      sessionId: "existing-bidi-session"
+      wsEndpoint: "ws://127.0.0.1:9222"
     });
     expect(bidiAdapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
     expect(cdpFactory.create).not.toHaveBeenCalled();
+  });
+
+  it("connects chromium over connect() using the cdp factory", async () => {
+    const cdpAdapter = createBrowserAdapterStub();
+    cdpAdapter.browser = vi.fn(async () => createBrowserSessionStub());
+    const cdpFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn(() => cdpAdapter)
+    };
+    const bidiFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const browserType = new RoxyBrowserType("chromium", {
+      cdp: cdpFactory,
+      bidi: bidiFactory
+    });
+
+    const browser = await browserType.connect("ws://127.0.0.1:9222/devtools/browser/example");
+
+    expect(cdpFactory.create).toHaveBeenCalledWith({
+      browserName: "chromium",
+      protocol: "cdp",
+      wsEndpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+    expect(cdpAdapter.connect).toHaveBeenCalledTimes(1);
+    expect(browser).toBeInstanceOf(RoxyBrowser);
+    expect(bidiFactory.create).not.toHaveBeenCalled();
   });
 
   it("rejects non-websocket CDP endpoints", async () => {

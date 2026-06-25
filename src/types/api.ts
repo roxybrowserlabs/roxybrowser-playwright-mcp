@@ -112,7 +112,10 @@ export type ElementArrayCallback<TResult, TArg = unknown> = (
 
 export interface BrowserType {
   launch(options?: LaunchOptions): Promise<Browser>;
-  connect(options: BrowserConnectOptions): Promise<Browser>;
+  connect(
+    endpointURL: string,
+    options?: ConnectOverCDPOptions
+  ): Promise<Browser>;
   connectOverCDP(
     endpointURL: string,
     options?: ConnectOverCDPOptions

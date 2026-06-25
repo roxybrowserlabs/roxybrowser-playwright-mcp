@@ -1,0 +1,35 @@
+1. BiDi click —— alert() 阻塞问题
+说明：Firefox 下同步 alert() 会阻塞页面主线程，进而卡住 BiDi 传输，inputPerformActions
+永不 resolve。与 CDP 不同（CDP 只阻塞 mouse-release，可拆分），BiDi
+把整段指针序列作为一个原子命令派发，无法拆分。当前只是缓解（race
+waitForDialog），performPromise 故意留作 dangling。
+TODO 标注 KNOWN-UNRESOLVED：即便加了 race，模态框打开期间后续 BiDi
+命令仍可能整体卡死（见 handleDialog），这是浏览器/驱动层限制，适配器无法绕过。
+
+2. BiDi handleDialog —— handleUserPrompt 卡死
+说明：实测 Firefox/geckodriver 在 alert 模态下对 browsingContext.handleUserPrompt
+长时间不返回（60s+，靠 MCP 客户端超时才解脱）。withBiDiTimeout(..., 5000)
+只是快速失败的缓解，并未解决底层问题。
+TODO 标注 KNOWN-UNRESOLVED：模态框打开期间前序的 refreshTabs (browsingContextGetTree)
+等也可能先一步卡死，导致整个 tool 调用超时。CDP 侧可靠，BiDi 暂只能参考思路。
+
+3. BiDi initialize —— 监听器注册顺序
+说明：顺序关键，必须先注册监听器再 sessionSubscribe。实测 Firefox：subscribe
+返回后事件立即涌入，若此刻监听器还没注册，最早一批 network.beforeRequestSent 会落进
+no-listener 分支被静默丢弃（调试时观察到连续几十次 no-listener）。TODO 指向
+handleResponseCompleted / networkRequests 的时序问题。
+
+4. BiDi handleBeforeRequestSent —— POST body 缺失
+TODO 说明：BiDi 的 beforeRequestSent 只给 bodySize，不内联 POST
+body。这里只置了个空串占位，真实 POST 体从未填充，因此 part="request-body" 在 BiDi
+下只能拿到空串。要拿到需另发 network.getRequestPostData（Firefox
+支持不稳），暂未实现——已知缺口。
+
+5. BiDi handleResponseCompleted —— 网络事件时序不一致
+TODO 结合 KNOWN-UNRESOLVED 说明：BiDi 网络事件乱序/延迟到达，status 与 body
+的可用时机不可靠。实测 waitForNetworkRequest 在 body/status
+尚未就绪时就可能匹配到请求；随后再次列出网络请求时，同一个 POST /api
+有时从列表“消失”（疑似 responseCompleted 到达途中 ensureNetworkRequest
+重建条目或上下文切换所致，未完全定位）。因此 BiDi 下无法像 CDP
+那样做强一致的网络契约断言，需等 geckodriver 事件时序稳定后再追，或改用
+network.getDataCollector 统一采集。

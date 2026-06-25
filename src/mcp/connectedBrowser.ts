@@ -36,6 +36,20 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function withBiDiTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms.`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const chromeRemoteInterface = ("default" in cdpModule
   ? cdpModule.default
   : cdpModule) as unknown as {
@@ -2481,10 +2495,28 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       actions: pointerActions
     });
 
-    await this.client.inputPerformActions({
+    // TODO(bidi): A synchronous alert()/confirm()/prompt() opened by the click
+    // blocks the page's main thread, and in Firefox that also wedges the BiDi
+    // transport: inputPerformActions never resolves while the modal is open.
+    // Unlike CDP (where only the mouse-release call blocks), BiDi dispatches
+    // the whole pointer sequence as one atomic command, so we cannot split it.
+    // Mitigation (NOT a full fix): race the action against the dialog waiter so
+    // a dialog-opening click resolves instead of hanging forever. The residual
+    // performPromise is intentionally left dangling; it resolves later once the
+    // dialog is dismissed.
+    //
+    // KNOWN-UNRESOLVED: even with this race,后续的 BiDi 命令在模态框打开期间仍可能
+    // 整体卡死（见 handleDialog 的 TODO）。Firefox/geckodriver 在 alert 模态下会
+    // 阻塞几乎所有 BiDi 命令，这是浏览器/驱动层的限制，本适配器无法绕过。
+    const performPromise = this.client.inputPerformActions({
       context: tabId,
       actions
     });
+    await Promise.race([
+      performPromise,
+      this.waitForDialog(tabId, options.clickHoldMs + 5000)
+    ]);
+    performPromise.catch(() => {});
     await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
   }
 
@@ -2817,11 +2849,22 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       throw new McpToolError("no_dialog", "No dialog visible.");
     }
     this.pageDialogStates.delete(tabId);
-    await this.client.browsingContextHandleUserPrompt({
-      context: tabId,
-      accept,
-      ...(promptText !== undefined ? { userText: promptText } : {})
-    });
+    // TODO(bidi): Firefox's browsingContext.handleUserPrompt can stall while a
+    // modal is open — 实测在 alert/confirm 模态下 geckodriver 对该命令的响应会
+    // 长时间不返回（实测 60s+ 不返回，最终靠 MCP 客户端超时才解脱）。这里用
+    // withBiDiTimeout 兜底：最多等 5s 后强制 reject，避免工具调用无限挂起。
+    // 这只是“快速失败”的缓解，并未真正解决“模态框打开时几乎所有 BiDi 命令都
+    // 被卡死”的底层问题。CDP 下这一路径是可靠的，BiDi 暂只能参考 CDP 思路。
+    // KNOWN-UNRESOLVED: 若在模态框打开期间调用本命令，前序的 refreshTabs
+    // (browsingContextGetTree) 等也可能先一步卡死，导致整个 tool 调用超时。
+    await withBiDiTimeout(
+      this.client.browsingContextHandleUserPrompt({
+        context: tabId,
+        accept,
+        ...(promptText !== undefined ? { userText: promptText } : {})
+      }),
+      5_000
+    );
   }
 
   async hasDialog(): Promise<boolean> {
@@ -2871,6 +2914,15 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   private async initialize(): Promise<void> {
+    // 顺序很关键：必须先 attachBiDiListeners()，再 sessionSubscribe()。
+    // 实测 Firefox：sessionSubscribe 返回后事件会立即开始涌入；若此刻监听器
+    // 还没注册，最早的一批 network.beforeRequestSent（页面导航/资源请求）会落进
+    // “no registered listener” 分支被静默丢弃，导致 network 列表里缺首页请求。
+    // 调试时观察到 [DEBUG bidi client no-listener] network.beforeRequestSent 连续
+    // 出现几十次，正是此问题。先注册监听器即可避免丢事件。
+    // TODO(bidi): 即便修了顺序，BiDi 网络捕获仍有状态时序问题，见
+    // handleResponseCompleted / networkRequests 的 TODO。
+    this.attachBiDiListeners();
     await this.client.sessionSubscribe({
       events: [
         "browsingContext.userPromptOpened",
@@ -2886,7 +2938,6 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       maxEncodedDataSize: 10_000_000
     }).catch(() => undefined);
     this.responseDataCollector = (collectorResult as { collector?: string } | undefined)?.collector;
-    this.attachBiDiListeners();
   }
 
   private attachBiDiListeners(): void {
@@ -3094,6 +3145,11 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       type: event.type ?? "alert",
       ...(event.defaultValue !== undefined ? { defaultPrompt: event.defaultValue } : {})
     });
+    // 这里必须 resolve 对话框等待器：BiDi 的 click 会 race inputPerformActions
+    // 与 waitForDialog（见 click 注释）。若不在此 resolve，alert() 触发后
+    // waitForDialog 会一直 pending，click 永久挂起。CDP 侧的
+    // javascriptDialogOpening 处理也调用了 resolveDialogWaiters，两侧需对齐。
+    this.resolveDialogWaiters(event.context);
   }
 
   private handleBeforeRequestSent(payload: unknown): void {
@@ -3115,6 +3171,12 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     request.url = event.request.url;
     request.resourceType = normalizeResourceType(event.request.destination);
     request.requestHeaders = normalizeHeaders(bidiHeadersToRecord(event.request.headers));
+    // TODO(bidi): BiDi 的 network.beforeRequestSent 只给 bodySize，不内联 POST
+    // body。这里只置了个空串占位（requestBody ??= ""），真实 POST 体从未填充，
+    // 因此 browser_network_request 的 part="request-body" 在 BiDi 下只能拿到空串。
+    // CDP 侧通过 Network.requestWillBeSent 的 request.postData 直接拿到 body。
+    // BiDi 若要拿到 body 需另发 network.getRequestPostData 请求（Firefox 支持不稳），
+    // 暂未实现 —— 这是已知缺口，等 geckodriver 稳定后再补。
     if (event.request.bodySize !== undefined && event.request.bodySize > 0) {
       request.requestBody ??= "";
     }
@@ -3153,6 +3215,17 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     if (startedAt !== undefined && event.timestamp !== undefined) {
       request.durationMs = Math.round(event.timestamp - startedAt);
     }
+    // TODO(bidi): BiDi 网络事件是乱序/延迟到达的，且 status 与 body 的可用时机
+    // 不可靠。实测 Firefox：
+    //   - beforeRequestSent 与 responseCompleted 之间存在竞态，waitForNetworkRequest
+    //     在 body/status 尚未就绪时就可能匹配到请求并返回；
+    //   - 随后再次 browser_network_requests 时，同一个 POST /api 请求有时会从列表
+    //     里“消失”（疑似 responseCompleted 到达途中 ensureNetworkRequest 重建了条目
+    //     或上下文切换所致，未完全定位）。
+    // 这导致 BiDi 下无法像 CDP 那样做强一致的网络契约断言（=> [status] OK 全匹配）。
+    // 这里仅在 responseCompleted 时尽力补 body；status 缺失的窗口由调用方容忍。
+    // KNOWN-UNRESOLVED: BiDi 网络捕获的一致性问题，需等 Firefox/geckodriver 事件
+    // 时序稳定后再追，或改用 network.getDataCollector 统一采集。
     if (canReadResponseBody(request)) {
       const body = await this.getResponseBody(event.request.request).catch(() => undefined);
       if (body !== undefined) {

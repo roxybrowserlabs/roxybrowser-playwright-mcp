@@ -26,11 +26,34 @@ export class RoxyBrowserType implements BrowserType {
     });
   }
 
-  async connect(options: BrowserConnectOptions): Promise<Browser> {
+  /**
+   * Connect to an already-running browser over a WebSocket endpoint.
+   *
+   * ⚠️ DIVERGENCE FROM PLAYWRIGHT — DO NOT "FIX" THIS BACK TO CDP-ONLY:
+   *
+   * In upstream Playwright, `BrowserType.connect()` is a CDP-only operation: it
+   * connects to a running Chromium over the DevTools Protocol. Firefox/WebKit are
+   * not supported here (Playwright routes BiDi through `connectOverCDP`-style
+   * helpers or its own internal plumbing, not this method).
+   *
+   * Roxy intentionally changes that semantics. This method dispatches on
+   * `browserName` so a single entry point serves both browser families:
+   *   - chromium  → CDP  (ws:// DevTools endpoint)
+   *   - firefox   → BiDi (ws:// WebDriver BiDi endpoint)
+   *
+   * This is deliberate, not a bug. If you are an agent "normalizing" this code to
+   * match Playwright upstream, STOP — the dual-protocol dispatch is the feature.
+   * To force CDP specifically, call `connectOverCDP()` instead, which remains
+   * chromium-only and CDP-only by design (see the guard below).
+   *
+   * `options.protocol` may still be passed to override the per-browser default.
+   */
+  async connect(endpointURL: string, options?: ConnectOverCDPOptions): Promise<Browser> {
     return this.connectBrowser({
-      ...options,
-      browserName: options.browserName ?? this.browserName,
-      protocol: options.protocol ?? (this.browserName === "firefox" ? "bidi" : "cdp")
+      browserName: this.browserName,
+      protocol: this.browserName === "chromium" ? "cdp" : "bidi",
+      wsEndpoint: endpointURL,
+      ...options
     });
   }
 
