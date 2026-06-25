@@ -260,6 +260,11 @@ interface BrowserNetworkState {
   requests: BrowserNetworkRequest[];
   byRequestId: Map<string, BrowserNetworkRequest>;
   startedAt: Map<string, number>;
+  hydratedPerformanceResources: boolean;
+  // Resolves when a request finishes loading (its response body is readable),
+  // or rejects when it fails. Created lazily on first access.
+  loadingDone: Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>;
+  bodyRead: Set<string>;
 }
 
 interface BrowserDialogState {
@@ -267,6 +272,12 @@ interface BrowserDialogState {
   type: "alert" | "confirm" | "prompt" | "beforeunload";
   defaultPrompt?: string | undefined;
   url?: string | undefined;
+}
+
+interface DialogWaiter {
+  resolve(): void;
+  reject?(error: Error): void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 function buildConnectionFromWsEndpoint(browserWsEndpoint: string): CdpConnectionDetails {
@@ -804,6 +815,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   private readonly pageConsoleStates = new Map<string, BrowserConsoleState>();
   private readonly pageNetworkStates = new Map<string, BrowserNetworkState>();
   private readonly pageDialogStates = new Map<string, BrowserDialogState>();
+  private readonly dialogWaiters = new Map<string, Set<DialogWaiter>>();
   private activeTabId: string | undefined;
   private versionString = "Chromium/unknown";
 
@@ -831,10 +843,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
     const session = new CdpConnectedBrowserSession(browserClient, connection);
     session.versionString = version.Browser;
-    const tabs = await session.refreshTabs();
-    if (tabs.length === 0) {
-      await session.newTab();
-    }
+    await session.refreshTabs();
     await session.getActivePageClient().catch(() => undefined);
     return session;
   }
@@ -915,6 +924,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
+    const tabId = await this.getActiveTabId();
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const point = await evaluateCdp<{ ok: boolean; reason?: string; x?: number; y?: number }>(
@@ -961,7 +971,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         modifiers: modifiersMask
       });
       await delay(options.clickHoldMs);
-      await pageClient.Input.dispatchMouseEvent({
+      const releasePromise = pageClient.Input.dispatchMouseEvent({
         type: "mouseReleased",
         x: point.x,
         y: point.y,
@@ -969,6 +979,10 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         clickCount,
         modifiers: modifiersMask
       });
+      await Promise.race([
+        releasePromise,
+        this.waitForDialog(tabId, options.clickHoldMs + 1000)
+      ]);
     }
   }
 
@@ -1312,11 +1326,11 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async handleDialog(accept: boolean, promptText?: string): Promise<void> {
-    const tabId = await this.getActiveTabId();
+    const tabId = this.dialogTabId();
     if (!this.pageDialogStates.has(tabId)) {
       throw new McpToolError("no_dialog", "No dialog visible.");
     }
-    const pageClient = await this.getActivePageClient();
+    const pageClient = this.pageClients.get(tabId) ?? await this.getActivePageClient();
     this.pageDialogStates.delete(tabId);
     await pageClient.Page.handleJavaScriptDialog({
       accept,
@@ -1324,15 +1338,99 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     });
   }
 
+  async hasDialog(): Promise<boolean> {
+    return this.pageDialogStates.size > 0;
+  }
+
+  private waitForDialog(tabId: string, timeoutMs: number): Promise<void> {
+    if (this.pageDialogStates.has(tabId)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiter: DialogWaiter = {
+        resolve: () => {
+          if (waiter.timer) {
+            clearTimeout(waiter.timer);
+          }
+          this.removeDialogWaiter(tabId, waiter);
+          resolve();
+        }
+      };
+      waiter.timer = setTimeout(() => waiter.resolve(), timeoutMs);
+      const waiters = this.dialogWaiters.get(tabId) ?? new Set<DialogWaiter>();
+      waiters.add(waiter);
+      this.dialogWaiters.set(tabId, waiters);
+    });
+  }
+
+  private resolveDialogWaiters(tabId: string): void {
+    const waiters = this.dialogWaiters.get(tabId);
+    if (!waiters) {
+      return;
+    }
+    this.dialogWaiters.delete(tabId);
+    for (const waiter of waiters) {
+      waiter.resolve();
+    }
+  }
+
+  private removeDialogWaiter(tabId: string, waiter: DialogWaiter): void {
+    const waiters = this.dialogWaiters.get(tabId);
+    if (!waiters) {
+      return;
+    }
+    waiters.delete(waiter);
+    if (waiters.size === 0) {
+      this.dialogWaiters.delete(tabId);
+    }
+  }
+
   async networkRequests(): Promise<BrowserNetworkRequest[]> {
     const tabId = await this.getActiveTabId();
+    await this.hydratePerformanceResourceRequests(tabId);
     return this.ensureNetworkState(tabId).requests.map(cloneNetworkRequest);
   }
 
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
     const tabId = await this.getActiveTabId();
+    await this.hydratePerformanceResourceRequests(tabId);
     const request = this.ensureNetworkState(tabId).requests[index - 1];
     return request ? cloneNetworkRequest(request) : undefined;
+  }
+
+  async fetchResponseBody(index: number): Promise<string | undefined> {
+    const tabId = await this.getActiveTabId();
+    const state = this.ensureNetworkState(tabId);
+    const request = state.requests[index - 1];
+    if (!request || !request.requestId) {
+      return request?.responseBody;
+    }
+    if (!canReadResponseBody(request)) {
+      return undefined;
+    }
+    if (request.responseBody !== undefined) {
+      return request.responseBody;
+    }
+    await waitForLoadingDone(state, request.requestId, 5_000).catch(() => undefined);
+    if (request.responseBody !== undefined) {
+      return request.responseBody;
+    }
+    if (state.bodyRead.has(request.requestId)) {
+      return undefined;
+    }
+    state.bodyRead.add(request.requestId);
+    const pageClient = this.pageClients.get(tabId) ?? await this.getActivePageClient();
+    const clientNetwork = pageClient.Network;
+    if (!clientNetwork) {
+      return undefined;
+    }
+    const body = await clientNetwork.getResponseBody({ requestId: request.requestId }).catch(() => undefined);
+    if (body) {
+      request.responseBody = body.base64Encoded
+        ? Buffer.from(body.body, "base64").toString("utf8")
+        : body.body;
+    }
+    return request.responseBody;
   }
 
   async runCodeUnsafe(code: string): Promise<unknown> {
@@ -1419,6 +1517,17 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       throw new McpToolError("no_active_tab", "No active tab is available.");
     }
     return activeTab.id;
+  }
+
+  private dialogTabId(): string {
+    if (this.activeTabId && this.pageDialogStates.has(this.activeTabId)) {
+      return this.activeTabId;
+    }
+    const tabId = this.pageDialogStates.keys().next().value as string | undefined;
+    if (!tabId) {
+      throw new McpToolError("no_dialog", "No dialog visible.");
+    }
+    return tabId;
   }
 
   private async getActivePageClient(): Promise<CdpClient> {
@@ -1519,6 +1628,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         ...(event.defaultPrompt !== undefined ? { defaultPrompt: event.defaultPrompt } : {}),
         ...(event.url !== undefined ? { url: event.url } : {})
       });
+      this.resolveDialogWaiters(tabId);
     });
     this.installNetworkCollection(tabId, client);
   }
@@ -1567,13 +1677,15 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     client.Network.loadingFinished(async (event) => {
       const request = state.byRequestId.get(event.requestId);
       if (!request) {
+        resolveLoadingDone(state, event.requestId, true);
         return;
       }
       const startedAt = state.startedAt.get(event.requestId);
       if (startedAt !== undefined && event.timestamp !== undefined) {
         request.durationMs = Math.round(event.timestamp * 1000 - startedAt);
       }
-      if (canReadResponseBody(request)) {
+      if (canReadResponseBody(request) && !state.bodyRead.has(event.requestId)) {
+        state.bodyRead.add(event.requestId);
         const clientNetwork = client.Network;
         const body = await clientNetwork?.getResponseBody({ requestId: event.requestId }).catch(() => undefined);
         if (body) {
@@ -1582,10 +1694,12 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
             : body.body;
         }
       }
+      resolveLoadingDone(state, event.requestId, true);
     });
     client.Network.loadingFailed((event) => {
       const request = state.byRequestId.get(event.requestId);
       if (!request) {
+        resolveLoadingDone(state, event.requestId, false);
         return;
       }
       request.failureText = event.errorText ?? "Unknown error";
@@ -1593,6 +1707,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       if (startedAt !== undefined && event.timestamp !== undefined) {
         request.durationMs = Math.round(event.timestamp * 1000 - startedAt);
       }
+      resolveLoadingDone(state, event.requestId, false);
     });
   }
 
@@ -1616,7 +1731,10 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       state = {
         requests: [],
         byRequestId: new Map(),
-        startedAt: new Map()
+        startedAt: new Map(),
+        hydratedPerformanceResources: false,
+        loadingDone: new Map(),
+        bodyRead: new Set()
       };
       this.pageNetworkStates.set(tabId, state);
     }
@@ -1633,9 +1751,114 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     this.pageNetworkStates.set(tabId, {
       requests: [],
       byRequestId: new Map(),
-      startedAt: new Map()
+      startedAt: new Map(),
+      hydratedPerformanceResources: false,
+      loadingDone: new Map(),
+      bodyRead: new Set()
     });
     this.pageDialogStates.delete(tabId);
+  }
+
+  private async hydratePerformanceResourceRequests(tabId: string): Promise<void> {
+    const state = this.ensureNetworkState(tabId);
+    if (state.hydratedPerformanceResources) {
+      return;
+    }
+    state.hydratedPerformanceResources = true;
+
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const documentRequest = await evaluateCdp<{
+      url: string;
+      duration?: number;
+    }>(
+      pageClient,
+      String.raw`() => {
+        const navigation = performance.getEntriesByType("navigation")[0];
+        return {
+          url: String(location.href || ""),
+          duration: navigation ? Math.round(Number(navigation.duration || 0)) : undefined
+        };
+      }`,
+      undefined,
+      contextId
+    ).catch(() => undefined);
+    if (documentRequest?.url && !Array.from(state.byRequestId.values()).some((request) => request.url === documentRequest.url)) {
+      const requestId = `performance:navigation:${documentRequest.url}`;
+      const request: BrowserNetworkRequest = {
+        index: state.requests.length + 1,
+        requestId,
+        method: "GET",
+        url: documentRequest.url,
+        resourceType: "document",
+        requestHeaders: {},
+        status: 200,
+        statusText: "OK",
+        ...(documentRequest.duration !== undefined ? { durationMs: documentRequest.duration } : {})
+      };
+      state.requests.push(request);
+      state.byRequestId.set(requestId, request);
+    }
+
+    const resources = await evaluateCdp<Array<{
+      name: string;
+      initiatorType: string;
+      duration?: number;
+      responseStatus?: number;
+    }>>(
+      pageClient,
+      String.raw`() => performance.getEntriesByType("resource").map((entry) => ({
+        name: String(entry.name || ""),
+        initiatorType: String(entry.initiatorType || "other"),
+        duration: Math.round(Number(entry.duration || 0)),
+        responseStatus: typeof entry.responseStatus === "number" ? entry.responseStatus : undefined
+      }))`,
+      undefined,
+      contextId
+    ).catch(() => []);
+
+    for (const resource of resources) {
+      if (!resource.name || Array.from(state.byRequestId.values()).some((request) => request.url === resource.name)) {
+        continue;
+      }
+
+      const status = resource.responseStatus && resource.responseStatus > 0
+        ? resource.responseStatus
+        : await this.probeResourceStatus(pageClient, contextId, resource.name);
+      const requestId = `performance:${resource.name}`;
+      const request: BrowserNetworkRequest = {
+        index: state.requests.length + 1,
+        requestId,
+        method: "GET",
+        url: resource.name,
+        resourceType: normalizeResourceType(resource.initiatorType),
+        requestHeaders: {},
+        ...(status !== undefined ? { status, statusText: statusTextForStatus(status) } : {}),
+        ...(resource.duration !== undefined ? { durationMs: resource.duration } : {})
+      };
+      state.requests.push(request);
+      state.byRequestId.set(requestId, request);
+    }
+  }
+
+  private async probeResourceStatus(
+    pageClient: CdpClient,
+    contextId: number,
+    url: string
+  ): Promise<number | undefined> {
+    return evaluateCdp<number | undefined>(
+      pageClient,
+      String.raw`async (url) => {
+        try {
+          const response = await fetch(url, { method: "HEAD", cache: "no-store" });
+          return response.status;
+        } catch {
+          return undefined;
+        }
+      }`,
+      url,
+      contextId
+    ).catch(() => undefined);
   }
 
   private addConsoleMessage(tabId: string, message: BrowserConsoleMessage): void {
@@ -1843,6 +2066,54 @@ function canReadResponseBody(request: BrowserNetworkRequest): boolean {
   return request.status !== 204 && request.status !== 304 && !(request.status >= 100 && request.status < 200);
 }
 
+function loadingDoneEntry(state: BrowserNetworkState, requestId: string): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
+  let entry = state.loadingDone.get(requestId);
+  if (!entry) {
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    entry = { promise, resolve, reject };
+    state.loadingDone.set(requestId, entry);
+  }
+  return entry;
+}
+
+function resolveLoadingDone(state: BrowserNetworkState, requestId: string, success: boolean): void {
+  const entry = state.loadingDone.get(requestId);
+  if (!entry) {
+    return;
+  }
+  state.loadingDone.delete(requestId);
+  if (success) {
+    entry.resolve();
+  } else {
+    entry.reject(new Error("Request failed before the response body was available."));
+  }
+}
+
+async function waitForLoadingDone(state: BrowserNetworkState, requestId: string, timeoutMs: number): Promise<void> {
+  const entry = loadingDoneEntry(state, requestId);
+  await Promise.race([
+    entry.promise,
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
+function statusTextForStatus(status: number): string {
+  if (status === 200) return "OK";
+  if (status === 204) return "No Content";
+  if (status === 304) return "Not Modified";
+  if (status === 400) return "Bad Request";
+  if (status === 401) return "Unauthorized";
+  if (status === 403) return "Forbidden";
+  if (status === 404) return "Not Found";
+  if (status === 500) return "Internal Server Error";
+  return "";
+}
+
 function cloneNetworkRequest(request: BrowserNetworkRequest): BrowserNetworkRequest {
   return {
     ...request,
@@ -1986,6 +2257,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private readonly pageConsoleStates = new Map<string, BrowserConsoleState>();
   private readonly pageNetworkStates = new Map<string, BrowserNetworkState>();
   private readonly pageDialogStates = new Map<string, BrowserDialogState>();
+  private readonly dialogWaiters = new Map<string, Set<DialogWaiter>>();
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
   private responseDataCollector: string | undefined;
   private activeTabId: string | undefined;
@@ -2017,10 +2289,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const session = new BidiConnectedBrowserSession(client);
     session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint, args.sessionId);
     await session.initialize();
-    const tabs = await session.refreshTabs();
-    if (tabs.length === 0) {
-      await session.newTab();
-    }
+    await session.refreshTabs();
     return session;
   }
 
@@ -2092,10 +2361,14 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         toAriaSnapshotPayload(request)
       )
     );
-    return toBrowserSnapshot(result, request, {
+    const snapshot = toBrowserSnapshot(result, request, {
       console: this.consoleSummary(tabId),
       consoleLink: await this.takeConsoleLink(tabId)
     });
+    return {
+      ...snapshot,
+      retryable: true
+    };
   }
 
   async consoleMessages(level: "error" | "warning" | "info" | "debug" = "info", all = false): Promise<BrowserConsoleEntry[]> {
@@ -2539,7 +2812,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async handleDialog(accept: boolean, promptText?: string): Promise<void> {
-    const tabId = await this.getActiveTabId();
+    const tabId = this.dialogTabId();
     if (!this.pageDialogStates.has(tabId)) {
       throw new McpToolError("no_dialog", "No dialog visible.");
     }
@@ -2551,6 +2824,10 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     });
   }
 
+  async hasDialog(): Promise<boolean> {
+    return this.pageDialogStates.size > 0;
+  }
+
   async networkRequests(): Promise<BrowserNetworkRequest[]> {
     const tabId = await this.getActiveTabId();
     return this.ensureNetworkState(tabId).requests.map(cloneNetworkRequest);
@@ -2560,6 +2837,22 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const tabId = await this.getActiveTabId();
     const request = this.ensureNetworkState(tabId).requests[index - 1];
     return request ? cloneNetworkRequest(request) : undefined;
+  }
+
+  async fetchResponseBody(index: number): Promise<string | undefined> {
+    const tabId = await this.getActiveTabId();
+    const request = this.ensureNetworkState(tabId).requests[index - 1];
+    if (!request || !request.requestId) {
+      return request?.responseBody;
+    }
+    if (request.responseBody !== undefined) {
+      return request.responseBody;
+    }
+    const body = await this.getResponseBody(request.requestId).catch(() => undefined);
+    if (body !== undefined) {
+      request.responseBody = body;
+    }
+    return request.responseBody;
   }
 
   async runCodeUnsafe(code: string): Promise<unknown> {
@@ -2643,6 +2936,67 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
   private targetArg(target: ClickTarget): { nodeToken: string } | { selector: string } {
     return "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
+  }
+
+  private dialogTabId(): string {
+    if (this.activeTabId && this.pageDialogStates.has(this.activeTabId)) {
+      return this.activeTabId;
+    }
+    const tabId = this.pageDialogStates.keys().next().value as string | undefined;
+    if (!tabId) {
+      throw new McpToolError("no_dialog", "No dialog visible.");
+    }
+    return tabId;
+  }
+
+  private waitForDialog(tabId: string, timeoutMs: number): Promise<void> {
+    if (this.pageDialogStates.has(tabId)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const waiter: DialogWaiter = {
+        resolve: () => {
+          if (waiter.timer) {
+            clearTimeout(waiter.timer);
+          }
+          this.removeDialogWaiter(tabId, waiter);
+          resolve();
+        },
+        reject: (error: Error) => {
+          if (waiter.timer) {
+            clearTimeout(waiter.timer);
+          }
+          this.removeDialogWaiter(tabId, waiter);
+          reject(error);
+        }
+      };
+      waiter.timer = setTimeout(() => waiter.reject?.(new Error("Timed out waiting for dialog.")), timeoutMs);
+      const waiters = this.dialogWaiters.get(tabId) ?? new Set<DialogWaiter>();
+      waiters.add(waiter);
+      this.dialogWaiters.set(tabId, waiters);
+    });
+  }
+
+  private resolveDialogWaiters(tabId: string): void {
+    const waiters = this.dialogWaiters.get(tabId);
+    if (!waiters) {
+      return;
+    }
+    this.dialogWaiters.delete(tabId);
+    for (const waiter of waiters) {
+      waiter.resolve();
+    }
+  }
+
+  private removeDialogWaiter(tabId: string, waiter: DialogWaiter): void {
+    const waiters = this.dialogWaiters.get(tabId);
+    if (!waiters) {
+      return;
+    }
+    waiters.delete(waiter);
+    if (waiters.size === 0) {
+      this.dialogWaiters.delete(tabId);
+    }
   }
 
   private async actionPoint(tabId: string, target: ClickTarget): Promise<{ x: number; y: number }> {
@@ -2870,7 +3224,10 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       state = {
         requests: [],
         byRequestId: new Map(),
-        startedAt: new Map()
+        startedAt: new Map(),
+        hydratedPerformanceResources: false,
+        loadingDone: new Map(),
+        bodyRead: new Set()
       };
       this.pageNetworkStates.set(tabId, state);
     }
@@ -2887,7 +3244,10 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     this.pageNetworkStates.set(tabId, {
       requests: [],
       byRequestId: new Map(),
-      startedAt: new Map()
+      startedAt: new Map(),
+      hydratedPerformanceResources: false,
+      loadingDone: new Map(),
+      bodyRead: new Set()
     });
     this.pageDialogStates.delete(tabId);
   }

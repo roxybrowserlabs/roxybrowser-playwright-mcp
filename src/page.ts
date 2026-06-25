@@ -880,6 +880,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private closed = false;
   private closePromise: Promise<void> | null = null;
   private closeReason: string | undefined;
+  private ownedContext: RoxyBrowserContext | undefined;
   private defaultTimeoutMs = DEFAULT_EVENT_TIMEOUT_MS;
   private defaultNavigationTimeoutMs = DEFAULT_EVENT_TIMEOUT_MS;
   private currentViewportSize: ViewportSize | null = null;
@@ -2790,6 +2791,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
     this.closeReason = options.reason;
     this.closePromise = (async () => {
+      // When this page owns its browser context (e.g. created via
+      // browser.newPage), closing the page must also close the context so the
+      // browser stops tracking it. This mirrors Playwright's behaviour where
+      // page.close() awaits the owned context's teardown.
+      if (this.ownedContext) {
+        await this.ownedContext.close().catch(() => {});
+        return;
+      }
       await this.dismissActiveDialogsForClose();
       await this.finalizeVideoRecording();
       await this.adapter.close(options).catch(() => {});
@@ -2800,6 +2809,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     } finally {
       this.closePromise = null;
     }
+  }
+
+  setOwnedContext(context: RoxyBrowserContext): void {
+    this.ownedContext = context;
   }
 
   defaultTimeout(): number {

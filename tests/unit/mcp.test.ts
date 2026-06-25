@@ -30,6 +30,7 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   readonly protocol: "cdp" | "bidi";
   private tabs: BrowserTab[];
   private nextTabId = 2;
+  private dialogOpen = false;
 
   constructor(private readonly args: RoxyBrowserConnectArgs) {
     this.protocol = args.protocol;
@@ -139,6 +140,10 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     this.clickCalls.push({ target, options });
+    const targetValue = "selector" in target ? target.selector : target.nodeToken;
+    if (targetValue.includes("dialog")) {
+      this.dialogOpen = true;
+    }
   }
 
   async hover(target: ClickTarget): Promise<void> {
@@ -214,7 +219,16 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     this.fillFormCalls.push(fields);
   }
 
-  async handleDialog(_accept: boolean, _promptText?: string): Promise<void> {}
+  async hasDialog(): Promise<boolean> {
+    return this.dialogOpen;
+  }
+
+  async handleDialog(_accept: boolean, _promptText?: string): Promise<void> {
+    if (!this.dialogOpen) {
+      throw new Error("No dialog visible.");
+    }
+    this.dialogOpen = false;
+  }
 
   async networkRequests(): Promise<BrowserNetworkRequest[]> {
     return [{
@@ -233,6 +247,11 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
 
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
     return (await this.networkRequests()).find((request) => request.index === index);
+  }
+
+  async fetchResponseBody(index: number): Promise<string | undefined> {
+    const request = await this.networkRequest(index);
+    return request?.responseBody;
   }
 
   async runCodeUnsafe(code: string): Promise<unknown> {
@@ -746,6 +765,27 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBeUndefined();
+    });
+
+    it("does not auto-capture snapshot while a dialog is open", async () => {
+      const client = await setupConnectedClient();
+
+      const click = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button#dialog", element: "Dialog button" }
+      });
+
+      expect(click.isError).toBeUndefined();
+      expect(textFromResult(click)).toContain('Clicked "Dialog button".');
+      expect(textFromResult(click)).not.toContain("### Snapshot");
+
+      const handled = await client.callTool({
+        name: "browser_handle_dialog",
+        arguments: { accept: true }
+      });
+
+      expect(handled.isError).toBeUndefined();
+      expect(textFromResult(handled)).toContain("### Snapshot");
     });
 
     it("returns stale_ref error for unknown aria-ref", async () => {

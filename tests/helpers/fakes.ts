@@ -1,5 +1,7 @@
 import { vi } from "vitest";
 import { createPageResponse } from "../../src/pageResponse.js";
+import { RoxyBrowser } from "../../src/browser.js";
+import type { BrowserType } from "../../src/types/api.js";
 import type {
   ProtocolBrowserAdapter,
   ProtocolBrowserContextAdapter,
@@ -9,6 +11,7 @@ import type {
   ProtocolPageAdapter
 } from "../../src/protocol/adapter.js";
 import type { ProtocolCapabilities } from "../../src/protocol/capabilities.js";
+import type { ResolvedHumanizationOptions } from "../../src/human/types.js";
 import type {
   RawPageEventListener,
   RawPageEventMap,
@@ -41,6 +44,37 @@ export function createBrowserSessionStub(): ProtocolBrowserSession {
     newContext: vi.fn(),
     close: vi.fn(async () => {})
   };
+}
+
+export const DEFAULT_HUMAN_OPTIONS: ResolvedHumanizationOptions = {
+  enabled: true,
+  profile: "balanced",
+  moveJitterMs: 16,
+  clickHoldMs: 60,
+  scrollStepPx: 280,
+  typingDelayMs: 95,
+  typingVarianceMs: 35,
+  hoverBeforeClickMs: 110
+};
+
+interface CreateBrowserOptions {
+  session?: ProtocolBrowserSession;
+  adapter?: ProtocolBrowserAdapter;
+  humanDefaults?: ResolvedHumanizationOptions;
+  browserName?: "chromium" | "firefox";
+  browserType?: BrowserType;
+  version?: string;
+}
+
+export function createBrowser(options: CreateBrowserOptions = {}): RoxyBrowser {
+  return new RoxyBrowser(
+    options.session ?? createBrowserSessionStub(),
+    options.adapter ?? createBrowserAdapterStub(),
+    options.humanDefaults ?? DEFAULT_HUMAN_OPTIONS,
+    options.browserName ?? "chromium",
+    options.browserType ?? ({} as BrowserType),
+    options.version ?? "Chrome/123.0.0.0"
+  );
 }
 
 export function createBrowserContextAdapterStub(): ProtocolBrowserContextAdapter & {

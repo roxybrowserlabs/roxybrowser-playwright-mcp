@@ -92,6 +92,9 @@ export class TestServer {
 
   async stop(): Promise<void> {
     this.reset();
+    // Force-close lingering keep-alive connections so the server can shut down
+    // promptly even when the browser still holds open sockets.
+    this.server.closeAllConnections?.();
     await new Promise<void>((resolve, reject) => {
       this.server.close((error) => {
         if (error) {

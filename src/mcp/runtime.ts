@@ -232,7 +232,7 @@ export class McpRuntime {
       };
       lastAttempt = captured;
 
-      if (snapshot.text.trim().length > 0 || currentActiveTab.url === "about:blank") {
+      if (!snapshot.retryable || snapshot.text.trim().length > 0 || currentActiveTab.url === "about:blank") {
         return captured;
       }
 
@@ -277,6 +277,9 @@ export class McpRuntime {
     if (this.snapshotMode === "none") {
       return undefined;
     }
+    if (await session.hasDialog()) {
+      return undefined;
+    }
     return this.snapshot();
   }
 
@@ -289,6 +292,9 @@ export class McpRuntime {
     if (this.snapshotMode === "none") {
       return undefined;
     }
+    if (await session.hasDialog()) {
+      return undefined;
+    }
     return this.snapshot();
   }
 
@@ -298,6 +304,9 @@ export class McpRuntime {
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    if (await session.hasDialog()) {
       return undefined;
     }
     return this.snapshot();
@@ -528,6 +537,11 @@ export class McpRuntime {
     return session.networkRequest(index);
   }
 
+  async fetchResponseBody(index: number): Promise<string | undefined> {
+    const session = this.requireConnected();
+    return session.fetchResponseBody(index);
+  }
+
   async runCodeUnsafe(code: string): Promise<unknown> {
     const session = this.requireConnected();
     const result = await session.runCodeUnsafe(code);
@@ -585,6 +599,13 @@ export class McpRuntime {
 
   hasPendingFileUploadTarget(): boolean {
     return !!this.pendingFileUploadTarget;
+  }
+
+  async hasDialog(): Promise<boolean> {
+    if (!this.connection) {
+      return false;
+    }
+    return this.connection.session.hasDialog();
   }
 
   async close(): Promise<void> {

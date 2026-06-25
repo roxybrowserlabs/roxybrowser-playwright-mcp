@@ -120,9 +120,26 @@ export interface BrowserType {
 }
 
 export interface Browser {
+  on(event: 'context', listener: (context: BrowserContext) => any): this;
+  on(event: 'disconnected', listener: (browser: Browser) => any): this;
+  once(event: 'context', listener: (context: BrowserContext) => any): this;
+  once(event: 'disconnected', listener: (browser: Browser) => any): this;
+  addListener(event: 'context', listener: (context: BrowserContext) => any): this;
+  addListener(event: 'disconnected', listener: (browser: Browser) => any): this;
+  removeListener(event: 'context', listener: (context: BrowserContext) => any): this;
+  removeListener(event: 'disconnected', listener: (browser: Browser) => any): this;
+  off(event: 'context', listener: (context: BrowserContext) => any): this;
+  off(event: 'disconnected', listener: (browser: Browser) => any): this;
+  prependListener(event: 'context', listener: (context: BrowserContext) => any): this;
+  prependListener(event: 'disconnected', listener: (browser: Browser) => any): this;
+  removeAllListeners(type?: string): this;
+  browserType(): BrowserType;
+  close(options?: { reason?: string }): Promise<void>;
+  contexts(): BrowserContext[];
+  isConnected(): boolean;
   newContext(options?: BrowserContextOptions): Promise<BrowserContext>;
-  version(): Promise<string>;
-  close(): Promise<void>;
+  newPage(options?: BrowserContextOptions): Promise<Page>;
+  version(): string;
 }
 
 export interface APIRequestContext {

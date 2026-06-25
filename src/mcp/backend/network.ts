@@ -66,7 +66,21 @@ const networkRequest = defineTool({
       response.addError(`Request #${args.index} not found. Use browser_network_requests to see available indexes.`);
       return;
     }
-    const text = args.part ? renderRequestPart(request, args.part) : renderRequestDetails(request);
+    if (args.part) {
+      response.setRawResults();
+      const partText = args.part === "response-body"
+        ? (await context.runtime.fetchResponseBody(args.index) ?? "")
+        : renderRequestPart(request, args.part);
+      if (args.filename) {
+        const resolvedFilename = await context.resolveOutputFile(args.filename);
+        await writeFile(resolvedFilename, partText);
+        response.addTextResult(`Saved network request to "${resolvedFilename}".`);
+      } else {
+        response.addTextResult(partText);
+      }
+      return;
+    }
+    const text = renderRequestDetails(request);
     if (args.filename) {
       const resolvedFilename = await context.resolveOutputFile(args.filename);
       await writeFile(resolvedFilename, text);
@@ -116,11 +130,15 @@ function renderRequestDetails(request: BrowserNetworkRequest): string {
   if (request.responseHeaders) {
     appendHeaders(lines, "Response headers", request.responseHeaders);
   }
+  const hints: string[] = [];
   if (request.requestBody) {
-    lines.push("", `Call browser_network_request with part="request-body" to read the request body.`);
+    hints.push(`Call browser_network_request with part="request-body" to read the request body.`);
   }
-  if (request.responseBody) {
-    lines.push("", `Call browser_network_request with part="response-body" to read the response body.`);
+  if (canHaveResponseBody(request)) {
+    hints.push(`Call browser_network_request with part="response-body" to read the response body.`);
+  }
+  if (hints.length) {
+    lines.push("", ...hints);
   }
   return lines.join("\n");
 }
@@ -144,6 +162,14 @@ function appendHeaders(lines: string[], title: string, headers: Record<string, s
 
 function renderHeaders(headers: Record<string, string>): string {
   return Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join("\n");
+}
+
+function canHaveResponseBody(request: BrowserNetworkRequest): boolean {
+  if (request.failureText || request.status === undefined) {
+    return false;
+  }
+  // Status codes that cannot have a response body per RFC 7230.
+  return request.status !== 204 && request.status !== 304 && !(request.status >= 100 && request.status < 200);
 }
 
 export default [networkRequests, networkRequest];

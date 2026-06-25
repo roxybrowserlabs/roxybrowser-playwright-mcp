@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -E \"\\\\.spec\\\\.ts$\")"
+      "Bash(grep -E \"\\\\.spec\\\\.ts$\")",
+      "Bash(npx tsc *)",
+      "Bash(pnpm test:mcp-parity)",
+      "Bash(pnpm build:bundle)",
+      "Bash(pnpm vitest *)",
+      "Bash(pnpm test:unit)"
     ]
   }
 }

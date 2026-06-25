@@ -19,6 +19,7 @@ export class Response {
       }
     | undefined;
   private isClose = false;
+  private rawResults = false;
 
   constructor(
     private readonly context: Context,
@@ -46,6 +47,10 @@ export class Response {
     this.isClose = true;
   }
 
+  setRawResults(): void {
+    this.rawResults = true;
+  }
+
   setIncludeSnapshot(): void {
     this.includeSnapshot = this.context.config.snapshot?.mode ?? "full";
   }
@@ -67,6 +72,24 @@ export class Response {
       sections.push("### Error", ...this.errors);
     }
 
+    if (this.rawResults) {
+      if (this.results.length) {
+        sections.push(...this.results);
+      }
+      return {
+        content: [
+          { type: "text", text: sections.join("\n") },
+          ...this.images.map((image) => ({
+            type: "image" as const,
+            data: image.data,
+            mimeType: image.mimeType
+          }))
+        ],
+        ...(this.isClose ? { isClose: true } : {}),
+        ...(this.errors.length ? { isError: true } : {})
+      };
+    }
+
     if (this.results.length) {
       if (sections.length) {
         sections.push("");
@@ -82,14 +105,16 @@ export class Response {
     }
 
     if (this.includeSnapshot === "full") {
-      const snapshot = await reconcileSnapshotWithTabs(
-        this.context,
-        await this.context.runtime.snapshot()
-      );
-      if (sections.length) {
-        sections.push("");
+      if (!await this.context.runtime.hasDialog()) {
+        const snapshot = await reconcileSnapshotWithTabs(
+          this.context,
+          await this.context.runtime.snapshot()
+        );
+        if (sections.length) {
+          sections.push("");
+        }
+        sections.push(formatSnapshot(snapshot));
       }
-      sections.push(formatSnapshot(snapshot));
     }
 
     if (this.fullSnapshot) {
@@ -103,6 +128,7 @@ export class Response {
       );
       if (
         !this.fullSnapshot.filename
+        && snapshot.retryable
         && snapshot.text.trim().length === 0
         && snapshot.url
         && snapshot.url !== "about:blank"

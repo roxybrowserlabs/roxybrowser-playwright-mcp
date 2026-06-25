@@ -27,6 +27,7 @@ export interface BrowserSnapshot {
   url: string;
   console?: BrowserConsoleSummary | undefined;
   consoleLink?: string | undefined;
+  retryable?: boolean | undefined;
 }
 
 export interface BrowserConsoleSummary {
@@ -108,9 +109,11 @@ export interface ConnectedBrowserSession {
   screenshot(options?: SessionScreenshotOptions): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }>;
   uploadFile(target: ClickTarget, filePaths: string[]): Promise<void>;
   fillForm(fields: SessionFormField[]): Promise<void>;
+  hasDialog(): Promise<boolean>;
   handleDialog(accept: boolean, promptText?: string): Promise<void>;
   networkRequests(): Promise<BrowserNetworkRequest[]>;
   networkRequest(index: number): Promise<BrowserNetworkRequest | undefined>;
+  fetchResponseBody(index: number): Promise<string | undefined>;
   runCodeUnsafe(code: string): Promise<unknown>;
   close(): Promise<void>;
 }
