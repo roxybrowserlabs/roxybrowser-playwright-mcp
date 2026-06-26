@@ -158,7 +158,7 @@ export async function withBidiPage<T>(
   let context: BrowserContext | undefined;
 
   try {
-    context = await browser.newContext({ reuseDefaultUserContext: true });
+    context = browser.contexts()[0] ?? await browser.newContext({ reuseDefaultUserContext: true });
   } catch (error) {
     if (!isRecoverableBidiBrowserError(error)) {
       throw error;
@@ -166,7 +166,7 @@ export async function withBidiPage<T>(
 
     await cleanupExternalBidiTestState();
     browser = await openBidiBrowser();
-    context = await browser.newContext({ reuseDefaultUserContext: true });
+    context = browser.contexts()[0] ?? await browser.newContext({ reuseDefaultUserContext: true });
   }
 
   try {

@@ -152,6 +152,10 @@ export interface ProtocolBrowserContextAdapter {
     ) => void | Promise<void>
   ): () => void;
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
+  // Resolves once the adapter has finished its initial setup and any pre-existing
+  // pages have been discovered and emitted. Callers (e.g. RoxyBrowser.newContext)
+  // await this so that context.pages() is populated before the context is returned.
+  ready?(): Promise<void>;
   close(): Promise<void>;
 }
 

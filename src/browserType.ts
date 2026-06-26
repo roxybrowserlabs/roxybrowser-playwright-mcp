@@ -113,7 +113,7 @@ export class RoxyBrowserType implements BrowserType {
 
     const session = await adapter.browser();
     const versionStr = await session.version();
-    return new RoxyBrowser(
+    const browser = new RoxyBrowser(
       session,
       adapter,
       resolveHumanizationOptions(options.human),
@@ -121,6 +121,12 @@ export class RoxyBrowserType implements BrowserType {
       this,
       versionStr
     );
+
+    if (options.wsEndpoint) {
+      await browser.newContext({ reuseDefaultUserContext: true });
+    }
+
+    return browser;
   }
 }
 

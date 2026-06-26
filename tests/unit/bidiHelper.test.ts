@@ -32,6 +32,7 @@ const context = {
   })
 };
 const browser = {
+  contexts: vi.fn(() => [] as typeof context[]),
   newContext: vi.fn(async () => context),
   close: vi.fn(async () => {
     events.push("browser.close");

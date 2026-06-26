@@ -136,6 +136,13 @@ export class RoxyBrowser implements Browser {
       if (index !== -1) this._contexts.splice(index, 1);
     });
     this._emit('context', context);
+    // Wait for the adapter's initial page discovery to complete before returning.
+    // For CDP contexts this means waiting until all pre-existing tabs have been
+    // attached and their page objects emitted to listeners, so context.pages()
+    // is non-empty immediately after newContext() resolves.
+    // The onPage listener is already registered above (via new RoxyBrowserContext),
+    // so pages emitted during ready() will be captured correctly.
+    await contextAdapter.ready?.();
     return context;
   }
 

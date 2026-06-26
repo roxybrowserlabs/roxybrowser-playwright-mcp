@@ -433,6 +433,10 @@ interface CdpBrowserState {
   browserClient: CdpClient;
   version: CdpVersionResult;
   connection: CdpConnectionDetails;
+  // Tracks IDs returned by Target.createBrowserContext so the default context
+  // adapter (browserContextId === undefined) can exclude targets that explicitly
+  // belong to an isolated context. Populated in CdpBrowserSession.newContext().
+  isolatedBrowserContextIds: Set<string>;
 }
 
 type LocatorPick =
@@ -1077,7 +1081,8 @@ export class CdpBrowserAdapter implements ProtocolBrowserAdapter {
     this.state = {
       browserClient,
       version,
-      connection
+      connection,
+      isolatedBrowserContextIds: new Set<string>()
     };
   }
 
@@ -1115,7 +1120,14 @@ class CdpBrowserSession implements ProtocolBrowserSession {
   async newContext(
     options: BrowserContextOptions = {}
   ): Promise<ProtocolBrowserContextAdapter> {
+    if (options.reuseDefaultUserContext) {
+      return new CdpBrowserContextAdapter(this.state, undefined, options);
+    }
+
     const response = await this.state.browserClient.Target.createBrowserContext({});
+    // Track the new isolated context so the default context adapter (reuseDefaultUserContext)
+    // can distinguish default-context targets from explicitly isolated ones.
+    this.state.isolatedBrowserContextIds.add(response.browserContextId);
 
     return new CdpBrowserContextAdapter(
       this.state,
@@ -1171,6 +1183,13 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     private readonly options: BrowserContextOptions
   ) {
     this.targetDiscoveryReady = this.initializeTargetDiscovery();
+  }
+
+  // Resolves once target discovery and the initial page-population batch have
+  // completed. RoxyBrowser.newContext() awaits this so context.pages() is
+  // non-empty by the time the caller receives the BrowserContext object.
+  async ready(): Promise<void> {
+    await this.targetDiscoveryReady;
   }
 
   async newPage(): Promise<ProtocolPageAdapter> {
@@ -1431,6 +1450,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
           throw error;
         }
       }
+      // Remove from the shared set so the default context adapter stops
+      // excluding targets that belonged to this now-disposed context.
+      this.state.isolatedBrowserContextIds.delete(this.browserContextId);
     }
 
     await Promise.allSettled(pendingPages);
@@ -1478,11 +1500,32 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       void this.handleTargetDetached(event.targetId);
     });
 
+    // Bug fix: when connecting to an existing browser's default user context
+    // (reuseDefaultUserContext: true), use waitForDebuggerOnStart: false.
+    //
+    // With waitForDebuggerOnStart: true, Chrome pauses EVERY new renderer process
+    // — including the ones created by cross-origin navigations — and waits for
+    // Runtime.runIfWaitingForDebugger before allowing them to execute.
+    // resumeOnInitialized only unblocks the initial attachment; subsequent
+    // navigations to cross-origin pages spin up fresh renderer processes that
+    // never get resumed, so page.goto() hangs indefinitely. The navigation
+    // appears to succeed only after our process exits and Chrome auto-detaches.
+    //
+    // For newly isolated contexts (normal newContext()), we keep true so that
+    // init scripts are injected before any page JavaScript executes.
     await this.state.browserClient.Target.setAutoAttach?.({
       autoAttach: true,
-      waitForDebuggerOnStart: true,
+      waitForDebuggerOnStart: !this.options.reuseDefaultUserContext,
       flatten: true
     }).catch(() => {});
+
+    // Await pages that were attached synchronously via setAutoAttach events.
+    // In practice Chrome does NOT fire attachedToTarget for pre-existing page
+    // targets from the browser session, so this batch is usually empty — but
+    // it's still needed for targets attached via other mechanisms (workers, etc.).
+    const initialPagePromises = Array.from(this.pendingPages.values());
+    await Promise.allSettled(initialPagePromises);
+
     await (
       this.state.browserClient.Target as typeof this.state.browserClient.Target & {
         getTargetInfo?: () => Promise<unknown>;
@@ -1491,10 +1534,18 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     await this.state.browserClient.Target.setDiscoverTargets?.({
       discover: true
     });
+
+    // Explicitly discover and attach to any pre-existing page targets that
+    // setAutoAttach did not fire attachedToTarget for (Chrome's browser-level
+    // setAutoAttach only triggers attachedToTarget for new targets, not for
+    // tabs that were already open before our session connected).
+    // This is the primary mechanism that populates context.pages() after
+    // connectOverCDP — without it, pages() is always empty on connect.
+    await this.discoverTargets();
+
     this.targetPollTimer = setInterval(() => {
       void this.discoverTargets().catch(() => {});
     }, 100);
-    await this.discoverTargets();
   }
 
   private async handleTargetAttached(event: {
@@ -1508,6 +1559,11 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       url?: string;
     };
     waitingForDebugger?: boolean;
+    // When true, suppresses the automatic emitPage call inside getOrCreatePage.
+    // discoverTargets() sets this so it can control emission order itself,
+    // emitting pages in getTargets() order (i.e. Chrome creation order) rather
+    // than in async-initialization-completion order.
+    _suppressEmit?: boolean;
   }): Promise<void> {
     const { targetInfo } = event;
     if (this.closing) {
@@ -1547,7 +1603,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       fallbackUrl: targetInfo.url ?? "about:blank",
       hasWindowOpener: targetInfo.canAccessOpener ?? true,
       openerTargetId: targetInfo.openerId ?? null,
-      emitPage: !this.manuallyCreatedTargetIds.has(targetInfo.targetId),
+      // Suppress auto-emit when called from discoverTargets() — it will emit
+      // pages itself in getTargets() order once all initializations complete.
+      emitPage: event._suppressEmit ? false : !this.manuallyCreatedTargetIds.has(targetInfo.targetId),
       sessionId: event.sessionId
     });
     this.pageSessionIds.set(targetInfo.targetId, event.sessionId);
@@ -1583,8 +1641,80 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       }
     ).getTargets();
 
-    for (const targetInfo of result.targetInfos) {
-      await this.handleTargetCreated(targetInfo);
+    // Filter to page targets we own that haven't been attached yet.
+    // Chrome's browser-level setAutoAttach does not fire attachedToTarget for
+    // tabs that were already open before our CDP session connected, so we must
+    // discover and attach to them explicitly here.
+    const unattached = result.targetInfos.filter(
+      targetInfo =>
+        this.matchesTargetInfo(targetInfo) &&
+        !this.pages.has(targetInfo.targetId) &&
+        !this.pendingPages.has(targetInfo.targetId)
+    );
+
+    if (!unattached.length) {
+      return;
+    }
+
+    // Attach to all unattached targets concurrently — mirrors Playwright's approach
+    // of starting all attachments in parallel for faster connection on multi-tab browsers.
+    const sessions = (
+      await Promise.all(
+        unattached.map(async targetInfo => {
+          try {
+            const attachResult = await (
+              this.state.browserClient.Target as typeof this.state.browserClient.Target & {
+                attachToTarget(params: {
+                  targetId: string;
+                  flatten?: boolean;
+                }): Promise<{ sessionId: string }>;
+              }
+            ).attachToTarget({ targetId: targetInfo.targetId, flatten: true });
+            return { targetInfo, sessionId: attachResult.sessionId };
+          } catch {
+            return null;
+          }
+        })
+      )
+    ).filter((s): s is { targetInfo: (typeof unattached)[number]; sessionId: string } => s !== null);
+
+    // Kick off page initialization for all targets concurrently, but suppress the
+    // automatic emitPage call inside getOrCreatePage. We will emit pages below in
+    // getTargets() order — which Chrome guarantees is tab-creation order — so that
+    // context.pages() has a stable, predictable ordering regardless of which tab's
+    // CDP initialization happens to complete first.
+    //
+    // handleTargetAttached runs synchronously until its first internal await, so
+    // pendingPages entries are populated for all targets before this loop ends.
+    for (const { targetInfo, sessionId } of sessions) {
+      void this.handleTargetAttached({
+        sessionId,
+        targetInfo,
+        waitingForDebugger: false,
+        _suppressEmit: true
+      });
+    }
+
+    // Capture all pending page promises now (they were set synchronously above).
+    const pagePromises = sessions
+      .map(({ targetInfo }) => this.pendingPages.get(targetInfo.targetId))
+      .filter((p): p is Promise<ProtocolPageAdapter> => p !== undefined);
+
+    // Wait for all initializations concurrently — mirrors Playwright's
+    // Promise.all(crPages.map(crPage => crPage._page.waitForInitializedOrError()))
+    await Promise.allSettled(pagePromises);
+
+    // Emit pages in the order getTargets() returned them (Chrome creation order).
+    // This gives context.pages() a stable ordering that matches the visual tab bar.
+    for (const { targetInfo } of sessions) {
+      const page = this.pages.get(targetInfo.targetId);
+      if (!page) {
+        continue;
+      }
+      const opener = targetInfo.openerId
+        ? await this.resolveKnownPage(targetInfo.openerId)
+        : null;
+      await this.emitPage(page, opener, targetInfo.canAccessOpener ?? true);
     }
   }
 
@@ -1599,6 +1729,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     if (this.closing || !this.matchesTargetInfo(targetInfo)) {
       return;
     }
+    // New targets created after our session connected are handled by the
+    // attachedToTarget events fired by setAutoAttach. Pre-existing targets are
+    // handled by discoverTargets() at initialization time and on each poll tick.
   }
 
   private async handleTargetDetached(targetId: string, sessionId?: string): Promise<void> {
@@ -1641,7 +1774,19 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     if (targetInfo.openerId && this.pendingPages.has(targetInfo.openerId)) {
       return true;
     }
-    return !this.browserContextId && !targetInfo.browserContextId;
+    // When we represent the default browser context (no browserContextId), match
+    // all page targets that do NOT belong to a known isolated context.
+    //
+    // Chrome 119+ assigns a non-empty UUID to ALL targets — including those in the
+    // default context — so the old check `!targetInfo.browserContextId` incorrectly
+    // excluded every tab that had been given a default-context UUID, making
+    // context.pages() always empty after connectOverCDP.
+    //
+    // Isolated contexts are tracked in state.isolatedBrowserContextIds (populated
+    // in CdpBrowserSession.newContext when Target.createBrowserContext is called).
+    // Any target NOT in that set belongs to the default context.
+    return !this.browserContextId &&
+      !this.state.isolatedBrowserContextIds.has(targetInfo.browserContextId ?? "");
   }
 
   private matchesBrowserContextTarget(targetInfo: {
@@ -1650,7 +1795,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     if (targetInfo.browserContextId === this.browserContextId) {
       return true;
     }
-    return !this.browserContextId && !targetInfo.browserContextId;
+    // Same reasoning as matchesTargetInfo: default context adapter accepts all
+    // non-isolated targets regardless of whether browserContextId is a UUID.
+    return !this.browserContextId &&
+      !this.state.isolatedBrowserContextIds.has(targetInfo.browserContextId ?? "");
   }
 
   private async getOrCreatePage(

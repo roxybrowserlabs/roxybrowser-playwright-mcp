@@ -6,7 +6,8 @@
       "Bash(pnpm test:mcp-parity)",
       "Bash(pnpm build:bundle)",
       "Bash(pnpm vitest *)",
-      "Bash(pnpm test:unit)"
+      "Bash(pnpm test:unit)",
+      "Bash(npx vitest *)"
     ]
   }
 }

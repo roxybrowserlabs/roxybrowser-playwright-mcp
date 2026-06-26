@@ -100,6 +100,7 @@ describe("RoxyBrowserType", () => {
     });
     expect(cdpAdapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
+    expect(browser.contexts()).toHaveLength(1);
     expect(bidiFactory.create).not.toHaveBeenCalled();
   });
 
@@ -129,6 +130,7 @@ describe("RoxyBrowserType", () => {
     });
     expect(bidiAdapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
+    expect(browser.contexts()).toHaveLength(1);
     expect(cdpFactory.create).not.toHaveBeenCalled();
   });
 
@@ -155,6 +157,7 @@ describe("RoxyBrowserType", () => {
     });
     expect(cdpAdapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
+    expect(browser.contexts()).toHaveLength(1);
     expect(bidiFactory.create).not.toHaveBeenCalled();
   });
 

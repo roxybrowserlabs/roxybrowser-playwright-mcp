@@ -187,6 +187,48 @@ describe("RoxyBrowser", () => {
       expect(listener).toHaveBeenCalledWith(context);
     });
 
+    // Bug fix: context.pages() should be populated before newContext() returns.
+    // When connecting to an existing browser (reuseDefaultUserContext: true), the
+    // CDP adapter discovers pre-existing tabs asynchronously. Without awaiting
+    // ready(), callers would see an empty pages() list immediately after connect.
+    it("awaits adapter.ready() before returning so context.pages() is populated", async () => {
+      const session = createBrowserSessionStub();
+      const contextAdapter = createBrowserContextAdapterStub();
+      const pageAdapter = createPageAdapterStub();
+      let readyResolved = false;
+
+      // Simulate what CdpBrowserContextAdapter does: emit an existing page
+      // during the ready() phase (after initial target discovery completes).
+      contextAdapter.ready = vi.fn(async () => {
+        await contextAdapter.emitPage(pageAdapter);
+        readyResolved = true;
+      });
+      session.newContext = async () => contextAdapter;
+      const browser = createBrowser({ session });
+
+      const context = await browser.newContext({ reuseDefaultUserContext: true });
+
+      // ready() must have been called and completed before newContext() returned
+      expect(readyResolved).toBe(true);
+      expect(contextAdapter.ready).toHaveBeenCalledTimes(1);
+      // Pre-existing pages emitted during ready() must be visible immediately
+      expect(context.pages()).toHaveLength(1);
+    });
+
+    it("returns the context even when the adapter does not implement ready()", async () => {
+      // Backward-compatibility: adapters that don't implement ready() (e.g. BiDi)
+      // should still work — the optional call silently no-ops.
+      const session = createBrowserSessionStub();
+      const contextAdapter = createBrowserContextAdapterStub();
+      // ready is intentionally absent — the stub does not define it
+      expect((contextAdapter as { ready?: unknown }).ready).toBeUndefined();
+      session.newContext = async () => contextAdapter;
+      const browser = createBrowser({ session });
+
+      const context = await browser.newContext();
+      expect(context).toBeDefined();
+    });
+
     it("newPage creates a context, a page within it, and closes the context when the page closes", async () => {
       const session = createBrowserSessionStub();
       const contextAdapter = createBrowserContextAdapterStub();

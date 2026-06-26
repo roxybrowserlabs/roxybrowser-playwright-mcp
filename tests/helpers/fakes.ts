@@ -41,7 +41,7 @@ export function createBrowserAdapterStub(): ProtocolBrowserAdapter {
 export function createBrowserSessionStub(): ProtocolBrowserSession {
   return {
     version: vi.fn(async () => "Chrome/123.0.0.0"),
-    newContext: vi.fn(),
+    newContext: vi.fn(async () => createBrowserContextAdapterStub()),
     close: vi.fn(async () => {})
   };
 }
