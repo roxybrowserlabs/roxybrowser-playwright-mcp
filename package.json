@@ -57,6 +57,7 @@
     "example:probe-bidi-http": "pnpm build && node ./examples/probe-firefox-bidi-http.mjs",
     "example:launch-bidi": "pnpm build && node ./examples/launch-firefox-bidi.mjs",
     "example:page-events": "pnpm build && node ./examples/page-events-and-screenshot.mjs",
+    "example:mcp-stdio": "pnpm build && node ./examples/launch-mcp-stdio.mjs",
     "mcp:stdio": "pnpm build && node ./dist/bin/roxybrowser-mcp.js",
     "mcp:http": "pnpm build && node ./dist/bin/roxybrowser-mcp.js --transport http",
     "inspector": "pnpm build && node ./node_modules/@modelcontextprotocol/inspector/client/bin/start.js -- node ./dist/bin/roxybrowser-mcp.js",
