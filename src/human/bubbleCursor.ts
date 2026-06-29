@@ -1,125 +1,207 @@
-export const BUBBLE_CURSOR_INSTALL_SOURCE = `(() => {
-  const globalState = globalThis;
-  if (globalState.__roxyBubbleCursor?.installed) {
-    return true;
-  }
+export type CursorVisualizationMode = "bubble" | "arrow";
 
-  const prefersReducedMotion = globalState.matchMedia?.('(prefers-reduced-motion: reduce)');
-  if (prefersReducedMotion?.matches) {
-    globalState.__roxyBubbleCursor = {
-      installed: false,
-      reducedMotion: true
-    };
-    return false;
-  }
+// Change this one value to switch the globally injected cursor visualization.
+export const DEFAULT_CURSOR_VISUALIZATION_MODE: CursorVisualizationMode = "arrow";
 
-  class Particle {
-    constructor(x, y) {
-      this.initialLifeSpan = Math.floor(Math.random() * 60 + 60);
-      this.lifeSpan = this.initialLifeSpan;
-      this.velocity = {
-        x: (Math.random() < 0.5 ? -1 : 1) * (Math.random() / 10),
-        y: -0.4 + Math.random() * -1
-      };
-      this.position = { x, y };
-      this.baseDimension = 4;
-    }
+const ARROW_CURSOR_SVG = [
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">',
+  '<path class="inner" d="M25,30a5.82,5.82,0,0,1-1.09-.17l-.2-.07-7.36-3.48a.72.72,0,0,0-.35-.08.78.78,0,0,0-.33.07L8.24,29.54a.66.66,0,0,1-.2.06,5.17,5.17,0,0,1-1,.15,3.6,3.6,0,0,1-3.29-5L12.68,4.2a3.59,3.59,0,0,1,6.58,0l9,20.74A3.6,3.6,0,0,1,25,30Z" fill="#F2F5F8" />',
+  '<path class="outer" d="M16,3A2.59,2.59,0,0,1,18.34,4.6l9,20.74A2.59,2.59,0,0,1,25,29a5.42,5.42,0,0,1-.86-.15l-7.37-3.48a1.84,1.84,0,0,0-.77-.17,1.69,1.69,0,0,0-.73.16l-7.4,3.31a5.89,5.89,0,0,1-.79.12,2.59,2.59,0,0,1-2.37-3.62L13.6,4.6A2.58,2.58,0,0,1,16,3m0-2h0A4.58,4.58,0,0,0,11.76,3.8L2.84,24.33A4.58,4.58,0,0,0,7,30.75a6.08,6.08,0,0,0,1.21-.17,1.87,1.87,0,0,0,.4-.13L16,27.18l7.29,3.44a1.64,1.64,0,0,0,.39.14A6.37,6.37,0,0,0,25,31a4.59,4.59,0,0,0,4.21-6.41l-9-20.75A4.62,4.62,0,0,0,16,1Z" fill="#111920" />',
+  "</svg>"
+].join("");
 
-    update(context) {
-      this.position.x += this.velocity.x;
-      this.position.y += this.velocity.y;
-      this.velocity.x += ((Math.random() < 0.5 ? -1 : 1) * 2) / 75;
-      this.velocity.y -= Math.random() / 600;
-      this.lifeSpan -= 1;
+function sharedPreamble(mode: CursorVisualizationMode): string {
+  return [
+    "const globalState = globalThis;",
+    "const existing = globalState.__roxyBubbleCursor;",
+    `if (existing?.installed && existing.mode === ${JSON.stringify(mode)}) return true;`,
+    "existing?.destroy?.();",
+    "const prefersReducedMotion = globalState.matchMedia?.('(prefers-reduced-motion: reduce)');",
+    "if (prefersReducedMotion?.matches) {",
+    "  globalState.__roxyBubbleCursor = { installed: false, reducedMotion: true, mode: " + JSON.stringify(mode) + " };",
+    "  return false;",
+    "}"
+  ].join("\n");
+}
 
-      const scale = 0.2 + (this.initialLifeSpan - this.lifeSpan) / this.initialLifeSpan;
+function buildBubbleInstallSource(): string {
+  return [
+    "(() => {",
+    sharedPreamble("bubble"),
+    "class Particle {",
+    "  constructor(x, y) {",
+    "    this.initialLifeSpan = Math.floor(Math.random() * 60 + 60);",
+    "    this.lifeSpan = this.initialLifeSpan;",
+    "    this.velocity = {",
+    "      x: (Math.random() < 0.5 ? -1 : 1) * (Math.random() / 10),",
+    "      y: -0.4 + Math.random() * -1",
+    "    };",
+    "    this.position = { x, y };",
+    "    this.baseDimension = 4;",
+    "  }",
+    "  update(context) {",
+    "    this.position.x += this.velocity.x;",
+    "    this.position.y += this.velocity.y;",
+    "    this.velocity.x += ((Math.random() < 0.5 ? -1 : 1) * 2) / 75;",
+    "    this.velocity.y -= Math.random() / 600;",
+    "    this.lifeSpan -= 1;",
+    "    const scale = 0.2 + (this.initialLifeSpan - this.lifeSpan) / this.initialLifeSpan;",
+    "    context.fillStyle = '#e6f1f7';",
+    "    context.strokeStyle = '#3a92c5';",
+    "    context.beginPath();",
+    "    context.arc(",
+    "      this.position.x - (this.baseDimension / 2) * scale,",
+    "      this.position.y - this.baseDimension / 2,",
+    "      this.baseDimension * scale,",
+    "      0,",
+    "      2 * Math.PI",
+    "    );",
+    "    context.stroke();",
+    "    context.fill();",
+    "    context.closePath();",
+    "  }",
+    "}",
+    "const canvas = document.createElement('canvas');",
+    "const context = canvas.getContext('2d');",
+    "if (!context) return false;",
+    "let particles = [];",
+    "let animationFrameId = null;",
+    "canvas.style.position = 'fixed';",
+    "canvas.style.top = '0px';",
+    "canvas.style.left = '0px';",
+    "canvas.style.pointerEvents = 'none';",
+    "canvas.style.zIndex = '2147483647';",
+    "const resize = () => { canvas.width = globalState.innerWidth; canvas.height = globalState.innerHeight; };",
+    "const addParticle = (x, y) => { particles.push(new Particle(x, y)); };",
+    "const onPointerMove = (event) => { addParticle(event.clientX, event.clientY); };",
+    "const onTouchMove = (event) => { for (const touch of event.touches) addParticle(touch.clientX, touch.clientY); };",
+    "const updateParticles = () => {",
+    "  context.clearRect(0, 0, canvas.width, canvas.height);",
+    "  for (const particle of particles) particle.update(context);",
+    "  particles = particles.filter((particle) => particle.lifeSpan >= 0);",
+    "};",
+    "const loop = () => { updateParticles(); animationFrameId = globalState.requestAnimationFrame(loop); };",
+    "resize();",
+    "document.documentElement.appendChild(canvas);",
+    "document.addEventListener('mousemove', onPointerMove, true);",
+    "document.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });",
+    "document.addEventListener('touchstart', onTouchMove, { passive: true, capture: true });",
+    "globalState.addEventListener('resize', resize);",
+    "loop();",
+    "globalState.__roxyBubbleCursor = {",
+    "  installed: true,",
+    "  mode: 'bubble',",
+    "  destroy: () => {",
+    "    document.removeEventListener('mousemove', onPointerMove, true);",
+    "    document.removeEventListener('touchmove', onTouchMove, true);",
+    "    document.removeEventListener('touchstart', onTouchMove, true);",
+    "    globalState.removeEventListener('resize', resize);",
+    "    if (animationFrameId !== null) globalState.cancelAnimationFrame(animationFrameId);",
+    "    particles = [];",
+    "    canvas.remove();",
+    "    delete globalState.__roxyBubbleCursor;",
+    "  }",
+    "};",
+    "return true;",
+    "})()"
+  ].join("\n");
+}
 
-      context.fillStyle = '#e6f1f7';
-      context.strokeStyle = '#3a92c5';
-      context.beginPath();
-      context.arc(
-        this.position.x - (this.baseDimension / 2) * scale,
-        this.position.y - this.baseDimension / 2,
-        this.baseDimension * scale,
-        0,
-        2 * Math.PI
-      );
-      context.stroke();
-      context.fill();
-      context.closePath();
-    }
-  }
+function buildArrowInstallSource(): string {
+  return [
+    "(() => {",
+    sharedPreamble("arrow"),
+    "const isTouchDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(globalState.navigator.userAgent);",
+    "if (isTouchDevice) {",
+    "  globalState.__roxyBubbleCursor = { installed: false, touchDevice: true, mode: 'arrow' };",
+    "  return false;",
+    "}",
+    "const cursorSize = 20;",
+    "const root = document.body ?? document.documentElement;",
+    "if (!root) return false;",
+    "const cursor = document.createElement('div');",
+    "cursor.className = 'curzr';",
+    `cursor.innerHTML = ${JSON.stringify(ARROW_CURSOR_SVG)};`,
+    "Object.assign(cursor.style, {",
+    "  boxSizing: 'border-box',",
+    "  position: 'fixed',",
+    "  top: '0px',",
+    "  left: String(-cursorSize / 2) + 'px',",
+    "  zIndex: '2147483647',",
+    "  width: String(cursorSize) + 'px',",
+    "  height: String(cursorSize) + 'px',",
+    "  transition: '250ms, transform 100ms',",
+    "  userSelect: 'none',",
+    "  pointerEvents: 'none'",
+    "});",
+    "let pointerX = 0;",
+    "let pointerY = 0;",
+    "let previousPointerX = 0;",
+    "let previousPointerY = 0;",
+    "let angle = 0;",
+    "let previousAngle = 0;",
+    "let angleDisplace = 0;",
+    "const degrees = 57.296;",
+    "const updateAnchor = () => {",
+    "  const modAngle = angleDisplace >= 0 ? angleDisplace % 360 : 360 + angleDisplace % 360;",
+    "  if (modAngle >= 45 && modAngle < 135) {",
+    "    cursor.style.left = String(-cursorSize) + 'px';",
+    "    cursor.style.top = String(-cursorSize / 2) + 'px';",
+    "  } else if (modAngle >= 135 && modAngle < 225) {",
+    "    cursor.style.left = String(-cursorSize / 2) + 'px';",
+    "    cursor.style.top = String(-cursorSize) + 'px';",
+    "  } else if (modAngle >= 225 && modAngle < 315) {",
+    "    cursor.style.left = '0px';",
+    "    cursor.style.top = String(-cursorSize / 2) + 'px';",
+    "  } else {",
+    "    cursor.style.left = String(-cursorSize / 2) + 'px';",
+    "    cursor.style.top = '0px';",
+    "  }",
+    "};",
+    "const rotate = (distanceX, distanceY) => {",
+    "  const unsortedAngle = Math.atan(Math.abs(distanceY) / Math.abs(distanceX)) * degrees;",
+    "  previousAngle = angle;",
+    "  if (distanceX <= 0 && distanceY >= 0) angle = 90 - unsortedAngle;",
+    "  else if (distanceX < 0 && distanceY < 0) angle = unsortedAngle + 90;",
+    "  else if (distanceX >= 0 && distanceY <= 0) angle = 90 - unsortedAngle + 180;",
+    "  else if (distanceX > 0 && distanceY > 0) angle = unsortedAngle + 270;",
+    "  if (Number.isNaN(angle)) angle = previousAngle;",
+    "  else if (angle - previousAngle <= -270) angleDisplace += 360 + angle - previousAngle;",
+    "  else if (angle - previousAngle >= 270) angleDisplace += angle - previousAngle - 360;",
+    "  else angleDisplace += angle - previousAngle;",
+    "  cursor.style.transform += ' rotate(' + angleDisplace + 'deg)';",
+    "  globalState.setTimeout(updateAnchor, 0);",
+    "};",
+    "const onMouseMove = (event) => {",
+    "  previousPointerX = pointerX;",
+    "  previousPointerY = pointerY;",
+    "  pointerX = event.pageX + root.getBoundingClientRect().x;",
+    "  pointerY = event.pageY + root.getBoundingClientRect().y;",
+    "  const distanceX = previousPointerX - pointerX;",
+    "  const distanceY = previousPointerY - pointerY;",
+    "  const distance = Math.sqrt(distanceY ** 2 + distanceX ** 2);",
+    "  cursor.style.transform = 'translate3d(' + pointerX + 'px, ' + pointerY + 'px, 0)';",
+    "  if (distance > 1) rotate(distanceX, distanceY);",
+    "  else cursor.style.transform += ' rotate(' + angleDisplace + 'deg)';",
+    "};",
+    "document.documentElement.appendChild(cursor);",
+    "document.addEventListener('mousemove', onMouseMove, true);",
+    "globalState.__roxyBubbleCursor = {",
+    "  installed: true,",
+    "  mode: 'arrow',",
+    "  destroy: () => {",
+    "    document.removeEventListener('mousemove', onMouseMove, true);",
+    "    cursor.remove();",
+    "    delete globalState.__roxyBubbleCursor;",
+    "  }",
+    "};",
+    "return true;",
+    "})()"
+  ].join("\n");
+}
 
-  const canvas = document.createElement('canvas');
-  const context = canvas.getContext('2d');
-  if (!context) {
-    return false;
-  }
+export function getBubbleCursorInstallSource(mode: CursorVisualizationMode = "bubble"): string {
+  return mode === "arrow" ? buildArrowInstallSource() : buildBubbleInstallSource();
+}
 
-  let particles = [];
-  let animationFrameId = null;
-
-  canvas.style.position = 'fixed';
-  canvas.style.top = '0px';
-  canvas.style.left = '0px';
-  canvas.style.pointerEvents = 'none';
-  canvas.style.zIndex = '2147483647';
-
-  const resize = () => {
-    canvas.width = globalState.innerWidth;
-    canvas.height = globalState.innerHeight;
-  };
-
-  const addParticle = (x, y) => {
-    particles.push(new Particle(x, y));
-  };
-
-  const onPointerMove = (event) => {
-    addParticle(event.clientX, event.clientY);
-  };
-
-  const onTouchMove = (event) => {
-    for (const touch of event.touches) {
-      addParticle(touch.clientX, touch.clientY);
-    }
-  };
-
-  const updateParticles = () => {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    for (const particle of particles) {
-      particle.update(context);
-    }
-    particles = particles.filter((particle) => particle.lifeSpan >= 0);
-  };
-
-  const loop = () => {
-    updateParticles();
-    animationFrameId = globalState.requestAnimationFrame(loop);
-  };
-
-  resize();
-  document.documentElement.appendChild(canvas);
-  document.addEventListener('mousemove', onPointerMove, true);
-  document.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
-  document.addEventListener('touchstart', onTouchMove, { passive: true, capture: true });
-  globalState.addEventListener('resize', resize);
-  loop();
-
-  globalState.__roxyBubbleCursor = {
-    installed: true,
-    destroy: () => {
-      document.removeEventListener('mousemove', onPointerMove, true);
-      document.removeEventListener('touchmove', onTouchMove, true);
-      document.removeEventListener('touchstart', onTouchMove, true);
-      globalState.removeEventListener('resize', resize);
-      if (animationFrameId !== null) {
-        globalState.cancelAnimationFrame(animationFrameId);
-      }
-      particles = [];
-      canvas.remove();
-      delete globalState.__roxyBubbleCursor;
-    }
-  };
-
-  return true;
-})()`;
+export const CURSOR_VISUALIZATION_INSTALL_SOURCE = getBubbleCursorInstallSource(DEFAULT_CURSOR_VISUALIZATION_MODE);

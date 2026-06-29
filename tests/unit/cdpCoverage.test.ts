@@ -194,6 +194,29 @@ describe("CDP coverage", () => {
     expect(pageClient.send).toHaveBeenCalledWith("HeapProfiler.collectGarbage");
   });
 
+  it("uses keyboard events instead of insertText for modified printable keys", async () => {
+    const { pageClient } = await createCdpPageClients();
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      getActivePageClient(): Promise<typeof pageClient>;
+      pressKey(
+        key: string,
+        modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
+      ): Promise<void>;
+    };
+    session.getActivePageClient = async () => pageClient;
+
+    await session.pressKey("a", ["ControlOrMeta"]);
+
+    expect(pageClient.Input.insertText).not.toHaveBeenCalled();
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalledTimes(2);
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      type: "keyDown",
+      key: "a",
+      code: "KeyA"
+    }));
+  });
+
   it("emits browser log entries as Playwright-style console events", async () => {
     const { page, pageClient } = await createCdpPageClients();
     const roxyPage = new RoxyPage(page, {

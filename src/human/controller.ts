@@ -12,7 +12,7 @@ import type {
   HumanController,
   ResolvedHumanizationOptions
 } from "./types.js";
-import { BUBBLE_CURSOR_INSTALL_SOURCE } from "./bubbleCursor.js";
+import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "./bubbleCursor.js";
 
 export class DefaultHumanController implements HumanController {
   private actionQueue = Promise.resolve();
@@ -86,7 +86,7 @@ export class DefaultHumanController implements HumanController {
     if (typeof evaluatableTarget.evaluate !== "function") {
       return;
     }
-    await evaluatableTarget.evaluate(BUBBLE_CURSOR_INSTALL_SOURCE);
+    await evaluatableTarget.evaluate(CURSOR_VISUALIZATION_INSTALL_SOURCE);
   }
 
   private async prepareEditableTarget(
@@ -128,15 +128,11 @@ export class DefaultHumanController implements HumanController {
     target: HumanActionTarget,
     defaults: ResolvedHumanizationOptions
   ): Promise<void> {
-    await target.press("a", {
-      delay: defaults.typingDelayMs,
-      modifiers: ["ControlOrMeta"],
-      noWaitAfter: true,
-      human: { profile: defaults.profile }
-    } as PressOptions);
-    await target.press("Backspace", {
-      delay: defaults.typingDelayMs,
-      noWaitAfter: true,
+    if (typeof target.clear === "function") {
+      await target.clear();
+      return;
+    }
+    await target.fill("", {
       human: { profile: defaults.profile }
     });
   }

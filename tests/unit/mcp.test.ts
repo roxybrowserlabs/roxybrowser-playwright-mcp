@@ -107,6 +107,8 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
 
   clickCalls: Array<{ target: ClickTarget; options: SessionClickOptions }> = [];
   hoverCalls: Array<ClickTarget> = [];
+  focusCalls: Array<ClickTarget> = [];
+  clearCalls: Array<ClickTarget> = [];
   navigateCalls: string[] = [];
   typeCalls: Array<{ target: ClickTarget; text: string; options?: SessionTypeOptions }> = [];
   pressKeyCalls: Array<{ key: string; modifiers?: string[] }> = [];
@@ -119,6 +121,8 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   scrollCalls: Array<{ target: ClickTarget | null; deltaX: number; deltaY: number }> = [];
   screenshotCount = 0;
   uploadFileCalls: Array<{ target: ClickTarget; paths: string[] }> = [];
+  prepareForFileUploadCalls: ClickTarget[] = [];
+  finishFileUploadCalls: ClickTarget[] = [];
   fillFormCalls: SessionFormField[][] = [];
 
   async consoleMessages() {
@@ -138,6 +142,10 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     return "selector" in target && target.selector.includes("file");
   }
 
+  async prepareForFileUpload(target: ClickTarget): Promise<void> {
+    this.prepareForFileUploadCalls.push(target);
+  }
+
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     this.clickCalls.push({ target, options });
     const targetValue = "selector" in target ? target.selector : target.nodeToken;
@@ -148,6 +156,14 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
 
   async hover(target: ClickTarget): Promise<void> {
     this.hoverCalls.push(target);
+  }
+
+  async focus(target: ClickTarget): Promise<void> {
+    this.focusCalls.push(target);
+  }
+
+  async clear(target: ClickTarget): Promise<void> {
+    this.clearCalls.push(target);
   }
 
   async navigate(url: string): Promise<void> {
@@ -213,6 +229,10 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
 
   async uploadFile(target: ClickTarget, paths: string[]): Promise<void> {
     this.uploadFileCalls.push({ target, paths });
+  }
+
+  async finishFileUpload(target: ClickTarget): Promise<void> {
+    this.finishFileUploadCalls.push(target);
   }
 
   async fillForm(fields: SessionFormField[]): Promise<void> {
@@ -1298,10 +1318,9 @@ describe("MCP server", () => {
       expect(getSession().typeCalls.length).toBe(1);
       expect(getSession().typeCalls[0]!.text).toBe("hello");
       expect(getSession().typeCalls[0]!.target).toHaveProperty("nodeToken");
-      expect(getSession().pressKeyCalls.slice(0, 2)).toEqual([
-        { key: "a", modifiers: ["ControlOrMeta"] },
-        { key: "Backspace", modifiers: undefined }
-      ]);
+      expect(getSession().focusCalls).toHaveLength(1);
+      expect(getSession().clearCalls).toHaveLength(1);
+      expect(getSession().pressKeyCalls).toEqual([]);
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
@@ -1350,10 +1369,9 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(getSession().pressKeyCalls.slice(0, 2)).toEqual([
-        { key: "a", modifiers: ["ControlOrMeta"] },
-        { key: "Backspace", modifiers: undefined }
-      ]);
+      expect(getSession().focusCalls).toHaveLength(1);
+      expect(getSession().clearCalls).toHaveLength(1);
+      expect(getSession().pressKeyCalls).toEqual([]);
       expect(getSession().typeCalls[0]!.text).toBe("world");
     });
   });
@@ -1627,6 +1645,8 @@ describe("MCP server", () => {
       expect(result.isError).toBeUndefined();
       expect(getSession().uploadFileCalls[0]!.paths).toEqual(["/tmp/file.txt"]);
       expect(getSession().uploadFileCalls[0]!.target).toEqual({ selector: "input[type=file]" });
+      expect(getSession().prepareForFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
+      expect(getSession().finishFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
@@ -1644,6 +1664,8 @@ describe("MCP server", () => {
       });
 
       expect(getSession().uploadFileCalls[0]!.target).toEqual({ selector: "input[type=file]" });
+      expect(getSession().prepareForFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
+      expect(getSession().finishFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
     });
 
     it("returns no_file_chooser when no file chooser is pending", async () => {

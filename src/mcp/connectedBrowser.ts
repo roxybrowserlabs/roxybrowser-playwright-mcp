@@ -13,8 +13,16 @@ import {
   parseSerializedEvaluationResult,
   wrapWithSerializedEvaluationResult
 } from "../protocol/evaluationSerializer.js";
-import { resolveSmartModifierString } from "../protocol/keyboardInput.js";
-import { BUBBLE_CURSOR_INSTALL_SOURCE } from "../human/bubbleCursor.js";
+import {
+  isKeyboardModifier,
+  isUsKeyboardLayoutKey,
+  keypadLocation,
+  keyDescriptionForString,
+  keyboardModifierMask,
+  resolveSmartModifierString,
+  splitKeyboardShortcut
+} from "../protocol/keyboardInput.js";
+import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "../human/bubbleCursor.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
 import { configuredTempDir } from "./output.js";
@@ -31,6 +39,7 @@ import type {
   SessionDragOptions,
   SessionDropOptions,
   SessionFormField,
+  SessionHoverOptions,
   SessionScrollOptions,
   SessionScreenshotOptions,
   SessionTypeOptions
@@ -87,6 +96,7 @@ type CdpClient = {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   Page: {
     enable(): Promise<void>;
+    setInterceptFileChooserDialog?(options: { enabled: boolean }): Promise<void>;
     createIsolatedWorld(options: {
       frameId: string;
       worldName?: string;
@@ -233,6 +243,10 @@ type CdpClient = {
       windowsVirtualKeyCode?: number;
       nativeVirtualKeyCode?: number;
       text?: string;
+      unmodifiedText?: string;
+      autoRepeat?: boolean;
+      location?: number;
+      isKeypad?: boolean;
       modifiers?: number;
     }): Promise<void>;
     insertText(options: { text: string }): Promise<void>;
@@ -410,6 +424,31 @@ const FOCUS_AND_GET_ELEMENT_SOURCE = String.raw`(payload) => {
   return el;
 }`;
 
+const CLEAR_ELEMENT_SOURCE = String.raw`(payload) => {
+  const state = globalThis.__roxyMcpState;
+  const el = payload.nodeToken
+    ? (state?.elements?.get(payload.nodeToken) ?? null)
+    : document.querySelector(payload.selector);
+  if (!el || !el.isConnected) return { ok: false, reason: 'not_found' };
+  el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  el.focus();
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'input' || tag === 'textarea') {
+    const proto = Object.getPrototypeOf(el);
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+      ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(el, '');
+    else el.value = '';
+  } else if (el.isContentEditable) {
+    el.textContent = '';
+  } else {
+    return { ok: false, reason: 'not_input' };
+  }
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true };
+}`;
+
 const TYPE_INTO_ELEMENT_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
   const el = payload.nodeToken
@@ -520,7 +559,7 @@ const SCROLL_ELEMENT_SOURCE = String.raw`(payload) => {
   return { ok: true };
 }`;
 
-const ENSURE_BUBBLE_CURSOR_SOURCE = BUBBLE_CURSOR_INSTALL_SOURCE;
+const ENSURE_BUBBLE_CURSOR_SOURCE = CURSOR_VISUALIZATION_INSTALL_SOURCE;
 
 const GET_ELEMENT_OBJECT_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
@@ -646,6 +685,13 @@ const DOCUMENT_BOX_SOURCE = String.raw`() => {
   return { x: 0, y: 0, width: Math.max(1, width), height: Math.max(1, height) };
 }`;
 
+const VIEWPORT_BOX_SOURCE = String.raw`() => ({
+  x: 0,
+  y: 0,
+  width: Math.max(1, globalThis.innerWidth || document.documentElement?.clientWidth || 1),
+  height: Math.max(1, globalThis.innerHeight || document.documentElement?.clientHeight || 1)
+})`;
+
 const CDP_KEY_MAP: Record<string, { key: string; code: string; keyCode: number; text?: string }> = {
   Enter:      { key: "Enter",     code: "Enter",       keyCode: 13, text: "\r" },
   Return:     { key: "Enter",     code: "Enter",       keyCode: 13, text: "\r" },
@@ -676,6 +722,28 @@ const CDP_KEY_MAP: Record<string, { key: string; code: string; keyCode: number; 
   F11: { key: "F11", code: "F11", keyCode: 122 },
   F12: { key: "F12", code: "F12", keyCode: 123 },
 };
+
+function humanMousePath(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  moveDelayMs = 140
+): Array<{ x: number; y: number; pauseMs: number }> {
+  const distance = Math.hypot(end.x - start.x, end.y - start.y);
+  const steps = Math.max(Math.ceil(distance / 18), 1);
+  const perStepBase = Math.max(24, Math.round(moveDelayMs / 2.4));
+  const points: Array<{ x: number; y: number; pauseMs: number }> = [];
+  for (let index = 1; index <= steps; index += 1) {
+    const progress = index / steps;
+    const easedProgress = 1 - Math.pow(1 - progress, 2);
+    const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
+    points.push({
+      x: start.x + ((end.x - start.x) * easedProgress) + drift * ((end.y - start.y) / Math.max(distance, 1)),
+      y: start.y + ((end.y - start.y) * easedProgress) - drift * ((end.x - start.x) / Math.max(distance, 1)),
+      pauseMs: index < steps ? perStepBase + Math.round((1 - progress) * Math.max(18, moveDelayMs * 0.35)) : 0
+    });
+  }
+  return points;
+}
 
 async function evaluateBiDi<TResult>(
   client: BidiProtocolClient,
@@ -889,6 +957,11 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   private activeTabId: string | undefined;
   private versionString = "Chromium/unknown";
   private readonly tempDir: string;
+  private currentMousePosition = { x: 0, y: 0 };
+  private hasMouseEnteredViewport = false;
+  private readonly fileChooserInterceptEnabledByTabId = new Set<string>();
+  private readonly pressedKeyboardModifiers = new Set<string>();
+  private readonly pressedKeyboardCodes = new Set<string>();
 
   private constructor(
     private readonly browserClient: CdpClient,
@@ -998,9 +1071,11 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
-    const tabId = await this.getActiveTabId();
+    await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const point = await evaluateCdp<{ ok: boolean; reason?: string; x?: number; y?: number }>(
@@ -1029,13 +1104,13 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const clickCount = options.doubleClick ? 2 : 1;
     const cycles = options.doubleClick ? 2 : 1;
 
-    await pageClient.Input.dispatchMouseEvent({
-      type: "mouseMoved",
-      x: point.x,
-      y: point.y,
-      button: "none",
-      modifiers: modifiersMask
-    });
+    await this.moveMouseAlongHumanPath(
+      pageClient,
+      { x: point.x, y: point.y },
+      modifiersMask,
+      "none",
+      options.moveDelayMs
+    );
 
     for (let i = 0; i < cycles; i++) {
       await pageClient.Input.dispatchMouseEvent({
@@ -1065,14 +1140,10 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   async drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
+    await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
     const startPoint = await this.actionPoint(pageClient, contextId, start);
     const endPoint = await this.actionPoint(pageClient, contextId, end);
-    await pageClient.Input.dispatchMouseEvent({
-      type: "mouseMoved",
-      x: startPoint.x,
-      y: startPoint.y,
-      button: "none"
-    });
+    await this.moveMouseAlongHumanPath(pageClient, startPoint, 0, "none", options.moveDelayMs);
     await delay(options.moveDelayMs);
     await pageClient.Input.dispatchMouseEvent({
       type: "mousePressed",
@@ -1082,12 +1153,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       clickCount: 1
     });
     await delay(options.holdDelayMs);
-    await pageClient.Input.dispatchMouseEvent({
-      type: "mouseMoved",
-      x: endPoint.x,
-      y: endPoint.y,
-      button: "left"
-    });
+    await this.moveMouseAlongHumanPath(pageClient, endPoint, 0, "left", options.moveDelayMs);
     await delay(options.moveDelayMs);
     await pageClient.Input.dispatchMouseEvent({
       type: "mouseReleased",
@@ -1118,9 +1184,12 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     }
   }
 
-  async hover(target: ClickTarget): Promise<void> {
+  async hover(target: ClickTarget, options?: SessionHoverOptions): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
+    await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const point = await evaluateCdp<{ ok: boolean; reason?: string; x?: number; y?: number }>(
@@ -1139,12 +1208,105 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       );
     }
 
+    await this.moveMouseAlongHumanPath(pageClient, { x: point.x, y: point.y }, 0, "none", options?.moveDelayMs);
+  }
+
+  async focus(target: ClickTarget): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.bringTabToFront(tabId);
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdpRef(pageClient, FOCUS_AND_GET_ELEMENT_SOURCE, this.targetArg(target), contextId);
+    if (!result.objectId) {
+      const isSelector = "selector" in target;
+      throw new McpToolError(
+        isSelector ? "invalid_target" : "stale_ref",
+        isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid."
+      );
+    }
+  }
+
+  async clear(target: ClickTarget): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.bringTabToFront(tabId);
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdp<{ ok: boolean; reason?: string }>(
+      pageClient,
+      CLEAR_ELEMENT_SOURCE,
+      this.targetArg(target),
+      contextId
+    );
+    if (!result.ok) {
+      const isSelector = "selector" in target;
+      throw new McpToolError(
+        isSelector ? "invalid_target" : "stale_ref",
+        result.reason === "not_found"
+          ? (isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid.")
+          : "Element is not a typeable input."
+      );
+    }
+  }
+
+  private async moveMouseAlongHumanPath(
+    pageClient: CdpClient,
+    destination: { x: number; y: number },
+    modifiers = 0,
+    button: "none" | "left" | "middle" | "right" = "none",
+    moveDelayMs = 140
+  ): Promise<void> {
+    if (!this.hasMouseEnteredViewport) {
+      await this.seedMouseEntryPosition(pageClient, moveDelayMs, modifiers, button);
+    }
+    const points = humanMousePath(this.currentMousePosition, destination, moveDelayMs);
+    for (const point of points) {
+      await pageClient.Input.dispatchMouseEvent({
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+        button,
+        modifiers
+      });
+      if (point.pauseMs > 0) {
+        await delay(point.pauseMs);
+      }
+    }
+    this.currentMousePosition = { x: destination.x, y: destination.y };
+  }
+
+  private async seedMouseEntryPosition(
+    pageClient: CdpClient,
+    moveDelayMs: number,
+    modifiers: number,
+    button: "none" | "left" | "middle" | "right"
+  ): Promise<void> {
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const viewport = await evaluateCdp<{ x: number; y: number; width: number; height: number }>(
+      pageClient,
+      VIEWPORT_BOX_SOURCE,
+      undefined,
+      contextId
+    ).catch(() => ({ x: 0, y: 0, width: 1280, height: 720 }));
+    const padding = Math.max(12, Math.round(Math.min(viewport.width, viewport.height) * 0.03));
+    const horizontal = viewport.x + padding + Math.random() * Math.max(1, viewport.width - padding * 2);
+    const vertical = viewport.y + padding + Math.random() * Math.max(1, viewport.height - padding * 2);
+    const edge = Math.floor(Math.random() * 4);
+    const entry =
+      edge === 0 ? { x: horizontal, y: viewport.y + 1 } :
+      edge === 1 ? { x: viewport.x + viewport.width - 1, y: vertical } :
+      edge === 2 ? { x: horizontal, y: viewport.y + viewport.height - 1 } :
+      { x: viewport.x + 1, y: vertical };
+
+    this.currentMousePosition = entry;
+    this.hasMouseEnteredViewport = true;
     await pageClient.Input.dispatchMouseEvent({
       type: "mouseMoved",
-      x: point.x,
-      y: point.y,
-      button: "none"
+      x: entry.x,
+      y: entry.y,
+      button,
+      modifiers
     });
+    await delay(Math.max(60, Math.round(moveDelayMs * 0.8)));
   }
 
   async close(): Promise<void> {
@@ -1166,6 +1328,8 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async type(target: ClickTarget, text: string, options?: SessionTypeOptions): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
@@ -1210,39 +1374,88 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     key: string,
     modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
   ): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
-    const resolvedModifiers = (modifiers ?? []).map((modifier) => resolveSmartModifierString(modifier));
-
-    const MODIFIER_BITS: Record<string, number> = {
-      Alt: 1, Control: 2, Meta: 4, Shift: 8
-    };
-    const modifiersMask = resolvedModifiers.reduce(
-      (acc, m) => acc | (MODIFIER_BITS[m] ?? 0), 0
-    );
-
-    const mapped = CDP_KEY_MAP[key];
-    if (mapped) {
-      await pageClient.Input.dispatchKeyEvent({
-        type: "keyDown",
-        key: mapped.key,
-        code: mapped.code,
-        windowsVirtualKeyCode: mapped.keyCode,
-        nativeVirtualKeyCode: mapped.keyCode,
-        ...(mapped.text ? { text: mapped.text } : {}),
-        modifiers: modifiersMask
-      });
-      await pageClient.Input.dispatchKeyEvent({
-        type: "keyUp",
-        key: mapped.key,
-        code: mapped.code,
-        windowsVirtualKeyCode: mapped.keyCode,
-        nativeVirtualKeyCode: mapped.keyCode,
-        modifiers: modifiersMask
-      });
-    } else {
-      // Printable single character
-      await pageClient.Input.insertText({ text: key });
+    const shortcut = [...(modifiers ?? []).map((modifier) => resolveSmartModifierString(modifier)), key].join("+");
+    const tokens = splitKeyboardShortcut(shortcut);
+    const keyName = tokens[tokens.length - 1] ?? "";
+    for (let index = 0; index < tokens.length - 1; index += 1) {
+      await this.keyboardDown(pageClient, tokens[index] ?? "");
     }
+    try {
+      if (isUsKeyboardLayoutKey(keyName) || keyDescriptionForString(keyName, this.pressedKeyboardModifiers)) {
+        await this.keyboardDown(pageClient, keyName);
+        await this.keyboardUp(pageClient, keyName);
+      } else {
+        await pageClient.Input.insertText({ text: keyName });
+      }
+    } catch {
+      if (tokens.length === 1) {
+        await pageClient.Input.insertText({ text: keyName });
+      } else {
+        throw new Error(`Unknown key: "${keyName}"`);
+      }
+    } finally {
+      for (let index = tokens.length - 2; index >= 0; index -= 1) {
+        await this.keyboardUp(pageClient, tokens[index] ?? "");
+      }
+    }
+  }
+
+  private async keyboardDown(pageClient: CdpClient, key: string): Promise<void> {
+    const keyDefinition = keyDescriptionForString(key, this.pressedKeyboardModifiers);
+    const autoRepeat = this.pressedKeyboardCodes.has(keyDefinition.code);
+    const nextModifiers = new Set(this.pressedKeyboardModifiers);
+    if (isKeyboardModifier(keyDefinition.key)) {
+      nextModifiers.add(keyDefinition.key);
+    }
+    this.pressedKeyboardCodes.add(keyDefinition.code);
+    await pageClient.Input.dispatchKeyEvent({
+      type: keyDefinition.text ? "keyDown" : "rawKeyDown",
+      key: keyDefinition.key,
+      code: keyDefinition.code,
+      text: keyDefinition.text,
+      unmodifiedText: keyDefinition.text,
+      autoRepeat,
+      windowsVirtualKeyCode: keyDefinition.keyCodeWithoutLocation,
+      nativeVirtualKeyCode: keyDefinition.keyCode,
+      modifiers: keyboardModifierMask(nextModifiers),
+      location: keyDefinition.location,
+      isKeypad: keyDefinition.location === keypadLocation
+    });
+    this.pressedKeyboardModifiers.clear();
+    for (const modifier of nextModifiers) {
+      this.pressedKeyboardModifiers.add(modifier);
+    }
+  }
+
+  private async keyboardUp(pageClient: CdpClient, key: string): Promise<void> {
+    const keyDefinition = keyDescriptionForString(key, this.pressedKeyboardModifiers);
+    const nextModifiers = new Set(this.pressedKeyboardModifiers);
+    if (isKeyboardModifier(keyDefinition.key)) {
+      nextModifiers.delete(keyDefinition.key);
+    }
+    this.pressedKeyboardCodes.delete(keyDefinition.code);
+    await pageClient.Input.dispatchKeyEvent({
+      type: "keyUp",
+      key: keyDefinition.key,
+      code: keyDefinition.code,
+      windowsVirtualKeyCode: keyDefinition.keyCodeWithoutLocation,
+      nativeVirtualKeyCode: keyDefinition.keyCode,
+      modifiers: keyboardModifierMask(nextModifiers),
+      location: keyDefinition.location
+    });
+    this.pressedKeyboardModifiers.clear();
+    for (const modifier of nextModifiers) {
+      this.pressedKeyboardModifiers.add(modifier);
+    }
+  }
+
+  private async bringTabToFront(tabId: string): Promise<void> {
+    await this.browserClient.Target.activateTarget({
+      targetId: tabId
+    }).catch(() => {});
   }
 
   async selectOption(target: ClickTarget, values: string[]): Promise<string[]> {
@@ -1405,6 +1618,16 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       );
     }
     await pageClient.DOM.setFileInputFiles({ objectId: refResult.objectId, files: filePaths });
+  }
+
+  async finishFileUpload(_target: ClickTarget): Promise<void> {
+    const tabId = await this.getActiveTabId().catch(() => undefined);
+    if (!tabId || !this.fileChooserInterceptEnabledByTabId.has(tabId)) {
+      return;
+    }
+    const pageClient = await this.getActivePageClient().catch(() => undefined);
+    await pageClient?.Page.setInterceptFileChooserDialog?.({ enabled: false }).catch(() => {});
+    this.fileChooserInterceptEnabledByTabId.delete(tabId);
   }
 
   async fillForm(fields: SessionFormField[]): Promise<void> {
@@ -2020,6 +2243,16 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     ).catch(() => false);
   }
 
+  async prepareForFileUpload(_target: ClickTarget): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    if (this.fileChooserInterceptEnabledByTabId.has(tabId)) {
+      return;
+    }
+    const pageClient = await this.getActivePageClient();
+    await pageClient.Page.setInterceptFileChooserDialog?.({ enabled: true }).catch(() => {});
+    this.fileChooserInterceptEnabledByTabId.add(tabId);
+  }
+
   private consoleSummary(tabId: string): { total: number; errors: number; warnings: number } {
     const messages = this.ensureConsoleState(tabId).messages;
     let errors = 0;
@@ -2526,6 +2759,8 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     ).catch(() => false);
   }
 
+  async prepareForFileUpload(_target: ClickTarget): Promise<void> {}
+
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     const tabId = await this.getActiveTabId();
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
@@ -2708,6 +2943,37 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       ]
     });
     await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
+  }
+
+  async focus(target: ClickTarget): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDiRef(this.client, tabId, FOCUS_AND_GET_ELEMENT_SOURCE, this.targetArg(target));
+    if (!result.sharedId && !result.handle) {
+      const isSelector = "selector" in target;
+      throw new McpToolError(
+        isSelector ? "invalid_target" : "stale_ref",
+        isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid."
+      );
+    }
+  }
+
+  async clear(target: ClickTarget): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDi<{ ok: boolean; reason?: string }>(
+      this.client,
+      tabId,
+      CLEAR_ELEMENT_SOURCE,
+      this.targetArg(target)
+    );
+    if (!result.ok) {
+      const isSelector = "selector" in target;
+      throw new McpToolError(
+        isSelector ? "invalid_target" : "stale_ref",
+        result.reason === "not_found"
+          ? (isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid.")
+          : "Element is not a typeable input."
+      );
+    }
   }
 
   async close(): Promise<void> {
@@ -2947,6 +3213,8 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       files: filePaths
     });
   }
+
+  async finishFileUpload(_target: ClickTarget): Promise<void> {}
 
   async fillForm(fields: SessionFormField[]): Promise<void> {
     const tabId = await this.getActiveTabId();

@@ -94,10 +94,13 @@ export interface ConnectedBrowserSession {
   consoleMessages(level?: "error" | "warning" | "info" | "debug", all?: boolean): Promise<BrowserConsoleEntry[]>;
   evaluate(expression: string, target?: ClickTarget): Promise<unknown>;
   isFileInput(target: ClickTarget): Promise<boolean>;
+  prepareForFileUpload?(target: ClickTarget): Promise<void>;
   click(target: ClickTarget, options: SessionClickOptions): Promise<void>;
   drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void>;
   drop(target: ClickTarget, payload: SessionDropOptions): Promise<void>;
-  hover(target: ClickTarget): Promise<void>;
+  hover(target: ClickTarget, options?: SessionHoverOptions): Promise<void>;
+  focus(target: ClickTarget): Promise<void>;
+  clear(target: ClickTarget): Promise<void>;
   navigate(url: string): Promise<void>;
   type(target: ClickTarget, text: string, options?: SessionTypeOptions): Promise<void>;
   pressKey(key: string, modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">): Promise<void>;
@@ -114,6 +117,7 @@ export interface ConnectedBrowserSession {
   ): Promise<void>;
   screenshot(options?: SessionScreenshotOptions): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }>;
   uploadFile(target: ClickTarget, filePaths: string[]): Promise<void>;
+  finishFileUpload?(target: ClickTarget): Promise<void>;
   fillForm(fields: SessionFormField[]): Promise<void>;
   hasDialog(): Promise<boolean>;
   handleDialog(accept: boolean, promptText?: string): Promise<void>;
@@ -131,6 +135,11 @@ export interface SessionClickOptions {
   button?: "left" | "right" | "middle";
   modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">;
   clickHoldMs: number;
+  moveDelayMs?: number;
+}
+
+export interface SessionHoverOptions {
+  moveDelayMs?: number;
 }
 
 export interface SessionTypeOptions {

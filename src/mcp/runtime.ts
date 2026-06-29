@@ -272,6 +272,10 @@ export class McpRuntime {
     const opensFileChooser = await session.isFileInput(resolved);
     const humanOpts = resolveHumanizationOptions(opts?.human as HumanizationOptions | undefined);
 
+    if (opensFileChooser) {
+      await session.prepareForFileUpload?.(resolved);
+    }
+
     await session.hover(resolved);
     const hoverDelayMs = jitter(humanOpts.hoverBeforeClickMs);
     if (hoverDelayMs > 0) await delay(hoverDelayMs);
@@ -280,7 +284,8 @@ export class McpRuntime {
       ...(opts?.doubleClick !== undefined ? { doubleClick: opts.doubleClick } : {}),
       ...(opts?.button !== undefined ? { button: opts.button } : {}),
       ...(opts?.modifiers !== undefined ? { modifiers: opts.modifiers as SessionClickOptions["modifiers"] } : {}),
-      clickHoldMs: jitter(humanOpts.clickHoldMs)
+      clickHoldMs: jitter(humanOpts.clickHoldMs),
+      moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
     } as SessionClickOptions);
 
     this.invalidateSnapshot();
@@ -297,7 +302,10 @@ export class McpRuntime {
   async hover(target: string): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const resolved = this.resolveTarget(target);
-    await session.hover(resolved);
+    const humanOpts = resolveHumanizationOptions();
+    await session.hover(resolved, {
+      moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
+    });
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {
@@ -337,10 +345,11 @@ export class McpRuntime {
       await delay(hoverDelayMs);
     }
     await session.click(resolved, {
-      clickHoldMs: jitter(humanOpts.clickHoldMs)
+      clickHoldMs: jitter(humanOpts.clickHoldMs),
+      moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
     });
-    await session.pressKey("a", ["ControlOrMeta"]);
-    await session.pressKey("Backspace");
+    await session.focus(resolved);
+    await session.clear(resolved);
     await session.type(resolved, text, {
       ...(opts?.submit !== undefined ? { submit: opts.submit } : {}),
       slowly: true,
@@ -450,7 +459,7 @@ export class McpRuntime {
     const session = this.requireConnected();
     const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
     await session.drag(this.resolveTarget(startTarget), this.resolveTarget(endTarget), {
-      moveDelayMs: jitter(humanOpts.moveJitterMs),
+      moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs)),
       holdDelayMs: jitter(humanOpts.clickHoldMs)
     });
     this.invalidateSnapshot();
@@ -510,9 +519,19 @@ export class McpRuntime {
         "No file chooser visible."
       );
     }
+    const humanOpts = resolveHumanizationOptions();
     const target = this.pendingFileUploadTarget;
     this.pendingFileUploadTarget = undefined;
-    await session.uploadFile(target, paths);
+    try {
+      const chooserObservationDelayMs = Math.max(
+        320,
+        jitter(humanOpts.hoverBeforeClickMs + humanOpts.clickHoldMs)
+      );
+      await delay(chooserObservationDelayMs);
+      await session.uploadFile(target, paths);
+    } finally {
+      await session.finishFileUpload?.(target);
+    }
     this.invalidateSnapshot();
     if (this.snapshotMode === "none") {
       return undefined;
@@ -530,16 +549,19 @@ export class McpRuntime {
     for (const field of fields) {
       const resolved = this.resolveTarget(field.target);
       if (field.type === "textbox") {
-        await session.hover(resolved);
+        await session.hover(resolved, {
+          moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
+        });
         const hoverDelayMs = jitter(humanOpts.hoverBeforeClickMs);
         if (hoverDelayMs > 0) {
           await delay(hoverDelayMs);
         }
         await session.click(resolved, {
-          clickHoldMs: jitter(humanOpts.clickHoldMs)
+          clickHoldMs: jitter(humanOpts.clickHoldMs),
+          moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
         });
-        await session.pressKey("a", ["ControlOrMeta"]);
-        await session.pressKey("Backspace");
+        await session.focus(resolved);
+        await session.clear(resolved);
         await session.type(resolved, field.value, {
           slowly: true,
           delayMs: jitter(humanOpts.typingDelayMs)

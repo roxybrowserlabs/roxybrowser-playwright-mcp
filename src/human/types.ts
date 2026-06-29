@@ -21,6 +21,7 @@ export interface HumanActionTarget {
   focus?(): Promise<void>;
   click(options?: ClickOptions): Promise<void>;
   hover(options?: HoverOptions): Promise<void>;
+  clear?(): Promise<void>;
   fill(value: string, options?: FillOptions): Promise<void>;
   type(value: string, options?: TypeOptions): Promise<void>;
   press(key: string, options?: PressOptions): Promise<void>;
