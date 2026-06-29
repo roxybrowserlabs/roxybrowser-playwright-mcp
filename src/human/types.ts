@@ -8,7 +8,6 @@ import type {
 } from "../types/options.js";
 
 export interface ResolvedHumanizationOptions {
-  enabled: boolean;
   profile: "cautious" | "balanced" | "fast";
   moveJitterMs: number;
   clickHoldMs: number;

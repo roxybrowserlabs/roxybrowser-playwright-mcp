@@ -13,6 +13,7 @@ import {
   parseSerializedEvaluationResult,
   wrapWithSerializedEvaluationResult
 } from "../protocol/evaluationSerializer.js";
+import { BUBBLE_CURSOR_INSTALL_SOURCE } from "../human/bubbleCursor.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
 import { configuredTempDir } from "./output.js";
@@ -29,6 +30,7 @@ import type {
   SessionDragOptions,
   SessionDropOptions,
   SessionFormField,
+  SessionScrollOptions,
   SessionScreenshotOptions,
   SessionTypeOptions
 } from "./types.js";
@@ -517,6 +519,8 @@ const SCROLL_ELEMENT_SOURCE = String.raw`(payload) => {
   return { ok: true };
 }`;
 
+const ENSURE_BUBBLE_CURSOR_SOURCE = BUBBLE_CURSOR_INSTALL_SOURCE;
+
 const GET_ELEMENT_OBJECT_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
   return payload.nodeToken
@@ -739,6 +743,32 @@ async function evaluateBiDiRef(
     ...(response.result?.value?.sharedId !== undefined ? { sharedId: response.result.value.sharedId } : {}),
     ...(response.result?.value?.handle !== undefined ? { handle: response.result.value.handle } : {})
   };
+}
+
+async function splitScrollDeltas(
+  deltaX: number,
+  deltaY: number,
+  stepPx: number
+): Promise<Array<{ deltaX: number; deltaY: number }>> {
+  const dominantDistance = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+  if (dominantDistance === 0) {
+    return [];
+  }
+  const steps = Math.max(1, Math.ceil(dominantDistance / Math.max(1, stepPx)));
+  const chunks: Array<{ deltaX: number; deltaY: number }> = [];
+  let appliedX = 0;
+  let appliedY = 0;
+  for (let index = 0; index < steps; index += 1) {
+    const nextAppliedX = Math.round((deltaX * (index + 1)) / steps);
+    const nextAppliedY = Math.round((deltaY * (index + 1)) / steps);
+    chunks.push({
+      deltaX: nextAppliedX - appliedX,
+      deltaY: nextAppliedY - appliedY
+    });
+    appliedX = nextAppliedX;
+    appliedY = nextAppliedY;
+  }
+  return chunks.filter((chunk) => chunk.deltaX !== 0 || chunk.deltaY !== 0);
 }
 
 type BidiRemoteValue = {
@@ -1254,16 +1284,28 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     });
   }
 
-  async scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void> {
+  async scroll(
+    target: ClickTarget | null,
+    deltaX: number,
+    deltaY: number,
+    options?: SessionScrollOptions
+  ): Promise<void> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = target ? this.targetArg(target) : {};
-    await evaluateCdp<{ ok: boolean }>(
-      pageClient,
-      SCROLL_ELEMENT_SOURCE,
-      { ...arg, deltaX, deltaY },
-      contextId
-    );
+    await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
+    const chunks = await splitScrollDeltas(deltaX, deltaY, options?.stepPx ?? Math.max(Math.abs(deltaX), Math.abs(deltaY), 1));
+    for (const chunk of chunks) {
+      await evaluateCdp<{ ok: boolean }>(
+        pageClient,
+        SCROLL_ELEMENT_SOURCE,
+        { ...arg, deltaX: chunk.deltaX, deltaY: chunk.deltaY },
+        contextId
+      );
+      if ((options?.stepDelayMs ?? 0) > 0) {
+        await delay(options!.stepDelayMs);
+      }
+    }
   }
 
   async screenshot(options: SessionScreenshotOptions = {}): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
@@ -2769,10 +2811,26 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     });
   }
 
-  async scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void> {
+  async scroll(
+    target: ClickTarget | null,
+    deltaX: number,
+    deltaY: number,
+    options?: SessionScrollOptions
+  ): Promise<void> {
     const tabId = await this.getActiveTabId();
     const arg = target ? ("nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector }) : {};
-    await evaluateBiDi<{ ok: boolean }>(this.client, tabId, SCROLL_ELEMENT_SOURCE, { ...arg, deltaX, deltaY });
+    await evaluateBiDi<boolean>(this.client, tabId, ENSURE_BUBBLE_CURSOR_SOURCE).catch(() => false);
+    const chunks = await splitScrollDeltas(deltaX, deltaY, options?.stepPx ?? Math.max(Math.abs(deltaX), Math.abs(deltaY), 1));
+    for (const chunk of chunks) {
+      await evaluateBiDi<{ ok: boolean }>(this.client, tabId, SCROLL_ELEMENT_SOURCE, {
+        ...arg,
+        deltaX: chunk.deltaX,
+        deltaY: chunk.deltaY
+      });
+      if ((options?.stepDelayMs ?? 0) > 0) {
+        await delay(options!.stepDelayMs);
+      }
+    }
   }
 
   async screenshot(options: SessionScreenshotOptions = {}): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {

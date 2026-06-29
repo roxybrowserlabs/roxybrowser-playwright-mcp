@@ -6,7 +6,6 @@ import type { ResolvedHumanizationOptions } from "./types.js";
 
 const PROFILE_DEFAULTS: Record<HumanProfileName, ResolvedHumanizationOptions> = {
   cautious: {
-    enabled: false,
     profile: "cautious",
     moveJitterMs: 28,
     clickHoldMs: 90,
@@ -16,7 +15,6 @@ const PROFILE_DEFAULTS: Record<HumanProfileName, ResolvedHumanizationOptions> = 
     hoverBeforeClickMs: 180
   },
   balanced: {
-    enabled: false,
     profile: "balanced",
     moveJitterMs: 16,
     clickHoldMs: 60,
@@ -26,7 +24,6 @@ const PROFILE_DEFAULTS: Record<HumanProfileName, ResolvedHumanizationOptions> = 
     hoverBeforeClickMs: 110
   },
   fast: {
-    enabled: false,
     profile: "fast",
     moveJitterMs: 8,
     clickHoldMs: 30,
@@ -45,7 +42,6 @@ export function resolveHumanizationOptions(
   const profile = PROFILE_DEFAULTS[profileName];
 
   return {
-    enabled: options?.enabled ?? base?.enabled ?? profile.enabled,
     profile: profileName,
     moveJitterMs: options?.moveJitterMs ?? base?.moveJitterMs ?? profile.moveJitterMs,
     clickHoldMs: options?.clickHoldMs ?? base?.clickHoldMs ?? profile.clickHoldMs,

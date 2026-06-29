@@ -6,7 +6,6 @@ describe("resolveHumanizationOptions", () => {
     const result = resolveHumanizationOptions();
 
     expect(result).toEqual({
-      enabled: false,
       profile: "balanced",
       moveJitterMs: 16,
       clickHoldMs: 60,
@@ -17,14 +16,12 @@ describe("resolveHumanizationOptions", () => {
     });
   });
 
-  it("enables humanization only when explicitly requested", () => {
+  it("keeps humanization enabled when selecting another profile", () => {
     const result = resolveHumanizationOptions({
-      enabled: true,
       profile: "fast"
     });
 
     expect(result).toEqual({
-      enabled: true,
       profile: "fast",
       moveJitterMs: 8,
       clickHoldMs: 30,
@@ -39,11 +36,9 @@ describe("resolveHumanizationOptions", () => {
     const result = resolveHumanizationOptions(
       {
         profile: "fast",
-        typingDelayMs: 10,
-        enabled: false
+        typingDelayMs: 10
       },
       {
-        enabled: true,
         profile: "cautious",
         moveJitterMs: 1,
         clickHoldMs: 2,
@@ -55,7 +50,6 @@ describe("resolveHumanizationOptions", () => {
     );
 
     expect(result).toEqual({
-      enabled: false,
       profile: "fast",
       moveJitterMs: 1,
       clickHoldMs: 2,
@@ -72,7 +66,6 @@ describe("resolveHumanizationOptions", () => {
         profile: "cautious"
       },
       {
-        enabled: true,
         profile: "balanced",
         moveJitterMs: 10,
         clickHoldMs: 20,

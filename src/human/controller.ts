@@ -12,6 +12,7 @@ import type {
   HumanController,
   ResolvedHumanizationOptions
 } from "./types.js";
+import { BUBBLE_CURSOR_INSTALL_SOURCE } from "./bubbleCursor.js";
 
 export class DefaultHumanController implements HumanController {
   private actionQueue = Promise.resolve();
@@ -20,10 +21,7 @@ export class DefaultHumanController implements HumanController {
 
   async click(target: HumanActionTarget, options?: ClickOptions): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    if (!defaults.enabled) {
-      await target.click(options);
-      return;
-    }
+    await this.ensureVisualization(target);
     await this.enqueue(async () => {
       await this.hover(target, options);
       if (defaults.hoverBeforeClickMs > 0) {
@@ -37,6 +35,7 @@ export class DefaultHumanController implements HumanController {
   }
 
   async hover(target: HumanActionTarget, options?: HoverOptions): Promise<void> {
+    await this.ensureVisualization(target);
     await target.hover(options);
   }
 
@@ -45,6 +44,7 @@ export class DefaultHumanController implements HumanController {
     value: string,
     options?: FillOptions
   ): Promise<void> {
+    await this.ensureVisualization(target);
     await target.fill(value, options);
   }
 
@@ -54,10 +54,7 @@ export class DefaultHumanController implements HumanController {
     options?: TypeOptions
   ): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    if (!defaults.enabled) {
-      await target.type(value, options);
-      return;
-    }
+    await this.ensureVisualization(target);
     await target.type(value, {
       ...options,
       delay: options?.delay ?? defaults.typingDelayMs
@@ -70,10 +67,7 @@ export class DefaultHumanController implements HumanController {
     options?: PressOptions
   ): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    if (!defaults.enabled) {
-      await target.press(key, options);
-      return;
-    }
+    await this.ensureVisualization(target);
     await target.press(key, {
       ...options,
       delay: options?.delay ?? defaults.typingDelayMs
@@ -82,6 +76,16 @@ export class DefaultHumanController implements HumanController {
 
   private resolveDefaults(options?: HumanActionOptions): ResolvedHumanizationOptions {
     return resolveHumanizationOptions(options?.human, this.defaults);
+  }
+
+  private async ensureVisualization(target: HumanActionTarget): Promise<void> {
+    const evaluatableTarget = target as HumanActionTarget & {
+      evaluate?: (expression: string, arg?: unknown, isFunction?: boolean) => Promise<unknown>;
+    };
+    if (typeof evaluatableTarget.evaluate !== "function") {
+      return;
+    }
+    await evaluatableTarget.evaluate(BUBBLE_CURSOR_INSTALL_SOURCE);
   }
 
   private async enqueue<TResult>(action: () => Promise<TResult>): Promise<TResult> {

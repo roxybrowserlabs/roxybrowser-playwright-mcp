@@ -596,7 +596,6 @@ describe("RoxyLocator", () => {
     const elementHandle = new RoxyElementHandle(
       elementAdapter,
       {
-        enabled: true,
         profile: "balanced",
         moveJitterMs: 16,
         clickHoldMs: 60,
@@ -607,58 +606,58 @@ describe("RoxyLocator", () => {
       }
     );
 
-    await locator.click({ human: { enabled: false }, trial: true });
-    await locator.hover({ human: { enabled: false }, timeout: 22 });
-    await locator.fill("value", { human: { enabled: false }, force: true });
-    await locator.type("typed", { human: { enabled: false }, delay: 12 });
-    await locator.press("Enter", { human: { enabled: false }, delay: 8 });
-    await locator.tap({ human: { enabled: false }, trial: true });
-    await locator.check({ human: { enabled: false }, trial: true });
-    await locator.uncheck({ human: { enabled: false }, trial: true });
-    await locator.setChecked(true, { human: { enabled: false }, trial: true });
-    await locator.clear({ human: { enabled: false }, timeout: 12 });
-    await locator.dblclick({ human: { enabled: false }, delay: 5 });
-    await locator.pressSequentially("slow", { human: { enabled: false }, delay: 3 });
+    await locator.click({ human: { profile: "fast" }, trial: true });
+    await locator.hover({ human: { profile: "fast" }, timeout: 22 });
+    await locator.fill("value", { human: { profile: "fast" }, force: true });
+    await locator.type("typed", { human: { profile: "fast" }, delay: 12 });
+    await locator.press("Enter", { human: { profile: "fast" }, delay: 8 });
+    await locator.tap({ human: { profile: "fast" }, trial: true });
+    await locator.check({ human: { profile: "fast" }, trial: true });
+    await locator.uncheck({ human: { profile: "fast" }, trial: true });
+    await locator.setChecked(true, { human: { profile: "fast" }, trial: true });
+    await locator.clear({ human: { profile: "fast" }, timeout: 12 });
+    await locator.dblclick({ human: { profile: "fast" }, delay: 5 });
+    await locator.pressSequentially("slow", { human: { profile: "fast" }, delay: 3 });
 
-    expect(controller.click).toHaveBeenCalledWith(locatorAdapter, { human: { enabled: false }, trial: true });
-    expect(controller.hover).toHaveBeenCalledWith(locatorAdapter, { human: { enabled: false }, timeout: 22 });
-    expect(controller.fill).toHaveBeenCalledWith(locatorAdapter, "value", { human: { enabled: false }, force: true });
-    expect(controller.type).toHaveBeenCalledWith(locatorAdapter, "typed", { human: { enabled: false }, delay: 12 });
-    expect(controller.press).toHaveBeenCalledWith(locatorAdapter, "Enter", { human: { enabled: false }, delay: 8 });
-    expect(locatorAdapter.tap).toHaveBeenCalledWith({ human: { enabled: false }, trial: true });
-    expect(locatorAdapter.check).toHaveBeenCalledWith({ human: { enabled: false }, trial: true });
-    expect(locatorAdapter.uncheck).toHaveBeenCalledWith({ human: { enabled: false }, trial: true });
-    expect(locatorAdapter.check).toHaveBeenNthCalledWith(2, { human: { enabled: false }, trial: true });
-    expect(controller.fill).toHaveBeenNthCalledWith(2, locatorAdapter, "", { human: { enabled: false }, timeout: 12 });
-    expect(locatorAdapter.dblclick).toHaveBeenCalledWith({ human: { enabled: false }, delay: 5 });
-    expect(controller.type).toHaveBeenNthCalledWith(2, locatorAdapter, "slow", { human: { enabled: false }, delay: 3 });
+    expect(controller.click).toHaveBeenCalledWith(locatorAdapter, { human: { profile: "fast" }, trial: true });
+    expect(controller.hover).toHaveBeenCalledWith(locatorAdapter, { human: { profile: "fast" }, timeout: 22 });
+    expect(controller.fill).toHaveBeenCalledWith(locatorAdapter, "value", { human: { profile: "fast" }, force: true });
+    expect(controller.type).toHaveBeenCalledWith(locatorAdapter, "typed", { human: { profile: "fast" }, delay: 12 });
+    expect(controller.press).toHaveBeenCalledWith(locatorAdapter, "Enter", { human: { profile: "fast" }, delay: 8 });
+    expect(locatorAdapter.tap).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
+    expect(locatorAdapter.check).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
+    expect(locatorAdapter.uncheck).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
+    expect(locatorAdapter.check).toHaveBeenNthCalledWith(2, { human: { profile: "fast" }, trial: true });
+    expect(controller.fill).toHaveBeenNthCalledWith(2, locatorAdapter, "", { human: { profile: "fast" }, timeout: 12 });
+    expect(locatorAdapter.dblclick).toHaveBeenCalledWith({ human: { profile: "fast" }, delay: 5 });
+    expect(controller.type).toHaveBeenNthCalledWith(2, locatorAdapter, "slow", { human: { profile: "fast" }, delay: 3 });
 
-    await elementHandle.click({ human: { enabled: false }, trial: true });
-    await elementHandle.hover({ human: { enabled: false }, timeout: 14 });
-    await elementHandle.fill("value", { human: { enabled: false }, force: true });
-    await elementHandle.type("typed", { human: { enabled: false }, delay: 11 });
-    await elementHandle.press("Enter", { human: { enabled: false }, delay: 7 });
-    await elementHandle.tap({ human: { enabled: false }, trial: true });
-    await elementHandle.check({ human: { enabled: false }, trial: true });
-    await elementHandle.uncheck({ human: { enabled: false }, trial: true });
-    await elementHandle.setChecked(true, { human: { enabled: false }, trial: true });
-    await elementHandle.dblclick({ human: { enabled: false }, delay: 6 });
+    await elementHandle.click({ human: { profile: "fast" }, trial: true });
+    await elementHandle.hover({ human: { profile: "fast" }, timeout: 14 });
+    await elementHandle.fill("value", { human: { profile: "fast" }, force: true });
+    await elementHandle.type("typed", { human: { profile: "fast" }, delay: 11 });
+    await elementHandle.press("Enter", { human: { profile: "fast" }, delay: 7 });
+    await elementHandle.tap({ human: { profile: "fast" }, trial: true });
+    await elementHandle.check({ human: { profile: "fast" }, trial: true });
+    await elementHandle.uncheck({ human: { profile: "fast" }, trial: true });
+    await elementHandle.setChecked(true, { human: { profile: "fast" }, trial: true });
+    await elementHandle.dblclick({ human: { profile: "fast" }, delay: 6 });
 
     expect(elementAdapter.click).toHaveBeenCalledWith(expect.objectContaining({
-      human: { enabled: false },
+      human: { profile: "fast" },
       trial: true
     }));
     expect(elementAdapter.hover).toHaveBeenCalledWith(expect.objectContaining({
-      human: { enabled: false },
+      human: { profile: "fast" },
       timeout: 14
     }));
-    expect(elementAdapter.fill).toHaveBeenCalledWith("value", { human: { enabled: false }, force: true });
-    expect(elementAdapter.type).toHaveBeenCalledWith("typed", { human: { enabled: false }, delay: 11 });
-    expect(elementAdapter.press).toHaveBeenCalledWith("Enter", { human: { enabled: false }, delay: 7 });
-    expect(elementAdapter.check).toHaveBeenCalledWith({ human: { enabled: false }, trial: true });
-    expect(elementAdapter.uncheck).toHaveBeenCalledWith({ human: { enabled: false }, trial: true });
-    expect(elementAdapter.check).toHaveBeenNthCalledWith(2, { human: { enabled: false }, trial: true });
-    expect(elementAdapter.dblclick).toHaveBeenCalledWith({ human: { enabled: false }, delay: 6 });
+    expect(elementAdapter.fill).toHaveBeenCalledWith("value", { human: { profile: "fast" }, force: true });
+    expect(elementAdapter.type).toHaveBeenCalledWith("typed", { human: { profile: "fast" }, delay: 11 });
+    expect(elementAdapter.press).toHaveBeenCalledWith("Enter", { human: { profile: "fast" }, delay: 7 });
+    expect(elementAdapter.check).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
+    expect(elementAdapter.uncheck).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
+    expect(elementAdapter.check).toHaveBeenNthCalledWith(2, { human: { profile: "fast" }, trial: true });
+    expect(elementAdapter.dblclick).toHaveBeenCalledWith({ human: { profile: "fast" }, delay: 6 });
   });
 
   it("dispatches drop through an element handle with normalized payloads", async () => {

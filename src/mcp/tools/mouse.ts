@@ -92,11 +92,21 @@ const scroll = defineTool({
         "Element to scroll; omit to scroll the whole page"
       ),
       deltaX: z.number().optional().describe("Horizontal scroll delta in pixels (default 0)"),
-      deltaY: z.number().optional().describe("Vertical scroll delta in pixels (default 0)")
+      deltaY: z.number().optional().describe("Vertical scroll delta in pixels (default 0)"),
+      human: z.object({
+        profile: z.enum(["cautious", "balanced", "fast"]).optional().describe(
+          "Humanization timing profile, defaults to balanced"
+        )
+      }).optional().describe("Humanization settings for this scroll")
     })
   },
   handle: async (args, runtime) => {
-    const snap = await runtime.scroll(args.ref ?? null, args.deltaX ?? 0, args.deltaY ?? 0);
+    const snap = await runtime.scroll(
+      args.ref ?? null,
+      args.deltaX ?? 0,
+      args.deltaY ?? 0,
+      args.human as { profile?: string } | undefined
+    );
     if (!snap) return textResult("Scrolled.");
     return textResult(formatSnapshot(snap));
   }

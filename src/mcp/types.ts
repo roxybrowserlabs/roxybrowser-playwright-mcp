@@ -106,7 +106,12 @@ export interface ConnectedBrowserSession {
   goBack(): Promise<void>;
   goForward(): Promise<void>;
   resize(width: number, height: number): Promise<void>;
-  scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void>;
+  scroll(
+    target: ClickTarget | null,
+    deltaX: number,
+    deltaY: number,
+    options?: SessionScrollOptions
+  ): Promise<void>;
   screenshot(options?: SessionScreenshotOptions): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }>;
   uploadFile(target: ClickTarget, filePaths: string[]): Promise<void>;
   fillForm(fields: SessionFormField[]): Promise<void>;
@@ -132,6 +137,11 @@ export interface SessionTypeOptions {
   submit?: boolean;
   slowly?: boolean;
   delayMs?: number;
+}
+
+export interface SessionScrollOptions {
+  stepPx: number;
+  stepDelayMs: number;
 }
 
 export interface SessionDragOptions {

@@ -5,6 +5,7 @@ import type { HumanActionTarget } from "../../../src/human/types.js";
 function createTarget(): HumanActionTarget {
   return {
     click: vi.fn(async () => {}),
+    evaluate: vi.fn(async () => true),
     hover: vi.fn(async () => {}),
     fill: vi.fn(async () => {}),
     type: vi.fn(async () => {}),
@@ -23,7 +24,6 @@ describe("DefaultHumanController", () => {
 
   it("hovers before click and applies default click delay", async () => {
     const controller = new DefaultHumanController({
-      enabled: true,
       profile: "balanced",
       moveJitterMs: 1,
       clickHoldMs: 88,
@@ -38,6 +38,7 @@ describe("DefaultHumanController", () => {
     await vi.advanceTimersByTimeAsync(25);
     await pending;
 
+    expect(target.evaluate).toHaveBeenCalledTimes(2);
     expect(target.hover).toHaveBeenCalledWith({ button: "right" });
     expect(target.click).toHaveBeenCalledWith({
       button: "right",
@@ -47,7 +48,6 @@ describe("DefaultHumanController", () => {
 
   it("skips wait when hoverBeforeClickMs is zero and preserves explicit delay", async () => {
     const controller = new DefaultHumanController({
-      enabled: true,
       profile: "fast",
       moveJitterMs: 1,
       clickHoldMs: 60,
@@ -60,13 +60,13 @@ describe("DefaultHumanController", () => {
 
     await controller.click(target, { delay: 9 });
 
+    expect(target.evaluate).toHaveBeenCalledTimes(2);
     expect(target.hover).toHaveBeenCalledTimes(1);
     expect(target.click).toHaveBeenCalledWith({ delay: 9 });
   });
 
   it("forwards fill, type and press with default typing delay", async () => {
     const controller = new DefaultHumanController({
-      enabled: true,
       profile: "balanced",
       moveJitterMs: 1,
       clickHoldMs: 50,
@@ -81,14 +81,14 @@ describe("DefaultHumanController", () => {
     await controller.type(target, "hello");
     await controller.press(target, "Enter");
 
+    expect(target.evaluate).toHaveBeenCalledTimes(3);
     expect(target.fill).toHaveBeenCalledWith("hello", { force: true });
     expect(target.type).toHaveBeenCalledWith("hello", { delay: 77 });
     expect(target.press).toHaveBeenCalledWith("Enter", { delay: 77 });
   });
 
-  it("treats human disabled as pure pass-through behavior", async () => {
+  it("still humanizes when a profile override is passed", async () => {
     const controller = new DefaultHumanController({
-      enabled: true,
       profile: "balanced",
       moveJitterMs: 1,
       clickHoldMs: 50,
@@ -99,19 +99,23 @@ describe("DefaultHumanController", () => {
     });
     const target = createTarget();
 
-    await controller.click(target, { human: { enabled: false }, delay: 9 });
-    await controller.type(target, "hello", { human: { enabled: false } });
-    await controller.press(target, "Enter", { human: { enabled: false } });
+    const clickPromise = controller.click(target, { human: { profile: "fast" }, delay: 9 });
+    const typePromise = controller.type(target, "hello", { human: { profile: "fast" } });
+    const pressPromise = controller.press(target, "Enter", { human: { profile: "fast" } });
+    await vi.advanceTimersByTimeAsync(25);
+    await clickPromise;
+    await typePromise;
+    await pressPromise;
 
-    expect(target.hover).not.toHaveBeenCalled();
-    expect(target.click).toHaveBeenCalledWith({ human: { enabled: false }, delay: 9 });
-    expect(target.type).toHaveBeenCalledWith("hello", { human: { enabled: false } });
-    expect(target.press).toHaveBeenCalledWith("Enter", { human: { enabled: false } });
+    expect(target.evaluate).toHaveBeenCalledTimes(4);
+    expect(target.hover).toHaveBeenCalledTimes(1);
+    expect(target.click).toHaveBeenCalledWith({ human: { profile: "fast" }, delay: 9 });
+    expect(target.type).toHaveBeenCalledWith("hello", { human: { profile: "fast" }, delay: 77 });
+    expect(target.press).toHaveBeenCalledWith("Enter", { human: { profile: "fast" }, delay: 77 });
   });
 
   it("serializes concurrent clicks within the same controller", async () => {
     const controller = new DefaultHumanController({
-      enabled: true,
       profile: "fast",
       moveJitterMs: 1,
       clickHoldMs: 60,
@@ -137,6 +141,7 @@ describe("DefaultHumanController", () => {
           }
         )
         .mockResolvedValue(undefined),
+      evaluate: vi.fn(async () => true),
       hover: vi.fn(async () => {}),
       fill: vi.fn(async () => {}),
       type: vi.fn(async () => {}),
@@ -147,6 +152,7 @@ describe("DefaultHumanController", () => {
     const secondClick = controller.click(target);
 
     await firstClickStarted;
+    expect(target.evaluate).toHaveBeenCalledTimes(3);
     expect(target.hover).toHaveBeenCalledTimes(1);
     expect(target.click).toHaveBeenCalledTimes(1);
 
@@ -154,6 +160,7 @@ describe("DefaultHumanController", () => {
     await firstClick;
     await secondClick;
 
+    expect(target.evaluate).toHaveBeenCalledTimes(4);
     expect(target.hover).toHaveBeenCalledTimes(2);
     expect(target.click).toHaveBeenCalledTimes(2);
   });

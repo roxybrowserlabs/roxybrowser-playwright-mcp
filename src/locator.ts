@@ -68,7 +68,7 @@ const LAST_SELECTOR: LocatorSelector = {
   value: "pick",
   pick: { kind: "last" }
 };
-const DEFAULT_LOCATOR_HUMAN_DEFAULTS = resolveHumanizationOptions({ enabled: false });
+const DEFAULT_LOCATOR_HUMAN_DEFAULTS = resolveHumanizationOptions();
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 
 type ActionOptionsLike = { force?: boolean; timeout?: number } | undefined;

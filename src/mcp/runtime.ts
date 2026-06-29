@@ -465,11 +465,16 @@ export class McpRuntime {
   async scroll(
     ref: string | null,
     deltaX: number,
-    deltaY: number
+    deltaY: number,
+    human?: { profile?: string }
   ): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const resolved = ref !== null ? this.resolveTarget(ref) : null;
-    await session.scroll(resolved, deltaX, deltaY);
+    const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
+    await session.scroll(resolved, deltaX, deltaY, {
+      stepPx: Math.max(1, humanOpts.scrollStepPx),
+      stepDelayMs: Math.max(0, jitter(humanOpts.moveJitterMs))
+    });
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {

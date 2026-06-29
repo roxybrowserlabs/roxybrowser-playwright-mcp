@@ -18,7 +18,6 @@ describe("RoxyPage", () => {
   it("proxies page-level methods to the page adapter", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
-      enabled: true,
       profile: "balanced",
       moveJitterMs: 16,
       clickHoldMs: 60,
@@ -2410,21 +2409,20 @@ describe("RoxyPage", () => {
     const typeSpy = vi.spyOn(page.mainFrame(), "type").mockResolvedValue(undefined);
     const pressSpy = vi.spyOn(page.mainFrame(), "press").mockResolvedValue(undefined);
 
-    await page.click("button", { human: { enabled: false }, trial: true });
-    await page.fill("input", "hello", { human: { enabled: false }, force: true });
-    await page.type("input", "world", { human: { enabled: false }, delay: 12 });
-    await page.press("input", "Enter", { human: { enabled: false }, delay: 8 });
+    await page.click("button", { human: { profile: "fast" }, trial: true });
+    await page.fill("input", "hello", { human: { profile: "fast" }, force: true });
+    await page.type("input", "world", { human: { profile: "fast" }, delay: 12 });
+    await page.press("input", "Enter", { human: { profile: "fast" }, delay: 8 });
 
-    expect(clickSpy).toHaveBeenCalledWith("button", { human: { enabled: false }, trial: true });
-    expect(fillSpy).toHaveBeenCalledWith("input", "hello", { human: { enabled: false }, force: true });
-    expect(typeSpy).toHaveBeenCalledWith("input", "world", { human: { enabled: false }, delay: 12 });
-    expect(pressSpy).toHaveBeenCalledWith("input", "Enter", { human: { enabled: false }, delay: 8 });
+    expect(clickSpy).toHaveBeenCalledWith("button", { human: { profile: "fast" }, trial: true });
+    expect(fillSpy).toHaveBeenCalledWith("input", "hello", { human: { profile: "fast" }, force: true });
+    expect(typeSpy).toHaveBeenCalledWith("input", "world", { human: { profile: "fast" }, delay: 12 });
+    expect(pressSpy).toHaveBeenCalledWith("input", "Enter", { human: { profile: "fast" }, delay: 8 });
   });
 
   it("forwards optional human overrides through all page pointer actions", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
-      enabled: true,
       profile: "balanced",
       moveJitterMs: 16,
       clickHoldMs: 60,
@@ -2440,19 +2438,19 @@ describe("RoxyPage", () => {
     const uncheckSpy = vi.spyOn(page.mainFrame(), "uncheck").mockResolvedValue(undefined);
     const setCheckedSpy = vi.spyOn(page.mainFrame(), "setChecked").mockResolvedValue(undefined);
 
-    await page.hover("button", { human: { enabled: false }, timeout: 22 });
-    await page.dblclick("button", { human: { enabled: false }, delay: 6 });
-    await page.tap("button", { human: { enabled: false }, trial: true });
-    await page.check("input", { human: { enabled: false }, trial: true });
-    await page.uncheck("input", { human: { enabled: false }, trial: true });
-    await page.setChecked("input", true, { human: { enabled: false }, trial: true });
+    await page.hover("button", { human: { profile: "fast" }, timeout: 22 });
+    await page.dblclick("button", { human: { profile: "fast" }, delay: 6 });
+    await page.tap("button", { human: { profile: "fast" }, trial: true });
+    await page.check("input", { human: { profile: "fast" }, trial: true });
+    await page.uncheck("input", { human: { profile: "fast" }, trial: true });
+    await page.setChecked("input", true, { human: { profile: "fast" }, trial: true });
 
-    expect(hoverSpy).toHaveBeenCalledWith("button", { human: { enabled: false }, timeout: 22 });
-    expect(dblclickSpy).toHaveBeenCalledWith("button", { human: { enabled: false }, delay: 6 });
-    expect(tapSpy).toHaveBeenCalledWith("button", { human: { enabled: false }, trial: true });
-    expect(checkSpy).toHaveBeenCalledWith("input", { human: { enabled: false }, trial: true });
-    expect(uncheckSpy).toHaveBeenCalledWith("input", { human: { enabled: false }, trial: true });
-    expect(setCheckedSpy).toHaveBeenCalledWith("input", true, { human: { enabled: false }, trial: true });
+    expect(hoverSpy).toHaveBeenCalledWith("button", { human: { profile: "fast" }, timeout: 22 });
+    expect(dblclickSpy).toHaveBeenCalledWith("button", { human: { profile: "fast" }, delay: 6 });
+    expect(tapSpy).toHaveBeenCalledWith("button", { human: { profile: "fast" }, trial: true });
+    expect(checkSpy).toHaveBeenCalledWith("input", { human: { profile: "fast" }, trial: true });
+    expect(uncheckSpy).toHaveBeenCalledWith("input", { human: { profile: "fast" }, trial: true });
+    expect(setCheckedSpy).toHaveBeenCalledWith("input", true, { human: { profile: "fast" }, trial: true });
   });
 
   it("waitForSelector parses chained selectors and returns an element handle", async () => {

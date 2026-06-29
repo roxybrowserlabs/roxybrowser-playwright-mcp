@@ -45,7 +45,6 @@ export interface Rect extends Point {
 }
 
 export interface HumanizationOptions {
-  enabled?: boolean;
   profile?: HumanProfileName;
   moveJitterMs?: number;
   clickHoldMs?: number;

@@ -47,7 +47,6 @@ export function createBrowserSessionStub(): ProtocolBrowserSession {
 }
 
 export const DEFAULT_HUMAN_OPTIONS: ResolvedHumanizationOptions = {
-  enabled: true,
   profile: "balanced",
   moveJitterMs: 16,
   clickHoldMs: 60,
