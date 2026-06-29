@@ -7,12 +7,12 @@ describe("resolveHumanizationOptions", () => {
 
     expect(result).toEqual({
       profile: "balanced",
-      moveJitterMs: 16,
-      clickHoldMs: 60,
-      scrollStepPx: 280,
-      typingDelayMs: 95,
-      typingVarianceMs: 35,
-      hoverBeforeClickMs: 110
+      moveJitterMs: 140,
+      clickHoldMs: 180,
+      scrollStepPx: 180,
+      typingDelayMs: 140,
+      typingVarianceMs: 55,
+      hoverBeforeClickMs: 380
     });
   });
 
@@ -23,12 +23,12 @@ describe("resolveHumanizationOptions", () => {
 
     expect(result).toEqual({
       profile: "fast",
-      moveJitterMs: 8,
-      clickHoldMs: 30,
-      scrollStepPx: 360,
-      typingDelayMs: 45,
-      typingVarianceMs: 20,
-      hoverBeforeClickMs: 45
+      moveJitterMs: 80,
+      clickHoldMs: 120,
+      scrollStepPx: 240,
+      typingDelayMs: 85,
+      typingVarianceMs: 30,
+      hoverBeforeClickMs: 180
     });
   });
 

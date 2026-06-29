@@ -82,8 +82,10 @@ describe("DefaultHumanController", () => {
     await controller.press(target, "Enter");
 
     expect(target.evaluate).toHaveBeenCalledTimes(3);
-    expect(target.fill).toHaveBeenCalledWith("hello", { force: true });
-    expect(target.type).toHaveBeenCalledWith("hello", { delay: 77 });
+    expect(target.hover).toHaveBeenCalledTimes(3);
+    expect(target.click).toHaveBeenNthCalledWith(1, { force: true, delay: 50 });
+    expect(target.type).toHaveBeenNthCalledWith(1, "hello", { delay: 77 });
+    expect(target.type).toHaveBeenNthCalledWith(2, "hello", { delay: 77 });
     expect(target.press).toHaveBeenCalledWith("Enter", { delay: 77 });
   });
 
@@ -102,13 +104,13 @@ describe("DefaultHumanController", () => {
     const clickPromise = controller.click(target, { human: { profile: "fast" }, delay: 9 });
     const typePromise = controller.type(target, "hello", { human: { profile: "fast" } });
     const pressPromise = controller.press(target, "Enter", { human: { profile: "fast" } });
-    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(100);
     await clickPromise;
     await typePromise;
     await pressPromise;
 
     expect(target.evaluate).toHaveBeenCalledTimes(4);
-    expect(target.hover).toHaveBeenCalledTimes(1);
+    expect(target.hover).toHaveBeenCalledTimes(3);
     expect(target.click).toHaveBeenCalledWith({ human: { profile: "fast" }, delay: 9 });
     expect(target.type).toHaveBeenCalledWith("hello", { human: { profile: "fast" }, delay: 77 });
     expect(target.press).toHaveBeenCalledWith("Enter", { human: { profile: "fast" }, delay: 77 });

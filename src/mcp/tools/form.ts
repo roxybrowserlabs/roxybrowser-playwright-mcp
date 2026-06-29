@@ -90,6 +90,11 @@ const fillForm = defineTool({
     title: "Fill form",
     description: "Fill multiple form fields",
     inputSchema: z.object({
+      human: z.object({
+        profile: z.enum(["cautious", "balanced", "fast"]).optional().describe(
+          "Humanization timing profile, defaults to balanced"
+        )
+      }).optional().describe("Humanization settings for text input fields"),
       fields: z.array(z.object({
         name: z.string().describe("Human-readable field name"),
         type: z.enum(["textbox", "checkbox", "radio", "combobox", "slider"]).describe("Type of the field"),
@@ -99,7 +104,10 @@ const fillForm = defineTool({
     })
   },
   handle: async (args, runtime) => {
-    const snap = await runtime.fillForm(args.fields);
+    const snap = await runtime.fillForm(
+      args.fields,
+      args.human as { profile?: string } | undefined
+    );
     if (!snap) return textResult("Filled form.");
     return textResult(formatSnapshot(snap));
   }

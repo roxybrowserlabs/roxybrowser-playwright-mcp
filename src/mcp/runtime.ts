@@ -331,10 +331,20 @@ export class McpRuntime {
     const session = this.requireConnected();
     const resolved = this.resolveTarget(ref);
     const humanOpts = resolveHumanizationOptions(opts?.human as HumanizationOptions | undefined);
+    await session.hover(resolved);
+    const hoverDelayMs = jitter(humanOpts.hoverBeforeClickMs);
+    if (hoverDelayMs > 0) {
+      await delay(hoverDelayMs);
+    }
+    await session.click(resolved, {
+      clickHoldMs: jitter(humanOpts.clickHoldMs)
+    });
+    await session.pressKey("a", ["ControlOrMeta"]);
+    await session.pressKey("Backspace");
     await session.type(resolved, text, {
       ...(opts?.submit !== undefined ? { submit: opts.submit } : {}),
-      ...(opts?.slowly !== undefined ? { slowly: opts.slowly } : {}),
-      ...(opts?.slowly ? { delayMs: jitter(humanOpts.typingDelayMs) } : {})
+      slowly: true,
+      delayMs: jitter(humanOpts.typingDelayMs)
     });
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
@@ -517,13 +527,31 @@ export class McpRuntime {
   }>, human?: { profile?: string }): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
-    const delayMs = jitter(humanOpts.typingDelayMs);
-    await session.fillForm(fields.map((field) => ({
-      target: this.resolveTarget(field.target),
-      type: field.type,
-      value: field.value
-    })));
-    if (delayMs > 0) await delay(delayMs);
+    for (const field of fields) {
+      const resolved = this.resolveTarget(field.target);
+      if (field.type === "textbox") {
+        await session.hover(resolved);
+        const hoverDelayMs = jitter(humanOpts.hoverBeforeClickMs);
+        if (hoverDelayMs > 0) {
+          await delay(hoverDelayMs);
+        }
+        await session.click(resolved, {
+          clickHoldMs: jitter(humanOpts.clickHoldMs)
+        });
+        await session.pressKey("a", ["ControlOrMeta"]);
+        await session.pressKey("Backspace");
+        await session.type(resolved, field.value, {
+          slowly: true,
+          delayMs: jitter(humanOpts.typingDelayMs)
+        });
+        continue;
+      }
+      await session.fillForm([{
+        target: resolved,
+        type: field.type,
+        value: field.value
+      }]);
+    }
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     if (this.snapshotMode === "none") {

@@ -1298,6 +1298,10 @@ describe("MCP server", () => {
       expect(getSession().typeCalls.length).toBe(1);
       expect(getSession().typeCalls[0]!.text).toBe("hello");
       expect(getSession().typeCalls[0]!.target).toHaveProperty("nodeToken");
+      expect(getSession().pressKeyCalls.slice(0, 2)).toEqual([
+        { key: "a", modifiers: ["ControlOrMeta"] },
+        { key: "Backspace", modifiers: undefined }
+      ]);
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
@@ -1331,6 +1335,26 @@ describe("MCP server", () => {
 
       expect(result.isError).toBe(true);
       expect(textFromResult(result)).toContain("[stale_ref]");
+    });
+  });
+
+  describe("browser_fill_form", () => {
+    it("clears textbox content before typing", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_fill_form",
+        arguments: {
+          fields: [{ target: "e1", type: "textbox", value: "world", name: "Search" }]
+        }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(getSession().pressKeyCalls.slice(0, 2)).toEqual([
+        { key: "a", modifiers: ["ControlOrMeta"] },
+        { key: "Backspace", modifiers: undefined }
+      ]);
+      expect(getSession().typeCalls[0]!.text).toBe("world");
     });
   });
 

@@ -48,12 +48,12 @@ export function createBrowserSessionStub(): ProtocolBrowserSession {
 
 export const DEFAULT_HUMAN_OPTIONS: ResolvedHumanizationOptions = {
   profile: "balanced",
-  moveJitterMs: 16,
-  clickHoldMs: 60,
-  scrollStepPx: 280,
-  typingDelayMs: 95,
-  typingVarianceMs: 35,
-  hoverBeforeClickMs: 110
+  moveJitterMs: 140,
+  clickHoldMs: 180,
+  scrollStepPx: 180,
+  typingDelayMs: 140,
+  typingVarianceMs: 55,
+  hoverBeforeClickMs: 380
 };
 
 interface CreateBrowserOptions {

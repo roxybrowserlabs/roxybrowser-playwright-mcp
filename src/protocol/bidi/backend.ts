@@ -1668,14 +1668,21 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       steps?: number;
     }
   ): Promise<void> {
-    const steps = Math.max(options?.steps ?? 1, 1);
+    const distance = Math.hypot(x - this.currentMousePosition.x, y - this.currentMousePosition.y);
+    const steps = Math.max(options?.steps ?? Math.ceil(distance / 24), 1);
     const start = this.currentMousePosition;
     const actions = [];
     for (let index = 1; index <= steps; index += 1) {
+      const progress = index / steps;
+      const easedProgress = 1 - Math.pow(1 - progress, 2);
+      const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
       actions.push(this.mousePointerMove({
-        x: start.x + ((x - start.x) * index) / steps,
-        y: start.y + ((y - start.y) * index) / steps
+        x: start.x + ((x - start.x) * easedProgress) + drift * ((y - start.y) / Math.max(distance, 1)),
+        y: start.y + ((y - start.y) * easedProgress) - drift * ((x - start.x) / Math.max(distance, 1))
       }));
+      if (index < steps) {
+        actions.push({ type: "pause" as const, duration: 8 + Math.round((1 - progress) * 14) });
+      }
     }
 
     await this.performMousePointerActions(actions);

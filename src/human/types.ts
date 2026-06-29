@@ -18,6 +18,7 @@ export interface ResolvedHumanizationOptions {
 }
 
 export interface HumanActionTarget {
+  focus?(): Promise<void>;
   click(options?: ClickOptions): Promise<void>;
   hover(options?: HoverOptions): Promise<void>;
   fill(value: string, options?: FillOptions): Promise<void>;

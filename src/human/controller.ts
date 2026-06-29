@@ -44,8 +44,12 @@ export class DefaultHumanController implements HumanController {
     value: string,
     options?: FillOptions
   ): Promise<void> {
-    await this.ensureVisualization(target);
-    await target.fill(value, options);
+    const defaults = this.resolveDefaults(options);
+    await this.prepareEditableTarget(target, options, defaults);
+    await this.clearEditableTarget(target, defaults);
+    await this.typeText(target, value, {
+      ...(options?.human !== undefined ? { human: options.human } : {})
+    }, defaults);
   }
 
   async type(
@@ -54,11 +58,8 @@ export class DefaultHumanController implements HumanController {
     options?: TypeOptions
   ): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    await this.ensureVisualization(target);
-    await target.type(value, {
-      ...options,
-      delay: options?.delay ?? defaults.typingDelayMs
-    });
+    await this.prepareEditableTarget(target, options, defaults);
+    await this.typeText(target, value, options, defaults);
   }
 
   async press(
@@ -67,7 +68,7 @@ export class DefaultHumanController implements HumanController {
     options?: PressOptions
   ): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    await this.ensureVisualization(target);
+    await this.prepareEditableTarget(target, options, defaults);
     await target.press(key, {
       ...options,
       delay: options?.delay ?? defaults.typingDelayMs
@@ -86,6 +87,58 @@ export class DefaultHumanController implements HumanController {
       return;
     }
     await evaluatableTarget.evaluate(BUBBLE_CURSOR_INSTALL_SOURCE);
+  }
+
+  private async prepareEditableTarget(
+    target: HumanActionTarget,
+    options: HumanActionOptions | undefined,
+    defaults: ResolvedHumanizationOptions
+  ): Promise<void> {
+    await this.ensureVisualization(target);
+    await this.enqueue(async () => {
+      await target.hover(options as HoverOptions | undefined);
+      if (defaults.hoverBeforeClickMs > 0) {
+        await delay(defaults.hoverBeforeClickMs);
+      }
+      await target.click({
+        ...(options ?? {}),
+        delay: defaults.clickHoldMs
+      } as ClickOptions);
+      await target.focus?.();
+    });
+  }
+
+  private async typeText(
+    target: HumanActionTarget,
+    value: string,
+    options: TypeOptions | FillOptions | undefined,
+    defaults: ResolvedHumanizationOptions
+  ): Promise<void> {
+    const delay =
+      options && "delay" in options && typeof options.delay === "number"
+        ? options.delay
+        : defaults.typingDelayMs;
+    await target.type(value, {
+      ...options,
+      delay
+    } as TypeOptions);
+  }
+
+  private async clearEditableTarget(
+    target: HumanActionTarget,
+    defaults: ResolvedHumanizationOptions
+  ): Promise<void> {
+    await target.press("a", {
+      delay: defaults.typingDelayMs,
+      modifiers: ["ControlOrMeta"],
+      noWaitAfter: true,
+      human: { profile: defaults.profile }
+    } as PressOptions);
+    await target.press("Backspace", {
+      delay: defaults.typingDelayMs,
+      noWaitAfter: true,
+      human: { profile: defaults.profile }
+    });
   }
 
   private async enqueue<TResult>(action: () => Promise<TResult>): Promise<TResult> {

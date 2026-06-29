@@ -13,6 +13,7 @@ import {
   parseSerializedEvaluationResult,
   wrapWithSerializedEvaluationResult
 } from "../protocol/evaluationSerializer.js";
+import { resolveSmartModifierString } from "../protocol/keyboardInput.js";
 import { BUBBLE_CURSOR_INSTALL_SOURCE } from "../human/bubbleCursor.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
@@ -771,6 +772,30 @@ async function splitScrollDeltas(
   return chunks.filter((chunk) => chunk.deltaX !== 0 || chunk.deltaY !== 0);
 }
 
+function maybeReverseScrollChunk(
+  chunk: { deltaX: number; deltaY: number },
+  index: number,
+  total: number
+): { deltaX: number; deltaY: number } | null {
+  if (total < 3 || index === 0 || index === total - 1) {
+    return null;
+  }
+  if (Math.random() > 0.18) {
+    return null;
+  }
+  return {
+    deltaX: -Math.round(chunk.deltaX * (0.18 + Math.random() * 0.18)),
+    deltaY: -Math.round(chunk.deltaY * (0.18 + Math.random() * 0.18))
+  };
+}
+
+function shouldPauseToObserve(index: number, total: number): boolean {
+  if (index === total - 1) {
+    return false;
+  }
+  return total > 2 && Math.random() < 0.22;
+}
+
 type BidiRemoteValue = {
   type: string;
   value?: unknown;
@@ -1186,11 +1211,12 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
   ): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const resolvedModifiers = (modifiers ?? []).map((modifier) => resolveSmartModifierString(modifier));
 
     const MODIFIER_BITS: Record<string, number> = {
-      Alt: 1, Control: 2, ControlOrMeta: 2, Meta: 4, Shift: 8
+      Alt: 1, Control: 2, Meta: 4, Shift: 8
     };
-    const modifiersMask = (modifiers ?? []).reduce(
+    const modifiersMask = resolvedModifiers.reduce(
       (acc, m) => acc | (MODIFIER_BITS[m] ?? 0), 0
     );
 
@@ -1295,13 +1321,26 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const arg = target ? this.targetArg(target) : {};
     await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
     const chunks = await splitScrollDeltas(deltaX, deltaY, options?.stepPx ?? Math.max(Math.abs(deltaX), Math.abs(deltaY), 1));
-    for (const chunk of chunks) {
+    for (const [index, chunk] of chunks.entries()) {
       await evaluateCdp<{ ok: boolean }>(
         pageClient,
         SCROLL_ELEMENT_SOURCE,
         { ...arg, deltaX: chunk.deltaX, deltaY: chunk.deltaY },
         contextId
       );
+      const reverseChunk = maybeReverseScrollChunk(chunk, index, chunks.length);
+      if (reverseChunk) {
+        await delay(60 + Math.round(Math.random() * 120));
+        await evaluateCdp<{ ok: boolean }>(
+          pageClient,
+          SCROLL_ELEMENT_SOURCE,
+          { ...arg, deltaX: reverseChunk.deltaX, deltaY: reverseChunk.deltaY },
+          contextId
+        );
+      }
+      if (shouldPauseToObserve(index, chunks.length)) {
+        await delay(220 + Math.round(Math.random() * 520));
+      }
       if ((options?.stepDelayMs ?? 0) > 0) {
         await delay(options!.stepDelayMs);
       }
@@ -2730,12 +2769,14 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       F9: "", F10: "", F11: "", F12: "",
     };
     const BIDI_MODIFIER_KEY: Record<string, string> = {
-      Alt: "", Control: "", ControlOrMeta: "",
+      Alt: "", Control: "",
       Meta: "", Shift: ""
     };
 
     const keyValue = BIDI_SPECIAL_KEY[key] ?? key;
-    const modifierKeys = (modifiers ?? []).map((m) => BIDI_MODIFIER_KEY[m] ?? m);
+    const modifierKeys = (modifiers ?? [])
+      .map((modifier) => resolveSmartModifierString(modifier))
+      .map((m) => BIDI_MODIFIER_KEY[m] ?? m);
 
     const keyDownActions = modifierKeys.map((value) => ({ type: "keyDown" as const, value }));
     const keyUpActions = [...modifierKeys].reverse().map((value) => ({ type: "keyUp" as const, value }));
@@ -2821,12 +2862,24 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const arg = target ? ("nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector }) : {};
     await evaluateBiDi<boolean>(this.client, tabId, ENSURE_BUBBLE_CURSOR_SOURCE).catch(() => false);
     const chunks = await splitScrollDeltas(deltaX, deltaY, options?.stepPx ?? Math.max(Math.abs(deltaX), Math.abs(deltaY), 1));
-    for (const chunk of chunks) {
+    for (const [index, chunk] of chunks.entries()) {
       await evaluateBiDi<{ ok: boolean }>(this.client, tabId, SCROLL_ELEMENT_SOURCE, {
         ...arg,
         deltaX: chunk.deltaX,
         deltaY: chunk.deltaY
       });
+      const reverseChunk = maybeReverseScrollChunk(chunk, index, chunks.length);
+      if (reverseChunk) {
+        await delay(60 + Math.round(Math.random() * 120));
+        await evaluateBiDi<{ ok: boolean }>(this.client, tabId, SCROLL_ELEMENT_SOURCE, {
+          ...arg,
+          deltaX: reverseChunk.deltaX,
+          deltaY: reverseChunk.deltaY
+        });
+      }
+      if (shouldPauseToObserve(index, chunks.length)) {
+        await delay(220 + Math.round(Math.random() * 520));
+      }
       if ((options?.stepDelayMs ?? 0) > 0) {
         await delay(options!.stepDelayMs);
       }

@@ -5735,13 +5735,18 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     await this.enqueuePointerAction(async () => {
       await this.bringToFront();
-      const steps = Math.max(options?.steps ?? 1, 1);
+      const distance = Math.hypot(x - this.currentMousePosition.x, y - this.currentMousePosition.y);
+      const steps = Math.max(options?.steps ?? Math.ceil(distance / 24), 1);
       const start = this.currentMousePosition;
       for (let index = 1; index <= steps; index += 1) {
+        const progress = index / steps;
+        const easedProgress = 1 - Math.pow(1 - progress, 2);
+        const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
         await this.moveMouseInternal({
-          x: start.x + ((x - start.x) * index) / steps,
-          y: start.y + ((y - start.y) * index) / steps
+          x: start.x + ((x - start.x) * easedProgress) + drift * ((y - start.y) / Math.max(distance, 1)),
+          y: start.y + ((y - start.y) * easedProgress) - drift * ((x - start.x) / Math.max(distance, 1))
         });
+        await delay(8 + Math.round((1 - progress) * 14));
       }
     });
   }

@@ -651,7 +651,7 @@ describe("RoxyLocator", () => {
       human: { profile: "fast" },
       timeout: 14
     }));
-    expect(elementAdapter.fill).toHaveBeenCalledWith("value", { human: { profile: "fast" }, force: true });
+    expect(elementAdapter.type).toHaveBeenCalledWith("value", { human: { profile: "fast" }, delay: 95 });
     expect(elementAdapter.type).toHaveBeenCalledWith("typed", { human: { profile: "fast" }, delay: 11 });
     expect(elementAdapter.press).toHaveBeenCalledWith("Enter", { human: { profile: "fast" }, delay: 7 });
     expect(elementAdapter.check).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });

@@ -11,9 +11,6 @@ const humanSchema = z.object({
 const typeSchema = elementSchema.extend({
   text: z.string().describe("Text to type into the element"),
   submit: z.boolean().optional().describe("Whether to submit entered text (press Enter after)"),
-  slowly: z.boolean().optional().describe(
-    "Whether to type one character at a time. Useful for triggering key handlers in the page. By default entire text is filled in at once."
-  ),
   human: humanSchema.describe("Humanization settings for this typing action")
 });
 
@@ -61,22 +58,14 @@ export const type = defineTabTool({
     response.addTextResult(`Typed into "${params.element ?? params.target}".`);
 
     const { locator, resolved } = await tab.targetLocator(params);
-    if (params.slowly) {
-      response.addCode(`await page.${resolved}.pressSequentially(${JSON.stringify(params.text)});`);
-      if (params.submit) {
-        response.addCode(`await page.${resolved}.press('Enter');`);
-      }
-    } else {
-      response.addCode(`await page.${resolved}.fill(${JSON.stringify(params.text)});`);
-      if (params.submit) {
-        response.addCode(`await page.${resolved}.press('Enter');`);
-      }
+    response.addCode(`await page.${resolved}.fill(${JSON.stringify(params.text)});`);
+    if (params.submit) {
+      response.addCode(`await page.${resolved}.press('Enter');`);
     }
 
     await tab.waitForCompletion(async () => {
       await locator.type(params.text, {
         ...(params.submit !== undefined ? { submit: params.submit } : {}),
-        ...(params.slowly !== undefined ? { slowly: params.slowly } : {}),
         ...(params.human !== undefined ? { human: params.human } : {}),
         ...tab.actionTimeoutOptions
       });
