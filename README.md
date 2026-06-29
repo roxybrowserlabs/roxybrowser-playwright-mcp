@@ -71,10 +71,11 @@ Useful environment variables:
 - `ROXY_HEADLESS=false`
 - `ROXY_CDP_WS_ENDPOINT=ws://127.0.0.1:9222/devtools/browser/<id>`
 - `ROXY_MCP_OUTPUT_DIR=/absolute/path/to/output`
+- `ROXY_MCP_TEMP_DIR=/absolute/path/to/temp`
 
 ## MCP output directory
 
-The MCP tools that save files, such as `browser_snapshot`, `browser_take_screenshot`,
+The MCP tools that produce durable output files, such as `browser_take_screenshot`,
 `browser_network_requests`, `browser_network_request`, `browser_console_messages`,
 and `browser_evaluate`, support a shared output directory.
 
@@ -82,9 +83,25 @@ and `browser_evaluate`, support a shared output directory.
 - `PLAYWRIGHT_MCP_OUTPUT_DIR` is also recognized for compatibility with Playwright MCP.
 - If a tool receives a relative `filename`, it will be resolved inside the output directory.
 - If a tool receives an absolute `filename`, it will be used as-is.
-- If no output directory is configured, the default is `.roxybrowser-mcp` under the current working directory, or the system temp directory when the cwd is not writable.
+- If no output directory is configured, the default is `.roxybrowser-playwright-mcp` under the current working directory, or the system temp directory when the cwd is not writable.
 
-You can also set `outputDir` directly when creating the MCP server or transports:
+## MCP temp directory
+
+Some MCP runtime files are intentionally kept separate from `outputDir`.
+These are short-lived files created during automation, such as:
+
+- `browser_snapshot` files saved with `filename`
+- browser console event log files referenced from snapshots
+
+Temp directory behavior:
+
+- Set `ROXY_MCP_TEMP_DIR` to choose the default directory for MCP runtime temp files.
+- `PLAYWRIGHT_MCP_TEMP_DIR` is also recognized for compatibility with Playwright MCP.
+- If a tool receives a relative `filename`, it will be resolved inside the temp directory.
+- If a tool receives an absolute `filename`, it will be used as-is.
+- If no temp directory is configured, the default is the system temp directory from Node.js `os.tmpdir()`.
+
+You can also set `outputDir` and `tempDir` directly when creating the MCP server or transports:
 
 ```ts
 import {
@@ -95,22 +112,27 @@ import {
 } from "@roxybrowser/playwright/mcp";
 
 const outputDir = "/absolute/path/to/output";
+const tempDir = "/absolute/path/to/temp";
 
 createRoxyBrowserMcpServer({
-  outputDir
+  outputDir,
+  tempDir
 });
 
 await createRoxyBrowserMcpInMemory({
-  outputDir
+  outputDir,
+  tempDir
 });
 
 await startRoxyBrowserMcpHttp({
   port: 3000,
-  outputDir
+  outputDir,
+  tempDir
 });
 
 await startRoxyBrowserMcpStdio({
-  outputDir
+  outputDir,
+  tempDir
 });
 ```
 
@@ -164,6 +186,7 @@ node ./dist/bin/roxybrowser-mcp.js --transport http --port 3333 --host 127.0.0.1
 Optional flags:
 
 - `--output-dir /absolute/path`
+- `--temp-dir /absolute/path`
 - `--snapshot-mode full`
 - `--snapshot-mode none`
 

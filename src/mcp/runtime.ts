@@ -17,7 +17,7 @@ import type {
 } from "./types.js";
 import { resolveHumanizationOptions, jitter } from "../human/profile.js";
 import type { HumanizationOptions } from "../types/options.js";
-import { configuredOutputDir } from "./output.js";
+import { configuredOutputDir, configuredTempDir } from "./output.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -47,19 +47,27 @@ export class McpRuntime {
   private pendingFileUploadTarget: ClickTarget | undefined;
   private readonly snapshotMode: SnapshotMode;
   private readonly outputDir: string;
+  private readonly tempDir: string;
 
   constructor(
     private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession,
-    options: { snapshotMode?: SnapshotMode; outputDir?: string } = {}
+    options: { snapshotMode?: SnapshotMode; outputDir?: string; tempDir?: string } = {}
   ) {
     this.snapshotMode = options.snapshotMode ?? "full";
     this.outputDir = configuredOutputDir({
       ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {})
     });
+    this.tempDir = configuredTempDir({
+      ...(options.tempDir !== undefined ? { tempDir: options.tempDir } : {})
+    });
   }
 
   getOutputDir(): string {
     return this.outputDir;
+  }
+
+  getTempDir(): string {
+    return this.tempDir;
   }
 
   async connect(args: Parameters<BrowserSessionFactory>[0]): Promise<{
@@ -70,7 +78,10 @@ export class McpRuntime {
     snapshot?: BrowserSnapshot;
   }> {
     await this.close();
-    const session = await this.sessionFactory(args);
+    const session = await this.sessionFactory({
+      ...args,
+      tempDir: this.tempDir
+    });
     this.connection = {
       session
     };
@@ -706,7 +717,7 @@ export class McpRuntimeManager {
 
   constructor(
     private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"],
-    private readonly options: { snapshotMode?: SnapshotMode; outputDir?: string } = {}
+    private readonly options: { snapshotMode?: SnapshotMode; outputDir?: string; tempDir?: string } = {}
   ) {}
 
   getRuntime(sessionId = "default"): McpRuntime {
@@ -717,7 +728,8 @@ export class McpRuntimeManager {
 
     const runtime = new McpRuntime(this.sessionFactory, {
       ...(this.options.snapshotMode !== undefined ? { snapshotMode: this.options.snapshotMode } : {}),
-      ...(this.options.outputDir !== undefined ? { outputDir: this.options.outputDir } : {})
+      ...(this.options.outputDir !== undefined ? { outputDir: this.options.outputDir } : {}),
+      ...(this.options.tempDir !== undefined ? { tempDir: this.options.tempDir } : {})
     });
     this.runtimes.set(sessionId, runtime);
     return runtime;

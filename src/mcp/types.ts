@@ -11,6 +11,7 @@ export interface RoxyBrowserConnectArgs {
   endpoint: string;
   browser?: "chromium" | "firefox";
   sessionId?: string;
+  tempDir?: string;
 }
 
 export interface BrowserTab {
@@ -169,6 +170,7 @@ export interface CreateRoxyBrowserMcpServerOptions {
   };
   snapshotMode?: SnapshotMode;
   outputDir?: string;
+  tempDir?: string;
 }
 
 export interface StartRoxyBrowserMcpHttpOptions extends CreateRoxyBrowserMcpServerOptions {

@@ -143,7 +143,7 @@ export class Response {
         );
       }
       if (this.fullSnapshot.filename) {
-        const resolvedFilename = await this.context.resolveOutputFile(this.fullSnapshot.filename);
+        const resolvedFilename = await this.context.resolveTempFile(this.fullSnapshot.filename);
         await writeFile(resolvedFilename, snapshot.text);
         if (sections.length) {
           sections.push("");

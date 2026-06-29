@@ -572,15 +572,18 @@ describe("MCP server", () => {
     expect(savedSnapshot.startsWith("- button")).toBe(true);
   });
 
-  it("resolves relative browser_snapshot filenames into the configured output dir", async () => {
+  it("resolves relative browser_snapshot filenames into the configured temp dir", async () => {
     const outputDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-output-"));
+    const tempDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-temp-"));
     cleanupCallbacks.push(async () => {
       await rm(outputDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true });
     });
 
     const bundle = await createRoxyBrowserMcpInMemory({
       sessionFactory: fakeSessionFactory,
-      outputDir
+      outputDir,
+      tempDir
     });
     cleanupCallbacks.push(async () => bundle.close());
 
@@ -595,7 +598,7 @@ describe("MCP server", () => {
     });
 
     const relativeFilename = "nested/snapshot.md";
-    const resolvedFilename = join(outputDir, "nested", "snapshot.md");
+    const resolvedFilename = join(tempDir, "nested", "snapshot.md");
 
     const result = await client.callTool({
       name: "browser_snapshot",
@@ -606,6 +609,7 @@ describe("MCP server", () => {
 
     expect(result.isError).toBeUndefined();
     expect(textFromResult(result)).toContain(`Saved snapshot to "${resolvedFilename}".`);
+    expect(textFromResult(result)).not.toContain(outputDir);
 
     const savedSnapshot = await readFile(resolvedFilename, "utf8");
     expect(savedSnapshot).toContain("- button");

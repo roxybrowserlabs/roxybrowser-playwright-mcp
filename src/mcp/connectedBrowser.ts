@@ -15,6 +15,7 @@ import {
 } from "../protocol/evaluationSerializer.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
+import { configuredTempDir } from "./output.js";
 import type {
   BrowserConsoleEntry,
   BrowserNetworkRequest,
@@ -832,11 +833,17 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   private readonly dialogWaiters = new Map<string, Set<DialogWaiter>>();
   private activeTabId: string | undefined;
   private versionString = "Chromium/unknown";
+  private readonly tempDir: string;
 
   private constructor(
     private readonly browserClient: CdpClient,
-    private readonly connection: CdpConnectionDetails
-  ) {}
+    private readonly connection: CdpConnectionDetails,
+    tempDir?: string
+  ) {
+    this.tempDir = configuredTempDir({
+      ...(tempDir !== undefined ? { tempDir } : {})
+    });
+  }
 
   static async connect(args: RoxyBrowserConnectArgs): Promise<CdpConnectedBrowserSession> {
     if (args.browser && args.browser !== "chromium") {
@@ -855,7 +862,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       target: connection.browserWsEndpoint
     });
 
-    const session = new CdpConnectedBrowserSession(browserClient, connection);
+    const session = new CdpConnectedBrowserSession(browserClient, connection, args.tempDir);
     session.versionString = version.Browser;
     await session.refreshTabs();
     await session.getActivePageClient().catch(() => undefined);
@@ -1954,8 +1961,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     }
 
     state.logFile ??= path.join(
-      process.cwd(),
-      ".playwright-mcp",
+      this.tempDir,
       `console-${new Date(state.logStartTime).toISOString().replace(/[:.]/g, "-")}.log`
     );
     await mkdir(path.dirname(state.logFile), { recursive: true });
@@ -1969,9 +1975,8 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     }
     state.nextMessageIndex = state.messages.length;
 
-    const relativePath = path.relative(process.cwd(), state.logFile);
     const lineRange = fromLine === state.logLine ? `#L${fromLine}` : `#L${fromLine}-L${state.logLine}`;
-    return `${relativePath}${lineRange}`;
+    return `${state.logFile}${lineRange}`;
   }
 }
 
@@ -2276,8 +2281,16 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private responseDataCollector: string | undefined;
   private activeTabId: string | undefined;
   private ownsSession = false;
+  private readonly tempDir: string;
 
-  private constructor(private readonly client: BidiProtocolClient) {}
+  private constructor(
+    private readonly client: BidiProtocolClient,
+    tempDir?: string
+  ) {
+    this.tempDir = configuredTempDir({
+      ...(tempDir !== undefined ? { tempDir } : {})
+    });
+  }
 
   static async connect(args: RoxyBrowserConnectArgs): Promise<BidiConnectedBrowserSession> {
     if (args.browser && args.browser !== "firefox") {
@@ -2300,7 +2313,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       webSocketUrl: normalizeFirefoxBidiEndpoint(args.endpoint, args.sessionId)
     });
 
-    const session = new BidiConnectedBrowserSession(client);
+    const session = new BidiConnectedBrowserSession(client, args.tempDir);
     session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint, args.sessionId);
     await session.initialize();
     await session.refreshTabs();
@@ -3355,8 +3368,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
 
     state.logFile ??= path.join(
-      process.cwd(),
-      ".playwright-mcp",
+      this.tempDir,
       `console-${new Date(state.logStartTime).toISOString().replace(/[:.]/g, "-")}.log`
     );
     await mkdir(path.dirname(state.logFile), { recursive: true });
@@ -3370,9 +3382,8 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
     state.nextMessageIndex = state.messages.length;
 
-    const relativePath = path.relative(process.cwd(), state.logFile);
     const lineRange = fromLine === state.logLine ? `#L${fromLine}` : `#L${fromLine}-L${state.logLine}`;
-    return `${relativePath}${lineRange}`;
+    return `${state.logFile}${lineRange}`;
   }
 }
 

@@ -16,7 +16,7 @@ import { spawn } from "node:child_process";
  *   - `browser_snapshot` with a filename writes the snapshot text to
  *     `outputDir/filename` and echoes `Saved snapshot to "<abs path>".` back.
  *   - Assert the file exists INSIDE the custom outputDir (and NOT in the cwd
- *     default `.roxybrowser-mcp/`).
+ *     default `.roxybrowser-playwright-mcp/`).
  */
 
 function makeFakeSession() {
@@ -109,7 +109,7 @@ async function main() {
   }
   console.log("[custom] PASS — file landed inside custom outputDir");
 
-  // Case 2: no outputDir — file MUST default to cwd's `.roxybrowser-mcp/`.
+  // Case 2: no outputDir — file MUST default to cwd's `.roxybrowser-playwright-mcp/`.
   // Run in a throwaway cwd so we don't pollute the repo.
   console.log(`\n=== Case 2: no outputDir (default cwd basedir) ===`);
   const defaultDir = await mkdtemp(join(tmpdir(), "roxy-verify-default-"));
@@ -121,7 +121,7 @@ async function main() {
 }
 
 // Run case 2 in a child process so `process.cwd()` is the throwaway dir,
-// matching how `configuredOutputDir` picks the default `.roxybrowser-mcp/`.
+// matching how `configuredOutputDir` picks the default `.roxybrowser-playwright-mcp/`.
 function runInChild(cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [new URL("./verify-output-dir-default.mjs", import.meta.url).pathname], {

@@ -2,13 +2,15 @@ import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { configuredOutputDir, resolveOutputFilePath } from "../../src/mcp/output.js";
+import { configuredOutputDir, configuredTempDir, resolveOutputFilePath, resolveTempFilePath } from "../../src/mcp/output.js";
 
 const cleanupPaths: string[] = [];
 
 afterEach(async () => {
   delete process.env.ROXY_MCP_OUTPUT_DIR;
   delete process.env.PLAYWRIGHT_MCP_OUTPUT_DIR;
+  delete process.env.ROXY_MCP_TEMP_DIR;
+  delete process.env.PLAYWRIGHT_MCP_TEMP_DIR;
 
   while (cleanupPaths.length) {
     const target = cleanupPaths.pop();
@@ -36,11 +38,11 @@ describe("mcp output dir", () => {
     expect(configuredOutputDir()).toBe(explicit);
   });
 
-  it("uses cwd-relative .roxybrowser-mcp by default", async () => {
+  it("uses cwd-relative .roxybrowser-playwright-mcp by default", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "roxy-output-cwd-"));
     cleanupPaths.push(cwd);
 
-    expect(configuredOutputDir({ cwd })).toBe(path.join(cwd, ".roxybrowser-mcp"));
+    expect(configuredOutputDir({ cwd })).toBe(path.join(cwd, ".roxybrowser-playwright-mcp"));
   });
 
   it("falls back to tmpdir when cwd is not writable", async () => {
@@ -49,7 +51,7 @@ describe("mcp output dir", () => {
     await chmod(cwd, 0o500);
 
     try {
-      expect(configuredOutputDir({ cwd })).toBe(path.join(tmpdir(), ".roxybrowser-mcp"));
+      expect(configuredOutputDir({ cwd })).toBe(path.join(tmpdir(), ".roxybrowser-playwright-mcp"));
     } finally {
       await chmod(cwd, 0o700);
     }
@@ -72,5 +74,33 @@ describe("mcp output dir", () => {
     });
 
     expect(resolved).toBe(absolute);
+  });
+
+  it("uses tmpdir for runtime temp files by default", () => {
+    expect(configuredTempDir()).toBe(tmpdir());
+  });
+
+  it("prefers ROXY_MCP_TEMP_DIR", () => {
+    const explicit = path.join(tmpdir(), "roxy-temp-explicit");
+    process.env.ROXY_MCP_TEMP_DIR = explicit;
+    process.env.PLAYWRIGHT_MCP_TEMP_DIR = "/tmp/ignored-playwright-temp";
+
+    expect(configuredTempDir()).toBe(explicit);
+  });
+
+  it("falls back to PLAYWRIGHT_MCP_TEMP_DIR for compatibility", () => {
+    const explicit = path.join(tmpdir(), "roxy-temp-playwright");
+    process.env.PLAYWRIGHT_MCP_TEMP_DIR = explicit;
+
+    expect(configuredTempDir()).toBe(explicit);
+  });
+
+  it("resolves relative temp files under the configured temp dir", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "roxy-temp-relative-"));
+    cleanupPaths.push(tempDir);
+
+    const resolved = await resolveTempFilePath("nested/runtime.txt", { tempDir });
+
+    expect(resolved).toBe(path.join(tempDir, "nested", "runtime.txt"));
   });
 });

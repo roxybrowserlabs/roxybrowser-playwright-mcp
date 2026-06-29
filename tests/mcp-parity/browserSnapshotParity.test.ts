@@ -496,7 +496,7 @@ async function consoleLogEntries(result: CallToolResult): Promise<string[]> {
   const [, filePath, fromLineText, toLineText] = match;
   const fromLine = Number(fromLineText);
   const toLine = Number(toLineText ?? fromLineText);
-  const text = await readFile(join(process.cwd(), filePath), "utf8");
+  const text = await readFile(filePath, "utf8");
   return text
     .split("\n")
     .slice(fromLine - 1, toLine)

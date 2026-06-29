@@ -16,6 +16,7 @@ interface CliOptions {
   port?: number;
   path?: string;
   outputDir?: string;
+  tempDir?: string;
   snapshotMode?: SnapshotMode;
 }
 
@@ -28,6 +29,7 @@ function parseCliOptions(argv: string[]): CliOptions {
       port: { type: "string" },
       path: { type: "string" },
       "output-dir": { type: "string" },
+      "temp-dir": { type: "string" },
       "snapshot-mode": { type: "string" }
     },
     allowPositionals: false
@@ -60,16 +62,18 @@ function parseCliOptions(argv: string[]): CliOptions {
     ...(port !== undefined ? { port } : {}),
     ...(values.path !== undefined ? { path: values.path } : {}),
     ...(values["output-dir"] !== undefined ? { outputDir: values["output-dir"] } : {}),
+    ...(values["temp-dir"] !== undefined ? { tempDir: values["temp-dir"] } : {}),
     ...(snapshotMode !== undefined ? { snapshotMode: snapshotMode as SnapshotMode } : {})
   };
 }
 
 function sharedOptions(options: CliOptions): Pick<
   StartRoxyBrowserMcpStdioOptions,
-  "outputDir" | "snapshotMode"
+  "outputDir" | "snapshotMode" | "tempDir"
 > {
   return {
     ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {}),
+    ...(options.tempDir !== undefined ? { tempDir: options.tempDir } : {}),
     ...(options.snapshotMode !== undefined ? { snapshotMode: options.snapshotMode } : {})
   };
 }
