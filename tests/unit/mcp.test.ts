@@ -131,7 +131,13 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   pendingFileChooserTarget: ClickTarget | undefined;
   consumePendingChooserReturnsUndefinedOnce = false;
   networkRequestsList: BrowserNetworkRequest[] = [];
-  requestCollectionStates: Array<{ requests: BrowserNetworkRequest[] }> = [];
+  requestCollectionStates: Array<{ requests: BrowserNetworkRequest[]; requestKeys: string[] }> = [];
+
+  protected collectRequest(request: BrowserNetworkRequest): void {
+    for (const collector of this.requestCollectionStates) {
+      collector.requestKeys.push(request.requestKey ?? request.requestId);
+    }
+  }
 
   async consoleMessages() {
     return [{
@@ -263,9 +269,7 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
       responseBody: "{}"
     };
     this.networkRequestsList.push(request);
-    for (const collector of this.requestCollectionStates) {
-      collector.requests.push({ ...request });
-    }
+    this.collectRequest(request);
   }
 
   async finishFileUpload(target: ClickTarget): Promise<void> {
@@ -292,14 +296,22 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async beginRequestCollection(): Promise<unknown> {
-    const state = { requests: [] as BrowserNetworkRequest[] };
+    const state = { requests: [] as BrowserNetworkRequest[], requestKeys: [] as string[] };
     this.requestCollectionStates.push(state);
     return state;
   }
 
   async endRequestCollection(state?: unknown): Promise<BrowserNetworkRequest[]> {
-    const collector = state as { requests: BrowserNetworkRequest[] } | undefined;
-    return collector?.requests.map((request) => ({ ...request })) ?? [];
+    const collector = state as { requests: BrowserNetworkRequest[]; requestKeys: string[] } | undefined;
+    if (!collector) {
+      return [];
+    }
+    const uniqueKeys = Array.from(new Set(collector.requestKeys));
+    const requests = uniqueKeys
+      .map((requestKey) => this.networkRequestsList.find((request) => (request.requestKey ?? request.requestId) === requestKey))
+      .filter((request): request is BrowserNetworkRequest => !!request)
+      .map((request) => ({ ...request }));
+    return requests.length ? requests : collector.requests.map((request) => ({ ...request }));
   }
 
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
@@ -395,9 +407,7 @@ class NavigationRequestSession extends FakeConnectedBrowserSession {
       responseHeaders: {}
     };
     this.networkRequestsList.push(request);
-    for (const collector of this.requestCollectionStates) {
-      collector.requests.push({ ...request });
-    }
+    this.collectRequest(request);
   }
 }
 
@@ -416,9 +426,7 @@ class ImageRequestSession extends FakeConnectedBrowserSession {
       responseHeaders: {}
     };
     this.networkRequestsList.push(request);
-    for (const collector of this.requestCollectionStates) {
-      collector.requests.push({ ...request });
-    }
+    this.collectRequest(request);
   }
 }
 
@@ -438,9 +446,7 @@ class DocumentButNotNavigationSession extends FakeConnectedBrowserSession {
       responseHeaders: {}
     };
     this.networkRequestsList.push(request);
-    for (const collector of this.requestCollectionStates) {
-      collector.requests.push({ ...request });
-    }
+    this.collectRequest(request);
   }
 }
 
@@ -458,9 +464,7 @@ class PendingRequestUntilCloseSession extends FakeConnectedBrowserSession {
       requestHeaders: {}
     };
     this.networkRequestsList.push(request);
-    for (const collector of this.requestCollectionStates) {
-      collector.requests.push({ ...request });
-    }
+    this.collectRequest(request);
   }
 
   override async waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void> {
@@ -498,6 +502,8 @@ class RedirectRequestSession extends FakeConnectedBrowserSession {
       index: this.networkRequestsList.length + 2,
       requestId: first.requestId,
       requestKey: `${first.requestId}#2`,
+      redirectedFromRequestKey: first.requestKey,
+      finalRequestKey: `${first.requestId}#2`,
       method: "GET",
       url: "https://example.test/final",
       resourceType: "document",
@@ -507,10 +513,77 @@ class RedirectRequestSession extends FakeConnectedBrowserSession {
       statusText: "OK",
       responseHeaders: {}
     };
+    first.redirectedToRequestKey = second.requestKey;
+    first.finalRequestKey = second.requestKey;
     this.networkRequestsList.push(first, second);
-    for (const collector of this.requestCollectionStates) {
-      collector.requests.push({ ...first }, { ...second });
+    this.collectRequest(first);
+    this.collectRequest(second);
+  }
+}
+
+class UpdatingRequestSession extends FakeConnectedBrowserSession {
+  override async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    await super.click(target, options);
+    const request: BrowserNetworkRequest = {
+      index: this.networkRequestsList.length + 1,
+      requestId: `request-${this.networkRequestsList.length + 1}`,
+      method: "GET",
+      url: "https://example.test/updating",
+      resourceType: "fetch",
+      requestHeaders: {}
+    };
+    this.networkRequestsList.push(request);
+    this.collectRequest(request);
+    request.status = 200;
+    request.statusText = "OK";
+    request.responseHeaders = { "content-type": "application/json" };
+    request.responseBody = '{"ok":true}';
+  }
+}
+
+class DelayedPostActionRequestSession extends FakeConnectedBrowserSession {
+  override async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    await super.click(target, options);
+  }
+
+  override async waitForPageTimeout(timeoutMs: number): Promise<void> {
+    this.waitForPageTimeoutCalls.push(timeoutMs);
+    if (timeoutMs === 500 && this.requestCollectionStates.length > 0 && this.networkRequestsList.length === 0) {
+      const request: BrowserNetworkRequest = {
+        index: 1,
+        requestId: "request-1",
+        method: "GET",
+        url: "https://example.test/deferred.css",
+        resourceType: "stylesheet",
+        requestHeaders: {},
+        status: 200,
+        statusText: "OK",
+        responseHeaders: { "content-type": "text/css" }
+      };
+      this.networkRequestsList.push(request);
+      this.collectRequest(request);
     }
+  }
+}
+
+class BeginRequestCollectionFailureSession extends FakeConnectedBrowserSession {
+  override async beginRequestCollection(): Promise<unknown> {
+    throw new Error("begin request collection failed");
+  }
+}
+
+class EndRequestCollectionFailureSession extends FakeConnectedBrowserSession {
+  override async endRequestCollection(_state?: unknown): Promise<BrowserNetworkRequest[]> {
+    throw new Error("end request collection failed");
+  }
+}
+
+class PostActionQuietWindowFailureSession extends FakeConnectedBrowserSession {
+  override async waitForPageTimeout(timeoutMs: number): Promise<void> {
+    if (timeoutMs === 500 && this.requestCollectionStates.length > 0) {
+      throw new Error("post-action quiet window failed");
+    }
+    await super.waitForPageTimeout(timeoutMs);
   }
 }
 
@@ -1122,6 +1195,7 @@ describe("MCP server", () => {
         sessionId: "created-session",
         capabilities: { browserName: "firefox" }
       }));
+      const sessionSubscribe = vi.fn(async () => ({}));
       const createBidiClient = vi.fn(async () => ({
         capabilities: { browserName: "firefox" },
         close: vi.fn(),
@@ -1145,7 +1219,7 @@ describe("MCP server", () => {
         browsingContextActivate: vi.fn(async () => ({})),
         browsingContextCreate: vi.fn(async () => ({ context: "tab-1" })),
         browsingContextNavigate: vi.fn(async () => ({})),
-        sessionSubscribe: vi.fn(async () => ({})),
+        sessionSubscribe,
         networkAddDataCollector: vi.fn(async () => ({ collector: "collector-1" })),
         networkRemoveDataCollector: vi.fn(async () => ({})),
         scriptAddPreloadScript: vi.fn(async () => ({ script: "script-1" })),
@@ -1200,6 +1274,16 @@ describe("MCP server", () => {
           }
         }
       });
+      expect(sessionSubscribe).toHaveBeenCalledWith(expect.objectContaining({
+        events: expect.arrayContaining([
+          "browsingContext.navigationStarted",
+          "browsingContext.load",
+          "network.beforeRequestSent",
+          "network.responseStarted",
+          "network.responseCompleted",
+          "network.fetchError"
+        ])
+      }));
       expect(result.isError).toBeUndefined();
     });
 
@@ -2071,18 +2155,167 @@ describe("MCP server", () => {
 
       const session = bundle.runtimeManager.getRuntime(bundle.getLastSessionId?.()).requireConnected() as RedirectRequestSession;
       expect(result.isError).toBeUndefined();
-      expect(session.requestCollectionStates.at(-1)?.requests.map((request) => ({
+      expect(session.requestCollectionStates.at(-1)?.requestKeys).toEqual(["request-1#1", "request-1#2"]);
+      expect(session.networkRequestsList.map((request) => ({
         requestId: request.requestId,
         requestKey: request.requestKey,
+        redirectedFromRequestKey: request.redirectedFromRequestKey,
+        redirectedToRequestKey: request.redirectedToRequestKey,
+        finalRequestKey: request.finalRequestKey,
         url: request.url,
         status: request.status
       }))).toEqual([
-        { requestId: "request-1", requestKey: "request-1#1", url: "https://example.test/start", status: 302 },
-        { requestId: "request-1", requestKey: "request-1#2", url: "https://example.test/final", status: 200 }
+        {
+          requestId: "request-1",
+          requestKey: "request-1#1",
+          redirectedFromRequestKey: undefined,
+          redirectedToRequestKey: "request-1#2",
+          finalRequestKey: "request-1#2",
+          url: "https://example.test/start",
+          status: 302
+        },
+        {
+          requestId: "request-1",
+          requestKey: "request-1#2",
+          redirectedFromRequestKey: "request-1#1",
+          redirectedToRequestKey: undefined,
+          finalRequestKey: "request-1#2",
+          url: "https://example.test/final",
+          status: 200
+        }
       ]);
       expect(session.waitForMainFrameLoadCalls).toEqual([10_000]);
       expect(session.waitForRequestFinishedCalls).toEqual([]);
       expect(session.waitForRequestResponseCalls).toEqual([]);
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("observes the final collected request state like Playwright Request objects", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new UpdatingRequestSession(args)
+      });
+      const client = createClient("updating-request-wait-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.updating" }
+      });
+
+      const session = bundle.runtimeManager.getRuntime(bundle.getLastSessionId?.()).requireConnected() as UpdatingRequestSession;
+      expect(result.isError).toBeUndefined();
+      expect(session.requestCollectionStates.at(-1)?.requestKeys).toEqual(["request-1"]);
+      expect(session.requestCollectionStates.at(-1)?.requests).toEqual([]);
+      expect(session.waitForRequestFinishedCalls).toEqual([{ requestId: "request-1", timeoutMs: 5_000 }]);
+      const collected = session.networkRequestsList[0];
+      expect(collected).toMatchObject({
+        requestId: "request-1",
+        status: 200,
+        statusText: "OK",
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: '{"ok":true}'
+      });
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("collects requests that begin during the post-action 500ms window like Playwright", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new DelayedPostActionRequestSession(args)
+      });
+      const client = createClient("delayed-post-action-request-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.delayed-request" }
+      });
+
+      const session = bundle.runtimeManager.getRuntime(bundle.getLastSessionId?.()).requireConnected() as DelayedPostActionRequestSession;
+      expect(result.isError).toBeUndefined();
+      expect(session.requestCollectionStates.at(-1)?.requestKeys).toEqual(["request-1"]);
+      expect(session.waitForRequestFinishedCalls).toEqual([{ requestId: "request-1", timeoutMs: 5_000 }]);
+      expect(session.waitForRequestResponseCalls).toEqual([]);
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("propagates beginRequestCollection failures like Playwright listener setup failures", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new BeginRequestCollectionFailureSession(args)
+      });
+      const client = createClient("begin-request-collection-failure-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.begin-failure" }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain("begin request collection failed");
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("propagates the post-action 500ms wait failure like Playwright", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new PostActionQuietWindowFailureSession(args)
+      });
+      const client = createClient("post-action-quiet-window-failure-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.quiet-window-failure" }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain("post-action quiet window failed");
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("propagates endRequestCollection failures from cleanup like Playwright finally cleanup", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new EndRequestCollectionFailureSession(args)
+      });
+      const client = createClient("end-request-collection-failure-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.end-failure" }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain("end request collection failed");
 
       await client.close();
       await bundle.close();

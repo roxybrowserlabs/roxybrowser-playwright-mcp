@@ -3,7 +3,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createRoxyBrowserMcpInMemory } from "../dist/mcp/index.js";
 
-const endpoint = process.env.ROXY_CDP_ENDPOINT ?? "ws://127.0.0.1:61522/devtools/browser/b7fa7e8f-6a98-4fab-8788-56e8308b6994";
+const endpoint = process.env.ROXY_CDP_ENDPOINT ?? "ws://127.0.0.1:56185/devtools/browser/5e0a2368-1186-450a-b3b4-775fc21c14ce";
 const targetUrl = "https://www.tiktok.com/tiktokstudio/upload?from=webapp&tab=video";
 const uploadXPath = '//*[@id="root"]/div/div/div[2]/div[2]/div/div[2]/div/div[1]/div/div/input';
 const maxSnapshotAttempts = 8;

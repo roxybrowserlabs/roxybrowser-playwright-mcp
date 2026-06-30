@@ -156,6 +156,10 @@ export interface HoverOptions extends SelectorStrictOptions, HumanizedOption {
   trial?: boolean;
   position?: Point;
   __roxyBeforeActionRetry?: () => Promise<boolean | void>;
+  __roxyHumanMove?: {
+    durationMs: number;
+    stepPx: number;
+  };
 }
 
 export interface ClickOptions extends HoverOptions {
@@ -163,6 +167,7 @@ export interface ClickOptions extends HoverOptions {
   clickCount?: number;
   delay?: number;
   noWaitAfter?: boolean;
+  steps?: number;
 }
 
 export interface FillOptions extends SelectorStrictOptions, HumanizedOption {

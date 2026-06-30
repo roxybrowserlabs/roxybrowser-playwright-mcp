@@ -5735,19 +5735,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     await this.enqueuePointerAction(async () => {
       await this.bringToFront();
-      const distance = Math.hypot(x - this.currentMousePosition.x, y - this.currentMousePosition.y);
-      const steps = Math.max(options?.steps ?? Math.ceil(distance / 24), 1);
-      const start = this.currentMousePosition;
-      for (let index = 1; index <= steps; index += 1) {
-        const progress = index / steps;
-        const easedProgress = 1 - Math.pow(1 - progress, 2);
-        const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
-        await this.moveMouseInternal({
-          x: start.x + ((x - start.x) * easedProgress) + drift * ((y - start.y) / Math.max(distance, 1)),
-          y: start.y + ((y - start.y) * easedProgress) - drift * ((x - start.x) / Math.max(distance, 1))
-        });
-        await delay(8 + Math.round((1 - progress) * 14));
-      }
+      await this.performMouseMoveTo({ x, y }, options);
     });
   }
 
@@ -5887,7 +5875,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         const button = options?.button ?? "left";
         const clickCount = options?.clickCount ?? 1;
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
           await this.resolveActionPoint(locator, options, true);
           if (options?.trial) {
             return;
@@ -5910,13 +5898,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       await this.enqueuePointerAction(async () => {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
         });
       });
 
       if (await options?.__roxyBeforeActionRetry?.()) {
         await this.enqueuePointerAction(async () => {
-          await this.dispatchMouseMove({ x: 0, y: 0 });
+          await this.moveMouseInternal({ x: 0, y: 0 });
         });
         continue;
       }
@@ -5924,7 +5912,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       await this.enqueuePointerAction(async () => {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
         });
       });
       await options?.__roxyBeforeActionRetry?.();
@@ -5953,7 +5941,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         await this.bringToFront();
         const actionPoint = await this.resolveActionPoint(locator, options);
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
         });
       });
       return;
@@ -5963,12 +5951,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const actionPoint = await this.resolveActionPoint(locator, options);
       await this.enqueuePointerAction(async () => {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
         });
       });
       if (await options?.__roxyBeforeActionRetry?.()) {
         await this.enqueuePointerAction(async () => {
-          await this.dispatchMouseMove({ x: 0, y: 0 });
+          await this.moveMouseInternal({ x: 0, y: 0 });
         });
         continue;
       }
@@ -6301,6 +6289,34 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private async moveMouseInternal(point: ActionPoint): Promise<void> {
     await this.dispatchMouseMove(point);
     this.currentMousePosition = point;
+  }
+
+  private async performMouseMoveTo(
+    point: ActionPoint,
+    options?: {
+      steps?: number;
+      __roxyHumanMove?: {
+        durationMs: number;
+        stepPx: number;
+      };
+    }
+  ): Promise<void> {
+    const humanMove = options?.steps === undefined ? options?.__roxyHumanMove : undefined;
+    const distance = Math.hypot(point.x - this.currentMousePosition.x, point.y - this.currentMousePosition.y);
+    const steps = Math.max(
+      options?.steps ?? (humanMove ? Math.ceil(distance / Math.max(humanMove.stepPx, 1)) : 1),
+      1
+    );
+    const start = this.currentMousePosition;
+    const pauseMs = humanMove && steps > 1
+      ? Math.max(0, Math.round(humanMove.durationMs / (steps - 1)))
+      : 0;
+    for (let index = 1; index <= steps; index += 1) {
+      await this.moveMouseInternal(interpolateMousePoint(start, point, index / steps, Boolean(humanMove)));
+      if (pauseMs > 0 && index < steps) {
+        await delay(pauseMs);
+      }
+    }
   }
 
   private async dispatchMouseDown(
@@ -6728,7 +6744,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         const button = options?.button ?? "left";
         const clickCount = options?.clickCount ?? 1;
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
           await this.resolveActionPointReference(reference, options, true);
           if (options?.trial) {
             return;
@@ -6751,13 +6767,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       await this.enqueuePointerAction(async () => {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
         });
       });
 
       if (await options?.__roxyBeforeActionRetry?.()) {
         await this.enqueuePointerAction(async () => {
-          await this.dispatchMouseMove({ x: 0, y: 0 });
+          await this.moveMouseInternal({ x: 0, y: 0 });
         });
         continue;
       }
@@ -6765,7 +6781,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
       await this.enqueuePointerAction(async () => {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
         });
       });
       await options?.__roxyBeforeActionRetry?.();
@@ -6839,7 +6855,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         await this.bringToFront();
         const actionPoint = await this.resolveActionPointReference(reference, options);
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
         });
       });
       return;
@@ -6849,12 +6865,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const actionPoint = await this.resolveActionPointReference(reference, options);
       await this.enqueuePointerAction(async () => {
         await this.withPointerActionModifiers(options?.modifiers, async () => {
-          await this.dispatchMouseMove(actionPoint);
+          await this.performMouseMoveTo(actionPoint, options);
         });
       });
       if (await options?.__roxyBeforeActionRetry?.()) {
         await this.enqueuePointerAction(async () => {
-          await this.dispatchMouseMove({ x: 0, y: 0 });
+          await this.moveMouseInternal({ x: 0, y: 0 });
         });
         continue;
       }
@@ -7146,6 +7162,27 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     args: unknown[],
     isFunction: boolean
   ): Promise<TResult | ProtocolJSHandleAdapter<TResult>> {
+    if (frameId) {
+      const frameSessionId =
+        this.defaultExecutionContextSessionByFrameId.get(frameId) ??
+        this.frameSessionIds.get(frameId) ??
+        sessionId;
+      const executionContextId = await this.defaultExecutionContextIdForFrame(frameId).catch((error) => {
+        if (frameSessionId) {
+          return undefined;
+        }
+        throw error;
+      });
+      return this.evaluateWithArgumentsInContext<TResult>(
+        executionContextId,
+        frameSessionId,
+        expression,
+        returnByValue,
+        args,
+        isFunction,
+        frameId
+      );
+    }
     return this.evaluateWithArgumentsInContext<TResult>(
       undefined,
       sessionId,
@@ -11758,6 +11795,27 @@ function createScreencastHighlightBox(point: ActionPoint): {
     top: point.y - size / 2,
     width: size,
     height: size
+  };
+}
+
+function interpolateMousePoint(
+  start: ActionPoint,
+  end: ActionPoint,
+  progress: number,
+  humanized: boolean
+): ActionPoint {
+  if (!humanized) {
+    return {
+      x: start.x + ((end.x - start.x) * progress),
+      y: start.y + ((end.y - start.y) * progress)
+    };
+  }
+  const distance = Math.hypot(end.x - start.x, end.y - start.y);
+  const easedProgress = 1 - Math.pow(1 - progress, 2);
+  const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
+  return {
+    x: start.x + ((end.x - start.x) * easedProgress) + drift * ((end.y - start.y) / Math.max(distance, 1)),
+    y: start.y + ((end.y - start.y) * easedProgress) - drift * ((end.x - start.x) / Math.max(distance, 1))
   };
 }
 

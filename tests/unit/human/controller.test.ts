@@ -38,10 +38,15 @@ describe("DefaultHumanController", () => {
     await vi.advanceTimersByTimeAsync(25);
     await pending;
 
-    expect(target.evaluate).toHaveBeenCalledTimes(2);
-    expect(target.hover).toHaveBeenCalledWith({ button: "right" });
+    expect(target.evaluate).toHaveBeenCalledTimes(1);
+    expect(target.evaluate).toHaveBeenCalledWith(expect.any(String), undefined, false);
+    expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).toHaveBeenCalledWith({
       button: "right",
+      __roxyHumanMove: {
+        durationMs: 1,
+        stepPx: 24
+      },
       delay: 88
     });
   });
@@ -60,9 +65,15 @@ describe("DefaultHumanController", () => {
 
     await controller.click(target, { delay: 9 });
 
-    expect(target.evaluate).toHaveBeenCalledTimes(2);
-    expect(target.hover).toHaveBeenCalledTimes(1);
-    expect(target.click).toHaveBeenCalledWith({ delay: 9 });
+    expect(target.evaluate).toHaveBeenCalledTimes(1);
+    expect(target.hover).not.toHaveBeenCalled();
+    expect(target.click).toHaveBeenCalledWith({
+      delay: 9,
+      __roxyHumanMove: {
+        durationMs: 1,
+        stepPx: 24
+      }
+    });
   });
 
   it("forwards fill, type and press with default typing delay", async () => {
@@ -81,11 +92,11 @@ describe("DefaultHumanController", () => {
     await controller.type(target, "hello");
     await controller.press(target, "Enter");
 
-    expect(target.evaluate).toHaveBeenCalledTimes(3);
-    expect(target.hover).toHaveBeenCalledTimes(3);
-    expect(target.click).toHaveBeenNthCalledWith(1, { force: true, delay: 50 });
-    expect(target.type).toHaveBeenNthCalledWith(1, "hello", { delay: 77 });
-    expect(target.type).toHaveBeenNthCalledWith(2, "hello", { delay: 77 });
+    expect(target.evaluate).not.toHaveBeenCalled();
+    expect(target.hover).not.toHaveBeenCalled();
+    expect(target.click).not.toHaveBeenCalled();
+    expect(target.fill).toHaveBeenCalledWith("hello", { force: true });
+    expect(target.type).toHaveBeenCalledWith("hello", { delay: 77 });
     expect(target.press).toHaveBeenCalledWith("Enter", { delay: 77 });
   });
 
@@ -109,9 +120,16 @@ describe("DefaultHumanController", () => {
     await typePromise;
     await pressPromise;
 
-    expect(target.evaluate).toHaveBeenCalledTimes(4);
-    expect(target.hover).toHaveBeenCalledTimes(3);
-    expect(target.click).toHaveBeenCalledWith({ human: { profile: "fast" }, delay: 9 });
+    expect(target.evaluate).toHaveBeenCalledTimes(1);
+    expect(target.hover).not.toHaveBeenCalled();
+    expect(target.click).toHaveBeenCalledWith({
+      human: { profile: "fast" },
+      delay: 9,
+      __roxyHumanMove: {
+        durationMs: 1,
+        stepPx: 24
+      }
+    });
     expect(target.type).toHaveBeenCalledWith("hello", { human: { profile: "fast" }, delay: 77 });
     expect(target.press).toHaveBeenCalledWith("Enter", { human: { profile: "fast" }, delay: 77 });
   });
@@ -154,16 +172,16 @@ describe("DefaultHumanController", () => {
     const secondClick = controller.click(target);
 
     await firstClickStarted;
-    expect(target.evaluate).toHaveBeenCalledTimes(3);
-    expect(target.hover).toHaveBeenCalledTimes(1);
+    expect(target.evaluate).toHaveBeenCalledTimes(2);
+    expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).toHaveBeenCalledTimes(1);
 
     resolveFirstClick();
     await firstClick;
     await secondClick;
 
-    expect(target.evaluate).toHaveBeenCalledTimes(4);
-    expect(target.hover).toHaveBeenCalledTimes(2);
+    expect(target.evaluate).toHaveBeenCalledTimes(2);
+    expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).toHaveBeenCalledTimes(2);
   });
 });

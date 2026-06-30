@@ -33,14 +33,14 @@ async function collectRequestsDuringAction<R>(
   callback: () => Promise<R>
 ): Promise<{ result: R; requests: Awaited<ReturnType<McpRuntime["endRequestCollection"]>> }> {
   const runtime = tab.context.runtime;
-  const requestCollectionState = await runtime.beginRequestCollection().catch(() => undefined);
+  const requestCollectionState = await runtime.beginRequestCollection();
   let requests: Awaited<ReturnType<McpRuntime["endRequestCollection"]>> = [];
   let result: R;
   try {
     result = await callback();
-    await tab.waitForTimeout(500).catch(() => {});
+    await tab.waitForTimeout(500);
   } finally {
-    requests = await runtime.endRequestCollection(requestCollectionState).catch(() => []);
+    requests = await runtime.endRequestCollection(requestCollectionState);
   }
   return { result: result!, requests };
 }

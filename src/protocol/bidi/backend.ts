@@ -1668,25 +1668,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       steps?: number;
     }
   ): Promise<void> {
-    const distance = Math.hypot(x - this.currentMousePosition.x, y - this.currentMousePosition.y);
-    const steps = Math.max(options?.steps ?? Math.ceil(distance / 24), 1);
-    const start = this.currentMousePosition;
-    const actions = [];
-    for (let index = 1; index <= steps; index += 1) {
-      const progress = index / steps;
-      const easedProgress = 1 - Math.pow(1 - progress, 2);
-      const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
-      actions.push(this.mousePointerMove({
-        x: start.x + ((x - start.x) * easedProgress) + drift * ((y - start.y) / Math.max(distance, 1)),
-        y: start.y + ((y - start.y) * easedProgress) - drift * ((x - start.x) / Math.max(distance, 1))
-      }));
-      if (index < steps) {
-        actions.push({ type: "pause" as const, duration: 8 + Math.round((1 - progress) * 14) });
-      }
-    }
-
-    await this.performMousePointerActions(actions);
-    this.currentMousePosition = { x, y };
+    await this.performMouseMoveTo({ x, y }, options);
   }
 
   async mouseUp(
@@ -1747,6 +1729,50 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         }
       ]
     });
+  }
+
+  private async performMouseMoveTo(
+    point: ActionPoint,
+    options?: {
+      steps?: number;
+      __roxyHumanMove?: {
+        durationMs: number;
+        stepPx: number;
+      };
+    }
+  ): Promise<void> {
+    await this.performMousePointerActions(this.mousePointerMoveActions(point, options));
+    this.currentMousePosition = point;
+  }
+
+  private mousePointerMoveActions(
+    point: ActionPoint,
+    options?: {
+      steps?: number;
+      __roxyHumanMove?: {
+        durationMs: number;
+        stepPx: number;
+      };
+    }
+  ): BidiMouseAction[] {
+    const humanMove = options?.steps === undefined ? options?.__roxyHumanMove : undefined;
+    const distance = Math.hypot(point.x - this.currentMousePosition.x, point.y - this.currentMousePosition.y);
+    const steps = Math.max(
+      options?.steps ?? (humanMove ? Math.ceil(distance / Math.max(humanMove.stepPx, 1)) : 1),
+      1
+    );
+    const start = this.currentMousePosition;
+    const pauseMs = humanMove && steps > 1
+      ? Math.max(0, Math.round(humanMove.durationMs / (steps - 1)))
+      : 0;
+    const actions: BidiMouseAction[] = [];
+    for (let index = 1; index <= steps; index += 1) {
+      actions.push(this.mousePointerMove(interpolateMousePoint(start, point, index / steps, Boolean(humanMove))));
+      if (pauseMs > 0 && index < steps) {
+        actions.push({ type: "pause", duration: pauseMs });
+      }
+    }
+    return actions;
   }
 
   private async performMouseClickActions(
@@ -2123,7 +2149,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   ): Promise<void> {
     await this.bringToFront();
     const point = await this.resolveActionPoint(locator, options, true, retargetForAction);
-    await this.performMousePointerActions([this.mousePointerMove(point)]);
+    await this.performMouseMoveTo(point, options);
     await this.resolveActionPoint(locator, options, true, retargetForAction);
     await this.performMouseClickActions(point, options, false);
     this.currentMousePosition = point;
@@ -2132,10 +2158,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
 
   async hoverLocator(locator: BidiLocatorState, options?: HoverOptions): Promise<void> {
     const point = await this.resolveActionPoint(locator, options);
-    await this.performMousePointerActions([
-      this.mousePointerMove(point)
-    ]);
-    this.currentMousePosition = point;
+    await this.performMouseMoveTo(point, options);
   }
 
   async fillLocator(locator: BidiLocatorState, value: string, options?: FillOptions): Promise<void> {
@@ -2592,7 +2615,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       ...(options?.position ? { position: options.position } : {}),
       waitForEnabled: true
     });
-    await this.performMousePointerActions([this.mousePointerMove(point)]);
+    await this.performMouseMoveTo(point, options);
     await this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
       reference,
@@ -2628,10 +2651,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       ...(options?.force !== undefined ? { force: options.force } : {}),
       ...(options?.position ? { position: options.position } : {})
     });
-    await this.performMousePointerActions([
-      this.mousePointerMove(point)
-    ]);
-    this.currentMousePosition = point;
+    await this.performMouseMoveTo(point, options);
   }
 
   async fillReference(
@@ -4701,6 +4721,27 @@ function currentPlatform(): string {
 
 function isSelectOptionRetryResult(value: string[] | SelectOptionRetryResult): value is SelectOptionRetryResult {
   return !Array.isArray(value) && value.__needsRetry === true;
+}
+
+function interpolateMousePoint(
+  start: ActionPoint,
+  end: ActionPoint,
+  progress: number,
+  humanized: boolean
+): ActionPoint {
+  if (!humanized) {
+    return {
+      x: start.x + ((end.x - start.x) * progress),
+      y: start.y + ((end.y - start.y) * progress)
+    };
+  }
+  const distance = Math.hypot(end.x - start.x, end.y - start.y);
+  const easedProgress = 1 - Math.pow(1 - progress, 2);
+  const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
+  return {
+    x: start.x + ((end.x - start.x) * easedProgress) + drift * ((end.y - start.y) / Math.max(distance, 1)),
+    y: start.y + ((end.y - start.y) * easedProgress) - drift * ((end.x - start.x) / Math.max(distance, 1))
+  };
 }
 
 function normalizeConsoleMessageType(

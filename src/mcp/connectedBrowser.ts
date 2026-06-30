@@ -201,7 +201,17 @@ type CdpClient = {
         loaderId?: string;
         frameId?: string;
         timestamp?: number;
+        redirectHasExtraInfo?: boolean;
         type?: string;
+        redirectResponse?: {
+          url: string;
+          status: number;
+          statusText: string;
+          headers?: Record<string, string>;
+          mimeType?: string;
+          fromDiskCache?: boolean;
+          fromPrefetchCache?: boolean;
+        };
         request: {
           url: string;
           method: string;
@@ -221,6 +231,7 @@ type CdpClient = {
         requestId: string;
         timestamp?: number;
         type?: string;
+        hasExtraInfo?: boolean;
         response: {
           url: string;
           status: number;
@@ -344,33 +355,91 @@ interface BrowserConsoleState {
   logFile?: string;
 }
 
+interface RequestLifecycleWaiter {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject?: (error: Error) => void;
+}
+
+interface RequestLifecycleState {
+  loadingDone?: RequestLifecycleWaiter;
+  loadingDoneSettled?: boolean;
+}
+
+interface TrackedBrowserNetworkResponse {
+  available?: RequestLifecycleWaiter;
+  availableSettled?: boolean;
+  finished?: RequestLifecycleWaiter;
+  finishedSettled?: boolean;
+  status?: number | undefined;
+  statusText?: string | undefined;
+  headers?: Record<string, string> | undefined;
+  rawHeaders?: Record<string, string> | undefined;
+  headersSize?: number | undefined;
+  mimeType?: string | undefined;
+  body?: string | undefined;
+}
+
+interface TrackedRequestObject {
+  request: TrackedBrowserNetworkRequest;
+  hasFailure(): boolean;
+  hasResponseBody(): boolean;
+  hasResponse(): boolean;
+  hasRawRequestHeadersMissing(): boolean;
+  hasRawResponseHeadersProvisional(): boolean;
+  setFailureText(failureText: string): void;
+  markResponseFailure(failureText: string): void;
+  setRawRequestHeaders(rawHeaders: Record<string, string> | undefined): void;
+  isLoadingDoneSettled(): boolean;
+  loadingDoneEntry(): RequestLifecycleWaiter;
+  markLoadingDone(success: boolean): void;
+}
+
+interface TrackedResponseObject {
+  response: TrackedBrowserNetworkResponse;
+  request: TrackedRequestObject;
+  isAvailableSettled(): boolean;
+  isFinishedSettled(): boolean;
+  responseAvailableEntry(): RequestLifecycleWaiter;
+  requestFinishedEntry(): RequestLifecycleWaiter;
+  markAvailable(): void;
+  markFinished(): void;
+  setBody(body: string): void;
+  setMetadata(response: {
+    status: number;
+    statusText: string;
+    headers?: Record<string, string> | undefined;
+    mimeType?: string | undefined;
+  }): void;
+  setRawMetadata(rawHeaders: Record<string, string> | undefined, headersSize: number | undefined): void;
+  setStatus(status: number): void;
+}
+
+type TrackedBrowserNetworkRequest = BrowserNetworkRequest & {
+  __lifecycle?: RequestLifecycleState;
+  __response?: TrackedBrowserNetworkResponse;
+  __requestObject?: TrackedRequestObject;
+  __responseObject?: TrackedResponseObject;
+};
+
 interface BrowserNetworkState {
-  requests: BrowserNetworkRequest[];
-  byRequestId: Map<string, BrowserNetworkRequest>;
-  byRequestKey: Map<string, BrowserNetworkRequest>;
-  requestsByRequestId: Map<string, BrowserNetworkRequest[]>;
+  requests: TrackedBrowserNetworkRequest[];
+  byRequestId: Map<string, TrackedBrowserNetworkRequest>;
+  byRequestKey: Map<string, TrackedBrowserNetworkRequest>;
+  requestsByRequestId: Map<string, TrackedBrowserNetworkRequest[]>;
   requestSequenceByRequestId: Map<string, number>;
   requestExtraInfoHeaders: Map<string, Array<Record<string, string>>>;
   responseExtraInfoHeaders: Map<string, Array<{ headers: Record<string, string>; headersSize?: number }>>;
   servedFromCacheRequestIds: Set<string>;
   startedAt: Map<string, number>;
   hydratedPerformanceResources: boolean;
-  // Resolves when response metadata becomes available for a request,
-  // or rejects when the request fails before a response arrives.
-  responseStarted: Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>;
-  // Resolves when the request finishes, regardless of success or failure,
-  // matching Playwright's response.finished() completion semantics.
-  requestFinished: Map<string, { promise: Promise<void>; resolve: () => void }>;
-  // Resolves when a request finishes loading (its response body is readable),
-  // or rejects when it fails. Created lazily on first access.
-  loadingDone: Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>;
-  completedRequestIds: Set<string>;
-  finishedRequestIds: Set<string>;
   bodyRead: Set<string>;
 }
 
 interface CompletionRequestCollector {
   requests: BrowserNetworkRequest[];
+  requestKeys: string[];
+  liveRequests: TrackedRequestObject[];
 }
 
 interface BrowserDialogState {
@@ -398,11 +467,6 @@ function createBrowserNetworkState(): BrowserNetworkState {
     servedFromCacheRequestIds: new Set(),
     startedAt: new Map(),
     hydratedPerformanceResources: false,
-    responseStarted: new Map(),
-    requestFinished: new Map(),
-    loadingDone: new Map(),
-    completedRequestIds: new Set(),
-    finishedRequestIds: new Set(),
     bodyRead: new Set()
   };
 }
@@ -1916,7 +1980,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async beginRequestCollection(): Promise<unknown> {
     const tabId = await this.getActiveTabId();
-    const collector: CompletionRequestCollector = { requests: [] };
+    const collector: CompletionRequestCollector = { requests: [], requestKeys: [], liveRequests: [] };
     const collectors = this.completionCollectorsByTabId.get(tabId) ?? new Set<CompletionRequestCollector>();
     collectors.add(collector);
     this.completionCollectorsByTabId.set(tabId, collectors);
@@ -1935,7 +1999,16 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     if (collectors && collectors.size === 0) {
       this.completionCollectorsByTabId.delete(tabId);
     }
-    return collector.requests.map(cloneNetworkRequest);
+    const stateForTab = this.ensureNetworkState(tabId);
+    const requestsFromLiveObjects = Array.from(new Set(collector.liveRequests)).map(({ request }) => cloneNetworkRequest(request));
+    const uniqueKeys = Array.from(new Set(collector.requestKeys));
+    const requests = requestsFromLiveObjects.length
+      ? requestsFromLiveObjects
+      : uniqueKeys
+          .map((requestKey) => stateForTab.byRequestKey.get(requestKey))
+          .filter((request): request is BrowserNetworkRequest => !!request)
+          .map(cloneNetworkRequest);
+    return requests.length ? requests : collector.requests.map(cloneNetworkRequest);
   }
 
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
@@ -1955,12 +2028,12 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     if (!canReadResponseBody(request)) {
       return undefined;
     }
-    if (request.responseBody !== undefined) {
+    if (hasTrackedResponseBody(request)) {
       return request.responseBody;
     }
     const waitKey = requestWaitKey(request);
     await waitForLoadingDone(state, waitKey, 5_000).catch(() => undefined);
-    if (request.responseBody !== undefined) {
+    if (hasTrackedResponseBody(request)) {
       return request.responseBody;
     }
     if (state.bodyRead.has(waitKey)) {
@@ -1974,9 +2047,12 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     }
     const body = await clientNetwork.getResponseBody({ requestId: request.requestId }).catch(() => undefined);
     if (body) {
-      request.responseBody = body.base64Encoded
-        ? Buffer.from(body.body, "base64").toString("utf8")
-        : body.body;
+      setTrackedResponseBody(
+        request,
+        body.base64Encoded
+          ? Buffer.from(body.body, "base64").toString("utf8")
+          : body.body
+      );
     }
     return request.responseBody;
   }
@@ -2049,7 +2125,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   async waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void> {
     const tabId = await this.getActiveTabId();
     const state = this.ensureNetworkState(tabId);
-    await waitForResponseStarted(state, requestId, timeoutMs).catch(() => undefined);
+    await waitForResponseAvailable(state, requestId, timeoutMs).catch(() => undefined);
   }
 
   async runCodeUnsafe(code: string): Promise<unknown> {
@@ -2301,7 +2377,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
           state.requestExtraInfoHeaders.delete(event.requestId);
         }
         if (next) {
-          request.rawRequestHeaders = next;
+          setTrackedRawRequestHeaders(request, next);
         }
       }
     });
@@ -2322,24 +2398,30 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
           state.responseExtraInfoHeaders.delete(event.requestId);
         }
         if (next) {
-          request.rawResponseHeaders = next.headers;
-          request.responseHeadersSize = next.headersSize;
+          setTrackedRawResponseMetadata(request, next.headers, next.headersSize);
           if (event.statusCode !== undefined) {
-            request.status = event.statusCode;
+            setTrackedResponseStatus(request, event.statusCode);
           }
         }
       }
     });
     client.Network.requestWillBeSent((event) => {
       const existing = state.byRequestId.get(event.requestId);
-      const isRedirectHop = !!existing && !state.finishedRequestIds.has(requestWaitKey(existing));
+      const isRedirectHop = !!existing && !existing.__response?.finishedSettled;
+      if (existing && event.redirectResponse) {
+        applyResponseMetadataToRequest(state, existing, event.redirectResponse, event.redirectHasExtraInfo);
+        const startedAt = state.startedAt.get(event.requestId);
+        if (startedAt !== undefined && event.timestamp !== undefined) {
+          existing.durationMs = Math.round(event.timestamp * 1000 - startedAt);
+        }
+      }
       if (isRedirectHop) {
         resolveRequestFinished(state, requestWaitKey(existing));
         resolveLoadingDone(state, requestWaitKey(existing), true);
       }
       const sequence = (state.requestSequenceByRequestId.get(event.requestId) ?? 0) + 1;
       state.requestSequenceByRequestId.set(event.requestId, sequence);
-      const request: BrowserNetworkRequest = !isRedirectHop && existing ? existing : {
+      const request: TrackedBrowserNetworkRequest = !isRedirectHop && existing ? existing : {
         index: state.requests.length + 1,
         requestId: event.requestId,
         requestKey: `${event.requestId}#${sequence}`,
@@ -2362,7 +2444,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
           state.requestExtraInfoHeaders.delete(event.requestId);
         }
         if (nextRequestHeaders) {
-          request.rawRequestHeaders = nextRequestHeaders;
+          setTrackedRawRequestHeaders(request, nextRequestHeaders);
         }
       }
       if (event.request.postData !== undefined) {
@@ -2375,11 +2457,17 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         const requestsForId = state.requestsByRequestId.get(event.requestId) ?? [];
         requestsForId.push(request);
         state.requestsByRequestId.set(event.requestId, requestsForId);
+        if (isRedirectHop && existing) {
+          updateRedirectChain(state, existing, request);
+        } else {
+          request.finalRequestKey ??= requestWaitKey(request);
+        }
       }
       const collectors = this.completionCollectorsByTabId.get(tabId);
       if (collectors?.size) {
         for (const collector of collectors) {
-          collector.requests.push(cloneNetworkRequest(request));
+          collector.requestKeys.push(requestWaitKey(request));
+          collector.liveRequests.push(ensureTrackedRequestObject(request));
         }
       }
       if (event.timestamp !== undefined) {
@@ -2391,28 +2479,8 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       if (!request) {
         return;
       }
-      request.status = event.response.status;
-      request.statusText = event.response.statusText;
-      request.responseHeaders = normalizeHeaders(event.response.headers ?? {});
-      request.mimeType = event.response.mimeType;
       request.resourceType = normalizeResourceType(event.type) || request.resourceType;
-      if (state.servedFromCacheRequestIds.has(event.requestId)) {
-        request.rawRequestHeaders = undefined;
-        request.rawResponseHeaders = undefined;
-        request.responseHeadersSize = undefined;
-        resolveResponseStarted(state, requestWaitKey(request), true);
-        return;
-      }
-      const queuedResponseHeaders = state.responseExtraInfoHeaders.get(event.requestId);
-      const nextResponseHeaders = queuedResponseHeaders?.shift();
-      if (queuedResponseHeaders && queuedResponseHeaders.length === 0) {
-        state.responseExtraInfoHeaders.delete(event.requestId);
-      }
-      if (nextResponseHeaders) {
-        request.rawResponseHeaders = nextResponseHeaders.headers;
-        request.responseHeadersSize = nextResponseHeaders.headersSize;
-      }
-      resolveResponseStarted(state, requestWaitKey(request), true);
+      applyResponseMetadataToRequest(state, request, event.response, event.hasExtraInfo);
     });
     client.Network.loadingFinished(async (event) => {
       const request = state.byRequestId.get(event.requestId);
@@ -2426,14 +2494,24 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         request.durationMs = Math.round(event.timestamp * 1000 - startedAt);
       }
       const waitKey = requestWaitKey(request);
+      if (!isTrackedResponseAvailable(request) && !hasTrackedFailure(request)) {
+        resolveLoadingDone(state, waitKey, false);
+        return;
+      }
       if (canReadResponseBody(request) && !state.bodyRead.has(waitKey)) {
         state.bodyRead.add(waitKey);
         const clientNetwork = client.Network;
-        const body = await clientNetwork?.getResponseBody({ requestId: event.requestId }).catch(() => undefined);
+        const getResponseBody = clientNetwork?.getResponseBody?.bind(clientNetwork);
+        const body = getResponseBody
+          ? await getResponseBody({ requestId: event.requestId }).catch(() => undefined)
+          : undefined;
         if (body) {
-          request.responseBody = body.base64Encoded
-            ? Buffer.from(body.body, "base64").toString("utf8")
-            : body.body;
+          setTrackedResponseBody(
+            request,
+            body.base64Encoded
+              ? Buffer.from(body.body, "base64").toString("utf8")
+              : body.body
+          );
         }
       }
       resolveRequestFinished(state, waitKey);
@@ -2442,18 +2520,21 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     client.Network.loadingFailed((event) => {
       const request = state.byRequestId.get(event.requestId);
       if (!request) {
-        resolveResponseStarted(state, event.requestId, false);
+        resolveResponseAvailable(state, event.requestId);
         resolveRequestFinished(state, event.requestId);
         resolveLoadingDone(state, event.requestId, false);
         return;
       }
-      request.failureText = event.errorText ?? "Unknown error";
+      setTrackedFailureText(request, event.errorText ?? "Unknown error");
+      if (!isTrackedResponseAvailable(request) && isTrackedRawRequestHeadersMissing(request)) {
+        setTrackedRawRequestHeaders(request, request.requestHeaders);
+      }
       const startedAt = state.startedAt.get(event.requestId);
       if (startedAt !== undefined && event.timestamp !== undefined) {
         request.durationMs = Math.round(event.timestamp * 1000 - startedAt);
       }
       const waitKey = requestWaitKey(request);
-      resolveResponseStarted(state, waitKey, false);
+      resolveResponseAvailable(state, waitKey);
       resolveRequestFinished(state, waitKey);
       resolveLoadingDone(state, waitKey, false);
     });
@@ -2880,10 +2961,11 @@ function isCdpNavigationRequest(event: {
 }
 
 function canReadResponseBody(request: BrowserNetworkRequest): boolean {
-  if (request.failureText || request.status === undefined) {
+  const status = request.status;
+  if (hasTrackedFailure(request) || status === undefined) {
     return false;
   }
-  return request.status !== 204 && request.status !== 304 && !(request.status >= 100 && request.status < 200);
+  return status !== 204 && status !== 304 && !(status >= 100 && status < 200);
 }
 
 function requestWaitKey(request: Pick<BrowserNetworkRequest, "requestId" | "requestKey">): string {
@@ -2891,102 +2973,382 @@ function requestWaitKey(request: Pick<BrowserNetworkRequest, "requestId" | "requ
 }
 
 function firstRequestMissingRawRequestHeaders(state: BrowserNetworkState, requestId: string): BrowserNetworkRequest | undefined {
-  return (state.requestsByRequestId.get(requestId) ?? []).find((request) => request.rawRequestHeaders === undefined);
+  return (state.requestsByRequestId.get(requestId) ?? []).find((request) => isTrackedRawRequestHeadersMissing(request));
 }
 
 function firstRequestMissingRawResponseHeaders(state: BrowserNetworkState, requestId: string): BrowserNetworkRequest | undefined {
-  return (state.requestsByRequestId.get(requestId) ?? []).find((request) => request.responseHeaders !== undefined && request.rawResponseHeaders === request.responseHeaders);
+  return (state.requestsByRequestId.get(requestId) ?? []).find((request) => isTrackedRawResponseHeadersProvisional(request));
+}
+
+function applyProvisionalHeadersAsRaw(request: BrowserNetworkRequest): void {
+  if ("__response" in request || "__requestObject" in request || "__responseObject" in request) {
+    setTrackedRawRequestHeaders(request as TrackedBrowserNetworkRequest, request.requestHeaders);
+    applyProvisionalHeadersAsTrackedRaw(request as TrackedBrowserNetworkRequest);
+  } else {
+    request.rawRequestHeaders = request.requestHeaders;
+    request.rawResponseHeaders = request.responseHeaders;
+    request.responseHeadersSize = undefined;
+  }
+}
+
+function updateRedirectChain(
+  state: BrowserNetworkState,
+  previous: TrackedBrowserNetworkRequest,
+  next: TrackedBrowserNetworkRequest
+): void {
+  previous.redirectedToRequestKey = requestWaitKey(next);
+  next.redirectedFromRequestKey = requestWaitKey(previous);
+  const finalRequestKey = requestWaitKey(next);
+  next.finalRequestKey = finalRequestKey;
+
+  let current: TrackedBrowserNetworkRequest | undefined = previous;
+  while (current) {
+    current.finalRequestKey = finalRequestKey;
+    const redirectedFromKey: string | undefined = current.redirectedFromRequestKey;
+    current = redirectedFromKey ? state.byRequestKey.get(redirectedFromKey) : undefined;
+  }
+}
+
+function applyResponseMetadataToRequest(
+  state: BrowserNetworkState,
+  request: TrackedBrowserNetworkRequest,
+  response: {
+    status: number;
+    statusText: string;
+    headers?: Record<string, string>;
+    mimeType?: string;
+  },
+  hasExtraInfo?: boolean
+): void {
+  setTrackedResponseMetadata(request, response);
+  resolveResponseAvailable(state, requestWaitKey(request));
+  if (state.servedFromCacheRequestIds.has(request.requestId)) {
+    request.rawRequestHeaders = undefined;
+    setTrackedRawResponseMetadata(request, undefined, undefined);
+    return;
+  }
+  if (hasExtraInfo === false) {
+    applyProvisionalHeadersAsRaw(request);
+    setTrackedRawResponseMetadata(request, request.rawResponseHeaders, request.responseHeadersSize);
+    return;
+  }
+  const queuedResponseHeaders = state.responseExtraInfoHeaders.get(request.requestId);
+  const nextResponseHeaders = queuedResponseHeaders?.shift();
+  if (queuedResponseHeaders && queuedResponseHeaders.length === 0) {
+    state.responseExtraInfoHeaders.delete(request.requestId);
+  }
+  if (nextResponseHeaders) {
+    setTrackedRawResponseMetadata(request, nextResponseHeaders.headers, nextResponseHeaders.headersSize);
+  }
+  setTrackedRawResponseMetadata(request, request.rawResponseHeaders, request.responseHeadersSize);
 }
 
 function settleOutstandingNetworkWaits(state: BrowserNetworkState): void {
   for (const request of state.requests) {
     const waitKey = requestWaitKey(request);
-    resolveResponseStarted(state, waitKey, false);
+    resolveResponseAvailable(state, waitKey);
     resolveRequestFinished(state, waitKey);
     resolveLoadingDone(state, waitKey, false);
   }
 }
 
-function loadingDoneEntry(state: BrowserNetworkState, requestId: string): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
-  let entry = state.loadingDone.get(requestId);
-  if (!entry) {
-    let resolve!: () => void;
-    let reject!: (error: Error) => void;
-    const promise = new Promise<void>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    entry = { promise, resolve, reject };
-    state.loadingDone.set(requestId, entry);
-  }
-  return entry;
+function ensureRequestLifecycle(request: TrackedBrowserNetworkRequest): RequestLifecycleState {
+  request.__lifecycle ??= {};
+  return request.__lifecycle;
 }
 
-function responseStartedEntry(state: BrowserNetworkState, requestId: string): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
-  let entry = state.responseStarted.get(requestId);
-  if (!entry) {
-    let resolve!: () => void;
-    let reject!: (error: Error) => void;
-    const promise = new Promise<void>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    entry = { promise, resolve, reject };
-    state.responseStarted.set(requestId, entry);
-  }
-  return entry;
+function createLifecycleWaiter(withReject = false): RequestLifecycleWaiter {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return withReject ? { promise, resolve, reject } : { promise, resolve };
 }
 
-function resolveResponseStarted(state: BrowserNetworkState, requestId: string, success: boolean): void {
-  const entry = state.responseStarted.get(requestId);
-  if (!entry) {
-    return;
-  }
-  state.responseStarted.delete(requestId);
-  if (success) {
-    entry.resolve();
-  } else {
-    entry.reject(new Error("Request failed before a response was available."));
-  }
+function ensureTrackedRequestObject(request: TrackedBrowserNetworkRequest): TrackedRequestObject {
+  request.__requestObject ??= {
+    request,
+    hasFailure: () => !!request.failureText,
+    hasResponseBody: () => request.responseBody !== undefined,
+    hasResponse: () => request.status !== undefined,
+    hasRawRequestHeadersMissing: () => request.rawRequestHeaders === undefined,
+    hasRawResponseHeadersProvisional: () => request.responseHeaders !== undefined && request.rawResponseHeaders === request.responseHeaders,
+    setFailureText: (failureText: string) => {
+      request.failureText = failureText;
+      ensureTrackedResponseObject(request);
+    },
+    markResponseFailure: (failureText: string) => {
+      request.failureText = failureText;
+      ensureTrackedResponseObject(request).markAvailable();
+    },
+    setRawRequestHeaders: (rawHeaders: Record<string, string> | undefined) => {
+      request.rawRequestHeaders = rawHeaders;
+    },
+    isLoadingDoneSettled: () => !!ensureRequestLifecycle(request).loadingDoneSettled,
+    loadingDoneEntry: () => {
+      const lifecycle = ensureRequestLifecycle(request);
+      if (!lifecycle.loadingDone) {
+        lifecycle.loadingDone = createLifecycleWaiter(true);
+      }
+      return lifecycle.loadingDone;
+    },
+    markLoadingDone: (success: boolean) => {
+      const lifecycle = ensureRequestLifecycle(request);
+      if (lifecycle.loadingDoneSettled) {
+        return;
+      }
+      lifecycle.loadingDoneSettled = true;
+      const entry = lifecycle.loadingDone;
+      if (!entry) {
+        return;
+      }
+      if (success) {
+        entry.resolve();
+      } else {
+        entry.reject?.(new Error("Request failed before the response body was available."));
+      }
+    }
+  };
+  return request.__requestObject;
 }
 
-async function waitForResponseStarted(state: BrowserNetworkState, requestId: string, timeoutMs: number): Promise<void> {
+function ensureTrackedResponse(request: TrackedBrowserNetworkRequest): TrackedBrowserNetworkResponse {
+  request.__response ??= {};
+  return request.__response;
+}
+
+function ensureTrackedResponseObject(request: TrackedBrowserNetworkRequest): TrackedResponseObject {
+  const requestObject = ensureTrackedRequestObject(request);
+  const response = ensureTrackedResponse(request);
+  request.__responseObject ??= {
+    request: requestObject,
+    response,
+    isAvailableSettled: () => !!response.availableSettled,
+    isFinishedSettled: () => !!response.finishedSettled,
+    responseAvailableEntry: () => {
+      if (!response.available) {
+        response.available = createLifecycleWaiter();
+      }
+      return response.available;
+    },
+    requestFinishedEntry: () => {
+      if (!response.finished) {
+        response.finished = createLifecycleWaiter();
+      }
+      return response.finished;
+    },
+    markAvailable: () => {
+      if (response.availableSettled) {
+        return;
+      }
+      response.availableSettled = true;
+      response.available?.resolve();
+    },
+    markFinished: () => {
+      if (response.finishedSettled) {
+        return;
+      }
+      response.finishedSettled = true;
+      response.finished?.resolve();
+    },
+    setBody: (body: string) => {
+      request.responseBody = body;
+      response.body = body;
+    },
+    setMetadata: (nextResponse) => {
+      request.status = nextResponse.status;
+      request.statusText = nextResponse.statusText;
+      request.responseHeaders = normalizeHeaders(nextResponse.headers ?? {});
+      request.mimeType = nextResponse.mimeType;
+      response.status = request.status;
+      response.statusText = request.statusText;
+      response.headers = request.responseHeaders;
+      response.mimeType = request.mimeType;
+    },
+    setRawMetadata: (rawHeaders, headersSize) => {
+      request.rawResponseHeaders = rawHeaders;
+      request.responseHeadersSize = headersSize;
+      response.rawHeaders = rawHeaders;
+      response.headersSize = headersSize;
+    },
+    setStatus: (status: number) => {
+      request.status = status;
+      response.status = status;
+    }
+  };
+  return request.__responseObject;
+}
+
+function setTrackedResponseBody(request: TrackedBrowserNetworkRequest, body: string): void {
+  ensureTrackedResponseObject(request).setBody(body);
+}
+
+function setTrackedFailureText(request: TrackedBrowserNetworkRequest, failureText: string): void {
+  ensureTrackedRequestObject(request).setFailureText(failureText);
+}
+
+function markTrackedResponseFailure(request: TrackedBrowserNetworkRequest, failureText: string): void {
+  ensureTrackedRequestObject(request).markResponseFailure(failureText);
+}
+
+function setTrackedResponseMetadata(
+  request: TrackedBrowserNetworkRequest,
+  response: {
+    status: number;
+    statusText: string;
+    headers?: Record<string, string> | undefined;
+    mimeType?: string | undefined;
+  }
+): void {
+  ensureTrackedResponseObject(request).setMetadata(response);
+}
+
+function setTrackedRawResponseMetadata(
+  request: TrackedBrowserNetworkRequest,
+  rawHeaders: Record<string, string> | undefined,
+  headersSize: number | undefined
+): void {
+  ensureTrackedResponseObject(request).setRawMetadata(rawHeaders, headersSize);
+}
+
+function setTrackedResponseStatus(
+  request: TrackedBrowserNetworkRequest,
+  status: number
+): void {
+  ensureTrackedResponseObject(request).setStatus(status);
+}
+
+function applyProvisionalHeadersAsTrackedRaw(request: TrackedBrowserNetworkRequest): void {
+  setTrackedRawResponseMetadata(request, request.responseHeaders, undefined);
+}
+
+function setTrackedRawRequestHeaders(
+  request: TrackedBrowserNetworkRequest,
+  rawHeaders: Record<string, string> | undefined
+): void {
+  ensureTrackedRequestObject(request).setRawRequestHeaders(rawHeaders);
+}
+
+function isTrackedRequestObject(value: unknown): value is TrackedRequestObject {
+  return !!value
+    && typeof value === "object"
+    && "request" in value
+    && "hasFailure" in value
+    && "hasResponseBody" in value
+    && "hasResponse" in value
+    && "hasRawRequestHeadersMissing" in value
+    && "hasRawResponseHeadersProvisional" in value;
+}
+
+function hasTrackedFailure(request: BrowserNetworkRequest): boolean {
+  return isTrackedRequestObject(request)
+    ? request.hasFailure()
+    : !!request.failureText;
+}
+
+function hasTrackedResponseBody(request: BrowserNetworkRequest): boolean {
+  return isTrackedRequestObject(request)
+    ? request.hasResponseBody()
+    : request.responseBody !== undefined;
+}
+
+function isTrackedResponseAvailable(request: BrowserNetworkRequest): boolean {
+  return isTrackedRequestObject(request)
+    ? request.hasResponse()
+    : request.status !== undefined;
+}
+
+function isTrackedRawRequestHeadersMissing(request: BrowserNetworkRequest): boolean {
+  return isTrackedRequestObject(request)
+    ? request.hasRawRequestHeadersMissing()
+    : request.rawRequestHeaders === undefined;
+}
+
+function isTrackedRawResponseHeadersProvisional(request: BrowserNetworkRequest): boolean {
+  return isTrackedRequestObject(request)
+    ? request.hasRawResponseHeadersProvisional()
+    : request.responseHeaders !== undefined && request.rawResponseHeaders === request.responseHeaders;
+}
+
+function trackedRequestObjectForWaitKey(
+  state: BrowserNetworkState,
+  requestId: string
+): TrackedRequestObject | undefined {
   const request = state.byRequestKey.get(requestId);
-  if (request?.status !== undefined || request?.failureText) {
+  return request ? ensureTrackedRequestObject(request) : undefined;
+}
+
+function trackedResponseObjectForWaitKey(
+  state: BrowserNetworkState,
+  requestId: string
+): TrackedResponseObject | undefined {
+  const request = state.byRequestKey.get(requestId);
+  return request ? ensureTrackedResponseObject(request) : undefined;
+}
+
+function trackedWaitObjectsForKey(
+  state: BrowserNetworkState,
+  requestId: string
+): { requestObject?: TrackedRequestObject; responseObject?: TrackedResponseObject } {
+  const request = state.byRequestKey.get(requestId);
+  if (!request) {
+    return {};
+  }
+  return {
+    requestObject: ensureTrackedRequestObject(request),
+    responseObject: ensureTrackedResponseObject(request)
+  };
+}
+
+function responseAvailableEntry(state: BrowserNetworkState, requestId: string): RequestLifecycleWaiter {
+  const responseObject = trackedResponseObjectForWaitKey(state, requestId);
+  if (!responseObject) {
+    return createLifecycleWaiter();
+  }
+  return responseObject.responseAvailableEntry();
+}
+
+function resolveResponseAvailable(state: BrowserNetworkState, requestId: string): void {
+  const responseObject = trackedResponseObjectForWaitKey(state, requestId);
+  if (!responseObject) {
     return;
   }
-  const entry = responseStartedEntry(state, requestId);
+  responseObject.markAvailable();
+}
+
+async function waitForResponseAvailable(state: BrowserNetworkState, requestId: string, timeoutMs: number): Promise<void> {
+  const { responseObject } = trackedWaitObjectsForKey(state, requestId);
+  if (responseObject?.isAvailableSettled()) {
+    return;
+  }
+  const entry = responseAvailableEntry(state, requestId);
   await Promise.race([
     entry.promise,
     new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
   ]);
 }
 
-function requestFinishedEntry(state: BrowserNetworkState, requestId: string): { promise: Promise<void>; resolve: () => void } {
-  let entry = state.requestFinished.get(requestId);
-  if (!entry) {
-    let resolve!: () => void;
-    const promise = new Promise<void>((res) => {
-      resolve = res;
-    });
-    entry = { promise, resolve };
-    state.requestFinished.set(requestId, entry);
+function requestFinishedEntry(state: BrowserNetworkState, requestId: string): RequestLifecycleWaiter {
+  const responseObject = trackedResponseObjectForWaitKey(state, requestId);
+  if (!responseObject) {
+    return createLifecycleWaiter();
   }
-  return entry;
+  return responseObject.requestFinishedEntry();
 }
 
 function resolveRequestFinished(state: BrowserNetworkState, requestId: string): void {
-  state.finishedRequestIds.add(requestId);
-  const entry = state.requestFinished.get(requestId);
-  if (!entry) {
+  const responseObject = trackedResponseObjectForWaitKey(state, requestId);
+  if (!responseObject) {
     return;
   }
-  state.requestFinished.delete(requestId);
-  entry.resolve();
+  responseObject.markFinished();
 }
 
 async function waitForRequestFinishedSignal(state: BrowserNetworkState, requestId: string, timeoutMs: number): Promise<void> {
-  if (state.finishedRequestIds.has(requestId)) {
+  const { responseObject } = trackedWaitObjectsForKey(state, requestId);
+  if (responseObject?.isFinishedSettled()) {
     return;
   }
   const entry = requestFinishedEntry(state, requestId);
@@ -2996,22 +3358,25 @@ async function waitForRequestFinishedSignal(state: BrowserNetworkState, requestI
   ]);
 }
 
+function loadingDoneEntry(state: BrowserNetworkState, requestId: string): RequestLifecycleWaiter {
+  const requestObject = trackedRequestObjectForWaitKey(state, requestId);
+  if (!requestObject) {
+    return createLifecycleWaiter(true);
+  }
+  return requestObject.loadingDoneEntry();
+}
+
 function resolveLoadingDone(state: BrowserNetworkState, requestId: string, success: boolean): void {
-  state.completedRequestIds.add(requestId);
-  const entry = state.loadingDone.get(requestId);
-  if (!entry) {
+  const requestObject = trackedRequestObjectForWaitKey(state, requestId);
+  if (!requestObject) {
     return;
   }
-  state.loadingDone.delete(requestId);
-  if (success) {
-    entry.resolve();
-  } else {
-    entry.reject(new Error("Request failed before the response body was available."));
-  }
+  requestObject.markLoadingDone(success);
 }
 
 async function waitForLoadingDone(state: BrowserNetworkState, requestId: string, timeoutMs: number): Promise<void> {
-  if (state.completedRequestIds.has(requestId)) {
+  const { requestObject } = trackedWaitObjectsForKey(state, requestId);
+  if (requestObject?.isLoadingDoneSettled()) {
     return;
   }
   const entry = loadingDoneEntry(state, requestId);
@@ -3082,6 +3447,7 @@ type BidiHeader = {
 type BidiNetworkEvent = {
   context: string;
   errorText?: string;
+  redirectCount?: number;
   request: {
     bodySize?: number;
     destination?: string;
@@ -3092,6 +3458,7 @@ type BidiNetworkEvent = {
   };
   response?: {
     headers?: BidiHeader[];
+    headersSize?: number;
     mimeType?: string;
     status: number;
     statusText?: string;
@@ -3128,6 +3495,7 @@ function parseBidiNetworkEvent(payload: unknown): BidiNetworkEvent | undefined {
   return {
     context: event.context,
     request: event.request,
+    ...(event.redirectCount !== undefined ? { redirectCount: event.redirectCount } : {}),
     ...(event.errorText !== undefined ? { errorText: event.errorText } : {}),
     ...(event.response !== undefined ? { response: event.response } : {}),
     ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {})
@@ -3142,7 +3510,7 @@ function bidiLogContext(payload: unknown): string | undefined {
   return context ?? undefined;
 }
 
-class BidiConnectedBrowserSession implements ConnectedBrowserSession {
+export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   readonly protocol = "bidi" as const;
   readonly browserName = "firefox" as const;
 
@@ -3151,6 +3519,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private readonly completionCollectorsByTabId = new Map<string, Set<CompletionRequestCollector>>();
   private readonly pageDialogStates = new Map<string, BrowserDialogState>();
   private readonly dialogWaiters = new Map<string, Set<DialogWaiter>>();
+  private readonly pageLoadStates = new Map<string, { loaded: boolean }>();
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
   private responseDataCollector: string | undefined;
   private activeTabId: string | undefined;
@@ -3244,6 +3613,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         this.pageNetworkStates.delete(tabId);
       }
       this.pageDialogStates.delete(tabId);
+      this.pageLoadStates.delete(tabId);
       this.completionCollectorsByTabId.delete(tabId);
       return tabsAfterClose;
     }
@@ -3863,7 +4233,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
   async beginRequestCollection(): Promise<unknown> {
     const tabId = await this.getActiveTabId();
-    const collector: CompletionRequestCollector = { requests: [] };
+    const collector: CompletionRequestCollector = { requests: [], requestKeys: [], liveRequests: [] };
     const collectors = this.completionCollectorsByTabId.get(tabId) ?? new Set<CompletionRequestCollector>();
     collectors.add(collector);
     this.completionCollectorsByTabId.set(tabId, collectors);
@@ -3882,7 +4252,16 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     if (collectors && collectors.size === 0) {
       this.completionCollectorsByTabId.delete(tabId);
     }
-    return collector.requests.map(cloneNetworkRequest);
+    const stateForTab = this.ensureNetworkState(tabId);
+    const requestsFromLiveObjects = Array.from(new Set(collector.liveRequests)).map(({ request }) => cloneNetworkRequest(request));
+    const uniqueKeys = Array.from(new Set(collector.requestKeys));
+    const requests = requestsFromLiveObjects.length
+      ? requestsFromLiveObjects
+      : uniqueKeys
+          .map((requestKey) => stateForTab.byRequestKey.get(requestKey))
+          .filter((request): request is BrowserNetworkRequest => !!request)
+          .map(cloneNetworkRequest);
+    return requests.length ? requests : collector.requests.map(cloneNetworkRequest);
   }
 
   async waitForPageTimeout(timeoutMs: number): Promise<void> {
@@ -3899,7 +4278,41 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
   }
 
-  async waitForMainFrameLoad(_timeoutMs: number): Promise<void> {}
+  async waitForMainFrameLoad(timeoutMs: number): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const readyState = await evaluateBiDi<string>(
+      this.client,
+      tabId,
+      String.raw`() => document.readyState`
+    ).catch(() => "loading");
+    if (readyState === "complete") {
+      const state = this.ensurePageLoadState(tabId);
+      state.loaded = true;
+      return;
+    }
+
+    const currentState = this.ensurePageLoadState(tabId);
+    if (currentState.loaded) {
+      return;
+    }
+
+    await withBiDiTimeout(new Promise<void>((resolve) => {
+      const eventName = "browsingContext.load";
+      const listener = (payload: unknown) => {
+        if (!payload || typeof payload !== "object" || !("context" in payload)) {
+          return;
+        }
+        const event = payload as { context?: string };
+        if (event.context !== tabId) {
+          return;
+        }
+        this.client.removeListener(eventName, listener);
+        this.ensurePageLoadState(tabId).loaded = true;
+        resolve();
+      };
+      this.client.on(eventName, listener);
+    }), timeoutMs).catch(() => undefined);
+  }
 
   async waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void> {
     const tabId = await this.getActiveTabId();
@@ -3910,7 +4323,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   async waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void> {
     const tabId = await this.getActiveTabId();
     const state = this.ensureNetworkState(tabId);
-    await waitForResponseStarted(state, requestId, timeoutMs).catch(() => undefined);
+    await waitForResponseAvailable(state, requestId, timeoutMs).catch(() => undefined);
   }
 
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
@@ -3962,6 +4375,8 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     this.attachBiDiListeners();
     await this.client.sessionSubscribe({
       events: [
+        "browsingContext.navigationStarted",
+        "browsingContext.load",
         "browsingContext.userPromptOpened",
         "log.entryAdded",
         "network.beforeRequestSent",
@@ -3980,6 +4395,8 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private attachBiDiListeners(): void {
     this.attachBiDiListener("log.entryAdded", (payload) => this.handleLogEntry(payload));
     this.attachBiDiListener("browsingContext.userPromptOpened", (payload) => this.handleUserPromptOpened(payload));
+    this.attachBiDiListener("browsingContext.navigationStarted", (payload) => this.handleNavigationStarted(payload));
+    this.attachBiDiListener("browsingContext.load", (payload) => this.handleBrowsingContextLoad(payload));
     this.attachBiDiListener("network.beforeRequestSent", (payload) => this.handleBeforeRequestSent(payload));
     this.attachBiDiListener("network.responseStarted", (payload) => this.handleResponseStarted(payload));
     this.attachBiDiListener("network.responseCompleted", (payload) => void this.handleResponseCompleted(payload));
@@ -4192,6 +4609,28 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     this.resolveDialogWaiters(event.context);
   }
 
+  private handleNavigationStarted(payload: unknown): void {
+    if (!payload || typeof payload !== "object" || !("context" in payload)) {
+      return;
+    }
+    const event = payload as { context?: string };
+    if (!event.context) {
+      return;
+    }
+    this.ensurePageLoadState(event.context).loaded = false;
+  }
+
+  private handleBrowsingContextLoad(payload: unknown): void {
+    if (!payload || typeof payload !== "object" || !("context" in payload)) {
+      return;
+    }
+    const event = payload as { context?: string };
+    if (!event.context) {
+      return;
+    }
+    this.ensurePageLoadState(event.context).loaded = true;
+  }
+
   private handleBeforeRequestSent(payload: unknown): void {
     const event = parseBidiNetworkEvent(payload);
     if (!event) {
@@ -4199,9 +4638,10 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
     const state = this.ensureNetworkState(event.context);
     const existing = state.byRequestId.get(event.request.request);
+    const isRedirectHop = Boolean(event.redirectCount) && !!existing;
     const sequence = (state.requestSequenceByRequestId.get(event.request.request) ?? 0) + 1;
     state.requestSequenceByRequestId.set(event.request.request, sequence);
-    const request: BrowserNetworkRequest = existing ?? {
+    const request: TrackedBrowserNetworkRequest = !isRedirectHop && existing ? existing : {
       index: state.requests.length + 1,
       requestId: event.request.request,
       requestKey: `${event.request.request}#${sequence}`,
@@ -4215,6 +4655,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     request.url = event.request.url;
     request.resourceType = normalizeResourceType(event.request.destination);
     request.requestHeaders = normalizeHeaders(bidiHeadersToRecord(event.request.headers));
+    request.rawRequestHeaders = request.requestHeaders;
     // TODO(bidi): BiDi 的 network.beforeRequestSent 只给 bodySize，不内联 POST
     // body。这里只置了个空串占位（requestBody ??= ""），真实 POST 体从未填充，
     // 因此 browser_network_request 的 part="request-body" 在 BiDi 下只能拿到空串。
@@ -4224,20 +4665,26 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     if (event.request.bodySize !== undefined && event.request.bodySize > 0) {
       request.requestBody ??= "";
     }
-    if (!existing) {
+    if (!existing || isRedirectHop) {
       state.requests.push(request);
       state.byRequestId.set(event.request.request, request);
       state.byRequestKey.set(requestWaitKey(request), request);
       const requestsForId = state.requestsByRequestId.get(event.request.request) ?? [];
       requestsForId.push(request);
       state.requestsByRequestId.set(event.request.request, requestsForId);
-    }
-    const collectors = this.completionCollectorsByTabId.get(event.context);
-    if (collectors?.size) {
-      for (const collector of collectors) {
-        collector.requests.push(cloneNetworkRequest(request));
+      if (isRedirectHop && existing) {
+        updateRedirectChain(state, existing, request);
+      } else {
+        request.finalRequestKey ??= requestWaitKey(request);
       }
     }
+      const collectors = this.completionCollectorsByTabId.get(event.context);
+      if (collectors?.size) {
+        for (const collector of collectors) {
+          collector.requestKeys.push(requestWaitKey(request));
+          collector.liveRequests.push(ensureTrackedRequestObject(request));
+        }
+      }
     if (event.timestamp !== undefined) {
       state.startedAt.set(event.request.request, event.timestamp);
     }
@@ -4249,11 +4696,14 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       return;
     }
     const request = this.ensureNetworkRequest(event);
-    request.status = event.response.status;
-    request.statusText = event.response.statusText ?? "";
-    request.responseHeaders = normalizeHeaders(bidiHeadersToRecord(event.response.headers));
-    request.mimeType = event.response.mimeType;
-    resolveResponseStarted(this.ensureNetworkState(event.context), requestWaitKey(request), true);
+    setTrackedResponseMetadata(request, {
+      status: event.response.status,
+      statusText: event.response.statusText ?? "",
+      headers: bidiHeadersToRecord(event.response.headers),
+      mimeType: event.response.mimeType
+    });
+    setTrackedRawResponseMetadata(request, request.responseHeaders, event.response.headersSize);
+    resolveResponseAvailable(this.ensureNetworkState(event.context), requestWaitKey(request));
   }
 
   private async handleResponseCompleted(payload: unknown): Promise<void> {
@@ -4262,10 +4712,12 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       return;
     }
     const request = this.ensureNetworkRequest(event);
-    request.status = event.response.status;
-    request.statusText = event.response.statusText ?? "";
-    request.responseHeaders = normalizeHeaders(bidiHeadersToRecord(event.response.headers));
-    request.mimeType = event.response.mimeType;
+    setTrackedResponseMetadata(request, {
+      status: event.response.status,
+      statusText: event.response.statusText ?? "",
+      headers: bidiHeadersToRecord(event.response.headers),
+      mimeType: event.response.mimeType
+    });
     const startedAt = this.ensureNetworkState(event.context).startedAt.get(event.request.request);
     if (startedAt !== undefined && event.timestamp !== undefined) {
       request.durationMs = Math.round(event.timestamp - startedAt);
@@ -4284,7 +4736,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     if (canReadResponseBody(request)) {
       const body = await this.getResponseBody(event.request.request).catch(() => undefined);
       if (body !== undefined) {
-        request.responseBody = body;
+        setTrackedResponseBody(request, body);
       }
     }
     const state = this.ensureNetworkState(event.context);
@@ -4298,13 +4750,18 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       return;
     }
     const request = this.ensureNetworkRequest(event);
-    request.failureText = event.errorText ?? "Unknown error";
+    setTrackedFailureText(request, event.errorText ?? "Unknown error");
+    if (!isTrackedResponseAvailable(request) && isTrackedRawRequestHeadersMissing(request)) {
+      setTrackedRawRequestHeaders(request, request.requestHeaders);
+    }
     const startedAt = this.ensureNetworkState(event.context).startedAt.get(event.request.request);
     if (startedAt !== undefined && event.timestamp !== undefined) {
       request.durationMs = Math.round(event.timestamp - startedAt);
+    } else if (request.status !== undefined) {
+      request.durationMs = -1;
     }
     const state = this.ensureNetworkState(event.context);
-    resolveResponseStarted(state, requestWaitKey(request), false);
+    resolveResponseAvailable(state, requestWaitKey(request));
     resolveRequestFinished(state, requestWaitKey(request));
     resolveLoadingDone(state, requestWaitKey(request), false);
   }
@@ -4331,6 +4788,15 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       state.requestsByRequestId.set(event.request.request, requestsForId);
     }
     return request;
+  }
+
+  private ensurePageLoadState(tabId: string): { loaded: boolean } {
+    let state = this.pageLoadStates.get(tabId);
+    if (!state) {
+      state = { loaded: false };
+      this.pageLoadStates.set(tabId, state);
+    }
+    return state;
   }
 
   private async getResponseBody(requestId: string): Promise<string | undefined> {

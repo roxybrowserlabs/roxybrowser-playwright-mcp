@@ -494,4 +494,573 @@ describe("CDP coverage", () => {
       responseHeadersSize: undefined
     });
   });
+
+  it("falls back to provisional headers when response has no extra-info like Playwright", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[] }>>;
+      installNetworkCollection(tabId: string, client: ReturnType<typeof createCdpClientStub>): void;
+      networkRequests(): Promise<any[]>;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestWillBeSentListener = vi.fn();
+    const responseReceivedListener = vi.fn();
+    const loadingFinishedListener = vi.fn();
+
+    pageClient.Network.requestWillBeSent.mockImplementation((listener: Listener) => {
+      requestWillBeSentListener.mockImplementation(listener);
+    });
+    pageClient.Network.responseReceived.mockImplementation((listener: Listener) => {
+      responseReceivedListener.mockImplementation(listener);
+    });
+    pageClient.Network.loadingFinished.mockImplementation((listener: Listener) => {
+      loadingFinishedListener.mockImplementation(listener);
+    });
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.installNetworkCollection("tab-1", pageClient);
+
+    requestWillBeSentListener({
+      requestId: "no-extra-info-request",
+      loaderId: "no-extra-info-request",
+      type: "Document",
+      request: {
+        url: "https://example.com/no-extra-info",
+        method: "GET",
+        headers: { accept: "text/html" }
+      }
+    });
+    responseReceivedListener({
+      requestId: "no-extra-info-request",
+      type: "Document",
+      hasExtraInfo: false,
+      response: {
+        url: "https://example.com/no-extra-info",
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+        mimeType: "text/html"
+      }
+    });
+    loadingFinishedListener({
+      requestId: "no-extra-info-request"
+    });
+
+    const requests = await session.networkRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requestId: "no-extra-info-request",
+      requestHeaders: { accept: "text/html" },
+      responseHeaders: { "content-type": "text/html" },
+      rawRequestHeaders: { accept: "text/html" },
+      rawResponseHeaders: { "content-type": "text/html" },
+      responseHeadersSize: undefined
+    });
+  });
+
+  it("applies redirectResponse metadata to the previous hop like Playwright", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[] }>>;
+      installNetworkCollection(tabId: string, client: ReturnType<typeof createCdpClientStub>): void;
+      networkRequests(): Promise<any[]>;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestWillBeSentListener = vi.fn();
+    const loadingFinishedListener = vi.fn();
+
+    pageClient.Network.requestWillBeSent.mockImplementation((listener: Listener) => {
+      requestWillBeSentListener.mockImplementation(listener);
+    });
+    pageClient.Network.loadingFinished.mockImplementation((listener: Listener) => {
+      loadingFinishedListener.mockImplementation(listener);
+    });
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.installNetworkCollection("tab-1", pageClient);
+
+    requestWillBeSentListener({
+      requestId: "redirect-request",
+      loaderId: "redirect-request",
+      type: "Document",
+      timestamp: 1,
+      request: {
+        url: "https://example.com/start",
+        method: "GET",
+        headers: { accept: "text/html" }
+      }
+    });
+    requestWillBeSentListener({
+      requestId: "redirect-request",
+      loaderId: "redirect-request",
+      type: "Document",
+      timestamp: 1.25,
+      redirectHasExtraInfo: false,
+      redirectResponse: {
+        url: "https://example.com/start",
+        status: 302,
+        statusText: "Found",
+        headers: { location: "https://example.com/final" },
+        mimeType: "text/html"
+      },
+      request: {
+        url: "https://example.com/final",
+        method: "GET",
+        headers: { accept: "text/html" }
+      }
+    });
+    loadingFinishedListener({
+      requestId: "redirect-request"
+    });
+
+    const requests = await session.networkRequests();
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({
+      requestId: "redirect-request",
+      requestKey: "redirect-request#1",
+      redirectedToRequestKey: "redirect-request#2",
+      finalRequestKey: "redirect-request#2",
+      url: "https://example.com/start",
+      status: 302,
+      statusText: "Found",
+      responseHeaders: { location: "https://example.com/final" },
+      rawRequestHeaders: { accept: "text/html" },
+      rawResponseHeaders: { location: "https://example.com/final" },
+      durationMs: 250
+    });
+    expect(requests[0]?.redirectedFromRequestKey).toBeUndefined();
+    expect(requests[1]).toMatchObject({
+      requestId: "redirect-request",
+      requestKey: "redirect-request#2",
+      redirectedFromRequestKey: "redirect-request#1",
+      finalRequestKey: "redirect-request#2",
+      url: "https://example.com/final"
+    });
+    expect(requests[1]?.redirectedToRequestKey).toBeUndefined();
+  });
+
+  it("falls back to provisional request headers when loading fails before response like Playwright", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[] }>>;
+      installNetworkCollection(tabId: string, client: ReturnType<typeof createCdpClientStub>): void;
+      networkRequests(): Promise<any[]>;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestWillBeSentListener = vi.fn();
+    const loadingFailedListener = vi.fn();
+
+    pageClient.Network.requestWillBeSent.mockImplementation((listener: Listener) => {
+      requestWillBeSentListener.mockImplementation(listener);
+    });
+    pageClient.Network.loadingFailed.mockImplementation((listener: Listener) => {
+      loadingFailedListener.mockImplementation(listener);
+    });
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.installNetworkCollection("tab-1", pageClient);
+
+    requestWillBeSentListener({
+      requestId: "failed-before-response",
+      loaderId: "failed-before-response",
+      type: "Document",
+      request: {
+        url: "https://example.com/fail",
+        method: "GET",
+        headers: { accept: "text/html" }
+      }
+    });
+    loadingFailedListener({
+      requestId: "failed-before-response",
+      errorText: "net::ERR_ABORTED"
+    });
+
+    const requests = await session.networkRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requestId: "failed-before-response",
+      requestHeaders: { accept: "text/html" },
+      rawRequestHeaders: { accept: "text/html" },
+      failureText: "net::ERR_ABORTED"
+    });
+  });
+
+  it("does not treat loadingFinished without a response as a completed response like Playwright", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[]; requestKeys: string[] }>>;
+      installNetworkCollection(tabId: string, client: ReturnType<typeof createCdpClientStub>): void;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+      waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestWillBeSentListener = vi.fn();
+    const loadingFinishedListener = vi.fn();
+
+    pageClient.Network.requestWillBeSent.mockImplementation((listener: Listener) => {
+      requestWillBeSentListener.mockImplementation(listener);
+    });
+    pageClient.Network.loadingFinished.mockImplementation((listener: Listener) => {
+      loadingFinishedListener.mockImplementation(listener);
+    });
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.installNetworkCollection("tab-1", pageClient);
+
+    requestWillBeSentListener({
+      requestId: "finished-without-response",
+      loaderId: "finished-without-response",
+      type: "Document",
+      request: {
+        url: "https://example.com/finished-without-response",
+        method: "GET",
+        headers: { accept: "text/html" }
+      }
+    });
+    loadingFinishedListener({
+      requestId: "finished-without-response",
+      timestamp: 1
+    });
+
+    vi.useFakeTimers();
+    try {
+      const waitPromise = session.waitForRequestResponse("finished-without-response#1", 5_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(waitPromise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles request response wait after loadingFailed without requiring a thrown error like Playwright request.response()", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[]; requestKeys: string[] }>>;
+      installNetworkCollection(tabId: string, client: ReturnType<typeof createCdpClientStub>): void;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+      waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestWillBeSentListener = vi.fn();
+    const loadingFailedListener = vi.fn();
+
+    pageClient.Network.requestWillBeSent.mockImplementation((listener: Listener) => {
+      requestWillBeSentListener.mockImplementation(listener);
+    });
+    pageClient.Network.loadingFailed.mockImplementation((listener: Listener) => {
+      loadingFailedListener.mockImplementation(listener);
+    });
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.installNetworkCollection("tab-1", pageClient);
+
+    requestWillBeSentListener({
+      requestId: "failed-no-response",
+      loaderId: "failed-no-response",
+      type: "Image",
+      request: {
+        url: "https://example.com/fail-image",
+        method: "GET",
+        headers: { accept: "image/png" }
+      }
+    });
+
+    const waitPromise = session.waitForRequestResponse("failed-no-response#1", 5_000);
+
+    loadingFailedListener({
+      requestId: "failed-no-response",
+      errorText: "net::ERR_ABORTED"
+    });
+
+    await expect(waitPromise).resolves.toBeUndefined();
+  });
+
+  it("distinguishes response availability from request finished like Playwright request.response() and response.finished()", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[]; requestKeys: string[] }>>;
+      installNetworkCollection(tabId: string, client: ReturnType<typeof createCdpClientStub>): void;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+      waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void>;
+      waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestWillBeSentListener = vi.fn();
+    const responseReceivedListener = vi.fn();
+    const loadingFinishedListener = vi.fn();
+
+    pageClient.Network.requestWillBeSent.mockImplementation((listener: Listener) => {
+      requestWillBeSentListener.mockImplementation(listener);
+    });
+    pageClient.Network.responseReceived.mockImplementation((listener: Listener) => {
+      responseReceivedListener.mockImplementation(listener);
+    });
+    pageClient.Network.loadingFinished.mockImplementation((listener: Listener) => {
+      loadingFinishedListener.mockImplementation(listener);
+    });
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.installNetworkCollection("tab-1", pageClient);
+
+    requestWillBeSentListener({
+      requestId: "response-before-finish",
+      loaderId: "response-before-finish",
+      type: "Image",
+      request: {
+        url: "https://example.com/api/data",
+        method: "GET",
+        headers: { accept: "application/json" }
+      }
+    });
+
+    const responseWait = session.waitForRequestResponse("response-before-finish#1", 5_000);
+    const finishedWait = session.waitForRequestFinished("response-before-finish#1", 5_000);
+
+    responseReceivedListener({
+      requestId: "response-before-finish",
+      type: "Image",
+      response: {
+        url: "https://example.com/api/data",
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        mimeType: "application/json"
+      }
+    });
+
+    await expect(responseWait).resolves.toBeUndefined();
+
+    let finishedResolved = false;
+    finishedWait.then(() => {
+      finishedResolved = true;
+    });
+    await Promise.resolve();
+    expect(finishedResolved).toBe(false);
+
+    loadingFinishedListener({
+      requestId: "response-before-finish",
+      timestamp: 1
+    });
+
+    await expect(finishedWait).resolves.toBeUndefined();
+  });
+
+  it("creates a new BiDi request hop for redirects like Playwright", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.BidiConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[]; requestKeys: string[] }>>;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+      handleBeforeRequestSent(payload: unknown): void;
+      networkRequests(): Promise<any[]>;
+    };
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.handleBeforeRequestSent({
+      context: "tab-1",
+      request: {
+        request: "bidi-redirect",
+        method: "GET",
+        url: "https://example.com/start",
+        destination: "document",
+        headers: [{ name: "accept", value: "text/html" }]
+      },
+      timestamp: 1000
+    });
+    session.handleBeforeRequestSent({
+      context: "tab-1",
+      redirectCount: 1,
+      request: {
+        request: "bidi-redirect",
+        method: "GET",
+        url: "https://example.com/final",
+        destination: "document",
+        headers: [{ name: "accept", value: "text/html" }]
+      },
+      timestamp: 1250
+    });
+
+    const requests = await session.networkRequests();
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({
+      requestId: "bidi-redirect",
+      requestKey: "bidi-redirect#1",
+      redirectedToRequestKey: "bidi-redirect#2",
+      finalRequestKey: "bidi-redirect#2",
+      url: "https://example.com/start"
+    });
+    expect(requests[0]?.redirectedFromRequestKey).toBeUndefined();
+    expect(requests[1]).toMatchObject({
+      requestId: "bidi-redirect",
+      requestKey: "bidi-redirect#2",
+      redirectedFromRequestKey: "bidi-redirect#1",
+      finalRequestKey: "bidi-redirect#2",
+      url: "https://example.com/final"
+    });
+    expect(requests[1]?.redirectedToRequestKey).toBeUndefined();
+  });
+
+  it("keeps provisional raw request headers on BiDi fetchError like Playwright", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.BidiConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[]; requestKeys: string[] }>>;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+      handleBeforeRequestSent(payload: unknown): void;
+      handleFetchError(payload: unknown): void;
+      networkRequests(): Promise<any[]>;
+    };
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.handleBeforeRequestSent({
+      context: "tab-1",
+      request: {
+        request: "bidi-fail",
+        method: "GET",
+        url: "https://example.com/fail",
+        destination: "document",
+        headers: [{ name: "accept", value: "text/html" }]
+      },
+      timestamp: 1000
+    });
+    session.handleFetchError({
+      context: "tab-1",
+      request: {
+        request: "bidi-fail",
+        method: "GET",
+        url: "https://example.com/fail",
+        destination: "document",
+        headers: [{ name: "accept", value: "text/html" }]
+      },
+      errorText: "NS_BINDING_ABORTED",
+      timestamp: 1100
+    });
+
+    const requests = await session.networkRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requestId: "bidi-fail",
+      requestHeaders: { accept: "text/html" },
+      rawRequestHeaders: { accept: "text/html" },
+      failureText: "NS_BINDING_ABORTED",
+      durationMs: 100
+    });
+  });
+
+  it("waits for BiDi main-frame load on navigation requests like Playwright", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const listeners = new Map<string, Set<Listener>>();
+    const client = {
+      on: vi.fn((event: string, listener: Listener) => {
+        const eventListeners = listeners.get(event) ?? new Set<Listener>();
+        eventListeners.add(listener);
+        listeners.set(event, eventListeners);
+      }),
+      removeListener: vi.fn((event: string, listener: Listener) => {
+        listeners.get(event)?.delete(listener);
+      }),
+      scriptEvaluate: vi.fn(async (params?: { expression?: string }) => {
+        const expression = String(params?.expression ?? "");
+        if (expression.includes("document.title")) {
+          return {
+            type: "success",
+            result: { type: "string", value: "example" }
+          };
+        }
+        throw new Error("not ready");
+      }),
+      browsingContextGetTree: vi.fn(async () => ({
+        contexts: [{ context: "tab-1", url: "https://example.com" }]
+      }))
+    } as unknown as {
+      on(event: string, listener: Listener): void;
+      removeListener(event: string, listener: Listener): void;
+      scriptEvaluate(...args: any[]): Promise<unknown>;
+      browsingContextGetTree(...args: any[]): Promise<unknown>;
+    };
+
+    const session = Object.create(module.BidiConnectedBrowserSession.prototype) as {
+      client: typeof client;
+      activeTabId?: string;
+      pageLoadStates: Map<string, { loaded: boolean }>;
+      waitForMainFrameLoad(timeoutMs: number): Promise<void>;
+      ensurePageLoadState(tabId: string): { loaded: boolean };
+    };
+
+    session.client = client;
+    session.activeTabId = "tab-1";
+    session.pageLoadStates = new Map();
+
+    const waitPromise = session.waitForMainFrameLoad(5_000);
+    await vi.waitFor(() => {
+      expect(client.on).toHaveBeenCalledWith("browsingContext.load", expect.any(Function));
+    });
+
+    const loadListener = Array.from(listeners.get("browsingContext.load") ?? [])[0];
+    expect(loadListener).toBeTypeOf("function");
+
+    loadListener?.({ context: "tab-2" });
+    await Promise.resolve();
+    expect(client.removeListener).not.toHaveBeenCalled();
+
+    loadListener?.({ context: "tab-1" });
+    await expect(waitPromise).resolves.toBeUndefined();
+    expect(session.ensurePageLoadState("tab-1")).toEqual({ loaded: true });
+    expect(client.removeListener).toHaveBeenCalledWith("browsingContext.load", loadListener);
+  });
 });

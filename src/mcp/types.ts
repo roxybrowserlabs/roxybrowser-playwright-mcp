@@ -50,6 +50,9 @@ export interface BrowserNetworkRequest {
   index: number;
   requestId: string;
   requestKey?: string | undefined;
+  redirectedFromRequestKey?: string | undefined;
+  redirectedToRequestKey?: string | undefined;
+  finalRequestKey?: string | undefined;
   method: string;
   url: string;
   resourceType: string;

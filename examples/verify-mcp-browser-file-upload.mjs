@@ -4,7 +4,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createRoxyBrowserMcpInMemory } from "../dist/mcp/index.js";
 
-const endpoint = process.env.ROXY_CDP_ENDPOINT ?? "ws://127.0.0.1:59330/devtools/browser/53a1ebbd-37ee-4f4b-aa12-51496bdfc4f1";
+const endpoint = process.env.ROXY_CDP_ENDPOINT ?? "ws://127.0.0.1:56185/devtools/browser/5e0a2368-1186-450a-b3b4-775fc21c14ce";
 
 const fixtureUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html lang="en">

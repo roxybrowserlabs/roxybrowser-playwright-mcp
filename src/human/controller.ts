@@ -22,21 +22,23 @@ export class DefaultHumanController implements HumanController {
   async click(target: HumanActionTarget, options?: ClickOptions): Promise<void> {
     const defaults = this.resolveDefaults(options);
     await this.ensureVisualization(target);
-    await this.enqueue(async () => {
-      await this.hover(target, options);
-      if (defaults.hoverBeforeClickMs > 0) {
-        await delay(defaults.hoverBeforeClickMs);
-      }
+    const action = async () => {
       await target.click({
-        ...options,
+        ...this.withHumanMove(options, defaults),
         delay: options?.delay ?? defaults.clickHoldMs
       });
-    });
+    };
+    if (options?.__roxyBeforeActionRetry) {
+      await action();
+      return;
+    }
+    await this.enqueue(action);
   }
 
   async hover(target: HumanActionTarget, options?: HoverOptions): Promise<void> {
+    const defaults = this.resolveDefaults(options);
     await this.ensureVisualization(target);
-    await target.hover(options);
+    await target.hover(this.withHumanMove(options, defaults));
   }
 
   async fill(
@@ -44,12 +46,7 @@ export class DefaultHumanController implements HumanController {
     value: string,
     options?: FillOptions
   ): Promise<void> {
-    const defaults = this.resolveDefaults(options);
-    await this.prepareEditableTarget(target, options, defaults);
-    await this.clearEditableTarget(target, defaults);
-    await this.typeText(target, value, {
-      ...(options?.human !== undefined ? { human: options.human } : {})
-    }, defaults);
+    await target.fill(value, options);
   }
 
   async type(
@@ -58,7 +55,6 @@ export class DefaultHumanController implements HumanController {
     options?: TypeOptions
   ): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    await this.prepareEditableTarget(target, options, defaults);
     await this.typeText(target, value, options, defaults);
   }
 
@@ -68,7 +64,6 @@ export class DefaultHumanController implements HumanController {
     options?: PressOptions
   ): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    await this.prepareEditableTarget(target, options, defaults);
     await target.press(key, {
       ...options,
       delay: options?.delay ?? defaults.typingDelayMs
@@ -86,26 +81,7 @@ export class DefaultHumanController implements HumanController {
     if (typeof evaluatableTarget.evaluate !== "function") {
       return;
     }
-    await evaluatableTarget.evaluate(CURSOR_VISUALIZATION_INSTALL_SOURCE);
-  }
-
-  private async prepareEditableTarget(
-    target: HumanActionTarget,
-    options: HumanActionOptions | undefined,
-    defaults: ResolvedHumanizationOptions
-  ): Promise<void> {
-    await this.ensureVisualization(target);
-    await this.enqueue(async () => {
-      await target.hover(options as HoverOptions | undefined);
-      if (defaults.hoverBeforeClickMs > 0) {
-        await delay(defaults.hoverBeforeClickMs);
-      }
-      await target.click({
-        ...(options ?? {}),
-        delay: defaults.clickHoldMs
-      } as ClickOptions);
-      await target.focus?.();
-    });
+    await evaluatableTarget.evaluate(CURSOR_VISUALIZATION_INSTALL_SOURCE, undefined, false);
   }
 
   private async typeText(
@@ -124,19 +100,6 @@ export class DefaultHumanController implements HumanController {
     } as TypeOptions);
   }
 
-  private async clearEditableTarget(
-    target: HumanActionTarget,
-    defaults: ResolvedHumanizationOptions
-  ): Promise<void> {
-    if (typeof target.clear === "function") {
-      await target.clear();
-      return;
-    }
-    await target.fill("", {
-      human: { profile: defaults.profile }
-    });
-  }
-
   private async enqueue<TResult>(action: () => Promise<TResult>): Promise<TResult> {
     const run = this.actionQueue.then(action, action);
     this.actionQueue = run.then(
@@ -144,6 +107,22 @@ export class DefaultHumanController implements HumanController {
       () => undefined
     );
     return run;
+  }
+
+  private withHumanMove<TOptions extends (ClickOptions | HoverOptions) | undefined>(
+    options: TOptions,
+    defaults: ResolvedHumanizationOptions
+  ): TOptions {
+    if (options?.__roxyBeforeActionRetry) {
+      return options;
+    }
+    return {
+      ...(options ?? {}),
+      __roxyHumanMove: {
+        durationMs: defaults.moveJitterMs,
+        stepPx: 24
+      }
+    } as TOptions;
   }
 }
 
