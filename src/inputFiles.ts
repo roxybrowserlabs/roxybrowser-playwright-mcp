@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, extname, join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
+import mime from "mime";
 import type { ElementHandle } from "./types/api.js";
 import type { FilePayload } from "./types/options.js";
 
@@ -140,6 +141,14 @@ async function resolvePathsAndDirectoryForInputFiles(items: string[]): Promise<{
   };
 }
 
+export async function resolveLocalInputFilePaths(items: string[]): Promise<string[]> {
+  const { localDirectory, localPaths } = await resolvePathsAndDirectoryForInputFiles(items);
+  if (localDirectory) {
+    return [localDirectory];
+  }
+  return localPaths ?? [];
+}
+
 async function payloadsForDirectory(localDirectory: string): Promise<FileUploadPayload[]> {
   const filePaths = await collectFiles(localDirectory);
   const rootName = basename(localDirectory);
@@ -174,69 +183,11 @@ async function payloadForPath(filePath: string): Promise<FileUploadPayload> {
   return {
     base64: buffer.toString("base64"),
     lastModifiedMs: fileStat.mtimeMs,
-    mimeType: inferMimeType(filePath),
+    mimeType: mime.getType(filePath) || "application/octet-stream",
     name: basename(filePath)
   };
 }
 
 function filePayloadExceedsSizeLimit(payloads: FilePayload[]): boolean {
   return payloads.reduce((size, item) => size + item.buffer.byteLength, 0) >= fileUploadSizeLimit;
-}
-
-function inferMimeType(filePath: string): string {
-  const extension = extname(filePath).toLowerCase();
-  switch (extension) {
-    case ".avif":
-      return "image/avif";
-    case ".bmp":
-      return "image/bmp";
-    case ".css":
-      return "text/css";
-    case ".csv":
-      return "text/csv";
-    case ".gif":
-      return "image/gif";
-    case ".htm":
-    case ".html":
-      return "text/html";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".js":
-    case ".mjs":
-      return "text/javascript";
-    case ".json":
-      return "application/json";
-    case ".md":
-      return "text/markdown";
-    case ".m4v":
-      return "video/x-m4v";
-    case ".mov":
-      return "video/quicktime";
-    case ".mp4":
-      return "video/mp4";
-    case ".mpeg":
-    case ".mpg":
-      return "video/mpeg";
-    case ".pdf":
-      return "application/pdf";
-    case ".png":
-      return "image/png";
-    case ".svg":
-      return "image/svg+xml";
-    case ".txt":
-      return "text/plain";
-    case ".avi":
-      return "video/x-msvideo";
-    case ".webm":
-      return "video/webm";
-    case ".webp":
-      return "image/webp";
-    case ".xml":
-      return "application/xml";
-    case ".zip":
-      return "application/zip";
-    default:
-      return "application/octet-stream";
-  }
 }

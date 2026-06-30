@@ -49,14 +49,19 @@ export interface BrowserConsoleEntry {
 export interface BrowserNetworkRequest {
   index: number;
   requestId: string;
+  requestKey?: string | undefined;
   method: string;
   url: string;
   resourceType: string;
+  isNavigationRequest?: boolean | undefined;
   requestHeaders: Record<string, string>;
+  rawRequestHeaders?: Record<string, string> | undefined;
   requestBody?: string | undefined;
   status?: number | undefined;
   statusText?: string | undefined;
   responseHeaders?: Record<string, string> | undefined;
+  rawResponseHeaders?: Record<string, string> | undefined;
+  responseHeadersSize?: number | undefined;
   responseBody?: string | undefined;
   failureText?: string | undefined;
   mimeType?: string | undefined;
@@ -122,9 +127,15 @@ export interface ConnectedBrowserSession {
   fillForm(fields: SessionFormField[]): Promise<void>;
   hasDialog(): Promise<boolean>;
   handleDialog(accept: boolean, promptText?: string): Promise<void>;
+  beginRequestCollection?(): Promise<unknown>;
+  endRequestCollection?(state?: unknown): Promise<BrowserNetworkRequest[]>;
   networkRequests(): Promise<BrowserNetworkRequest[]>;
   networkRequest(index: number): Promise<BrowserNetworkRequest | undefined>;
   fetchResponseBody(index: number): Promise<string | undefined>;
+  waitForPageTimeout?(timeoutMs: number): Promise<void>;
+  waitForMainFrameLoad?(timeoutMs: number): Promise<void>;
+  waitForRequestFinished?(requestId: string, timeoutMs: number): Promise<void>;
+  waitForRequestResponse?(requestId: string, timeoutMs: number): Promise<void>;
   runCodeUnsafe(code: string): Promise<unknown>;
   close(): Promise<void>;
 }

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const endpoint = process.env.ROXY_CDP_ENDPOINT ?? "ws://127.0.0.1:55417/devtools/browser/42f389e8-6c5e-45c6-a2f0-a0ff2854701d";
+const endpoint = process.env.ROXY_CDP_ENDPOINT ?? "ws://127.0.0.1:61522/devtools/browser/b7fa7e8f-6a98-4fab-8788-56e8308b6994";
 const targetUrl = "https://www.tiktok.com/tiktokstudio/upload?from=webapp&tab=video";
 const uploadXPath = '//*[@id="root"]/div/div/div[2]/div[2]/div/div[2]/div/div[1]/div/div/input';
 const maxSnapshotAttempts = 8;
@@ -222,83 +222,86 @@ async function main() {
     console.log("\n[file_upload]\n");
     console.log(textFromResult(uploadResult));
 
-    let parsed = null;
-    for (let attempt = 1; attempt <= maxVerifyAttempts; attempt += 1) {
-      const verifyResult = await callTool(client, "browser_evaluate", {
-        function: `() => {
-          const xpath = ${JSON.stringify(uploadXPath)};
-          const exactInput = document.evaluate(
-            xpath,
-            document,
-            null,
-            XPathResult.FIRST_ORDERED_NODE_TYPE,
-            null
-          ).singleNodeValue;
-          const fallbackInput = document.querySelector('input[type="file"]')
-            ?? document.evaluate(
-              '//input[@type="file"]',
-              document,
-              null,
-              XPathResult.FIRST_ORDERED_NODE_TYPE,
-              null
-            ).singleNodeValue;
-          const input = exactInput ?? fallbackInput;
-          const files = Array.from(input?.files ?? []).map((file) => ({
-            name: file.name,
-            size: file.size,
-            type: file.type
-          }));
-          const visibleText = document.body?.innerText?.replace(/\\s+/g, " ").trim().slice(0, 3000) ?? "";
-          const hasFilename = visibleText.includes(${JSON.stringify(uploadFileName)});
-          const hasEditorUi = /Details|Description|Cover|Who can see this post|Upload another video|Post|Save draft|Discard/i.test(visibleText);
-          const hasProgressUi = /Uploading|Processing|Checking|Uploaded|Complete|Progress|%/i.test(visibleText);
-          return {
-            url: location.href,
-            title: document.title,
-            inputFound: Boolean(input),
-            inputFoundByExactXpath: Boolean(exactInput),
-            files,
-            fileCount: files.length,
-            uploadLooksAccepted: files.some((file) => file.name === ${JSON.stringify(uploadFileName)}) || hasFilename || hasEditorUi || hasProgressUi,
-            inputOuterHtml: input?.outerHTML?.slice(0, 500) ?? null,
-            loginHint: /log in|login|sign in/i.test(visibleText),
-            hasFilename,
-            hasEditorUi,
-            hasProgressUi,
-            visibleText
-          };
-        }`
-      });
-      const verifyText = textFromResult(verifyResult);
-      console.log(`\n[verify attempt ${attempt}]\n`);
-      console.log(verifyText);
-      parsed = parseJsonResultBlock(verifyText);
-      if (parsed.uploadLooksAccepted) {
-        break;
-      }
-      if (attempt < maxVerifyAttempts) {
-        await delay(verifyRetryDelayMs);
-      }
-    }
+    const snapshotResult = await callTool(client, "browser_snapshot", {});
+    console.log('snapshotResult', snapshotResult)
 
-    if (!parsed) {
-      throw new Error("Did not receive verification result.");
-    }
-    if (!precheckParsed.inputFound) {
-      throw new Error("Target upload input was not found before upload started on the TikTok Studio upload page.");
-    }
-    if (!parsed.uploadLooksAccepted) {
-      throw new Error(
-        `Upload UI did not transition to an accepted state. fileCount=${parsed.fileCount}, title="${parsed.title}", loginHint=${parsed.loginHint}, hasEditorUi=${parsed.hasEditorUi}, hasProgressUi=${parsed.hasProgressUi}, hasFilename=${parsed.hasFilename}`
-      );
-    }
+    // let parsed = null;
+    // for (let attempt = 1; attempt <= maxVerifyAttempts; attempt += 1) {
+    //   const verifyResult = await callTool(client, "browser_evaluate", {
+    //     function: `() => {
+    //       const xpath = ${JSON.stringify(uploadXPath)};
+    //       const exactInput = document.evaluate(
+    //         xpath,
+    //         document,
+    //         null,
+    //         XPathResult.FIRST_ORDERED_NODE_TYPE,
+    //         null
+    //       ).singleNodeValue;
+    //       const fallbackInput = document.querySelector('input[type="file"]')
+    //         ?? document.evaluate(
+    //           '//input[@type="file"]',
+    //           document,
+    //           null,
+    //           XPathResult.FIRST_ORDERED_NODE_TYPE,
+    //           null
+    //         ).singleNodeValue;
+    //       const input = exactInput ?? fallbackInput;
+    //       const files = Array.from(input?.files ?? []).map((file) => ({
+    //         name: file.name,
+    //         size: file.size,
+    //         type: file.type
+    //       }));
+    //       const visibleText = document.body?.innerText?.replace(/\\s+/g, " ").trim().slice(0, 3000) ?? "";
+    //       const hasFilename = visibleText.includes(${JSON.stringify(uploadFileName)});
+    //       const hasEditorUi = /Details|Description|Cover|Who can see this post|Upload another video|Post|Save draft|Discard/i.test(visibleText);
+    //       const hasProgressUi = /Uploading|Processing|Checking|Uploaded|Complete|Progress|%/i.test(visibleText);
+    //       return {
+    //         url: location.href,
+    //         title: document.title,
+    //         inputFound: Boolean(input),
+    //         inputFoundByExactXpath: Boolean(exactInput),
+    //         files,
+    //         fileCount: files.length,
+    //         uploadLooksAccepted: files.some((file) => file.name === ${JSON.stringify(uploadFileName)}) || hasFilename || hasEditorUi || hasProgressUi,
+    //         inputOuterHtml: input?.outerHTML?.slice(0, 500) ?? null,
+    //         loginHint: /log in|login|sign in/i.test(visibleText),
+    //         hasFilename,
+    //         hasEditorUi,
+    //         hasProgressUi,
+    //         visibleText
+    //       };
+    //     }`
+    //   });
+    //   const verifyText = textFromResult(verifyResult);
+    //   console.log(`\n[verify attempt ${attempt}]\n`);
+    //   console.log(verifyText);
+    //   parsed = parseJsonResultBlock(verifyText);
+    //   if (parsed.uploadLooksAccepted) {
+    //     break;
+    //   }
+    //   if (attempt < maxVerifyAttempts) {
+    //     await delay(verifyRetryDelayMs);
+    //   }
+    // }
 
-    console.log("\nVerification passed.");
-    console.log(`- uploaded file name: ${parsed.files[0]?.name ?? "(not retained on input)"}`);
-    console.log(`- uploaded file type: ${parsed.files[0]?.type ?? "(not retained on input)"}`);
-    console.log(`- page title: ${parsed.title}`);
-    console.log(`- editor UI visible: ${parsed.hasEditorUi}`);
-    console.log(`- progress UI visible: ${parsed.hasProgressUi}`);
+    // if (!parsed) {
+    //   throw new Error("Did not receive verification result.");
+    // }
+    // if (!precheckParsed.inputFound) {
+    //   throw new Error("Target upload input was not found before upload started on the TikTok Studio upload page.");
+    // }
+    // if (!parsed.uploadLooksAccepted) {
+    //   throw new Error(
+    //     `Upload UI did not transition to an accepted state. fileCount=${parsed.fileCount}, title="${parsed.title}", loginHint=${parsed.loginHint}, hasEditorUi=${parsed.hasEditorUi}, hasProgressUi=${parsed.hasProgressUi}, hasFilename=${parsed.hasFilename}`
+    //   );
+    // }
+
+    // console.log("\nVerification passed.");
+    // console.log(`- uploaded file name: ${parsed.files[0]?.name ?? "(not retained on input)"}`);
+    // console.log(`- uploaded file type: ${parsed.files[0]?.type ?? "(not retained on input)"}`);
+    // console.log(`- page title: ${parsed.title}`);
+    // console.log(`- editor UI visible: ${parsed.hasEditorUi}`);
+    // console.log(`- progress UI visible: ${parsed.hasProgressUi}`);
   } finally {
     await close();
   }

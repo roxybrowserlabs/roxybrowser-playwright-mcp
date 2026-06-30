@@ -534,7 +534,7 @@ export class McpRuntime {
     });
   }
 
-  async uploadFile(paths: string[]): Promise<BrowserSnapshot | undefined> {
+  async performFileUpload(paths: string[]): Promise<void> {
     const session = this.requireConnected();
     if (!this.fileUploadPending && !this.pendingFileUploadTarget) {
       throw new McpToolError(
@@ -557,15 +557,15 @@ export class McpRuntime {
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;
     try {
-      const chooserObservationDelayMs = Math.max(
-        320,
-        jitter(humanOpts.hoverBeforeClickMs + humanOpts.clickHoldMs)
-      );
-      await delay(chooserObservationDelayMs);
       await session.uploadFile(target, paths);
     } finally {
       await session.finishFileUpload?.(target);
     }
+    this.invalidateSnapshot();
+  }
+
+  async uploadFile(paths: string[]): Promise<BrowserSnapshot | undefined> {
+    await this.performFileUpload(paths);
     this.invalidateSnapshot();
     if (this.snapshotMode === "none") {
       return undefined;
@@ -632,6 +632,26 @@ export class McpRuntime {
     return session.networkRequests();
   }
 
+  async beginRequestCollection(): Promise<unknown> {
+    const session = this.requireConnected();
+    return session.beginRequestCollection?.();
+  }
+
+  async endRequestCollection(state?: unknown): Promise<BrowserNetworkRequest[]> {
+    const session = this.requireConnected();
+    return session.endRequestCollection?.(state) ?? [];
+  }
+
+  async waitForPageTimeout(timeoutMs: number): Promise<void> {
+    const session = this.requireConnected();
+    await session.waitForPageTimeout?.(timeoutMs);
+  }
+
+  async waitForMainFrameLoad(timeoutMs: number): Promise<void> {
+    const session = this.requireConnected();
+    await session.waitForMainFrameLoad?.(timeoutMs);
+  }
+
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
     const session = this.requireConnected();
     return session.networkRequest(index);
@@ -640,6 +660,16 @@ export class McpRuntime {
   async fetchResponseBody(index: number): Promise<string | undefined> {
     const session = this.requireConnected();
     return session.fetchResponseBody(index);
+  }
+
+  async waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void> {
+    const session = this.requireConnected();
+    await session.waitForRequestFinished?.(requestId, timeoutMs);
+  }
+
+  async waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void> {
+    const session = this.requireConnected();
+    await session.waitForRequestResponse?.(requestId, timeoutMs);
   }
 
   async runCodeUnsafe(code: string): Promise<unknown> {

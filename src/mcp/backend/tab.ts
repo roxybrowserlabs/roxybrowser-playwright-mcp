@@ -2,6 +2,7 @@ import type { ClickTarget } from "../types.js";
 import type { McpRuntime } from "../runtime.js";
 import type { Context } from "./context.js";
 import type { ModalState } from "./tool.js";
+import { waitForCompletion } from "./utils.js";
 
 type TargetParams = { element?: string | undefined; target: string };
 type HumanOptions = { profile?: "cautious" | "balanced" | "fast" | undefined };
@@ -102,7 +103,23 @@ export class Tab {
   }
 
   async waitForCompletion<T>(callback: () => Promise<T>): Promise<T> {
-    return callback();
+    return waitForCompletion(this, callback);
+  }
+
+  async waitForTimeout(time: number): Promise<void> {
+    await this.context.runtime.waitForPageTimeout(time);
+  }
+
+  async waitForMainFrameLoad(timeoutMs: number): Promise<void> {
+    await this.context.runtime.waitForMainFrameLoad(timeoutMs);
+  }
+
+  async waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void> {
+    await this.context.runtime.waitForRequestFinished(requestId, timeoutMs);
+  }
+
+  async waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void> {
+    await this.context.runtime.waitForRequestResponse(requestId, timeoutMs);
   }
 
   async targetLocator(params: TargetParams): Promise<{ locator: Locator; resolved: string }> {
@@ -125,6 +142,6 @@ export class Tab {
   }
 
   async uploadFile(paths: string[]): Promise<void> {
-    await this.context.runtime.uploadFile(paths);
+    await this.context.runtime.performFileUpload(paths);
   }
 }

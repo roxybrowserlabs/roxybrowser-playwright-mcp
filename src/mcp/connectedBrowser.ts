@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import * as cdpModule from "chrome-remote-interface";
+import mime from "mime";
 import {
   normalizeAriaSnapshotOptions,
   retryUntilReady,
@@ -9,6 +10,7 @@ import {
 import {
   applyResolvedInputFilesToInputElement,
   convertInputFiles,
+  resolveLocalInputFilePaths,
   type ResolvedInputFiles
 } from "../inputFiles.js";
 import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../vendor/playwright/ariaSnapshotEvaluate.js";
@@ -136,6 +138,8 @@ type CdpClient = {
         defaultPrompt?: string;
       }) => void
     ): void;
+    frameStoppedLoading?(listener: (event: { frameId: string }) => void): void;
+    loadEventFired?(listener: (event: { timestamp?: number }) => void): void;
   };
   Runtime: {
     enable(): Promise<void>;
@@ -194,6 +198,8 @@ type CdpClient = {
     requestWillBeSent(
       listener: (event: {
         requestId: string;
+        loaderId?: string;
+        frameId?: string;
         timestamp?: number;
         type?: string;
         request: {
@@ -202,6 +208,12 @@ type CdpClient = {
           headers?: Record<string, string>;
           postData?: string;
         };
+      }) => void
+    ): void;
+    requestWillBeSentExtraInfo?(
+      listener: (event: {
+        requestId: string;
+        headers: Record<string, string>;
       }) => void
     ): void;
     responseReceived(
@@ -216,6 +228,19 @@ type CdpClient = {
           headers?: Record<string, string>;
           mimeType?: string;
         };
+      }) => void
+    ): void;
+    responseReceivedExtraInfo?(
+      listener: (event: {
+        requestId: string;
+        headers: Record<string, string>;
+        headersText?: string;
+        statusCode?: number;
+      }) => void
+    ): void;
+    requestServedFromCache?(
+      listener: (event: {
+        requestId: string;
       }) => void
     ): void;
     loadingFinished(listener: (event: { requestId: string; timestamp?: number }) => void): void;
@@ -322,12 +347,30 @@ interface BrowserConsoleState {
 interface BrowserNetworkState {
   requests: BrowserNetworkRequest[];
   byRequestId: Map<string, BrowserNetworkRequest>;
+  byRequestKey: Map<string, BrowserNetworkRequest>;
+  requestsByRequestId: Map<string, BrowserNetworkRequest[]>;
+  requestSequenceByRequestId: Map<string, number>;
+  requestExtraInfoHeaders: Map<string, Array<Record<string, string>>>;
+  responseExtraInfoHeaders: Map<string, Array<{ headers: Record<string, string>; headersSize?: number }>>;
+  servedFromCacheRequestIds: Set<string>;
   startedAt: Map<string, number>;
   hydratedPerformanceResources: boolean;
+  // Resolves when response metadata becomes available for a request,
+  // or rejects when the request fails before a response arrives.
+  responseStarted: Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>;
+  // Resolves when the request finishes, regardless of success or failure,
+  // matching Playwright's response.finished() completion semantics.
+  requestFinished: Map<string, { promise: Promise<void>; resolve: () => void }>;
   // Resolves when a request finishes loading (its response body is readable),
   // or rejects when it fails. Created lazily on first access.
   loadingDone: Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>;
+  completedRequestIds: Set<string>;
+  finishedRequestIds: Set<string>;
   bodyRead: Set<string>;
+}
+
+interface CompletionRequestCollector {
+  requests: BrowserNetworkRequest[];
 }
 
 interface BrowserDialogState {
@@ -341,6 +384,27 @@ interface DialogWaiter {
   resolve(): void;
   reject?(error: Error): void;
   timer?: ReturnType<typeof setTimeout>;
+}
+
+function createBrowserNetworkState(): BrowserNetworkState {
+  return {
+    requests: [],
+    byRequestId: new Map(),
+    byRequestKey: new Map(),
+    requestsByRequestId: new Map(),
+    requestSequenceByRequestId: new Map(),
+    requestExtraInfoHeaders: new Map(),
+    responseExtraInfoHeaders: new Map(),
+    servedFromCacheRequestIds: new Set(),
+    startedAt: new Map(),
+    hydratedPerformanceResources: false,
+    responseStarted: new Map(),
+    requestFinished: new Map(),
+    loadingDone: new Map(),
+    completedRequestIds: new Set(),
+    finishedRequestIds: new Set(),
+    bodyRead: new Set()
+  };
 }
 
 function buildConnectionFromWsEndpoint(browserWsEndpoint: string): CdpConnectionDetails {
@@ -603,6 +667,7 @@ const GET_ELEMENT_OBJECT_SOURCE = String.raw`(payload) => {
     : document.querySelector(payload.selector);
 }`;
 
+// Retained for non-native/legacy upload paths; the CDP primary path now uses DOM.setFileInputFiles.
 async function setResolvedInputFilesByObjectId(
   client: CdpClient,
   objectId: string,
@@ -647,6 +712,17 @@ async function setResolvedInputFilesByObjectId(
     debug.eventDispatchSuccesses += 1;
     debug.lastEventDispatchError = "";
   }
+}
+
+async function setNativeInputFilePathsByObjectId(
+  client: CdpClient,
+  objectId: string,
+  filePaths: string[]
+): Promise<void> {
+  await client.DOM.setFileInputFiles({
+    objectId,
+    files: filePaths
+  });
 }
 
 const SET_FORM_FIELD_SOURCE = String.raw`(payload) => {
@@ -1026,13 +1102,14 @@ function chooseInitialTab(tabs: Array<{ id: string; url: string }>): string | un
   return tabs.find((tab) => tab.url && tab.url !== "about:blank")?.id ?? tabs[0]?.id;
 }
 
-class CdpConnectedBrowserSession implements ConnectedBrowserSession {
+export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   readonly protocol = "cdp" as const;
   readonly browserName = "chromium" as const;
 
   private readonly pageClients = new Map<string, CdpClient>();
   private readonly pageConsoleStates = new Map<string, BrowserConsoleState>();
   private readonly pageNetworkStates = new Map<string, BrowserNetworkState>();
+  private readonly completionCollectorsByTabId = new Map<string, Set<CompletionRequestCollector>>();
   private readonly pageDialogStates = new Map<string, BrowserDialogState>();
   private readonly dialogWaiters = new Map<string, Set<DialogWaiter>>();
   private activeTabId: string | undefined;
@@ -1123,6 +1200,13 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     if (pageClient) {
       this.pageClients.delete(tabId);
       this.pageConsoleStates.delete(tabId);
+      const networkState = this.pageNetworkStates.get(tabId);
+      if (networkState) {
+        settleOutstandingNetworkWaits(networkState);
+        this.pageNetworkStates.delete(tabId);
+      }
+      this.pageDialogStates.delete(tabId);
+      this.completionCollectorsByTabId.delete(tabId);
       await pageClient.close().catch(() => {});
     }
 
@@ -1406,6 +1490,13 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async close(): Promise<void> {
+    for (const [tabId, state] of this.pageNetworkStates) {
+      settleOutstandingNetworkWaits(state);
+      this.completionCollectorsByTabId.delete(tabId);
+    }
+    this.pageNetworkStates.clear();
+    this.pageConsoleStates.clear();
+    this.pageDialogStates.clear();
     await Promise.all(
       Array.from(this.pageClients.values()).map(async (client) => {
         await client.close().catch(() => {});
@@ -1703,14 +1794,14 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async uploadFile(target: ClickTarget, filePaths: string[]): Promise<void> {
     const pageClient = await this.getActivePageClient();
-    const resolvedFiles = await convertInputFiles(filePaths);
+    const resolvedLocalPaths = await resolveLocalInputFilePaths(filePaths);
     if (isBackendNodeTarget(target)) {
       const resolved = await pageClient.DOM.resolveNode({ backendNodeId: target.backendNodeId }).catch(() => undefined);
       const objectId = resolved?.object?.objectId;
       if (!objectId) {
         throw new McpToolError("stale_ref", "The referenced element is no longer valid.");
       }
-      await setResolvedInputFilesByObjectId(pageClient, objectId, resolvedFiles, this.fileChooserDebug);
+      await setNativeInputFilePathsByObjectId(pageClient, objectId, resolvedLocalPaths);
       return;
     }
     const contextId = await this.getActiveUtilityContextId(pageClient);
@@ -1723,7 +1814,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         isSelector ? `Element "${target.selector}" could not be found.` : 'The referenced element is no longer valid.'
       );
     }
-    await setResolvedInputFilesByObjectId(pageClient, refResult.objectId, resolvedFiles, this.fileChooserDebug);
+    await setNativeInputFilePathsByObjectId(pageClient, refResult.objectId, resolvedLocalPaths);
   }
 
   async finishFileUpload(_target: ClickTarget): Promise<void> {
@@ -1823,6 +1914,30 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return this.ensureNetworkState(tabId).requests.map(cloneNetworkRequest);
   }
 
+  async beginRequestCollection(): Promise<unknown> {
+    const tabId = await this.getActiveTabId();
+    const collector: CompletionRequestCollector = { requests: [] };
+    const collectors = this.completionCollectorsByTabId.get(tabId) ?? new Set<CompletionRequestCollector>();
+    collectors.add(collector);
+    this.completionCollectorsByTabId.set(tabId, collectors);
+    return { tabId, collector };
+  }
+
+  async endRequestCollection(state?: unknown): Promise<BrowserNetworkRequest[]> {
+    const completionState = state as { tabId?: string; collector?: CompletionRequestCollector } | undefined;
+    const tabId = completionState?.tabId ?? await this.getActiveTabId();
+    const collector = completionState?.collector;
+    if (!collector) {
+      return [];
+    }
+    const collectors = this.completionCollectorsByTabId.get(tabId);
+    collectors?.delete(collector);
+    if (collectors && collectors.size === 0) {
+      this.completionCollectorsByTabId.delete(tabId);
+    }
+    return collector.requests.map(cloneNetworkRequest);
+  }
+
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
     const tabId = await this.getActiveTabId();
     await this.hydratePerformanceResourceRequests(tabId);
@@ -1843,14 +1958,15 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     if (request.responseBody !== undefined) {
       return request.responseBody;
     }
-    await waitForLoadingDone(state, request.requestId, 5_000).catch(() => undefined);
+    const waitKey = requestWaitKey(request);
+    await waitForLoadingDone(state, waitKey, 5_000).catch(() => undefined);
     if (request.responseBody !== undefined) {
       return request.responseBody;
     }
-    if (state.bodyRead.has(request.requestId)) {
+    if (state.bodyRead.has(waitKey)) {
       return undefined;
     }
-    state.bodyRead.add(request.requestId);
+    state.bodyRead.add(waitKey);
     const pageClient = this.pageClients.get(tabId) ?? await this.getActivePageClient();
     const clientNetwork = pageClient.Network;
     if (!clientNetwork) {
@@ -1863,6 +1979,77 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         : body.body;
     }
     return request.responseBody;
+  }
+
+  async waitForPageTimeout(timeoutMs: number): Promise<void> {
+    if (timeoutMs <= 0) {
+      return;
+    }
+    const pageClient = await this.getActivePageClient().catch(() => undefined);
+    if (!pageClient) {
+      await delay(timeoutMs);
+      return;
+    }
+    const contextId = await this.getActiveUtilityContextId(pageClient).catch(() => undefined);
+    if (contextId === undefined) {
+      await delay(timeoutMs);
+      return;
+    }
+    await evaluateCdp(
+      pageClient,
+      String.raw`(ms) => new Promise((resolve) => setTimeout(resolve, ms))`,
+      timeoutMs,
+      contextId
+    ).catch(async () => {
+      await delay(timeoutMs);
+    });
+  }
+
+  async waitForMainFrameLoad(timeoutMs: number): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const pageClient = this.pageClients.get(tabId) ?? await this.getActivePageClient();
+    const { frameTree } = await pageClient.Page.getFrameTree().catch(() => ({ frameTree: { frame: { id: "" } } }));
+    const mainFrameId = frameTree.frame.id;
+    const readyState = await evaluateCdp<string>(
+      pageClient,
+      String.raw`() => document.readyState`,
+      undefined,
+      await this.getActiveUtilityContextId(pageClient)
+    ).catch(() => "loading");
+    if (readyState === "complete") {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      pageClient.Page.loadEventFired?.(() => finish());
+      pageClient.Page.frameStoppedLoading?.((event) => {
+        if (event.frameId === mainFrameId) {
+          finish();
+        }
+      });
+    });
+  }
+
+  async waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const state = this.ensureNetworkState(tabId);
+    await waitForRequestFinishedSignal(state, requestId, timeoutMs).catch(() => undefined);
+  }
+
+  async waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const state = this.ensureNetworkState(tabId);
+    await waitForResponseStarted(state, requestId, timeoutMs).catch(() => undefined);
   }
 
   async runCodeUnsafe(code: string): Promise<unknown> {
@@ -2097,26 +2284,103 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       return;
     }
     const state = this.ensureNetworkState(tabId);
+    client.Network.requestServedFromCache?.((event) => {
+      state.servedFromCacheRequestIds.add(event.requestId);
+    });
+    client.Network.requestWillBeSentExtraInfo?.((event) => {
+      const queued = state.requestExtraInfoHeaders.get(event.requestId) ?? [];
+      queued.push(normalizeHeaders(event.headers ?? {}));
+      state.requestExtraInfoHeaders.set(event.requestId, queued);
+      if (state.servedFromCacheRequestIds.has(event.requestId)) {
+        return;
+      }
+      const request = firstRequestMissingRawRequestHeaders(state, event.requestId);
+      if (request && request.rawRequestHeaders === undefined) {
+        const next = queued.shift();
+        if (queued.length === 0) {
+          state.requestExtraInfoHeaders.delete(event.requestId);
+        }
+        if (next) {
+          request.rawRequestHeaders = next;
+        }
+      }
+    });
+    client.Network.responseReceivedExtraInfo?.((event) => {
+      const queued = state.responseExtraInfoHeaders.get(event.requestId) ?? [];
+      queued.push({
+        headers: parseCdpHeadersText(event.headersText) ?? normalizeHeaders(event.headers ?? {}),
+        ...(event.headersText !== undefined ? { headersSize: event.headersText.length } : {})
+      });
+      state.responseExtraInfoHeaders.set(event.requestId, queued);
+      if (state.servedFromCacheRequestIds.has(event.requestId)) {
+        return;
+      }
+      const request = firstRequestMissingRawResponseHeaders(state, event.requestId);
+      if (request && request.rawResponseHeaders === request.responseHeaders) {
+        const next = queued.shift();
+        if (queued.length === 0) {
+          state.responseExtraInfoHeaders.delete(event.requestId);
+        }
+        if (next) {
+          request.rawResponseHeaders = next.headers;
+          request.responseHeadersSize = next.headersSize;
+          if (event.statusCode !== undefined) {
+            request.status = event.statusCode;
+          }
+        }
+      }
+    });
     client.Network.requestWillBeSent((event) => {
       const existing = state.byRequestId.get(event.requestId);
-      const request: BrowserNetworkRequest = existing ?? {
+      const isRedirectHop = !!existing && !state.finishedRequestIds.has(requestWaitKey(existing));
+      if (isRedirectHop) {
+        resolveRequestFinished(state, requestWaitKey(existing));
+        resolveLoadingDone(state, requestWaitKey(existing), true);
+      }
+      const sequence = (state.requestSequenceByRequestId.get(event.requestId) ?? 0) + 1;
+      state.requestSequenceByRequestId.set(event.requestId, sequence);
+      const request: BrowserNetworkRequest = !isRedirectHop && existing ? existing : {
         index: state.requests.length + 1,
         requestId: event.requestId,
+        requestKey: `${event.requestId}#${sequence}`,
         method: event.request.method,
         url: event.request.url,
         resourceType: normalizeResourceType(event.type),
+        isNavigationRequest: isCdpNavigationRequest(event),
         requestHeaders: {},
       };
+      request.requestKey ??= `${event.requestId}#${sequence}`;
       request.method = event.request.method;
       request.url = event.request.url;
       request.resourceType = normalizeResourceType(event.type);
+      request.isNavigationRequest = isCdpNavigationRequest(event);
       request.requestHeaders = normalizeHeaders(event.request.headers ?? {});
+      if (request.rawRequestHeaders === undefined && !state.servedFromCacheRequestIds.has(event.requestId)) {
+        const queuedRequestHeaders = state.requestExtraInfoHeaders.get(event.requestId);
+        const nextRequestHeaders = queuedRequestHeaders?.shift();
+        if (queuedRequestHeaders && queuedRequestHeaders.length === 0) {
+          state.requestExtraInfoHeaders.delete(event.requestId);
+        }
+        if (nextRequestHeaders) {
+          request.rawRequestHeaders = nextRequestHeaders;
+        }
+      }
       if (event.request.postData !== undefined) {
         request.requestBody = event.request.postData;
       }
-      if (!existing) {
+      if (!existing || isRedirectHop) {
         state.requests.push(request);
         state.byRequestId.set(event.requestId, request);
+        state.byRequestKey.set(requestWaitKey(request), request);
+        const requestsForId = state.requestsByRequestId.get(event.requestId) ?? [];
+        requestsForId.push(request);
+        state.requestsByRequestId.set(event.requestId, requestsForId);
+      }
+      const collectors = this.completionCollectorsByTabId.get(tabId);
+      if (collectors?.size) {
+        for (const collector of collectors) {
+          collector.requests.push(cloneNetworkRequest(request));
+        }
       }
       if (event.timestamp !== undefined) {
         state.startedAt.set(event.requestId, event.timestamp * 1000);
@@ -2132,10 +2396,28 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       request.responseHeaders = normalizeHeaders(event.response.headers ?? {});
       request.mimeType = event.response.mimeType;
       request.resourceType = normalizeResourceType(event.type) || request.resourceType;
+      if (state.servedFromCacheRequestIds.has(event.requestId)) {
+        request.rawRequestHeaders = undefined;
+        request.rawResponseHeaders = undefined;
+        request.responseHeadersSize = undefined;
+        resolveResponseStarted(state, requestWaitKey(request), true);
+        return;
+      }
+      const queuedResponseHeaders = state.responseExtraInfoHeaders.get(event.requestId);
+      const nextResponseHeaders = queuedResponseHeaders?.shift();
+      if (queuedResponseHeaders && queuedResponseHeaders.length === 0) {
+        state.responseExtraInfoHeaders.delete(event.requestId);
+      }
+      if (nextResponseHeaders) {
+        request.rawResponseHeaders = nextResponseHeaders.headers;
+        request.responseHeadersSize = nextResponseHeaders.headersSize;
+      }
+      resolveResponseStarted(state, requestWaitKey(request), true);
     });
     client.Network.loadingFinished(async (event) => {
       const request = state.byRequestId.get(event.requestId);
       if (!request) {
+        resolveRequestFinished(state, event.requestId);
         resolveLoadingDone(state, event.requestId, true);
         return;
       }
@@ -2143,8 +2425,9 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       if (startedAt !== undefined && event.timestamp !== undefined) {
         request.durationMs = Math.round(event.timestamp * 1000 - startedAt);
       }
-      if (canReadResponseBody(request) && !state.bodyRead.has(event.requestId)) {
-        state.bodyRead.add(event.requestId);
+      const waitKey = requestWaitKey(request);
+      if (canReadResponseBody(request) && !state.bodyRead.has(waitKey)) {
+        state.bodyRead.add(waitKey);
         const clientNetwork = client.Network;
         const body = await clientNetwork?.getResponseBody({ requestId: event.requestId }).catch(() => undefined);
         if (body) {
@@ -2153,11 +2436,14 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
             : body.body;
         }
       }
-      resolveLoadingDone(state, event.requestId, true);
+      resolveRequestFinished(state, waitKey);
+      resolveLoadingDone(state, waitKey, true);
     });
     client.Network.loadingFailed((event) => {
       const request = state.byRequestId.get(event.requestId);
       if (!request) {
+        resolveResponseStarted(state, event.requestId, false);
+        resolveRequestFinished(state, event.requestId);
         resolveLoadingDone(state, event.requestId, false);
         return;
       }
@@ -2166,7 +2452,10 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       if (startedAt !== undefined && event.timestamp !== undefined) {
         request.durationMs = Math.round(event.timestamp * 1000 - startedAt);
       }
-      resolveLoadingDone(state, event.requestId, false);
+      const waitKey = requestWaitKey(request);
+      resolveResponseStarted(state, waitKey, false);
+      resolveRequestFinished(state, waitKey);
+      resolveLoadingDone(state, waitKey, false);
     });
   }
 
@@ -2187,34 +2476,24 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   private ensureNetworkState(tabId: string): BrowserNetworkState {
     let state = this.pageNetworkStates.get(tabId);
     if (!state) {
-      state = {
-        requests: [],
-        byRequestId: new Map(),
-        startedAt: new Map(),
-        hydratedPerformanceResources: false,
-        loadingDone: new Map(),
-        bodyRead: new Set()
-      };
+      state = createBrowserNetworkState();
       this.pageNetworkStates.set(tabId, state);
     }
     return state;
   }
 
   private resetConsole(tabId: string): void {
+    const previousNetworkState = this.pageNetworkStates.get(tabId);
+    if (previousNetworkState) {
+      settleOutstandingNetworkWaits(previousNetworkState);
+    }
     this.pageConsoleStates.set(tabId, {
       messages: [],
       nextMessageIndex: 0,
       logStartTime: Date.now(),
       logLine: 0
     });
-    this.pageNetworkStates.set(tabId, {
-      requests: [],
-      byRequestId: new Map(),
-      startedAt: new Map(),
-      hydratedPerformanceResources: false,
-      loadingDone: new Map(),
-      bodyRead: new Set()
-    });
+    this.pageNetworkStates.set(tabId, createBrowserNetworkState());
     this.pageDialogStates.delete(tabId);
   }
 
@@ -2247,6 +2526,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       const request: BrowserNetworkRequest = {
         index: state.requests.length + 1,
         requestId,
+        requestKey: requestId,
         method: "GET",
         url: documentRequest.url,
         resourceType: "document",
@@ -2257,6 +2537,8 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       };
       state.requests.push(request);
       state.byRequestId.set(requestId, request);
+      state.byRequestKey.set(requestId, request);
+      state.requestsByRequestId.set(requestId, [request]);
     }
 
     const resources = await evaluateCdp<Array<{
@@ -2288,6 +2570,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       const request: BrowserNetworkRequest = {
         index: state.requests.length + 1,
         requestId,
+        requestKey: requestId,
         method: "GET",
         url: resource.name,
         resourceType: normalizeResourceType(resource.initiatorType),
@@ -2297,6 +2580,8 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       };
       state.requests.push(request);
       state.byRequestId.set(requestId, request);
+      state.byRequestKey.set(requestId, request);
+      state.requestsByRequestId.set(requestId, [request]);
     }
   }
 
@@ -2564,8 +2849,34 @@ function normalizeHeaders(headers: Record<string, string>): Record<string, strin
   return result;
 }
 
+function parseCdpHeadersText(headersText: string | undefined): Record<string, string> | undefined {
+  if (!headersText) {
+    return undefined;
+  }
+  const entries: Record<string, string> = {};
+  for (const line of headersText.split(/\r?\n/)) {
+    if (!line || line.startsWith("HTTP/")) {
+      continue;
+    }
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex === -1) {
+      continue;
+    }
+    entries[line.slice(0, separatorIndex).toLowerCase()] = line.slice(separatorIndex + 1).trimStart();
+  }
+  return Object.keys(entries).length ? entries : undefined;
+}
+
 function normalizeResourceType(type: string | undefined): string {
   return (type ?? "other").toLowerCase();
+}
+
+function isCdpNavigationRequest(event: {
+  requestId: string;
+  loaderId?: string;
+  type?: string;
+}): boolean {
+  return event.requestId === event.loaderId && event.type === "Document";
 }
 
 function canReadResponseBody(request: BrowserNetworkRequest): boolean {
@@ -2573,6 +2884,27 @@ function canReadResponseBody(request: BrowserNetworkRequest): boolean {
     return false;
   }
   return request.status !== 204 && request.status !== 304 && !(request.status >= 100 && request.status < 200);
+}
+
+function requestWaitKey(request: Pick<BrowserNetworkRequest, "requestId" | "requestKey">): string {
+  return request.requestKey ?? request.requestId;
+}
+
+function firstRequestMissingRawRequestHeaders(state: BrowserNetworkState, requestId: string): BrowserNetworkRequest | undefined {
+  return (state.requestsByRequestId.get(requestId) ?? []).find((request) => request.rawRequestHeaders === undefined);
+}
+
+function firstRequestMissingRawResponseHeaders(state: BrowserNetworkState, requestId: string): BrowserNetworkRequest | undefined {
+  return (state.requestsByRequestId.get(requestId) ?? []).find((request) => request.responseHeaders !== undefined && request.rawResponseHeaders === request.responseHeaders);
+}
+
+function settleOutstandingNetworkWaits(state: BrowserNetworkState): void {
+  for (const request of state.requests) {
+    const waitKey = requestWaitKey(request);
+    resolveResponseStarted(state, waitKey, false);
+    resolveRequestFinished(state, waitKey);
+    resolveLoadingDone(state, waitKey, false);
+  }
 }
 
 function loadingDoneEntry(state: BrowserNetworkState, requestId: string): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
@@ -2590,7 +2922,82 @@ function loadingDoneEntry(state: BrowserNetworkState, requestId: string): { prom
   return entry;
 }
 
+function responseStartedEntry(state: BrowserNetworkState, requestId: string): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
+  let entry = state.responseStarted.get(requestId);
+  if (!entry) {
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    entry = { promise, resolve, reject };
+    state.responseStarted.set(requestId, entry);
+  }
+  return entry;
+}
+
+function resolveResponseStarted(state: BrowserNetworkState, requestId: string, success: boolean): void {
+  const entry = state.responseStarted.get(requestId);
+  if (!entry) {
+    return;
+  }
+  state.responseStarted.delete(requestId);
+  if (success) {
+    entry.resolve();
+  } else {
+    entry.reject(new Error("Request failed before a response was available."));
+  }
+}
+
+async function waitForResponseStarted(state: BrowserNetworkState, requestId: string, timeoutMs: number): Promise<void> {
+  const request = state.byRequestKey.get(requestId);
+  if (request?.status !== undefined || request?.failureText) {
+    return;
+  }
+  const entry = responseStartedEntry(state, requestId);
+  await Promise.race([
+    entry.promise,
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
+function requestFinishedEntry(state: BrowserNetworkState, requestId: string): { promise: Promise<void>; resolve: () => void } {
+  let entry = state.requestFinished.get(requestId);
+  if (!entry) {
+    let resolve!: () => void;
+    const promise = new Promise<void>((res) => {
+      resolve = res;
+    });
+    entry = { promise, resolve };
+    state.requestFinished.set(requestId, entry);
+  }
+  return entry;
+}
+
+function resolveRequestFinished(state: BrowserNetworkState, requestId: string): void {
+  state.finishedRequestIds.add(requestId);
+  const entry = state.requestFinished.get(requestId);
+  if (!entry) {
+    return;
+  }
+  state.requestFinished.delete(requestId);
+  entry.resolve();
+}
+
+async function waitForRequestFinishedSignal(state: BrowserNetworkState, requestId: string, timeoutMs: number): Promise<void> {
+  if (state.finishedRequestIds.has(requestId)) {
+    return;
+  }
+  const entry = requestFinishedEntry(state, requestId);
+  await Promise.race([
+    entry.promise,
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
 function resolveLoadingDone(state: BrowserNetworkState, requestId: string, success: boolean): void {
+  state.completedRequestIds.add(requestId);
   const entry = state.loadingDone.get(requestId);
   if (!entry) {
     return;
@@ -2604,6 +3011,9 @@ function resolveLoadingDone(state: BrowserNetworkState, requestId: string, succe
 }
 
 async function waitForLoadingDone(state: BrowserNetworkState, requestId: string, timeoutMs: number): Promise<void> {
+  if (state.completedRequestIds.has(requestId)) {
+    return;
+  }
   const entry = loadingDoneEntry(state, requestId);
   await Promise.race([
     entry.promise,
@@ -2652,38 +3062,11 @@ async function prepareDropFiles(paths: string[] | undefined): Promise<DropFilePa
     }
     return {
       name: path.basename(filePath),
-      mimeType: mimeTypeForPath(filePath),
+      mimeType: mime.getType(filePath) || "application/octet-stream",
       buffer: buffer.toString("base64"),
       lastModifiedMs: fileStat.mtimeMs
     };
   }));
-}
-
-function mimeTypeForPath(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
-    case ".avif": return "image/avif";
-    case ".bmp": return "image/bmp";
-    case ".css": return "text/css";
-    case ".csv": return "text/csv";
-    case ".gif": return "image/gif";
-    case ".htm":
-    case ".html": return "text/html";
-    case ".jpeg":
-    case ".jpg": return "image/jpeg";
-    case ".js":
-    case ".mjs": return "text/javascript";
-    case ".json": return "application/json";
-    case ".md": return "text/markdown";
-    case ".pdf": return "application/pdf";
-    case ".png": return "image/png";
-    case ".svg": return "image/svg+xml";
-    case ".txt": return "text/plain";
-    case ".webp": return "image/webp";
-    case ".xml": return "application/xml";
-    case ".zip": return "application/zip";
-    default: return "application/octet-stream";
-  }
 }
 
 type BidiBytesValue = {
@@ -2765,6 +3148,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
   private readonly pageConsoleStates = new Map<string, BrowserConsoleState>();
   private readonly pageNetworkStates = new Map<string, BrowserNetworkState>();
+  private readonly completionCollectorsByTabId = new Map<string, Set<CompletionRequestCollector>>();
   private readonly pageDialogStates = new Map<string, BrowserDialogState>();
   private readonly dialogWaiters = new Map<string, Set<DialogWaiter>>();
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
@@ -2854,8 +3238,13 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     if (tabsAfterClose.length === 0) {
       this.activeTabId = undefined;
       this.pageConsoleStates.delete(tabId);
-      this.pageNetworkStates.delete(tabId);
+      const networkState = this.pageNetworkStates.get(tabId);
+      if (networkState) {
+        settleOutstandingNetworkWaits(networkState);
+        this.pageNetworkStates.delete(tabId);
+      }
       this.pageDialogStates.delete(tabId);
+      this.completionCollectorsByTabId.delete(tabId);
       return tabsAfterClose;
     }
     const fallbackIndex = index >= 0 ? Math.min(index, tabsAfterClose.length - 1) : 0;
@@ -3162,6 +3551,13 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async close(): Promise<void> {
+    for (const [tabId, state] of this.pageNetworkStates) {
+      settleOutstandingNetworkWaits(state);
+      this.completionCollectorsByTabId.delete(tabId);
+    }
+    this.pageNetworkStates.clear();
+    this.pageConsoleStates.clear();
+    this.pageDialogStates.clear();
     for (const [event, listener] of this.bidiListeners) {
       this.client.removeListener(event, listener);
     }
@@ -3465,6 +3861,58 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     return this.ensureNetworkState(tabId).requests.map(cloneNetworkRequest);
   }
 
+  async beginRequestCollection(): Promise<unknown> {
+    const tabId = await this.getActiveTabId();
+    const collector: CompletionRequestCollector = { requests: [] };
+    const collectors = this.completionCollectorsByTabId.get(tabId) ?? new Set<CompletionRequestCollector>();
+    collectors.add(collector);
+    this.completionCollectorsByTabId.set(tabId, collectors);
+    return { tabId, collector };
+  }
+
+  async endRequestCollection(state?: unknown): Promise<BrowserNetworkRequest[]> {
+    const completionState = state as { tabId?: string; collector?: CompletionRequestCollector } | undefined;
+    const tabId = completionState?.tabId ?? await this.getActiveTabId();
+    const collector = completionState?.collector;
+    if (!collector) {
+      return [];
+    }
+    const collectors = this.completionCollectorsByTabId.get(tabId);
+    collectors?.delete(collector);
+    if (collectors && collectors.size === 0) {
+      this.completionCollectorsByTabId.delete(tabId);
+    }
+    return collector.requests.map(cloneNetworkRequest);
+  }
+
+  async waitForPageTimeout(timeoutMs: number): Promise<void> {
+    const quietMs = 500;
+    if (timeoutMs > 0) {
+      await evaluateBiDi(
+        this.client,
+        await this.getActiveTabId(),
+        String.raw`(ms) => new Promise((resolve) => setTimeout(resolve, ms))`,
+        timeoutMs
+      ).catch(async () => {
+        await delay(timeoutMs);
+      });
+    }
+  }
+
+  async waitForMainFrameLoad(_timeoutMs: number): Promise<void> {}
+
+  async waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const state = this.ensureNetworkState(tabId);
+    await waitForRequestFinishedSignal(state, requestId, timeoutMs).catch(() => undefined);
+  }
+
+  async waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const state = this.ensureNetworkState(tabId);
+    await waitForResponseStarted(state, requestId, timeoutMs).catch(() => undefined);
+  }
+
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
     const tabId = await this.getActiveTabId();
     const request = this.ensureNetworkState(tabId).requests[index - 1];
@@ -3751,14 +4199,18 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
     const state = this.ensureNetworkState(event.context);
     const existing = state.byRequestId.get(event.request.request);
+    const sequence = (state.requestSequenceByRequestId.get(event.request.request) ?? 0) + 1;
+    state.requestSequenceByRequestId.set(event.request.request, sequence);
     const request: BrowserNetworkRequest = existing ?? {
       index: state.requests.length + 1,
       requestId: event.request.request,
+      requestKey: `${event.request.request}#${sequence}`,
       method: event.request.method,
       url: event.request.url,
       resourceType: normalizeResourceType(event.request.destination),
       requestHeaders: {},
     };
+    request.requestKey ??= `${event.request.request}#${sequence}`;
     request.method = event.request.method;
     request.url = event.request.url;
     request.resourceType = normalizeResourceType(event.request.destination);
@@ -3775,6 +4227,16 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     if (!existing) {
       state.requests.push(request);
       state.byRequestId.set(event.request.request, request);
+      state.byRequestKey.set(requestWaitKey(request), request);
+      const requestsForId = state.requestsByRequestId.get(event.request.request) ?? [];
+      requestsForId.push(request);
+      state.requestsByRequestId.set(event.request.request, requestsForId);
+    }
+    const collectors = this.completionCollectorsByTabId.get(event.context);
+    if (collectors?.size) {
+      for (const collector of collectors) {
+        collector.requests.push(cloneNetworkRequest(request));
+      }
     }
     if (event.timestamp !== undefined) {
       state.startedAt.set(event.request.request, event.timestamp);
@@ -3791,6 +4253,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     request.statusText = event.response.statusText ?? "";
     request.responseHeaders = normalizeHeaders(bidiHeadersToRecord(event.response.headers));
     request.mimeType = event.response.mimeType;
+    resolveResponseStarted(this.ensureNetworkState(event.context), requestWaitKey(request), true);
   }
 
   private async handleResponseCompleted(payload: unknown): Promise<void> {
@@ -3824,6 +4287,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         request.responseBody = body;
       }
     }
+    const state = this.ensureNetworkState(event.context);
+    resolveRequestFinished(state, requestWaitKey(request));
+    resolveLoadingDone(state, requestWaitKey(request), true);
   }
 
   private handleFetchError(payload: unknown): void {
@@ -3837,6 +4303,10 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     if (startedAt !== undefined && event.timestamp !== undefined) {
       request.durationMs = Math.round(event.timestamp - startedAt);
     }
+    const state = this.ensureNetworkState(event.context);
+    resolveResponseStarted(state, requestWaitKey(request), false);
+    resolveRequestFinished(state, requestWaitKey(request));
+    resolveLoadingDone(state, requestWaitKey(request), false);
   }
 
   private ensureNetworkRequest(event: BidiNetworkEvent): BrowserNetworkRequest {
@@ -3846,13 +4316,19 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       request = {
         index: state.requests.length + 1,
         requestId: event.request.request,
+        requestKey: `${event.request.request}#${(state.requestSequenceByRequestId.get(event.request.request) ?? 0) + 1}`,
         method: event.request.method,
         url: event.request.url,
         resourceType: normalizeResourceType(event.request.destination),
+        isNavigationRequest: normalizeResourceType(event.request.destination) === "document",
         requestHeaders: normalizeHeaders(bidiHeadersToRecord(event.request.headers)),
       };
       state.requests.push(request);
       state.byRequestId.set(event.request.request, request);
+      state.byRequestKey.set(requestWaitKey(request), request);
+      const requestsForId = state.requestsByRequestId.get(event.request.request) ?? [];
+      requestsForId.push(request);
+      state.requestsByRequestId.set(event.request.request, requestsForId);
     }
     return request;
   }
@@ -3886,34 +4362,24 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private ensureNetworkState(tabId: string): BrowserNetworkState {
     let state = this.pageNetworkStates.get(tabId);
     if (!state) {
-      state = {
-        requests: [],
-        byRequestId: new Map(),
-        startedAt: new Map(),
-        hydratedPerformanceResources: false,
-        loadingDone: new Map(),
-        bodyRead: new Set()
-      };
+      state = createBrowserNetworkState();
       this.pageNetworkStates.set(tabId, state);
     }
     return state;
   }
 
   private resetConsole(tabId: string): void {
+    const previousNetworkState = this.pageNetworkStates.get(tabId);
+    if (previousNetworkState) {
+      settleOutstandingNetworkWaits(previousNetworkState);
+    }
     this.pageConsoleStates.set(tabId, {
       messages: [],
       nextMessageIndex: 0,
       logStartTime: Date.now(),
       logLine: 0
     });
-    this.pageNetworkStates.set(tabId, {
-      requests: [],
-      byRequestId: new Map(),
-      startedAt: new Map(),
-      hydratedPerformanceResources: false,
-      loadingDone: new Map(),
-      bodyRead: new Set()
-    });
+    this.pageNetworkStates.set(tabId, createBrowserNetworkState());
     this.pageDialogStates.delete(tabId);
   }
 

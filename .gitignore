@@ -6,4 +6,5 @@ coverage
 *.tsbuildinfo
 .DS_Store
 .pnpm-store
+.playwright-mcp
 .roxybrowser-playwright-mcp

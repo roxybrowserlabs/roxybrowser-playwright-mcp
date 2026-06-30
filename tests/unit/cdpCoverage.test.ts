@@ -80,6 +80,8 @@ function createCdpClientStub() {
     Network: {
       enable: vi.fn(async () => ({})),
       requestWillBeSent: vi.fn(),
+      requestWillBeSentExtraInfo: vi.fn(),
+      requestServedFromCache: vi.fn(),
       responseReceived: vi.fn(),
       responseReceivedExtraInfo: vi.fn(),
       loadingFinished: vi.fn(),
@@ -199,19 +201,29 @@ describe("CDP coverage", () => {
     const module = await import("../../src/mcp/connectedBrowser.js");
     const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
       getActivePageClient(): Promise<typeof pageClient>;
+      getActiveTabId(): Promise<string>;
+      bringTabToFront(tabId: string): Promise<void>;
+      pressedKeyboardModifiers: Set<string>;
+      pressedKeyboardCodes: Set<string>;
       pressKey(
         key: string,
         modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
       ): Promise<void>;
     };
     session.getActivePageClient = async () => pageClient;
+    session.getActiveTabId = async () => "tab-1";
+    session.bringTabToFront = async () => {};
+    session.pressedKeyboardModifiers = new Set();
+    session.pressedKeyboardCodes = new Set();
 
     await session.pressKey("a", ["ControlOrMeta"]);
 
     expect(pageClient.Input.insertText).not.toHaveBeenCalled();
-    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalledTimes(2);
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalledTimes(4);
     expect(pageClient.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      type: "keyDown",
+      type: "rawKeyDown"
+    }));
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
       key: "a",
       code: "KeyA"
     }));
@@ -387,6 +399,99 @@ describe("CDP coverage", () => {
     expect(pageClient.send).toHaveBeenCalledWith("CSS.startRuleUsageTracking");
     expect(pageClient.send).toHaveBeenCalledWith("CSS.getStyleSheetText", {
       styleSheetId: "sheet-1"
+    });
+  });
+
+  it("treats served-from-cache responses like Playwright extra-info tracking", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[] }>>;
+      installNetworkCollection(tabId: string, client: ReturnType<typeof createCdpClientStub>): void;
+      networkRequests(): Promise<any[]>;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestWillBeSentListener = vi.fn();
+    const requestWillBeSentExtraInfoListener = vi.fn();
+    const requestServedFromCacheListener = vi.fn();
+    const responseReceivedListener = vi.fn();
+    const responseReceivedExtraInfoListener = vi.fn();
+    const loadingFinishedListener = vi.fn();
+
+    pageClient.Network.requestWillBeSent.mockImplementation((listener: Listener) => {
+      requestWillBeSentListener.mockImplementation(listener);
+    });
+    pageClient.Network.requestWillBeSentExtraInfo.mockImplementation((listener: Listener) => {
+      requestWillBeSentExtraInfoListener.mockImplementation(listener);
+    });
+    pageClient.Network.requestServedFromCache = vi.fn((listener: Listener) => {
+      requestServedFromCacheListener.mockImplementation(listener);
+    });
+    pageClient.Network.responseReceived.mockImplementation((listener: Listener) => {
+      responseReceivedListener.mockImplementation(listener);
+    });
+    pageClient.Network.responseReceivedExtraInfo.mockImplementation((listener: Listener) => {
+      responseReceivedExtraInfoListener.mockImplementation(listener);
+    });
+    pageClient.Network.loadingFinished.mockImplementation((listener: Listener) => {
+      loadingFinishedListener.mockImplementation(listener);
+    });
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.installNetworkCollection("tab-1", pageClient);
+
+    requestWillBeSentListener({
+      requestId: "cached-request",
+      loaderId: "cached-request",
+      type: "Document",
+      request: {
+        url: "https://example.com/cached",
+        method: "GET",
+        headers: { accept: "text/html" }
+      }
+    });
+    requestServedFromCacheListener({ requestId: "cached-request" });
+    requestWillBeSentExtraInfoListener({
+      requestId: "cached-request",
+      headers: { cookie: "session=1" }
+    });
+    responseReceivedListener({
+      requestId: "cached-request",
+      type: "Document",
+      response: {
+        url: "https://example.com/cached",
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+        mimeType: "text/html"
+      }
+    });
+    responseReceivedExtraInfoListener({
+      requestId: "cached-request",
+      headers: { age: "120" },
+      headersText: "age: 120\r\n"
+    });
+    loadingFinishedListener({
+      requestId: "cached-request"
+    });
+
+    const requests = await session.networkRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requestId: "cached-request",
+      url: "https://example.com/cached",
+      requestHeaders: { accept: "text/html" },
+      responseHeaders: { "content-type": "text/html" },
+      rawRequestHeaders: undefined,
+      rawResponseHeaders: undefined,
+      responseHeadersSize: undefined
     });
   });
 });

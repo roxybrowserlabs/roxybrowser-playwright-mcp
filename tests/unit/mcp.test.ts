@@ -123,9 +123,15 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   uploadFileCalls: Array<{ target: ClickTarget; paths: string[] }> = [];
   prepareForFileUploadCalls: ClickTarget[] = [];
   finishFileUploadCalls: ClickTarget[] = [];
+  waitForPageTimeoutCalls: number[] = [];
+  waitForMainFrameLoadCalls: number[] = [];
+  waitForRequestFinishedCalls: Array<{ requestId: string; timeoutMs: number }> = [];
+  waitForRequestResponseCalls: Array<{ requestId: string; timeoutMs: number }> = [];
   fillFormCalls: SessionFormField[][] = [];
   pendingFileChooserTarget: ClickTarget | undefined;
   consumePendingChooserReturnsUndefinedOnce = false;
+  networkRequestsList: BrowserNetworkRequest[] = [];
+  requestCollectionStates: Array<{ requests: BrowserNetworkRequest[] }> = [];
 
   async consoleMessages() {
     return [{
@@ -244,6 +250,22 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
 
   async uploadFile(target: ClickTarget, paths: string[]): Promise<void> {
     this.uploadFileCalls.push({ target, paths });
+    const request = {
+      index: this.networkRequestsList.length + 1,
+      requestId: `request-${this.networkRequestsList.length + 1}`,
+      method: "GET",
+      url: "https://example.test/api",
+      resourceType: "fetch",
+      requestHeaders: {},
+      status: 200,
+      statusText: "OK",
+      responseHeaders: {},
+      responseBody: "{}"
+    };
+    this.networkRequestsList.push(request);
+    for (const collector of this.requestCollectionStates) {
+      collector.requests.push({ ...request });
+    }
   }
 
   async finishFileUpload(target: ClickTarget): Promise<void> {
@@ -266,18 +288,18 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async networkRequests(): Promise<BrowserNetworkRequest[]> {
-    return [{
-      index: 1,
-      requestId: "request-1",
-      method: "GET",
-      url: "https://example.test/api",
-      resourceType: "fetch",
-      requestHeaders: {},
-      status: 200,
-      statusText: "OK",
-      responseHeaders: {},
-      responseBody: "{}"
-    }];
+    return this.networkRequestsList.map((request) => ({ ...request }));
+  }
+
+  async beginRequestCollection(): Promise<unknown> {
+    const state = { requests: [] as BrowserNetworkRequest[] };
+    this.requestCollectionStates.push(state);
+    return state;
+  }
+
+  async endRequestCollection(state?: unknown): Promise<BrowserNetworkRequest[]> {
+    const collector = state as { requests: BrowserNetworkRequest[] } | undefined;
+    return collector?.requests.map((request) => ({ ...request })) ?? [];
   }
 
   async networkRequest(index: number): Promise<BrowserNetworkRequest | undefined> {
@@ -287,6 +309,22 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   async fetchResponseBody(index: number): Promise<string | undefined> {
     const request = await this.networkRequest(index);
     return request?.responseBody;
+  }
+
+  async waitForPageTimeout(timeoutMs: number): Promise<void> {
+    this.waitForPageTimeoutCalls.push(timeoutMs);
+  }
+
+  async waitForMainFrameLoad(timeoutMs: number): Promise<void> {
+    this.waitForMainFrameLoadCalls.push(timeoutMs);
+  }
+
+  async waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void> {
+    this.waitForRequestFinishedCalls.push({ requestId, timeoutMs });
+  }
+
+  async waitForRequestResponse(requestId: string, timeoutMs: number): Promise<void> {
+    this.waitForRequestResponseCalls.push({ requestId, timeoutMs });
   }
 
   async runCodeUnsafe(code: string): Promise<unknown> {
@@ -338,6 +376,141 @@ class MismatchedSnapshotMetadataSession extends FakeConnectedBrowserSession {
       text: "",
       refs: {}
     };
+  }
+}
+
+class NavigationRequestSession extends FakeConnectedBrowserSession {
+  override async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    await super.click(target, options);
+    const request: BrowserNetworkRequest = {
+      index: this.networkRequestsList.length + 1,
+      requestId: `request-${this.networkRequestsList.length + 1}`,
+      method: "GET",
+      url: "https://example.test/next",
+      resourceType: "document",
+      isNavigationRequest: true,
+      requestHeaders: {},
+      status: 200,
+      statusText: "OK",
+      responseHeaders: {}
+    };
+    this.networkRequestsList.push(request);
+    for (const collector of this.requestCollectionStates) {
+      collector.requests.push({ ...request });
+    }
+  }
+}
+
+class ImageRequestSession extends FakeConnectedBrowserSession {
+  override async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    await super.click(target, options);
+    const request: BrowserNetworkRequest = {
+      index: this.networkRequestsList.length + 1,
+      requestId: `request-${this.networkRequestsList.length + 1}`,
+      method: "GET",
+      url: "https://example.test/logo.png",
+      resourceType: "image",
+      requestHeaders: {},
+      status: 200,
+      statusText: "OK",
+      responseHeaders: {}
+    };
+    this.networkRequestsList.push(request);
+    for (const collector of this.requestCollectionStates) {
+      collector.requests.push({ ...request });
+    }
+  }
+}
+
+class DocumentButNotNavigationSession extends FakeConnectedBrowserSession {
+  override async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    await super.click(target, options);
+    const request: BrowserNetworkRequest = {
+      index: this.networkRequestsList.length + 1,
+      requestId: `request-${this.networkRequestsList.length + 1}`,
+      method: "GET",
+      url: "https://example.test/frame-document",
+      resourceType: "document",
+      isNavigationRequest: false,
+      requestHeaders: {},
+      status: 200,
+      statusText: "OK",
+      responseHeaders: {}
+    };
+    this.networkRequestsList.push(request);
+    for (const collector of this.requestCollectionStates) {
+      collector.requests.push({ ...request });
+    }
+  }
+}
+
+class PendingRequestUntilCloseSession extends FakeConnectedBrowserSession {
+  private pendingResolvers = new Map<string, () => void>();
+
+  override async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    await super.click(target, options);
+    const request: BrowserNetworkRequest = {
+      index: this.networkRequestsList.length + 1,
+      requestId: `request-${this.networkRequestsList.length + 1}`,
+      method: "GET",
+      url: "https://example.test/pending.js",
+      resourceType: "script",
+      requestHeaders: {}
+    };
+    this.networkRequestsList.push(request);
+    for (const collector of this.requestCollectionStates) {
+      collector.requests.push({ ...request });
+    }
+  }
+
+  override async waitForRequestFinished(requestId: string, timeoutMs: number): Promise<void> {
+    this.waitForRequestFinishedCalls.push({ requestId, timeoutMs });
+    await new Promise<void>((resolve) => {
+      this.pendingResolvers.set(requestId, resolve);
+    });
+  }
+
+  override async close(): Promise<void> {
+    for (const resolve of this.pendingResolvers.values()) {
+      resolve();
+    }
+    this.pendingResolvers.clear();
+  }
+}
+
+class RedirectRequestSession extends FakeConnectedBrowserSession {
+  override async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    await super.click(target, options);
+    const first: BrowserNetworkRequest = {
+      index: this.networkRequestsList.length + 1,
+      requestId: `request-${this.networkRequestsList.length + 1}`,
+      requestKey: `request-${this.networkRequestsList.length + 1}#1`,
+      method: "GET",
+      url: "https://example.test/start",
+      resourceType: "document",
+      isNavigationRequest: true,
+      requestHeaders: {},
+      status: 302,
+      statusText: "Found",
+      responseHeaders: { location: "https://example.test/final" }
+    };
+    const second: BrowserNetworkRequest = {
+      index: this.networkRequestsList.length + 2,
+      requestId: first.requestId,
+      requestKey: `${first.requestId}#2`,
+      method: "GET",
+      url: "https://example.test/final",
+      resourceType: "document",
+      isNavigationRequest: true,
+      requestHeaders: {},
+      status: 200,
+      statusText: "OK",
+      responseHeaders: {}
+    };
+    this.networkRequestsList.push(first, second);
+    for (const collector of this.requestCollectionStates) {
+      collector.requests.push({ ...first }, { ...second });
+    }
   }
 }
 
@@ -542,15 +715,13 @@ describe("MCP server", () => {
     expect(connected.isError).toBeUndefined();
     expect(textFromResult(connected)).toContain("Connected to chrome via cdp.");
 
-    // Click with a valid aria-ref — should succeed and return a new snapshot
-    const clicked = await client.callTool({
-      name: "browser_click",
+    const hovered = await client.callTool({
+      name: "browser_hover",
       arguments: {
         target: "e1"
       }
     });
-    expect(clicked.isError).toBeUndefined();
-    expect(textFromResult(clicked)).toContain("button");
+    expect(hovered.isError).toBeUndefined();
 
     // Hover with an invalid ref (no snapshot cache after a hover-invalidation)
     const hoverResult = await client.callTool({
@@ -1662,6 +1833,9 @@ describe("MCP server", () => {
       expect(getSession().uploadFileCalls[0]!.target).toEqual({ selector: "input[type=file]" });
       expect(getSession().prepareForFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
       expect(getSession().finishFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
+      expect(getSession().waitForPageTimeoutCalls).toEqual([500, 500, 500]);
+      expect(getSession().waitForRequestFinishedCalls).toEqual([{ requestId: "request-1", timeoutMs: 5_000 }]);
+      expect(getSession().waitForRequestResponseCalls).toEqual([]);
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
@@ -1758,6 +1932,30 @@ describe("MCP server", () => {
       expect(textFromResult(result)).toContain("[no_file_chooser]");
     });
 
+    it("cleans up request collection when upload callback fails", async () => {
+      const { client, getSession } = await setupTrackingClient();
+      const session = getSession();
+      session.uploadFile = vi.fn(async () => {
+        throw new Error("upload failed");
+      });
+
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "input[type=file]" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_file_upload",
+        arguments: { paths: ["/tmp/file.txt"] }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain("upload failed");
+      expect(session.requestCollectionStates.length).toBeGreaterThanOrEqual(1);
+      expect(session.requestCollectionStates.at(-1)?.requests).toEqual([]);
+      expect(session.finishFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
+    });
+
     it("blocks hover while file chooser modal state is pending", async () => {
       const { client, getSession } = await setupTrackingClient();
 
@@ -1774,6 +1972,205 @@ describe("MCP server", () => {
       expect(result.isError).toBe(true);
       expect(textFromResult(result)).toContain('Tool "browser_hover" does not handle the modal state.');
       expect(getSession().hoverCalls).toEqual([{ selector: "input[type=file]" }]);
+    });
+  });
+
+  describe("waitForCompletion parity", () => {
+    it("waits for main frame load when a navigation request is collected", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new NavigationRequestSession(args)
+      });
+      const client = createClient("navigation-wait-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.navigate" }
+      });
+
+      const session = bundle.runtimeManager.getRuntime(bundle.getLastSessionId?.()).requireConnected() as NavigationRequestSession;
+      expect(result.isError).toBeUndefined();
+      expect(session.waitForMainFrameLoadCalls).toEqual([10_000]);
+      expect(session.waitForRequestFinishedCalls).toEqual([]);
+      expect(session.waitForRequestResponseCalls).toEqual([]);
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("waits for request response for non fetch-like resources", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new ImageRequestSession(args)
+      });
+      const client = createClient("image-wait-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.image" }
+      });
+
+      const session = bundle.runtimeManager.getRuntime(bundle.getLastSessionId?.()).requireConnected() as ImageRequestSession;
+      expect(result.isError).toBeUndefined();
+      expect(session.waitForPageTimeoutCalls).toEqual([500, 500]);
+      expect(session.waitForRequestFinishedCalls).toEqual([]);
+      expect(session.waitForRequestResponseCalls).toEqual([{ requestId: "request-1", timeoutMs: 5_000 }]);
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("does not treat every document resource as a navigation request", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new DocumentButNotNavigationSession(args)
+      });
+      const client = createClient("document-non-navigation-wait-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.frame-doc" }
+      });
+
+      const session = bundle.runtimeManager.getRuntime(bundle.getLastSessionId?.()).requireConnected() as DocumentButNotNavigationSession;
+      expect(result.isError).toBeUndefined();
+      expect(session.waitForMainFrameLoadCalls).toEqual([]);
+      expect(session.waitForRequestFinishedCalls).toEqual([{ requestId: "request-1", timeoutMs: 5_000 }]);
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("keeps redirect hops as separate collected requests like Playwright request events", async () => {
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: async (args) => new RedirectRequestSession(args)
+      });
+      const client = createClient("redirect-wait-client");
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { protocol: "cdp", endpoint: "https://example.test" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.redirect" }
+      });
+
+      const session = bundle.runtimeManager.getRuntime(bundle.getLastSessionId?.()).requireConnected() as RedirectRequestSession;
+      expect(result.isError).toBeUndefined();
+      expect(session.requestCollectionStates.at(-1)?.requests.map((request) => ({
+        requestId: request.requestId,
+        requestKey: request.requestKey,
+        url: request.url,
+        status: request.status
+      }))).toEqual([
+        { requestId: "request-1", requestKey: "request-1#1", url: "https://example.test/start", status: 302 },
+        { requestId: "request-1", requestKey: "request-1#2", url: "https://example.test/final", status: 200 }
+      ]);
+      expect(session.waitForMainFrameLoadCalls).toEqual([10_000]);
+      expect(session.waitForRequestFinishedCalls).toEqual([]);
+      expect(session.waitForRequestResponseCalls).toEqual([]);
+
+      await client.close();
+      await bundle.close();
+    });
+
+    it("keeps raw header patching aligned to redirect hop order", async () => {
+      const firstResponseHeaders = { location: "https://example.test/final" };
+      const secondResponseHeaders = { contentType: "text/html" };
+      const first: BrowserNetworkRequest = {
+        index: 1,
+        requestId: "request-redirect",
+        requestKey: "request-redirect#1",
+        method: "GET",
+        url: "https://example.test/start",
+        resourceType: "document",
+        isNavigationRequest: true,
+        requestHeaders: { accept: "text/html" },
+        responseHeaders: firstResponseHeaders,
+        rawResponseHeaders: firstResponseHeaders,
+        status: 302,
+        statusText: "Found"
+      };
+      const second: BrowserNetworkRequest = {
+        index: 2,
+        requestId: "request-redirect",
+        requestKey: "request-redirect#2",
+        method: "GET",
+        url: "https://example.test/final",
+        resourceType: "document",
+        isNavigationRequest: true,
+        requestHeaders: { accept: "text/html" },
+        responseHeaders: secondResponseHeaders,
+        rawResponseHeaders: secondResponseHeaders,
+        status: 200,
+        statusText: "OK"
+      };
+
+      const requestsByRequestId = new Map<string, BrowserNetworkRequest[]>();
+      requestsByRequestId.set("request-redirect", [first, second]);
+
+      const rawRequestTarget = (requestsByRequestId.get("request-redirect") ?? []).find((request) => request.rawRequestHeaders === undefined);
+      expect(rawRequestTarget?.requestKey).toBe("request-redirect#1");
+      rawRequestTarget!.rawRequestHeaders = { cookie: "a=1" };
+      const nextRawRequestTarget = (requestsByRequestId.get("request-redirect") ?? []).find((request) => request.rawRequestHeaders === undefined);
+      expect(nextRawRequestTarget?.requestKey).toBe("request-redirect#2");
+
+      const rawResponseTarget = (requestsByRequestId.get("request-redirect") ?? []).find(
+        (request) => request.responseHeaders !== undefined && request.rawResponseHeaders === request.responseHeaders
+      );
+      expect(rawResponseTarget?.requestKey).toBe("request-redirect#1");
+      rawResponseTarget!.rawResponseHeaders = { location: "https://example.test/final", server: "edge" };
+      const nextRawResponseTarget = (requestsByRequestId.get("request-redirect") ?? []).find(
+        (request) => request.responseHeaders !== undefined && request.rawResponseHeaders === request.responseHeaders
+      );
+      expect(nextRawResponseTarget?.requestKey).toBe("request-redirect#2");
+    });
+
+    it("does not wait for the full timeout once the session closes", async () => {
+      vi.useFakeTimers();
+      try {
+        const bundle = await createRoxyBrowserMcpInMemory({
+          sessionFactory: async (args) => new PendingRequestUntilCloseSession(args)
+        });
+        const client = createClient("close-interrupts-wait-client");
+        await client.connect(bundle.clientTransport);
+        await client.callTool({
+          name: "roxy_browser_connect",
+          arguments: { protocol: "cdp", endpoint: "https://example.test" }
+        });
+
+        const clickPromise = client.callTool({
+          name: "browser_click",
+          arguments: { target: "button.pending" }
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+        const session = bundle.runtimeManager.getRuntime(bundle.getLastSessionId?.()).requireConnected() as PendingRequestUntilCloseSession;
+        await session.close();
+        await vi.runAllTimersAsync();
+
+        const result = await clickPromise;
+        expect(result.isError).toBeUndefined();
+        await client.close().catch(() => undefined);
+        await bundle.close();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

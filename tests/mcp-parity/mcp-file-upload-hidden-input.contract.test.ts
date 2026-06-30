@@ -180,6 +180,186 @@ describeWithCdp("MCP hidden input file upload contract", () => {
     expect(parsed.stateFileName).toBe("upload.txt");
     expect(parsed.events).toEqual(["input", "change"]);
   });
+
+  it("waits for post-upload UI to settle before returning the snapshot", async () => {
+    fixture.server.reset();
+    fixture.server.setRoute("/upload-ready.json", async (_request, response) => {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ ready: true }));
+    });
+    fixture.server.setContent(
+      fixture.uploadPath,
+      `
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <title>Upload Settling</title>
+          </head>
+          <body>
+            <button id="upload-trigger" type="button">Select video</button>
+            <input id="hidden-upload-input" type="file" style="display:none" />
+            <button id="post-button" type="button" aria-disabled="true" disabled style="cursor: default;">Post</button>
+            <script>
+              const trigger = document.getElementById("upload-trigger");
+              const input = document.getElementById("hidden-upload-input");
+              const postButton = document.getElementById("post-button");
+              trigger.addEventListener("click", () => {
+                input.click();
+              });
+              input.addEventListener("change", () => {
+                postButton.setAttribute("aria-disabled", "true");
+                postButton.setAttribute("disabled", "");
+                fetch("/upload-ready.json")
+                  .then((response) => response.json())
+                  .then(() => {
+                    postButton.removeAttribute("disabled");
+                    postButton.setAttribute("aria-disabled", "false");
+                    postButton.style.cursor = "pointer";
+                  });
+              });
+            </script>
+          </body>
+        </html>
+      `,
+      "text/html"
+    );
+
+    const cdpEndpoint = await createPreparedPage(fixture.url);
+    const roxy = await createRoxyMcpClient(cleanupCallbacks);
+    await connectRoxyToCdp(roxy.client, cdpEndpoint);
+
+    const snapshot = await callTool(roxy.client, "browser_snapshot", {});
+    const buttonRef = refForButton(textFromResult(snapshot), "Select video");
+
+    await callTool(roxy.client, "browser_click", { target: buttonRef, element: "Select video" });
+    const uploadReadyRequest = fixture.server.waitForRequest("/upload-ready.json");
+    const upload = await callTool(roxy.client, "browser_file_upload", {
+      paths: [uploadFilePath]
+    });
+    await uploadReadyRequest;
+    const uploadText = textFromResult(upload);
+    const requests = await callTool(roxy.client, "browser_network_requests", {});
+    await callTool(roxy.client, "browser_evaluate", {
+      function: `async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        return true;
+      }`
+    });
+    const postButtonState = await callTool(roxy.client, "browser_evaluate", {
+      function: `() => {
+        const button = document.getElementById("post-button");
+        const style = button ? getComputedStyle(button) : null;
+        return {
+          ariaDisabled: button?.getAttribute("aria-disabled") ?? null,
+          disabledAttribute: button?.getAttribute("disabled") ?? null,
+          disabledProperty: button instanceof HTMLButtonElement ? button.disabled : null,
+          cursor: style?.cursor ?? null,
+          html: button?.outerHTML ?? null
+        };
+      }`
+    });
+
+    expect(uploadText).toContain('button "Post"');
+    expect(textFromResult(requests)).toContain("/upload-ready.json");
+    expect(textFromResult(postButtonState)).toContain('"ariaDisabled": "false"');
+    expect(textFromResult(postButtonState)).toContain('"disabledAttribute": null');
+    expect(textFromResult(postButtonState)).toContain('"disabledProperty": false');
+    expect(textFromResult(postButtonState)).toContain('"cursor": "pointer"');
+    expect(uploadText).toContain('[cursor=pointer]');
+    expect(uploadText).not.toContain('button "Post" [disabled]');
+  });
+
+  it("keeps the post button disabled when the upload-ready request fails", async () => {
+    fixture.server.reset();
+    fixture.server.setRoute("/upload-ready.json", async (_request, response) => {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      response.writeHead(500, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ ready: false, error: "server failed" }));
+    });
+    fixture.server.setContent(
+      fixture.uploadPath,
+      `
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <title>Upload Settling Failure</title>
+          </head>
+          <body>
+            <button id="upload-trigger" type="button">Select video</button>
+            <input id="hidden-upload-input" type="file" style="display:none" />
+            <button id="post-button" type="button" aria-disabled="true" disabled style="cursor: default;">Post</button>
+            <script>
+              const trigger = document.getElementById("upload-trigger");
+              const input = document.getElementById("hidden-upload-input");
+              const postButton = document.getElementById("post-button");
+              trigger.addEventListener("click", () => {
+                input.click();
+              });
+              input.addEventListener("change", () => {
+                postButton.setAttribute("aria-disabled", "true");
+                postButton.setAttribute("disabled", "");
+                fetch("/upload-ready.json")
+                  .then(async (response) => {
+                    if (!response.ok) {
+                      throw new Error("upload-ready failed: " + response.status);
+                    }
+                    return response.json();
+                  })
+                  .then(() => {
+                    postButton.removeAttribute("disabled");
+                    postButton.setAttribute("aria-disabled", "false");
+                    postButton.style.cursor = "pointer";
+                  })
+                  .catch(() => {
+                    postButton.setAttribute("data-error", "upload-ready-failed");
+                  });
+              });
+            </script>
+          </body>
+        </html>
+      `,
+      "text/html"
+    );
+
+    const cdpEndpoint = await createPreparedPage(fixture.url);
+    const roxy = await createRoxyMcpClient(cleanupCallbacks);
+    await connectRoxyToCdp(roxy.client, cdpEndpoint);
+
+    const snapshot = await callTool(roxy.client, "browser_snapshot", {});
+    const buttonRef = refForButton(textFromResult(snapshot), "Select video");
+
+    await callTool(roxy.client, "browser_click", { target: buttonRef, element: "Select video" });
+    const uploadReadyRequest = fixture.server.waitForRequest("/upload-ready.json");
+    const upload = await callTool(roxy.client, "browser_file_upload", {
+      paths: [uploadFilePath]
+    });
+    await uploadReadyRequest;
+
+    const uploadText = textFromResult(upload);
+    const postButtonState = await callTool(roxy.client, "browser_evaluate", {
+      function: `async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const button = document.getElementById("post-button");
+        const style = button ? getComputedStyle(button) : null;
+        return {
+          ariaDisabled: button?.getAttribute("aria-disabled") ?? null,
+          disabledAttribute: button?.getAttribute("disabled") ?? null,
+          disabledProperty: button instanceof HTMLButtonElement ? button.disabled : null,
+          cursor: style?.cursor ?? null,
+          error: button?.getAttribute("data-error") ?? null,
+          html: button?.outerHTML ?? null
+        };
+      }`
+    });
+
+    expect(uploadText).toContain('button "Post" [disabled]');
+    expect(textFromResult(postButtonState)).toContain('"ariaDisabled": "true"');
+    expect(textFromResult(postButtonState)).toContain('"disabledAttribute": ""');
+    expect(textFromResult(postButtonState)).toContain('"disabledProperty": true');
+    expect(textFromResult(postButtonState)).toContain('"cursor": "default"');
+    expect(textFromResult(postButtonState)).toContain('"error": "upload-ready-failed"');
+  });
 });
 
 async function createPreparedPage(url: string): Promise<string> {
@@ -422,7 +602,7 @@ function parseJsonResultBlock(text: string): Record<string, unknown> {
 
 function refForButton(snapshotText: string, label: string): string {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = snapshotText.match(new RegExp(`button "${escaped}" \\[ref=(e\\d+)\\]`));
+  const match = snapshotText.match(new RegExp(`button "${escaped}"(?: \\[[^\\]]+\\])* \\[ref=(e\\d+)\\]`));
   if (!match?.[1]) {
     throw new Error(`Unable to find ref for button "${label}" in snapshot:\n${snapshotText}`);
   }
