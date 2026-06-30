@@ -61,6 +61,20 @@ describe("page setInputFiles contract e2e", () => {
     });
   });
 
+  it("preserves video mime types for path-based uploads", async () => {
+    await withPage(async (page) => {
+      await page.setContent(`<input type=file accept="video/*">`);
+      const directory = await mkdtemp(join(tmpdir(), "roxy-set-input-video-"));
+      const filePath = join(directory, "clip.mp4");
+      await writeFile(filePath, Buffer.from("fake mp4 payload"));
+
+      await page.setInputFiles("input", filePath);
+
+      expect(await page.$eval("input", (input) => (input as HTMLInputElement).files![0].name)).toBe("clip.mp4");
+      expect(await page.$eval("input", (input) => (input as HTMLInputElement).files![0].type)).toBe("video/mp4");
+    });
+  });
+
   it("sets from memory", async () => {
     await withPage(async (page) => {
       await page.setContent(`<input type=file>`);

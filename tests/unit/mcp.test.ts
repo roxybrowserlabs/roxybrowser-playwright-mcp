@@ -124,6 +124,8 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   prepareForFileUploadCalls: ClickTarget[] = [];
   finishFileUploadCalls: ClickTarget[] = [];
   fillFormCalls: SessionFormField[][] = [];
+  pendingFileChooserTarget: ClickTarget | undefined;
+  consumePendingChooserReturnsUndefinedOnce = false;
 
   async consoleMessages() {
     return [{
@@ -146,11 +148,24 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     this.prepareForFileUploadCalls.push(target);
   }
 
+  async consumePendingFileChooserTarget(): Promise<ClickTarget | undefined> {
+    if (this.consumePendingChooserReturnsUndefinedOnce) {
+      this.consumePendingChooserReturnsUndefinedOnce = false;
+      return undefined;
+    }
+    const target = this.pendingFileChooserTarget;
+    this.pendingFileChooserTarget = undefined;
+    return target;
+  }
+
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     this.clickCalls.push({ target, options });
     const targetValue = "selector" in target ? target.selector : target.nodeToken;
     if (targetValue.includes("dialog")) {
       this.dialogOpen = true;
+    }
+    if (targetValue.includes("upload-button")) {
+      this.pendingFileChooserTarget = { selector: "input[type=file]" };
     }
   }
 
@@ -1666,6 +1681,69 @@ describe("MCP server", () => {
       expect(getSession().uploadFileCalls[0]!.target).toEqual({ selector: "input[type=file]" });
       expect(getSession().prepareForFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
       expect(getSession().finishFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
+    });
+
+    it("consumes a chooser target captured after clicking a non-file upload button", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.upload-button" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_file_upload",
+        arguments: { paths: ["/tmp/a.pdf"] }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(getSession().uploadFileCalls[0]!.target).toEqual({ selector: "input[type=file]" });
+      expect(getSession().prepareForFileUploadCalls).toEqual([{ selector: "button.upload-button" }]);
+      expect(getSession().finishFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
+    });
+
+    it("keeps file chooser modal state available after clicking a non-file upload button", async () => {
+      const { client } = await setupTrackingClient();
+
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.upload-button" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_hover",
+        arguments: { target: "button.other-action" }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain('Tool "browser_hover" does not handle the modal state.');
+    });
+
+    it("keeps file chooser modal state pending when chooser target is not captured before click returns", async () => {
+      const { client, getSession } = await setupTrackingClient();
+      getSession().consumePendingChooserReturnsUndefinedOnce = true;
+      getSession().pendingFileChooserTarget = { selector: "input[type=file]" };
+
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "button.upload-button" }
+      });
+
+      const blocked = await client.callTool({
+        name: "browser_hover",
+        arguments: { target: "button.other-action" }
+      });
+
+      expect(blocked.isError).toBe(true);
+      expect(textFromResult(blocked)).toContain('Tool "browser_hover" does not handle the modal state.');
+
+      const upload = await client.callTool({
+        name: "browser_file_upload",
+        arguments: { paths: ["/tmp/a.pdf"] }
+      });
+
+      expect(upload.isError).toBeUndefined();
+      expect(getSession().uploadFileCalls[0]!.target).toEqual({ selector: "input[type=file]" });
     });
 
     it("returns no_file_chooser when no file chooser is pending", async () => {

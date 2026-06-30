@@ -95,6 +95,7 @@ export interface ConnectedBrowserSession {
   evaluate(expression: string, target?: ClickTarget): Promise<unknown>;
   isFileInput(target: ClickTarget): Promise<boolean>;
   prepareForFileUpload?(target: ClickTarget): Promise<void>;
+  consumePendingFileChooserTarget?(options?: { timeoutMs?: number }): Promise<ClickTarget | undefined>;
   click(target: ClickTarget, options: SessionClickOptions): Promise<void>;
   drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void>;
   drop(target: ClickTarget, payload: SessionDropOptions): Promise<void>;
@@ -128,7 +129,10 @@ export interface ConnectedBrowserSession {
   close(): Promise<void>;
 }
 
-export type ClickTarget = { nodeToken: string } | { selector: string };
+export type ClickTarget =
+  | { nodeToken: string }
+  | { selector: string }
+  | { backendNodeId: number };
 
 export interface SessionClickOptions {
   doubleClick?: boolean;
@@ -217,6 +221,7 @@ export interface SnapshotCacheEntry {
 export interface RoxyBrowserMcpServerBundle {
   server: McpServer;
   runtimeManager: import("./runtime.js").McpRuntimeManager;
+  getLastSessionId?(): string | undefined;
   close(): Promise<void>;
 }
 
@@ -229,6 +234,7 @@ export interface RoxyBrowserMcpStdioBundle {
 export interface RoxyBrowserMcpInMemoryBundle {
   server: McpServer;
   runtimeManager: import("./runtime.js").McpRuntimeManager;
+  getLastSessionId?(): string | undefined;
   serverTransport: InMemoryTransport;
   clientTransport: InMemoryTransport;
   close(): Promise<void>;

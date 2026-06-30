@@ -6,6 +6,11 @@ import {
   retryUntilReady,
   type AriaSnapshotResult
 } from "../ariaSnapshot.js";
+import {
+  applyResolvedInputFilesToInputElement,
+  convertInputFiles,
+  type ResolvedInputFiles
+} from "../inputFiles.js";
 import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../vendor/playwright/ariaSnapshotEvaluate.js";
 import type { BidiProtocolClient } from "../protocol/bidi/client.js";
 import { getBidiClientFactory } from "../protocol/bidi/client.js";
@@ -91,12 +96,23 @@ type CdpFrameTree = {
   childFrames?: CdpFrameTree[];
 };
 
+type PendingFileChooserTarget = {
+  backendNodeId: number;
+};
+
 type CdpClient = {
   close(): Promise<void>;
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   Page: {
     enable(): Promise<void>;
     setInterceptFileChooserDialog?(options: { enabled: boolean }): Promise<void>;
+    fileChooserOpened?(
+      listener: (event: {
+        backendNodeId?: number;
+        frameId: string;
+        mode: "selectSingle" | "selectMultiple";
+      }) => void
+    ): void;
     createIsolatedWorld(options: {
       frameId: string;
       worldName?: string;
@@ -123,6 +139,21 @@ type CdpClient = {
   };
   Runtime: {
     enable(): Promise<void>;
+    callFunctionOn(options: {
+      functionDeclaration: string;
+      objectId?: string;
+      arguments?: Array<{
+        objectId?: string;
+        unserializableValue?: string;
+        value?: unknown;
+      }>;
+      returnByValue?: boolean;
+      awaitPromise?: boolean;
+      executionContextId?: number;
+    }): Promise<{
+      result: { value?: unknown; objectId?: string };
+      exceptionDetails?: { text?: string; exception?: { description?: string; value?: unknown } };
+    }>;
     consoleAPICalled(
       listener: (event: {
         type: string;
@@ -221,7 +252,7 @@ type CdpClient = {
     enable(options: {}): Promise<void>;
     getDocument(): Promise<{ root: { nodeId: number } }>;
     querySelector(options: { nodeId: number; selector: string }): Promise<{ nodeId: number }>;
-    resolveNode(options: { objectId: string }): Promise<{ object: { objectId?: string } }>;
+    resolveNode(options: { objectId?: string; backendNodeId?: number }): Promise<{ object: { objectId?: string } }>;
     setFileInputFiles(options: { nodeId?: number; objectId?: string; files: string[] }): Promise<void>;
     getBoxModel(options: { nodeId?: number; objectId?: string }): Promise<{
       model: { content: number[]; border: number[]; padding: number[] };
@@ -413,6 +444,10 @@ async function evaluateCdpRef(
   return objectId !== undefined ? { objectId } : {};
 }
 
+function isBackendNodeTarget(target: ClickTarget): target is { backendNodeId: number } {
+  return "backendNodeId" in target;
+}
+
 const FOCUS_AND_GET_ELEMENT_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
   const el = payload.nodeToken
@@ -567,6 +602,52 @@ const GET_ELEMENT_OBJECT_SOURCE = String.raw`(payload) => {
     ? (state?.elements?.get(payload.nodeToken) ?? null)
     : document.querySelector(payload.selector);
 }`;
+
+async function setResolvedInputFilesByObjectId(
+  client: CdpClient,
+  objectId: string,
+  inputFiles: ResolvedInputFiles,
+  debug?: {
+    eventDispatchCalls: number;
+    eventDispatchSuccesses: number;
+    lastEventDispatchError: string;
+  }
+): Promise<void> {
+  if (debug) {
+    debug.eventDispatchCalls += 1;
+  }
+  const response = await client.Runtime.callFunctionOn({
+    objectId,
+    functionDeclaration: `function(inputFiles) {
+      return (${applyResolvedInputFilesToInputElement.toString()})(this, inputFiles);
+    }`,
+    arguments: [{ value: inputFiles }],
+    returnByValue: true,
+    awaitPromise: true
+  });
+
+  if (response.exceptionDetails) {
+    const description = response.exceptionDetails.exception?.description;
+    const value = response.exceptionDetails.exception?.value;
+    if (debug) {
+      debug.lastEventDispatchError =
+        description
+        || (value !== undefined ? String(value) : undefined)
+        || response.exceptionDetails.text
+        || "CDP runtime callFunctionOn failed.";
+    }
+    throw new Error(
+      description
+        || (value !== undefined ? String(value) : undefined)
+        || response.exceptionDetails.text
+        || "CDP runtime callFunctionOn failed."
+    );
+  }
+  if (debug) {
+    debug.eventDispatchSuccesses += 1;
+    debug.lastEventDispatchError = "";
+  }
+}
 
 const SET_FORM_FIELD_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
@@ -960,6 +1041,15 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   private currentMousePosition = { x: 0, y: 0 };
   private hasMouseEnteredViewport = false;
   private readonly fileChooserInterceptEnabledByTabId = new Set<string>();
+  private readonly pendingFileChooserTargetByTabId = new Map<string, PendingFileChooserTarget>();
+  private fileChooserDebug = {
+    prepareCalls: 0,
+    chooserEvents: 0,
+    capturedTargets: 0,
+    eventDispatchCalls: 0,
+    eventDispatchSuccesses: 0,
+    lastEventDispatchError: ""
+  };
   private readonly pressedKeyboardModifiers = new Set<string>();
   private readonly pressedKeyboardCodes = new Set<string>();
 
@@ -1071,6 +1161,9 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
     const tabId = await this.getActiveTabId();
     await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
@@ -1185,6 +1278,9 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async hover(target: ClickTarget, options?: SessionHoverOptions): Promise<void> {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
     const tabId = await this.getActiveTabId();
     await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
@@ -1607,6 +1703,16 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async uploadFile(target: ClickTarget, filePaths: string[]): Promise<void> {
     const pageClient = await this.getActivePageClient();
+    const resolvedFiles = await convertInputFiles(filePaths);
+    if (isBackendNodeTarget(target)) {
+      const resolved = await pageClient.DOM.resolveNode({ backendNodeId: target.backendNodeId }).catch(() => undefined);
+      const objectId = resolved?.object?.objectId;
+      if (!objectId) {
+        throw new McpToolError("stale_ref", "The referenced element is no longer valid.");
+      }
+      await setResolvedInputFilesByObjectId(pageClient, objectId, resolvedFiles, this.fileChooserDebug);
+      return;
+    }
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
     const refResult = await evaluateCdpRef(pageClient, GET_ELEMENT_OBJECT_SOURCE, arg, contextId);
@@ -1617,7 +1723,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         isSelector ? `Element "${target.selector}" could not be found.` : 'The referenced element is no longer valid.'
       );
     }
-    await pageClient.DOM.setFileInputFiles({ objectId: refResult.objectId, files: filePaths });
+    await setResolvedInputFilesByObjectId(pageClient, refResult.objectId, resolvedFiles, this.fileChooserDebug);
   }
 
   async finishFileUpload(_target: ClickTarget): Promise<void> {
@@ -1628,6 +1734,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const pageClient = await this.getActivePageClient().catch(() => undefined);
     await pageClient?.Page.setInterceptFileChooserDialog?.({ enabled: false }).catch(() => {});
     this.fileChooserInterceptEnabledByTabId.delete(tabId);
+    this.pendingFileChooserTargetByTabId.delete(tabId);
   }
 
   async fillForm(fields: SessionFormField[]): Promise<void> {
@@ -1794,6 +1901,9 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   private targetArg(target: ClickTarget): { nodeToken?: string; selector?: string } {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets cannot be converted into snapshot selector arguments.");
+    }
     return "nodeToken" in target
       ? { nodeToken: target.nodeToken }
       : { selector: target.selector };
@@ -1873,6 +1983,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       target: activeTab.id
     });
     this.installConsoleCollection(activeTab.id, client);
+    this.installFileChooserCollection(activeTab.id, client);
     await Promise.all([
       client.Page.enable(),
       client.Runtime.enable(),
@@ -1882,6 +1993,29 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     ]);
     this.pageClients.set(activeTab.id, client);
     return client;
+  }
+
+  private installFileChooserCollection(tabId: string, client: CdpClient): void {
+    client.Page.fileChooserOpened?.((event: {
+      backendNodeId?: number;
+      frameId: string;
+      mode: "selectSingle" | "selectMultiple";
+    }) => {
+      this.fileChooserDebug.chooserEvents += 1;
+      if (!event.backendNodeId || !this.fileChooserInterceptEnabledByTabId.has(tabId)) {
+        return;
+      }
+      void this.captureFileChooserTarget(tabId, client, event.backendNodeId);
+    });
+  }
+
+  private async captureFileChooserTarget(tabId: string, client: CdpClient, backendNodeId: number): Promise<void> {
+    try {
+      this.fileChooserDebug.capturedTargets += 1;
+      this.pendingFileChooserTargetByTabId.set(tabId, { backendNodeId });
+    } catch {
+      // Ignore chooser capture failures and let runtime fall back to legacy behavior.
+    }
   }
 
   private async getActiveUtilityContextId(client: CdpClient): Promise<number> {
@@ -2214,12 +2348,17 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   async evaluate(expression: string, target?: ClickTarget): Promise<unknown> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
+    if (target && isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are not valid for browser_evaluate.");
+    }
     const source = target
       ? String.raw`async (payload) => {
           const state = globalThis.__roxyMcpState;
           const element = payload.nodeToken
             ? (state?.elements?.get(payload.nodeToken) ?? null)
-            : document.querySelector(payload.selector);
+            : payload.selector
+              ? document.querySelector(payload.selector)
+              : null;
           if (!element) throw new Error('Element not found');
           const value = eval('(' + payload.expression + ')');
           return typeof value === 'function' ? await value(element) : value;
@@ -2244,6 +2383,7 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async prepareForFileUpload(_target: ClickTarget): Promise<void> {
+    this.fileChooserDebug.prepareCalls += 1;
     const tabId = await this.getActiveTabId();
     if (this.fileChooserInterceptEnabledByTabId.has(tabId)) {
       return;
@@ -2251,6 +2391,42 @@ class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const pageClient = await this.getActivePageClient();
     await pageClient.Page.setInterceptFileChooserDialog?.({ enabled: true }).catch(() => {});
     this.fileChooserInterceptEnabledByTabId.add(tabId);
+  }
+
+  async consumePendingFileChooserTarget(options?: { timeoutMs?: number }): Promise<ClickTarget | undefined> {
+    const tabId = await this.getActiveTabId().catch(() => undefined);
+    if (!tabId) {
+      return undefined;
+    }
+    const deadline = Date.now() + Math.max(0, options?.timeoutMs ?? 0);
+    while (true) {
+      const target = this.pendingFileChooserTargetByTabId.get(tabId);
+      if (target) {
+        this.pendingFileChooserTargetByTabId.delete(tabId);
+        return { backendNodeId: target.backendNodeId };
+      }
+      if (Date.now() >= deadline) {
+        return undefined;
+      }
+      await delay(25);
+    }
+  }
+
+  debugFileChooserState(): {
+    prepareCalls: number;
+    chooserEvents: number;
+    capturedTargets: number;
+    eventDispatchCalls: number;
+    eventDispatchSuccesses: number;
+    lastEventDispatchError: string;
+    interceptEnabledTabCount: number;
+    pendingTargetCount: number;
+  } {
+    return {
+      ...this.fileChooserDebug,
+      interceptEnabledTabCount: this.fileChooserInterceptEnabledByTabId.size,
+      pendingTargetCount: this.pendingFileChooserTargetByTabId.size
+    };
   }
 
   private consoleSummary(tabId: string): { total: number; errors: number; warnings: number } {
@@ -2731,6 +2907,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
   async evaluate(expression: string, target?: ClickTarget): Promise<unknown> {
     const tabId = await this.getActiveTabId();
+    if (target && isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are not valid for browser_evaluate.");
+    }
     const source = target
       ? String.raw`async (payload) => {
           const state = globalThis.__roxyMcpState;
@@ -2745,7 +2924,7 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
           const value = eval('(' + payload.expression + ')');
           return typeof value === 'function' ? await value() : value;
         }`;
-    const payload = target ? { ...("nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector }), expression } : { expression };
+    const payload = target ? { ...this.targetArg(target), expression } : { expression };
     return evaluateBiDi<unknown>(this.client, tabId, source, payload);
   }
 
@@ -2762,6 +2941,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   async prepareForFileUpload(_target: ClickTarget): Promise<void> {}
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
     const tabId = await this.getActiveTabId();
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
@@ -2905,6 +3087,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async hover(target: ClickTarget): Promise<void> {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
     const tabId = await this.getActiveTabId();
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
@@ -2998,6 +3183,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async type(target: ClickTarget, text: string, options?: SessionTypeOptions): Promise<void> {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
     const tabId = await this.getActiveTabId();
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const result = await evaluateBiDi<{ ok: boolean; reason?: string }>(
@@ -3066,6 +3254,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async selectOption(target: ClickTarget, values: string[]): Promise<string[]> {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
     const tabId = await this.getActiveTabId();
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const result = await evaluateBiDi<{ ok: boolean; reason?: string; selected: string[] }>(
@@ -3084,6 +3275,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async check(target: ClickTarget, checked: boolean): Promise<void> {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
     const tabId = await this.getActiveTabId();
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const result = await evaluateBiDi<{ ok: boolean; reason?: string }>(
@@ -3124,6 +3318,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     deltaY: number,
     options?: SessionScrollOptions
   ): Promise<void> {
+    if (target && isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
     const tabId = await this.getActiveTabId();
     const arg = target ? ("nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector }) : {};
     await evaluateBiDi<boolean>(this.client, tabId, ENSURE_BUBBLE_CURSOR_SOURCE).catch(() => false);
@@ -3378,6 +3575,9 @@ class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   private targetArg(target: ClickTarget): { nodeToken: string } | { selector: string } {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets cannot be converted into page selector arguments.");
+    }
     return "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
   }
 

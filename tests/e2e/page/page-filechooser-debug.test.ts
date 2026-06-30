@@ -117,6 +117,7 @@ describe("page filechooser debug e2e", () => {
     });
   });
 
+
   it("clicks ordinary iframe controls", async () => {
     await withPage(async (page) => {
       await page.setContent(`

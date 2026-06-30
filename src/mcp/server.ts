@@ -45,6 +45,7 @@ export function createRoxyBrowserMcpServer(
   const backendToolNames = new Set(allBackendTools.map((tool) => tool.schema.name));
   const legacyTools = allTools.filter((tool) => !backendToolNames.has(tool.schema.name));
   const registeredTools: RegisteredTool[] = [...legacyTools, ...allBackendTools];
+  let lastSessionId: string | undefined;
 
   for (const tool of legacyTools) {
     server.registerTool(
@@ -56,6 +57,7 @@ export function createRoxyBrowserMcpServer(
       },
       async (args, extra) => {
         try {
+          lastSessionId = extra.sessionId;
           const runtime = runtimeManager.getRuntime(extra.sessionId);
           return await tool.handle(args, runtime);
         } catch (error) {
@@ -75,6 +77,7 @@ export function createRoxyBrowserMcpServer(
       },
       async (args, extra) => {
         try {
+          lastSessionId = extra.sessionId;
           const runtime = runtimeManager.getRuntime(extra.sessionId);
           const context = new Context(runtime, {
             ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {}),
@@ -102,6 +105,7 @@ export function createRoxyBrowserMcpServer(
   return {
     server,
     runtimeManager,
+    getLastSessionId: () => lastSessionId,
     close: async () => {
       await runtimeManager.closeAll();
       if (server.isConnected()) {
