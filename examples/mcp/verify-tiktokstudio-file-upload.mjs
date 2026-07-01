@@ -1,17 +1,17 @@
 import fs from "node:fs/promises";
-import path, { dirname, join } from "node:path";
-import { createRequire } from "node:module";
+import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createRoxyBrowserMcpInMemory } from "../../dist/mcp/index.js";
+import { requiredCdpEndpoint } from "./helpers/env.mjs";
 
-const endpoint = process.env.ROXY_CDP_ENDPOINT ?? "ws://127.0.0.1:61522/devtools/browser/b7fa7e8f-6a98-4fab-8788-56e8308b6994";
+const endpoint = requiredCdpEndpoint();
 const targetUrl = "https://www.tiktok.com/tiktokstudio/upload?from=webapp&tab=video";
 const uploadXPath = '//*[@id="root"]/div/div/div[2]/div[2]/div/div[2]/div/div[1]/div/div/input';
 const maxSnapshotAttempts = 8;
 const snapshotRetryDelayMs = 1500;
 const maxVerifyAttempts = 20;
 const verifyRetryDelayMs = 2000;
-const uploadPath = path.resolve("examples/006.mp4");
+const uploadPath = path.resolve("examples/mcp/assets/006.mp4");
 const uploadFileName = path.basename(uploadPath);
 
 function textFromResult(result) {
@@ -91,53 +91,20 @@ function findUploadTriggerRef(snapshotText) {
   return null;
 }
 
-function playwrightMcpCliPath() {
-  const require = createRequire(import.meta.url);
-  return join(dirname(require.resolve("@playwright/mcp/package.json")), "cli.js");
-}
-
-async function createPlaywrightMcpClient() {
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [
-      playwrightMcpCliPath(),
-      "--cdp-endpoint",
-      endpoint,
-      "--browser",
-      "chrome",
-      "--snapshot-mode",
-      "full"
-    ],
-    cwd: process.cwd(),
-    stderr: "pipe"
-  });
-  const stderrChunks = [];
-  transport.stderr?.on("data", (chunk) => stderrChunks.push(String(chunk)));
-
-  const client = new Client({ name: "verify-playwright-mcp-tiktokstudio-file-upload", version: "1.0.0" });
-  try {
-    await client.connect(transport);
-  } catch (error) {
-    const stderr = stderrChunks.join("").trim();
-    throw new Error(
-      `Unable to start Playwright MCP.${stderr ? `\n\nstderr:\n${stderr}` : ""}\n\n${String(error)}`
-    );
-  }
-
-  return {
-    client,
-    close: async () => {
-      await client.close().catch(() => {});
-      await transport.close().catch(() => {});
-    }
-  };
-}
-
 async function main() {
-  const { client, close } = await createPlaywrightMcpClient();
+  const bundle = await createRoxyBrowserMcpInMemory();
+  const client = new Client({ name: "verify-roxy-mcp-tiktokstudio-file-upload", version: "1.0.0" });
 
   try {
     await fs.access(uploadPath);
+    await client.connect(bundle.clientTransport);
+
+    const connectResult = await callTool(client, "roxy_browser_connect", {
+      browser: "chrome",
+      endpoint
+    });
+    console.log("\n[connect]\n");
+    console.log(textFromResult(connectResult));
 
     const navigateResult = await callTool(client, "browser_navigate", {
       url: targetUrl
@@ -222,88 +189,86 @@ async function main() {
     console.log("\n[file_upload]\n");
     console.log(textFromResult(uploadResult));
 
-    const snapshotResult = await callTool(client, "browser_snapshot", {});
-    console.log('snapshotResult', snapshotResult)
+    let parsed = null;
+    for (let attempt = 1; attempt <= maxVerifyAttempts; attempt += 1) {
+      const verifyResult = await callTool(client, "browser_evaluate", {
+        function: `() => {
+          const xpath = ${JSON.stringify(uploadXPath)};
+          const exactInput = document.evaluate(
+            xpath,
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+          ).singleNodeValue;
+          const fallbackInput = document.querySelector('input[type="file"]')
+            ?? document.evaluate(
+              '//input[@type="file"]',
+              document,
+              null,
+              XPathResult.FIRST_ORDERED_NODE_TYPE,
+              null
+            ).singleNodeValue;
+          const input = exactInput ?? fallbackInput;
+          const files = Array.from(input?.files ?? []).map((file) => ({
+            name: file.name,
+            size: file.size,
+            type: file.type
+          }));
+          const visibleText = document.body?.innerText?.replace(/\\s+/g, " ").trim().slice(0, 3000) ?? "";
+          const hasFilename = visibleText.includes(${JSON.stringify(uploadFileName)});
+          const hasEditorUi = /Details|Description|Cover|Who can see this post|Upload another video|Post|Save draft|Discard/i.test(visibleText);
+          const hasProgressUi = /Uploading|Processing|Checking|Uploaded|Complete|Progress|%/i.test(visibleText);
+          return {
+            url: location.href,
+            title: document.title,
+            inputFound: Boolean(input),
+            inputFoundByExactXpath: Boolean(exactInput),
+            files,
+            fileCount: files.length,
+            uploadLooksAccepted: files.some((file) => file.name === ${JSON.stringify(uploadFileName)}) || hasFilename || hasEditorUi || hasProgressUi,
+            inputOuterHtml: input?.outerHTML?.slice(0, 500) ?? null,
+            loginHint: /log in|login|sign in/i.test(visibleText),
+            hasFilename,
+            hasEditorUi,
+            hasProgressUi,
+            visibleText
+          };
+        }`
+      });
+      const verifyText = textFromResult(verifyResult);
+      console.log(`\n[verify attempt ${attempt}]\n`);
+      console.log(verifyText);
+      parsed = parseJsonResultBlock(verifyText);
+      if (parsed.uploadLooksAccepted) {
+        break;
+      }
+      if (attempt < maxVerifyAttempts) {
+        await delay(verifyRetryDelayMs);
+      }
+    }
 
-    // let parsed = null;
-    // for (let attempt = 1; attempt <= maxVerifyAttempts; attempt += 1) {
-    //   const verifyResult = await callTool(client, "browser_evaluate", {
-    //     function: `() => {
-    //       const xpath = ${JSON.stringify(uploadXPath)};
-    //       const exactInput = document.evaluate(
-    //         xpath,
-    //         document,
-    //         null,
-    //         XPathResult.FIRST_ORDERED_NODE_TYPE,
-    //         null
-    //       ).singleNodeValue;
-    //       const fallbackInput = document.querySelector('input[type="file"]')
-    //         ?? document.evaluate(
-    //           '//input[@type="file"]',
-    //           document,
-    //           null,
-    //           XPathResult.FIRST_ORDERED_NODE_TYPE,
-    //           null
-    //         ).singleNodeValue;
-    //       const input = exactInput ?? fallbackInput;
-    //       const files = Array.from(input?.files ?? []).map((file) => ({
-    //         name: file.name,
-    //         size: file.size,
-    //         type: file.type
-    //       }));
-    //       const visibleText = document.body?.innerText?.replace(/\\s+/g, " ").trim().slice(0, 3000) ?? "";
-    //       const hasFilename = visibleText.includes(${JSON.stringify(uploadFileName)});
-    //       const hasEditorUi = /Details|Description|Cover|Who can see this post|Upload another video|Post|Save draft|Discard/i.test(visibleText);
-    //       const hasProgressUi = /Uploading|Processing|Checking|Uploaded|Complete|Progress|%/i.test(visibleText);
-    //       return {
-    //         url: location.href,
-    //         title: document.title,
-    //         inputFound: Boolean(input),
-    //         inputFoundByExactXpath: Boolean(exactInput),
-    //         files,
-    //         fileCount: files.length,
-    //         uploadLooksAccepted: files.some((file) => file.name === ${JSON.stringify(uploadFileName)}) || hasFilename || hasEditorUi || hasProgressUi,
-    //         inputOuterHtml: input?.outerHTML?.slice(0, 500) ?? null,
-    //         loginHint: /log in|login|sign in/i.test(visibleText),
-    //         hasFilename,
-    //         hasEditorUi,
-    //         hasProgressUi,
-    //         visibleText
-    //       };
-    //     }`
-    //   });
-    //   const verifyText = textFromResult(verifyResult);
-    //   console.log(`\n[verify attempt ${attempt}]\n`);
-    //   console.log(verifyText);
-    //   parsed = parseJsonResultBlock(verifyText);
-    //   if (parsed.uploadLooksAccepted) {
-    //     break;
-    //   }
-    //   if (attempt < maxVerifyAttempts) {
-    //     await delay(verifyRetryDelayMs);
-    //   }
-    // }
+    if (!parsed) {
+      throw new Error("Did not receive verification result.");
+    }
+    if (!precheckParsed.inputFound) {
+      throw new Error("Target upload input was not found before upload started on the TikTok Studio upload page.");
+    }
+    if (!parsed.uploadLooksAccepted) {
+      throw new Error(
+        `Upload UI did not transition to an accepted state. fileCount=${parsed.fileCount}, title="${parsed.title}", loginHint=${parsed.loginHint}, hasEditorUi=${parsed.hasEditorUi}, hasProgressUi=${parsed.hasProgressUi}, hasFilename=${parsed.hasFilename}`
+      );
+    }
 
-    // if (!parsed) {
-    //   throw new Error("Did not receive verification result.");
-    // }
-    // if (!precheckParsed.inputFound) {
-    //   throw new Error("Target upload input was not found before upload started on the TikTok Studio upload page.");
-    // }
-    // if (!parsed.uploadLooksAccepted) {
-    //   throw new Error(
-    //     `Upload UI did not transition to an accepted state. fileCount=${parsed.fileCount}, title="${parsed.title}", loginHint=${parsed.loginHint}, hasEditorUi=${parsed.hasEditorUi}, hasProgressUi=${parsed.hasProgressUi}, hasFilename=${parsed.hasFilename}`
-    //   );
-    // }
-
-    // console.log("\nVerification passed.");
-    // console.log(`- uploaded file name: ${parsed.files[0]?.name ?? "(not retained on input)"}`);
-    // console.log(`- uploaded file type: ${parsed.files[0]?.type ?? "(not retained on input)"}`);
-    // console.log(`- page title: ${parsed.title}`);
-    // console.log(`- editor UI visible: ${parsed.hasEditorUi}`);
-    // console.log(`- progress UI visible: ${parsed.hasProgressUi}`);
+    console.log("\nVerification passed.");
+    console.log(`- uploaded file name: ${parsed.files[0]?.name ?? "(not retained on input)"}`);
+    console.log(`- uploaded file type: ${parsed.files[0]?.type ?? "(not retained on input)"}`);
+    console.log(`- page title: ${parsed.title}`);
+    console.log(`- editor UI visible: ${parsed.hasEditorUi}`);
+    console.log(`- progress UI visible: ${parsed.hasProgressUi}`);
   } finally {
-    await close();
+    await client.close().catch(() => {});
+    await bundle.close().catch(() => {});
   }
 }
 

@@ -96,7 +96,13 @@ describe("DefaultHumanController", () => {
     expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).not.toHaveBeenCalled();
     expect(target.fill).toHaveBeenCalledWith("hello", { force: true });
-    expect(target.type).toHaveBeenCalledWith("hello", { delay: 77 });
+    expect(target.type).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        delay: 77,
+        __roxyTypingPlan: expect.any(Array)
+      })
+    );
     expect(target.press).toHaveBeenCalledWith("Enter", { delay: 77 });
   });
 
@@ -130,8 +136,39 @@ describe("DefaultHumanController", () => {
         stepPx: 24
       }
     });
-    expect(target.type).toHaveBeenCalledWith("hello", { human: { profile: "fast" }, delay: 77 });
+    expect(target.type).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        human: { profile: "fast" },
+        delay: 77,
+        __roxyTypingPlan: expect.any(Array)
+      })
+    );
     expect(target.press).toHaveBeenCalledWith("Enter", { human: { profile: "fast" }, delay: 77 });
+  });
+
+  it("keeps the typing plan but omits __roxyTypeVariance when typingVarianceMs is 0", async () => {
+    const controller = new DefaultHumanController({
+      profile: "balanced",
+      moveJitterMs: 1,
+      clickHoldMs: 50,
+      scrollStepPx: 2,
+      typingDelayMs: 77,
+      typingVarianceMs: 0,
+      hoverBeforeClickMs: 0
+    });
+    const target = createTarget();
+
+    await controller.type(target, "hello");
+
+    expect(target.type).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        delay: 77,
+        __roxyTypingPlan: expect.any(Array)
+      })
+    );
+    expect(vi.mocked(target.type).mock.calls[0]?.[1]).not.toHaveProperty("__roxyTypeVariance");
   });
 
   it("serializes concurrent clicks within the same controller", async () => {

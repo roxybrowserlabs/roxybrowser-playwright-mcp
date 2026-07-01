@@ -38,6 +38,7 @@ function createCdpClientStub() {
     Target: {
       createBrowserContext: vi.fn(async () => ({ browserContextId: "ctx-1" })),
       createTarget: vi.fn(async () => ({ targetId: "target-1" })),
+      activateTarget: vi.fn(async () => ({})),
       closeTarget: vi.fn(async () => ({})),
       disposeBrowserContext: vi.fn(async () => ({})),
       getTargets: vi.fn(async () => ({ targetInfos: [] })),
@@ -227,6 +228,28 @@ describe("CDP coverage", () => {
       key: "a",
       code: "KeyA"
     }));
+  });
+
+  it("executes humanized typing plans through keyboard events and insertText", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+
+    await page.keyboardType("ignored", {
+      __roxyTypingPlan: [
+        { type: "char", value: "a", delay: 0 },
+        { type: "backspace", delay: 0 },
+        { type: "char", value: "指", delay: 0 }
+      ]
+    } as never);
+
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "keyDown",
+      key: "a"
+    }));
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "rawKeyDown",
+      key: "Backspace"
+    }));
+    expect(pageClient.Input.insertText).toHaveBeenCalledWith({ text: "指" });
   });
 
   it("emits browser log entries as Playwright-style console events", async () => {

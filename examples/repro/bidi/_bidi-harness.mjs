@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import http from "node:http";
-import { openRoxyBrowserFirefoxBidiProfile, closeRoxyBrowserFirefoxBidiProfile } from "../../scripts/roxybrowser-firefox-bidi.mjs";
+import { openRoxyBrowserFirefoxBidiProfile, closeRoxyBrowserFirefoxBidiProfile } from "../../../scripts/roxybrowser-firefox-bidi.mjs";
 
 const envPath = resolve(process.cwd(), ".env");
 if (existsSync(envPath)) loadEnvFile(envPath);
@@ -26,7 +26,7 @@ const API_TOKEN = process.env.ROXYBROWSER_API_TOKEN ?? process.env.ROXY_API_TOKE
 const WORKSPACE_ID = process.env.ROXYBROWSER_WORKSPACE_ID;
 const CORE_VERSION = process.env.ROXYBROWSER_CORE_VERSION ?? "146";
 
-if (!API_TOKEN) {
+if (!API_TOKEN && !process.env.ROXY_BIDI_ENDPOINT && !process.env.ROXY_BIDI_WS_ENDPOINT) {
   throw new Error("Missing ROXYBROWSER_API_TOKEN in .env (set it like the mcp-parity tests).");
 }
 
@@ -103,18 +103,28 @@ export class RawBiDi {
 
 export async function launchRawBiDi(label) {
   const tag = label ?? "Bidi Repro";
-  console.log(`[harness] opening RoxyBrowser Firefox BiDi profile (${tag})...`);
-  const session = await openRoxyBrowserFirefoxBidiProfile({
-    apiPort: API_PORT,
-    apiToken: API_TOKEN,
-    workspaceId: WORKSPACE_ID,
-    createNewProfile: true,
-    profileName: process.env.ROXYBROWSER_PROFILE_NAME ?? `RoxyBrowser ${tag}`,
-    windowRemark: process.env.ROXYBROWSER_WINDOW_REMARK ?? tag.toLowerCase(),
-    coreType: "Firefox",
-    coreVersion: CORE_VERSION,
-    debug: false
-  });
+  const configuredEndpoint = process.env.ROXY_BIDI_ENDPOINT ?? process.env.ROXY_BIDI_WS_ENDPOINT;
+  if (configuredEndpoint) {
+    console.log(`[harness] using configured ROXY_BIDI_ENDPOINT (${tag})...`);
+  } else {
+    console.log(`[harness] opening RoxyBrowser Firefox BiDi profile (${tag})...`);
+  }
+  const session = configuredEndpoint
+    ? {
+        endpoint: configuredEndpoint,
+        ...(process.env.ROXY_BIDI_SESSION_ID ? { sessionId: process.env.ROXY_BIDI_SESSION_ID } : {})
+      }
+    : await openRoxyBrowserFirefoxBidiProfile({
+        apiPort: API_PORT,
+        apiToken: API_TOKEN,
+        workspaceId: WORKSPACE_ID,
+        createNewProfile: true,
+        profileName: process.env.ROXYBROWSER_PROFILE_NAME ?? `RoxyBrowser ${tag}`,
+        windowRemark: process.env.ROXYBROWSER_WINDOW_REMARK ?? tag.toLowerCase(),
+        coreType: "Firefox",
+        coreVersion: CORE_VERSION,
+        debug: false
+      });
   console.log(`[harness] endpoint=${session.endpoint} sessionId=${session.sessionId ?? "<none>"}`);
 
   // 解析 ws 包（geckodriver 的 BiDi 端点用 ws@8 能握手机；ws@7/Node 内置 undici
@@ -122,7 +132,7 @@ export async function launchRawBiDi(label) {
   // .pnpm/node_modules/ws 与 .pnpm/ws@8.x/node_modules/ws。
   const { createRequire } = await import("node:module");
   const { resolve: pathResolve } = await import("node:path");
-  const req = createRequire(pathResolve("examples/bidi-repro/index.js"));
+  const req = createRequire(pathResolve("examples/repro/bidi/index.js"));
   const candidates = [
     pathResolve("node_modules/.pnpm/ws@8.21.0/node_modules/ws"),
     pathResolve("node_modules/.pnpm/node_modules/ws"),
@@ -188,7 +198,7 @@ export async function launchRawBiDi(label) {
 
   const cleanup = async () => {
     bidi.close();
-    if (process.env.BIDI_REPRO_PROFILE_REUSE === "1") return;
+    if (configuredEndpoint || process.env.BIDI_REPRO_PROFILE_REUSE === "1") return;
     await closeRoxyBrowserFirefoxBidiProfile({
       apiPort: API_PORT,
       apiToken: API_TOKEN,

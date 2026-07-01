@@ -14,7 +14,7 @@
 // 所以本脚本用来“证伪抖动是协议层固有的”，并量化：若裸协议也抖动→协议层问题；
 // 若不抖动→问题在 adapter 读取时机。实测结论是后者。
 //
-// 运行：node examples/bidi-repro/05-network-state-race.mjs
+// 运行：node examples/repro/bidi/05-network-state-race.mjs
 import { launchRawBiDi, newTabAndNavigate, startFixtureServer } from "./_bidi-harness.mjs";
 
 const { server, PREFIX } = await startFixtureServer();

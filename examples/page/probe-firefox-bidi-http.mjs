@@ -2,14 +2,14 @@ import { createServer } from "node:http";
 import { firefox } from "@roxybrowser/playwright";
 import { createExampleFixture } from "./helpers/fixture.mjs";
 
-const wsEndpoint = process.env.ROXY_BIDI_WS_ENDPOINT;
+const wsEndpoint = process.env.ROXY_BIDI_ENDPOINT ?? process.env.ROXY_BIDI_WS_ENDPOINT;
 const sessionId = process.env.ROXY_BIDI_SESSION_ID;
 const reuseDefaultUserContext = process.env.ROXY_BIDI_REUSE_DEFAULT_USER_CONTEXT === "1";
 
 if (!wsEndpoint) {
-  console.error("Missing ROXY_BIDI_WS_ENDPOINT.");
+  console.error("Missing ROXY_BIDI_ENDPOINT.");
   console.error("Example:");
-  console.error("  ROXY_BIDI_WS_ENDPOINT=ws://127.0.0.1:9222/session pnpm example:probe-bidi-http");
+  console.error("  ROXY_BIDI_ENDPOINT=ws://127.0.0.1:9222/session pnpm examples page probe-firefox-bidi-http");
   process.exit(1);
 }
 

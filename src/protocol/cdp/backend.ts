@@ -119,6 +119,9 @@ import {
 } from "../../utilityScriptSerializers.js";
 import type { InternalScreenshotOptions } from "../../screenshotOptions.js";
 import type { NormalizedSelectOption } from "../../selectOptionValues.js";
+import { buildHumanMousePath } from "../../human/mousePath.js";
+import { buildTypingDelays } from "../../human/typing.js";
+import { defaultRng } from "../../human/random.js";
 import type CDP from "chrome-remote-interface";
 
 const chromeRemoteInterface = ("default" in cdpModule
@@ -5612,19 +5615,47 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     text: string,
     options?: {
       delay?: number;
+      __roxyTypeVariance?: number;
+      __roxyTypingPlan?: TypeOptions["__roxyTypingPlan"];
     }
   ): Promise<void> {
     await this.bringToFront();
-    for (const character of text) {
+    if (options?.__roxyTypingPlan) {
+      for (const action of options.__roxyTypingPlan) {
+        if (action.type === "pause") {
+          if (action.delay) {
+            await delay(action.delay);
+          }
+          continue;
+        }
+        if (action.type === "backspace") {
+          await this.keyboardPress("Backspace", { delay: action.delay });
+          continue;
+        }
+        await this.keyboardType(action.value, { delay: action.delay });
+      }
+      return;
+    }
+    const chars = [...text];
+    // Humanized path: per-keystroke dwell jittered around the base delay (shared with BiDi).
+    // Absent variance (e.g. raw page.keyboard.type) → flat delay, identical to before.
+    const variance = options?.__roxyTypeVariance;
+    const delays =
+      variance !== undefined && variance > 0
+        ? buildTypingDelays(text, { delayMs: options?.delay ?? 0, varianceMs: variance }, defaultRng)
+        : undefined;
+    for (let index = 0; index < chars.length; index += 1) {
+      const character = chars[index]!;
+      const charDelay = delays ? delays[index] : options?.delay;
       if (isUsKeyboardLayoutKey(character)) {
         await this.keyboardPress(
           character,
-          options?.delay === undefined ? undefined : { delay: options.delay }
+          charDelay === undefined ? undefined : { delay: charDelay }
         );
         continue;
       }
-      if (options?.delay) {
-        await delay(options.delay);
+      if (charDelay) {
+        await delay(charDelay);
       }
       await this.keyboardInsertText(character);
     }
@@ -6302,20 +6333,31 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   ): Promise<void> {
     const humanMove = options?.steps === undefined ? options?.__roxyHumanMove : undefined;
-    const distance = Math.hypot(point.x - this.currentMousePosition.x, point.y - this.currentMousePosition.y);
-    const steps = Math.max(
-      options?.steps ?? (humanMove ? Math.ceil(distance / Math.max(humanMove.stepPx, 1)) : 1),
-      1
-    );
     const start = this.currentMousePosition;
-    const pauseMs = humanMove && steps > 1
-      ? Math.max(0, Math.round(humanMove.durationMs / (steps - 1)))
-      : 0;
-    for (let index = 1; index <= steps; index += 1) {
-      await this.moveMouseInternal(interpolateMousePoint(start, point, index / steps, Boolean(humanMove)));
-      if (pauseMs > 0 && index < steps) {
-        await delay(pauseMs);
+    if (humanMove) {
+      // ⚠️ DIVERGENCE FROM PLAYWRIGHT: humanized curved cursor path (randomized Bézier +
+      // tremor + overshoot) via the shared src/human/mousePath algorithm. Endpoints stay exact.
+      // Parity: BiDi uses the SAME generator; the only difference is dispatch — CDP awaits real
+      // timers per point, BiDi emits equivalent `pause` actions summing to the same duration.
+      const path = buildHumanMousePath(
+        start,
+        point,
+        { stepPx: humanMove.stepPx, durationMs: humanMove.durationMs },
+        defaultRng
+      );
+      for (let index = 0; index < path.length; index += 1) {
+        const step = path[index]!;
+        await this.moveMouseInternal({ x: step.x, y: step.y });
+        if (step.delayMs > 0 && index < path.length - 1) {
+          await delay(step.delayMs);
+        }
       }
+      return;
+    }
+    // Non-humanized (explicit steps or single hop): linear tween — byte-identical to Playwright.
+    const steps = Math.max(options?.steps ?? 1, 1);
+    for (let index = 1; index <= steps; index += 1) {
+      await this.moveMouseInternal(interpolateMousePoint(start, point, index / steps));
     }
   }
 
@@ -11798,24 +11840,12 @@ function createScreencastHighlightBox(point: ActionPoint): {
   };
 }
 
-function interpolateMousePoint(
-  start: ActionPoint,
-  end: ActionPoint,
-  progress: number,
-  humanized: boolean
-): ActionPoint {
-  if (!humanized) {
-    return {
-      x: start.x + ((end.x - start.x) * progress),
-      y: start.y + ((end.y - start.y) * progress)
-    };
-  }
-  const distance = Math.hypot(end.x - start.x, end.y - start.y);
-  const easedProgress = 1 - Math.pow(1 - progress, 2);
-  const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
+// Linear tween for the non-humanized path (explicit steps / single hop). The humanized curve
+// now lives in src/human/mousePath.ts and is shared with the BiDi backend.
+function interpolateMousePoint(start: ActionPoint, end: ActionPoint, progress: number): ActionPoint {
   return {
-    x: start.x + ((end.x - start.x) * easedProgress) + drift * ((end.y - start.y) / Math.max(distance, 1)),
-    y: start.y + ((end.y - start.y) * easedProgress) - drift * ((end.x - start.x) / Math.max(distance, 1))
+    x: start.x + (end.x - start.x) * progress,
+    y: start.y + (end.y - start.y) * progress
   };
 }
 

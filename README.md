@@ -1,14 +1,27 @@
 # @roxybrowser/playwright
 
-`@roxybrowser/playwright` is a Playwright-style automation library with humanized behavior by default.
+`@roxybrowser/playwright` is a Playwright-style browser-automation library with **humanized behavior by default**, plus an MCP server (`@roxybrowser/playwright/mcp`) that exposes the same capabilities as tools. It targets Chromium over CDP and Firefox over WebDriver BiDi. It is not a fork of Playwright — it reproduces a Playwright-familiar public API on top of a protocol-agnostic adapter layer.
 
 ## Design goals
 
 - Keep the public API familiar to Playwright users.
 - Route all browser operations through a protocol-agnostic adapter layer.
-- Start with `chrome-remote-interface` over CDP.
-- Keep CDP and BiDi as the supported protocol backends.
+- Support both CDP (Chromium) and WebDriver BiDi (Firefox) as protocol backends.
 - Make click, type, hover, and scroll behavior humanized by default instead of adding a second API.
+- Expose the same capabilities as MCP tools for agent-driven automation.
+
+## Install
+
+```bash
+npm install @roxybrowser/playwright
+# or
+pnpm add @roxybrowser/playwright
+```
+
+The package is ESM-only (`"type": "module"`, `NodeNext` resolution). Two entry points are published:
+
+- `@roxybrowser/playwright` — the Playwright-style library (`chromium`, `firefox`, `Browser`, `BrowserContext`, `Page`, `Locator`, `ElementHandle`).
+- `@roxybrowser/playwright/mcp` — the MCP server factories and transports.
 
 ## Package layout
 
@@ -16,11 +29,8 @@
 - `src/page.ts` and `src/locator.ts`: Playwright-style page and locator APIs.
 - `src/protocol/*`: protocol abstraction plus CDP and BiDi backend entry points.
 - `src/human/*`: humanization profiles and controller contracts.
-- `docs/architecture.md`: detailed architecture notes and implementation plan.
-
-## Current state
-
-This branch establishes the package scaffold, API shape, and protocol boundaries. The CDP runtime is intentionally skeletal so the architecture can be reviewed before we lock implementation details.
+- `src/mcp/*`: the MCP server, runtime, connected-browser session, and tools.
+- `CLAUDE.md` / `AGENTS.md`: architecture notes and repository guidance.
 
 ## Testing
 
@@ -40,7 +50,7 @@ The BiDi e2e suite prefers connecting to an existing Firefox BiDi websocket when
 - `channel`: resolve a known local install such as `chrome`, `chrome-beta`, `chrome-dev`, `chrome-canary`, `msedge`, `msedge-beta`, `msedge-dev`, `msedge-canary`, or `chromium`.
 - auto-detection: fall back to the default Chrome, Chromium, and Edge candidate paths for the current platform.
 
-`firefox.launch()` now uses the BiDi backend by default and launches a locally installed Firefox binary directly. The current Firefox BiDi path supports browser launch, context creation, page creation, navigation, title lookup, script evaluation, and locator-based `click`, `hover`, `fill`, `type`, `press`, `textContent`, and `isVisible` flows.
+`firefox.launch()` uses the WebDriver BiDi backend by default and launches a locally installed Firefox binary directly. The Firefox BiDi path supports browser launch, context creation, page creation, navigation, title lookup, script evaluation, and locator-based `click`, `hover`, `fill`, `type`, `press`, `textContent`, and `isVisible` flows.
 
 Firefox launch requires a local Firefox binary with BiDi remote debugging support. If auto-detection is not enough for your machine or CI image, set `ROXY_EXECUTABLE_PATH` or pass `executablePath` explicitly.
 
@@ -54,14 +64,23 @@ Firefox launch requires a local Firefox binary with BiDi remote debugging suppor
 
 ## Examples
 
-The [`examples`](/Users/macos/code/roxy-company/roxybrowser-playwright-mcp/examples) directory contains runnable scripts that import the package by its published name, `@roxybrowser/playwright`.
+The [`examples`](./examples) directory contains runnable `.mjs` scripts grouped by entry point. Run them directly with Node:
 
-- `pnpm example:launch`
+- `node examples/page/launch-local-browser.mjs`
   Launches a locally installed browser, opens a temporary `file://` fixture, and prints the result.
-- `pnpm example:connect-cdp`
-  Connects to an existing CDP WebSocket endpoint from `ROXY_CDP_WS_ENDPOINT` and runs the same flow.
-- `pnpm example:page-events`
+- `pnpm examples page connect-over-cdp`
+  Connects to an existing CDP WebSocket endpoint from `ROXY_CDP_ENDPOINT` and runs the same flow.
+- `pnpm examples page verify-baidu-search`
+  Drives Baidu search through the Page API and types into the search box with `page.type(...)`.
+- `node examples/page/page-events-and-screenshot.mjs`
   Launches a local browser, starts a temporary HTTP fixture, logs `page.on(...)` events, removes a `request` listener, and writes a screenshot to a temporary file.
+- `node examples/page/launch-firefox-bidi.mjs` / `node examples/page/connect-firefox-bidi.mjs`
+  Exercise the Firefox WebDriver BiDi backend by launching a local Firefox binary or connecting to an existing BiDi websocket.
+- `pnpm examples mcp verify-baidu-search`
+  Drive the MCP server end-to-end (Baidu search, drag, file upload, humanized typing) and double as integration checks.
+
+Use `examples/page/` for direct Browser/Context/Page API examples, `examples/mcp/` for MCP tool examples, and `examples/repro/` for bug reproductions.
+Use `pnpm examples <module> <script>` to run a script through the shared examples runner. The runner loads `.env`, injects `ROXY_CDP_ENDPOINT` / `ROXY_BIDI_ENDPOINT`, and can open a RoxyBrowser profile through the local API when an endpoint is missing.
 
 Useful environment variables:
 
@@ -69,9 +88,20 @@ Useful environment variables:
 - `ROXY_BROWSER_NAME=chromium|firefox`
 - `ROXY_EXECUTABLE_PATH=/absolute/path/to/browser`
 - `ROXY_HEADLESS=false`
-- `ROXY_CDP_WS_ENDPOINT=ws://127.0.0.1:9222/devtools/browser/<id>`
+- `ROXY_CDP_ENDPOINT=ws://127.0.0.1:9222/devtools/browser/<id>`
+- `ROXY_BIDI_ENDPOINT=ws://127.0.0.1:9222/session/<id>`
 - `ROXY_MCP_OUTPUT_DIR=/absolute/path/to/output`
 - `ROXY_MCP_TEMP_DIR=/absolute/path/to/temp`
+
+## Connecting the MCP server to a browser
+
+Before other MCP tools can act on a page, attach the session to a running browser with the `roxy_browser_connect` tool:
+
+- `endpoint` (required): the CDP WebSocket endpoint (Chrome) or the BiDi websocket endpoint (Firefox).
+- `browser`: `chrome` (default) or `firefox`. Chrome connects over CDP; Firefox connects over WebDriver BiDi.
+- `sessionId` (optional): reuse an existing BiDi session.
+
+Endpoints typically come from the RoxyBrowser desktop app's local API, which opens a profile and returns a debugging endpoint. Once connected, the standard `browser_*` tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`, and so on) operate on the active tab.
 
 ## MCP output directory
 

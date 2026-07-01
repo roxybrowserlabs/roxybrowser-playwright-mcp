@@ -24,7 +24,7 @@
 //       `if (!hasHandlers) dialog._close()` ——没有用户 handler 时立即自动
 //       关闭 dialog，正是为了规避“modal 一直开着把后续命令全卡死”。
 //
-// 运行：node examples/bidi-repro/02-handleuserprompt-hang.mjs
+// 运行：node examples/repro/bidi/02-handleuserprompt-hang.mjs
 import { launchRawBiDi, newTabAndNavigate, startFixtureServer } from "./_bidi-harness.mjs";
 
 const { server, PREFIX } = await startFixtureServer();

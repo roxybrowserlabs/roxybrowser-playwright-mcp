@@ -51,6 +51,7 @@
     "test:mcp-parity": "pnpm build:bundle && vitest run --config vitest.mcp-parity.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:e2e:bidi": "vitest run --config vitest.e2e.bidi.config.ts",
+    "examples": "node ./scripts/run-example.mjs",
     "mcp:stdio": "pnpm build && node ./dist/bin/roxybrowser-mcp.js",
     "mcp:http": "pnpm build && node ./dist/bin/roxybrowser-mcp.js --transport http",
     "inspector": "pnpm build && node ./node_modules/@modelcontextprotocol/inspector/client/bin/start.js -- node ./dist/bin/roxybrowser-mcp.js",

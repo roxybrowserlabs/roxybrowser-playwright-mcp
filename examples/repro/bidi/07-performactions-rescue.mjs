@@ -7,7 +7,7 @@
 // 若能 -> 现有 race 方案只需补"并发发 handleUserPrompt"，无需放弃 performActions。
 // 若不能 -> performActions 卡死占坑，必须改用 script.click 绕过（方案 B）。
 //
-// 运行：node examples/bidi-repro/07-performactions-rescue.mjs
+// 运行：node examples/repro/bidi/07-performactions-rescue.mjs
 import { launchRawBiDi, newTabAndNavigate, startFixtureServer } from "./_bidi-harness.mjs";
 
 const { server, PREFIX } = await startFixtureServer();

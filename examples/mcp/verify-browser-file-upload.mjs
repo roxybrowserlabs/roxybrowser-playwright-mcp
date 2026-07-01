@@ -2,9 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { createRoxyBrowserMcpInMemory } from "../dist/mcp/index.js";
+import { createRoxyBrowserMcpInMemory } from "../../dist/mcp/index.js";
+import { requiredCdpEndpoint } from "./helpers/env.mjs";
 
-const endpoint = process.env.ROXY_CDP_ENDPOINT ?? "ws://127.0.0.1:56185/devtools/browser/5e0a2368-1186-450a-b3b4-775fc21c14ce";
+const endpoint = requiredCdpEndpoint();
 
 const fixtureUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html lang="en">

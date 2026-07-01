@@ -13,7 +13,7 @@
 //   2. modal 期间 userPromptOpened 事件是否到达客户端？
 //   3. 事件到达后，browsingContext.handleUserPrompt 是否能正常关闭 modal？
 //
-// 运行：node examples/bidi-repro/06-prompt-event-delivery.mjs
+// 运行：node examples/repro/bidi/06-prompt-event-delivery.mjs
 import { launchRawBiDi, newTabAndNavigate, startFixtureServer } from "./_bidi-harness.mjs";
 
 const { server, PREFIX } = await startFixtureServer();

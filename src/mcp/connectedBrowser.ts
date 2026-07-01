@@ -30,6 +30,8 @@ import {
   splitKeyboardShortcut
 } from "../protocol/keyboardInput.js";
 import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "../human/bubbleCursor.js";
+import { buildTypingDelays } from "../human/typing.js";
+import { defaultRng } from "../human/random.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
 import { configuredTempDir } from "./output.js";
@@ -1593,10 +1595,19 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
           isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid."
         );
       }
-      for (const char of text) {
-        await pageClient.Input.insertText({ text: char });
-        if (options.delayMs) {
-          await delay(options.delayMs);
+      const chars = [...text];
+      // Humanized per-keystroke dwell: jitter each character around the base delay when a
+      // variance is supplied (mirrors the library keyboardType path). Falls back to the flat
+      // delay when no variance is set.
+      const delays =
+        options.varianceMs !== undefined && options.varianceMs > 0
+          ? buildTypingDelays(text, { delayMs: options.delayMs ?? 0, varianceMs: options.varianceMs }, defaultRng)
+          : undefined;
+      for (let index = 0; index < chars.length; index += 1) {
+        await pageClient.Input.insertText({ text: chars[index]! });
+        const charDelay = delays ? delays[index] : options.delayMs;
+        if (charDelay) {
+          await delay(charDelay);
         }
       }
       if (options.submit) {
@@ -3954,6 +3965,11 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
     const tabId = await this.getActiveTabId();
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
+    // ⚠️ CDP↔BiDi PARITY GAP: the CDP session.type has a real per-keystroke insertText loop that
+    // honors slowly/delayMs/varianceMs (humanized cadence). The BiDi MCP path sets the value via
+    // a single DOM operation (TYPE_INTO_ELEMENT_SOURCE) and does not emit per-character keystrokes,
+    // so humanized typing timing does not apply here. Root cause: this path never had a keystroke
+    // loop; matching CDP requires reworking it onto BiDi input actions (tracked as follow-up).
     const result = await evaluateBiDi<{ ok: boolean; reason?: string }>(
       this.client,
       tabId,

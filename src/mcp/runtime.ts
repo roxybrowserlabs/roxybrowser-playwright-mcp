@@ -366,7 +366,8 @@ export class McpRuntime {
     await session.type(resolved, text, {
       ...(opts?.submit !== undefined ? { submit: opts.submit } : {}),
       slowly: true,
-      delayMs: jitter(humanOpts.typingDelayMs)
+      delayMs: jitter(humanOpts.typingDelayMs),
+      varianceMs: humanOpts.typingVarianceMs
     });
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
@@ -598,7 +599,8 @@ export class McpRuntime {
         await session.clear(resolved);
         await session.type(resolved, field.value, {
           slowly: true,
-          delayMs: jitter(humanOpts.typingDelayMs)
+          delayMs: jitter(humanOpts.typingDelayMs),
+          varianceMs: humanOpts.typingVarianceMs
         });
         continue;
       }

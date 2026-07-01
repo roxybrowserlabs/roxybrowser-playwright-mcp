@@ -6,6 +6,8 @@ import type {
   TypeOptions
 } from "../types/options.js";
 import { resolveHumanizationOptions } from "./profile.js";
+import { defaultRng } from "./random.js";
+import { buildTypingPlan } from "./typing.js";
 import type {
   HumanActionTarget,
   HumanActionOptions,
@@ -94,9 +96,25 @@ export class DefaultHumanController implements HumanController {
       options && "delay" in options && typeof options.delay === "number"
         ? options.delay
         : defaults.typingDelayMs;
+    const variance = defaults.typingVarianceMs;
+    const typingBehavior = typingBehaviorForProfile(defaults.profile);
     await target.type(value, {
       ...options,
-      delay
+      delay,
+      __roxyTypingPlan: buildTypingPlan(
+        value,
+        {
+          delayMs: delay,
+          varianceMs: variance,
+          mistakeRate: typingBehavior.mistakeRate,
+          correctionDelayMs: typingBehavior.correctionDelayMs,
+          correctionVarianceMs: typingBehavior.correctionVarianceMs
+        },
+        defaultRng
+      ),
+      // Forward per-keystroke variance so the backend jitters each character's dwell.
+      // Mirrors the __roxyHumanMove convention; omitted when variance is disabled.
+      ...(variance > 0 ? { __roxyTypeVariance: variance } : {})
     } as TypeOptions);
   }
 
@@ -130,4 +148,32 @@ function delay(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, timeoutMs);
   });
+}
+
+function typingBehaviorForProfile(profile: ResolvedHumanizationOptions["profile"]): {
+  mistakeRate: number;
+  correctionDelayMs: number;
+  correctionVarianceMs: number;
+} {
+  switch (profile) {
+    case "cautious":
+      return {
+        mistakeRate: 0.006,
+        correctionDelayMs: 360,
+        correctionVarianceMs: 120
+      };
+    case "fast":
+      return {
+        mistakeRate: 0.018,
+        correctionDelayMs: 190,
+        correctionVarianceMs: 70
+      };
+    case "balanced":
+    default:
+      return {
+        mistakeRate: 0.012,
+        correctionDelayMs: 260,
+        correctionVarianceMs: 90
+      };
+  }
 }

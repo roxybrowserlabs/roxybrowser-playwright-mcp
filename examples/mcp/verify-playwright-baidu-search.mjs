@@ -2,14 +2,9 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { requiredCdpEndpoint } from "./helpers/env.mjs";
 
-const endpoint = "ws://127.0.0.1:63543/devtools/browser/cbf04210-8d26-4594-97f3-fea1fe268233"
-
-if (!endpoint) {
-  throw new Error(
-    "Set ROXY_CDP_ENDPOINT or ROXY_CDP_WS_ENDPOINT to a ws://.../devtools/browser/<id> endpoint before running this example."
-  );
-}
+const endpoint = requiredCdpEndpoint();
 
 const searchText = "指纹浏览器";
 const baiduUrl = "https://www.baidu.com";

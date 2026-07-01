@@ -8,13 +8,19 @@ import { createExampleFixture } from "./helpers/fixture.mjs";
 // 1. Launch Firefox with remote debugging enabled:
 //    /Applications/Firefox.app/Contents/MacOS/firefox --remote-debugging-port=9222
 //
-// 2. Set the WebSocket endpoint (optional, defaults to ws://127.0.0.1:9222):
-//    export ROXY_BIDI_WS_ENDPOINT=ws://127.0.0.1:9222
+// 2. Set the WebSocket endpoint:
+//    export ROXY_BIDI_ENDPOINT=ws://127.0.0.1:9222/session
 //
 // 3. Run this example:
-//    pnpm example:connect-bidi
+//    node examples/page/connect-firefox-bidi.mjs
 
-const wsEndpoint = process.env.ROXY_BIDI_WS_ENDPOINT || "ws://127.0.0.1:62471";
+const wsEndpoint = process.env.ROXY_BIDI_ENDPOINT ?? process.env.ROXY_BIDI_WS_ENDPOINT;
+
+if (!wsEndpoint) {
+  throw new Error(
+    "Set ROXY_BIDI_ENDPOINT to a ws://... BiDi endpoint, or run through `pnpm examples page connect-firefox-bidi`."
+  );
+}
 
 async function closeQuietly(resource, label) {
   if (!resource) {

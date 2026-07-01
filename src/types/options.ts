@@ -184,8 +184,20 @@ export interface SelectOption {
 
 export type SelectOptionValue = string | SelectOption;
 
+type InternalTypingAction =
+  | { type: "char"; value: string; delay: number }
+  | { type: "pause"; delay: number }
+  | { type: "backspace"; delay: number };
+
 export interface TypeOptions extends SelectorStrictOptions, HumanizedOption {
   delay?: number;
+  // Internal: per-keystroke delay variance (ms) attached by DefaultHumanController so the
+  // protocol backend can jitter each character's dwell independently. Not part of the public
+  // Playwright surface; mirrors the __roxyHumanMove convention.
+  __roxyTypeVariance?: number;
+  // Internal: full humanized typing action sequence. Carries typo/correction behavior while
+  // keeping the public Page.type/Locator.type API small.
+  __roxyTypingPlan?: InternalTypingAction[];
 }
 
 export interface PressOptions extends SelectorStrictOptions, HumanizedOption {

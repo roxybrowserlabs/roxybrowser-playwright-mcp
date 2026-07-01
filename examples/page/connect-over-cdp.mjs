@@ -1,11 +1,11 @@
 import { chromium } from "@roxybrowser/playwright";
 import { createExampleFixture } from "./helpers/fixture.mjs";
 
-const endpointURL = process.env.ROXY_CDP_WS_ENDPOINT;
+const endpointURL = process.env.ROXY_CDP_ENDPOINT ?? process.env.ROXY_CDP_WS_ENDPOINT;
 
 if (!endpointURL) {
   throw new Error(
-    "Set ROXY_CDP_WS_ENDPOINT to a ws://.../devtools/browser/<id> endpoint before running this example."
+    "Set ROXY_CDP_ENDPOINT to a ws://.../devtools/browser/<id> endpoint, or run through `pnpm examples page connect-over-cdp`."
   );
 }
 

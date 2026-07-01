@@ -5,8 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const here = fileURLToPath(new URL(".", import.meta.url));
-const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 /**
  * Starts the RoxyBrowser MCP server over stdio with a custom `outputDir`,

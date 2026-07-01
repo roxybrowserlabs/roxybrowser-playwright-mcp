@@ -5,7 +5,7 @@
 ## 运行示例
 
 ```bash
-pnpm example:launch-bidi
+node examples/page/launch-firefox-bidi.mjs
 ```
 
 ## 示例功能

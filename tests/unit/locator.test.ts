@@ -651,8 +651,17 @@ describe("RoxyLocator", () => {
       human: { profile: "fast" },
       timeout: 14
     }));
-    expect(elementAdapter.type).toHaveBeenCalledWith("value", { human: { profile: "fast" }, delay: 95 });
-    expect(elementAdapter.type).toHaveBeenCalledWith("typed", { human: { profile: "fast" }, delay: 11 });
+    // fill stays atomic (not humanized) — it goes straight to the adapter's fill, never type.
+    expect(elementAdapter.fill).toHaveBeenCalledWith("value", { human: { profile: "fast" }, force: true });
+    expect(elementAdapter.type).toHaveBeenCalledWith(
+      "typed",
+      expect.objectContaining({
+        human: { profile: "fast" },
+        delay: 11,
+        __roxyTypeVariance: 35,
+        __roxyTypingPlan: expect.any(Array)
+      })
+    );
     expect(elementAdapter.press).toHaveBeenCalledWith("Enter", { human: { profile: "fast" }, delay: 7 });
     expect(elementAdapter.check).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
     expect(elementAdapter.uncheck).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });

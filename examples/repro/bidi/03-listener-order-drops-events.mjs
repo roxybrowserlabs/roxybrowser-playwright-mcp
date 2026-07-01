@@ -13,7 +13,7 @@
 //        项目侧的修复（先 attach 再 subscribe）是更安全的写法，应保留。
 //        本脚本用以在不同机器/负载下尝试命中，便于内核工程师评估时序窗口。
 //
-// 运行：node examples/bidi-repro/03-listener-order-drops-events.mjs
+// 运行：node examples/repro/bidi/03-listener-order-drops-events.mjs
 import { launchRawBiDi, startFixtureServer } from "./_bidi-harness.mjs";
 
 const { server, PREFIX } = await startFixtureServer();

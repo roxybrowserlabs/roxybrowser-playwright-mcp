@@ -11,7 +11,7 @@
 // 佐证：Playwright bidiNetworkManager 在 _onBeforeRequestSent 里也没有直接读 body
 //       （仅取 headers/url），response body 走 network.getData —— 与本项目一致。
 //
-// 运行：node examples/bidi-repro/04-post-body-missing.mjs
+// 运行：node examples/repro/bidi/04-post-body-missing.mjs
 import { launchRawBiDi, newTabAndNavigate, startFixtureServer } from "./_bidi-harness.mjs";
 
 const { server, PREFIX } = await startFixtureServer();

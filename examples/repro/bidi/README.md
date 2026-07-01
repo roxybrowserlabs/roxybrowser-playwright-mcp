@@ -7,11 +7,11 @@
 ## 运行
 
 ```bash
-node examples/bidi-repro/01-click-alert-blocks.mjs
-node examples/bidi-repro/02-handleuserprompt-hang.mjs
-node examples/bidi-repro/03-listener-order-drops-events.mjs
-node examples/bidi-repro/04-post-body-missing.mjs
-node examples/bidi-repro/05-network-state-race.mjs
+node examples/repro/bidi/01-click-alert-blocks.mjs
+node examples/repro/bidi/02-handleuserprompt-hang.mjs
+node examples/repro/bidi/03-listener-order-drops-events.mjs
+node examples/repro/bidi/04-post-body-missing.mjs
+node examples/repro/bidi/05-network-state-race.mjs
 ```
 
 每个脚本都是独立入口，`_bidi-harness.mjs` 是共享的连接/夹具工具。每个脚本输出标记 `[REPRO]` 的行即为复现命中。

@@ -399,6 +399,50 @@ describe("BidiBrowserAdapterFactory", () => {
     ]);
   });
 
+  it("executes humanized typing plans through BiDi key actions", async () => {
+    const inputPerformActions = vi.fn(async () => ({}));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      inputPerformActions,
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await page.keyboardType("ignored", {
+      __roxyTypingPlan: [
+        { type: "char", value: "a", delay: 0 },
+        { type: "backspace", delay: 0 },
+        { type: "char", value: "b", delay: 0 }
+      ]
+    } as never);
+
+    expect(inputPerformActions.mock.calls.map((call) => call[0])).toEqual([
+      keyActions("ctx-1", [{ type: "keyDown", value: "a" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "a" }]),
+      keyActions("ctx-1", [{ type: "keyDown", value: "\uE003" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "\uE003" }]),
+      keyActions("ctx-1", [{ type: "keyDown", value: "b" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "b" }])
+    ]);
+  });
+
   it("throws on unknown BiDi keyboard keys like Playwright", async () => {
     const client = createBidiClientStub({
       browsingContextCreate: vi.fn(async () => ({

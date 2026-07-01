@@ -8,6 +8,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Package manager is **pnpm**. The package is ESM-only (`"type": "module"`, `NodeNext` module resolution). All internal imports use explicit `.js` extensions even though sources are `.ts`.
 
+## Guiding principles (highest priority)
+
+These two goals rank above everything else and every interaction-related change is judged against them:
+
+1. **Playwright API semantics first.** Signatures, behavior, return values, and event order align with upstream Playwright so users don't have to relearn anything.
+2. **Humanization-first.** Every interaction (click / hover / type / scroll / drag) is humanized *by default* through `HumanController` — human-like, never mechanical. This is the headline feature, not an opt-in.
+
+**When these conflict, or a change otherwise breaks something, you MUST leave a trace — never diverge silently:**
+
+- **Humanization breaks Playwright semantics** (timing, event sequence, return timing, etc.) → add a code comment explaining *why* this deviates and that it's a humanization trade-off. Reuse the existing `⚠️ DIVERGENCE FROM PLAYWRIGHT` comment style for consistency.
+- **CDP / BiDi parity.** The target is identical behavior across the CDP (chromium) and BiDi (firefox) backends. When BiDi genuinely cannot match CDP, you MUST both (1) add a code comment explaining the difference and its root cause (protocol/engine limitation), **and** (2) leave a reproducible example under `examples/` (same style as the `verify-*.mjs` scripts / e2e tests).
+
+Silent divergence — from Playwright semantics *or* from CDP↔BiDi parity — is not acceptable. Comment it, and for cross-protocol gaps ship a repro example.
+
 ## Commands
 
 ```bash
@@ -104,4 +118,4 @@ When a feature spans both the library surface and the MCP tool surface, write th
 - ESM + NodeNext: every relative TS import ends in `.js`.
 - `tsconfig` is strict with `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` — spreading `undefined` into an options object or indexing without a guard will fail the build. Use the `...(x !== undefined ? { k: x } : {})` pattern for optional properties.
 - The public API mirrors Playwright naming on purpose; when adding methods, match Playwright's signature shape so users don't have to relearn.
-- Examples in `examples/` are runnable `.mjs` scripts that import the package by its published name (`@roxybrowser/playwright`); the `verify-mcp-*.mjs` ones drive the MCP server end-to-end and double as integration checks.
+- Examples are grouped by entry point: `examples/mcp/` for MCP tool examples, `examples/page/` for direct Browser/Context/Page API examples, and `examples/repro/` for bug reproductions. Run them through `pnpm examples <module> <script>` so `ROXY_CDP_ENDPOINT` / `ROXY_BIDI_ENDPOINT` are injected consistently; runnable `.mjs` examples import the package by its published name (`@roxybrowser/playwright`), and the `examples/mcp/verify-*.mjs` ones drive the MCP server end-to-end and double as integration checks.

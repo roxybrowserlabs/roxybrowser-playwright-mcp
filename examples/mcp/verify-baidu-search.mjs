@@ -1,13 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { createRoxyBrowserMcpInMemory } from "../dist/mcp/index.js";
+import { createRoxyBrowserMcpInMemory } from "../../dist/mcp/index.js";
+import { requiredCdpEndpoint } from "./helpers/env.mjs";
 
-const endpoint = "ws://127.0.0.1:63543/devtools/browser/cbf04210-8d26-4594-97f3-fea1fe268233"
-
-if (!endpoint) {
-  throw new Error(
-    "Set ROXY_CDP_ENDPOINT or ROXY_CDP_WS_ENDPOINT to a ws://.../devtools/browser/<id> endpoint before running this example."
-  );
-}
+const endpoint = requiredCdpEndpoint();
 
 const searchText = "指纹浏览器";
 const baiduUrl = "https://www.baidu.com";

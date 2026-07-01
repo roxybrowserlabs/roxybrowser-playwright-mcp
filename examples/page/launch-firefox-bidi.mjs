@@ -5,7 +5,7 @@ import { createExampleFixture } from "./helpers/fixture.mjs";
 // BiDi is automatically used when you launch Firefox through the firefox browser type.
 //
 // Usage:
-//    pnpm example:launch-bidi
+//    node examples/page/launch-firefox-bidi.mjs
 
 async function closeQuietly(resource, label) {
   if (!resource) {

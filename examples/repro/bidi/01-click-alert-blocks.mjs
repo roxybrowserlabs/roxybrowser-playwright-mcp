@@ -11,7 +11,7 @@
 // 佐证：Playwright bidi（third_party）也只在 dialogDidOpen 里用
 //       handleUserPrompt 关闭，并未在 performActions 层 race。
 //
-// 运行：node examples/bidi-repro/01-click-alert-blocks.mjs
+// 运行：node examples/repro/bidi/01-click-alert-blocks.mjs
 import { launchRawBiDi, newTabAndNavigate, startFixtureServer } from "./_bidi-harness.mjs";
 
 const { server, PREFIX } = await startFixtureServer();
