@@ -1862,6 +1862,25 @@ describe("MCP server", () => {
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
+    it("presses a key after an ordinary click without a file chooser modal", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const click = await client.callTool({
+        name: "browser_click",
+        arguments: { target: "e1" }
+      });
+      expect(click.isError).toBeUndefined();
+
+      const press = await client.callTool({
+        name: "browser_press_key",
+        arguments: { key: "Enter" }
+      });
+
+      expect(press.isError).toBeUndefined();
+      expect(textFromResult(press)).not.toContain("does not handle the modal state");
+      expect(getSession().pressKeyCalls).toEqual([{ key: "Enter", modifiers: undefined }]);
+    });
+
   });
 
   describe("browser_scroll", () => {

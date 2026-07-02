@@ -281,7 +281,6 @@ export class McpRuntime {
 
     if (opensFileChooser || session.consumePendingFileChooserTarget) {
       await session.prepareForFileUpload?.(resolved);
-      this.fileUploadPending = true;
     }
 
     await session.hover(resolved);
@@ -297,11 +296,12 @@ export class McpRuntime {
     } as SessionClickOptions);
 
     this.invalidateSnapshot();
-    const chooserTarget = await session.consumePendingFileChooserTarget?.({
+    let chooserTarget = await session.consumePendingFileChooserTarget?.({
       timeoutMs: Math.max(250, jitter(humanOpts.hoverBeforeClickMs + humanOpts.clickHoldMs))
     });
+    chooserTarget ??= await session.consumePendingFileChooserTarget?.({ timeoutMs: 0 });
     this.pendingFileUploadTarget = chooserTarget ?? (opensFileChooser ? resolved : undefined);
-    this.fileUploadPending = this.fileUploadPending || !!this.pendingFileUploadTarget;
+    this.fileUploadPending = !!this.pendingFileUploadTarget;
     if (this.snapshotMode === "none") {
       return undefined;
     }
