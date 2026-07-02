@@ -99,9 +99,11 @@ MCP tools that write durable files (screenshots, network/console dumps, evaluate
 
 Some flows (Firefox BiDi e2e, MCP parity tests) open profiles through the RoxyBrowser desktop app's local API via `ROXYBROWSER_API_PORT` + `ROXYBROWSER_API_TOKEN`. When set, the BiDi e2e suite can open a Firefox profile through that API instead of launching a bare Firefox binary (`ROXY_BIDI_USE_ROXYBROWSER_API=1`). The MCP parity tests reuse this to connect both MCP implementations to one shared Chrome-kernel RoxyBrowser profile.
 
-## TDD workflow (mandatory)
+## TDD workflow (mandatory for `src/**` changes)
 
-New features and bug fixes both follow strict TDD — do not write implementation first.
+New features and bug fixes that modify the main runtime/library code under `src/**` follow strict TDD — do not write implementation first.
+
+This strict TDD requirement is intentionally scoped to production code in `src/**` and the tests that guard that code. It does **not** apply to docs-only edits, examples-only work under `examples/**`, scripts/tooling-only changes, or one-off reproduction examples. If an example reveals or accompanies a real `src/**` behavior change, add the failing regression test first, then fix the implementation.
 
 1. **Design the interface first.** Define the types/signatures the new code will expose (a function, a `Tool`, an adapter method, a `HumanController` hook, etc.). Put shared types in `src/types/*` or the relevant module's types file. The interface is the contract you build against.
 2. **Define input/output formats.** Specify the exact input shape (zod schema for MCP tools, options object for library APIs) and the output/return shape before any logic. For MCP tools, the zod `inputSchema` is the source of truth. For protocol backends, the adapter interface is the source of truth.
@@ -109,7 +111,7 @@ New features and bug fixes both follow strict TDD — do not write implementatio
 4. **Implement until green.** Write the minimum code to pass, then run the suite again.
 5. **Refactor** within the green bar, keeping the 90% coverage threshold intact.
 
-For bug fixes: first add a failing test that reproduces the bug (this is the regression guard), then fix the implementation. Never "just patch" a bug without a test that would have caught it.
+For bug fixes in `src/**`: first add a failing test that reproduces the bug (this is the regression guard), then fix the implementation. Never "just patch" production runtime/library code without a test that would have caught it.
 
 When a feature spans both the library surface and the MCP tool surface, write the test at the level the user will hit — MCP tools are exercised through the runtime/server (`tests/unit/mcp.test.ts`, `tests/mcp-parity/`), not by calling internals directly.
 
