@@ -230,6 +230,29 @@ describe("CDP coverage", () => {
     }));
   });
 
+  it("navigates MCP CDP sessions back through navigation history like Playwright", async () => {
+    const { pageClient } = await createCdpPageClients();
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      getActivePageClient(): Promise<typeof pageClient>;
+      goBack(): Promise<void>;
+    };
+    session.getActivePageClient = async () => pageClient;
+    pageClient.Page.getNavigationHistory = vi.fn(async () => ({
+      currentIndex: 1,
+      entries: [
+        { id: 10, url: "https://example.test/first" },
+        { id: 20, url: "https://example.test/second" }
+      ]
+    }));
+    pageClient.Page.navigateToHistoryEntry = vi.fn(async () => ({}));
+
+    await session.goBack();
+
+    expect(pageClient.Page.getNavigationHistory).toHaveBeenCalledTimes(1);
+    expect(pageClient.Page.navigateToHistoryEntry).toHaveBeenCalledWith({ entryId: 10 });
+  });
+
   it("executes humanized typing plans through keyboard events and insertText", async () => {
     const { page, pageClient } = await createCdpPageClients();
 

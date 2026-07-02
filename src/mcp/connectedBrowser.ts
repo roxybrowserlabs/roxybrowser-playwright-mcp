@@ -125,8 +125,11 @@ type CdpClient = {
     }): Promise<{ executionContextId: number }>;
     getFrameTree(): Promise<{ frameTree: CdpFrameTree }>;
     navigate(options: { url: string }): Promise<{ frameId: string; errorText?: string }>;
-    goBack(): Promise<{ success: boolean }>;
-    goForward(): Promise<{ success: boolean }>;
+    getNavigationHistory(): Promise<{
+      currentIndex: number;
+      entries: Array<{ id: number; url: string }>;
+    }>;
+    navigateToHistoryEntry(options: { entryId: number }): Promise<void>;
     captureScreenshot(options?: {
       format?: "jpeg" | "png";
       clip?: { x: number; y: number; width: number; height: number; scale: number };
@@ -1796,12 +1799,21 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   async goBack(): Promise<void> {
     const pageClient = await this.getActivePageClient();
-    await pageClient.Page.goBack().catch(() => {});
+    await this.navigateHistory(pageClient, -1).catch(() => {});
   }
 
   async goForward(): Promise<void> {
     const pageClient = await this.getActivePageClient();
-    await pageClient.Page.goForward().catch(() => {});
+    await this.navigateHistory(pageClient, 1).catch(() => {});
+  }
+
+  private async navigateHistory(pageClient: CdpClient, delta: -1 | 1): Promise<void> {
+    const history = await pageClient.Page.getNavigationHistory();
+    const nextEntry = history.entries[history.currentIndex + delta];
+    if (!nextEntry) {
+      return;
+    }
+    await pageClient.Page.navigateToHistoryEntry({ entryId: nextEntry.id });
   }
 
   async resize(width: number, height: number): Promise<void> {
