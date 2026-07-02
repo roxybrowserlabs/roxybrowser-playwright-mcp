@@ -110,6 +110,7 @@ export interface ConnectedBrowserSession {
   hover(target: ClickTarget, options?: SessionHoverOptions): Promise<void>;
   focus(target: ClickTarget): Promise<void>;
   clear(target: ClickTarget): Promise<void>;
+  formFieldMetadata?(target: ClickTarget): Promise<SessionFormFieldMetadata>;
   navigate(url: string): Promise<void>;
   type(target: ClickTarget, text: string, options?: SessionTypeOptions): Promise<void>;
   pressKey(key: string, modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">): Promise<void>;
@@ -191,8 +192,14 @@ export interface SessionScreenshotOptions {
 
 export interface SessionFormField {
   target: ClickTarget;
-  type: "textbox" | "checkbox" | "radio" | "combobox" | "slider";
+  type: "textbox" | "checkbox" | "radio" | "combobox" | "slider" | "value";
   value: string;
+}
+
+export interface SessionFormFieldMetadata {
+  tagName: string;
+  inputType?: string | undefined;
+  isContentEditable?: boolean | undefined;
 }
 
 export type BrowserSessionFactory = (

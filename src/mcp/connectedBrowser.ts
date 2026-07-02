@@ -799,6 +799,23 @@ const SET_FORM_FIELD_SOURCE = String.raw`(payload) => {
   if (!el || !el.isConnected) return { ok: false, reason: 'not_found' };
   const tag = el.tagName.toLowerCase();
   const type = el.getAttribute('type')?.toLowerCase();
+  if (payload.fieldType === 'value') {
+    if (tag !== 'input') return { ok: false, reason: 'not_input' };
+    const directValueTypes = new Set(['color', 'date', 'time', 'datetime-local', 'month', 'range', 'week']);
+    if (!directValueTypes.has(type ?? '')) return { ok: false, reason: 'not_direct_value_input' };
+    let value = String(payload.value).trim();
+    if (type === 'color') value = value.toLowerCase();
+    el.focus();
+    const proto = Object.getPrototypeOf(el);
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+      ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(el, value);
+    else el.value = value;
+    if (el.value !== value) return { ok: false, reason: 'malformed_value' };
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: true };
+  }
   if (payload.fieldType === 'textbox' || payload.fieldType === 'slider') {
     if (tag !== 'input' && tag !== 'textarea' && !el.isContentEditable) return { ok: false, reason: 'not_input' };
     el.focus();
@@ -810,7 +827,7 @@ const SET_FORM_FIELD_SOURCE = String.raw`(payload) => {
       if (setter) setter.call(el, payload.value);
       else el.value = payload.value;
     }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true };
   }
@@ -833,6 +850,20 @@ const SET_FORM_FIELD_SOURCE = String.raw`(payload) => {
     return { ok: matched, reason: matched ? undefined : 'not_found' };
   }
   return { ok: false, reason: 'unsupported' };
+}`;
+
+const FORM_FIELD_METADATA_SOURCE = String.raw`(payload) => {
+  const state = globalThis.__roxyMcpState;
+  const el = payload.nodeToken
+    ? (state?.elements?.get(payload.nodeToken) ?? null)
+    : document.querySelector(payload.selector);
+  if (!el || !el.isConnected) return { ok: false, reason: 'not_found' };
+  return {
+    ok: true,
+    tagName: el.tagName.toLowerCase(),
+    inputType: el instanceof HTMLInputElement ? el.type.toLowerCase() : undefined,
+    isContentEditable: Boolean(el.isContentEditable)
+  };
 }`;
 
 const DROP_ON_ELEMENT_SOURCE = String.raw`async (payload) => {
@@ -1901,6 +1932,37 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     await pageClient?.Page.setInterceptFileChooserDialog?.({ enabled: false }).catch(() => {});
     this.fileChooserInterceptEnabledByTabId.delete(tabId);
     this.pendingFileChooserTargetByTabId.delete(tabId);
+  }
+
+  async formFieldMetadata(target: ClickTarget): Promise<{ tagName: string; inputType?: string; isContentEditable?: boolean }> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdp<{
+      ok: boolean;
+      reason?: string;
+      tagName?: string;
+      inputType?: string;
+      isContentEditable?: boolean;
+    }>(
+      pageClient,
+      FORM_FIELD_METADATA_SOURCE,
+      this.targetArg(target),
+      contextId
+    );
+    if (!result.ok || !result.tagName) {
+      const isSelector = "selector" in target;
+      throw new McpToolError(
+        isSelector ? "invalid_target" : "stale_ref",
+        result.reason === "not_found"
+          ? (isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid.")
+          : `Unable to inspect form field: ${result.reason ?? "unknown error"}.`
+      );
+    }
+    return {
+      tagName: result.tagName,
+      ...(result.inputType !== undefined ? { inputType: result.inputType } : {}),
+      ...(result.isContentEditable !== undefined ? { isContentEditable: result.isContentEditable } : {})
+    };
   }
 
   async fillForm(fields: SessionFormField[]): Promise<void> {
@@ -4194,6 +4256,36 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async finishFileUpload(_target: ClickTarget): Promise<void> {}
+
+  async formFieldMetadata(target: ClickTarget): Promise<{ tagName: string; inputType?: string; isContentEditable?: boolean }> {
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDi<{
+      ok: boolean;
+      reason?: string;
+      tagName?: string;
+      inputType?: string;
+      isContentEditable?: boolean;
+    }>(
+      this.client,
+      tabId,
+      FORM_FIELD_METADATA_SOURCE,
+      this.targetArg(target)
+    );
+    if (!result.ok || !result.tagName) {
+      const isSelector = "selector" in target;
+      throw new McpToolError(
+        isSelector ? "invalid_target" : "stale_ref",
+        result.reason === "not_found"
+          ? (isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid.")
+          : `Unable to inspect form field: ${result.reason ?? "unknown error"}.`
+      );
+    }
+    return {
+      tagName: result.tagName,
+      ...(result.inputType !== undefined ? { inputType: result.inputType } : {}),
+      ...(result.isContentEditable !== undefined ? { isContentEditable: result.isContentEditable } : {})
+    };
+  }
 
   async fillForm(fields: SessionFormField[]): Promise<void> {
     const tabId = await this.getActiveTabId();

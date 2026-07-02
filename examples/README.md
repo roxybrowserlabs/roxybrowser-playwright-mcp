@@ -14,6 +14,7 @@
 
 ```bash
 pnpm examples mcp launch-stdio
+pnpm examples mcp verify-fill-form
 pnpm examples page verify-baidu-search
 pnpm examples page connect-over-cdp
 pnpm examples repro bidi 01-click-alert-blocks

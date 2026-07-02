@@ -10,6 +10,7 @@ import type {
   BrowserSnapshotTarget,
   BrowserTab,
   ClickTarget,
+  ConnectedBrowserSession,
   CreateRoxyBrowserMcpServerOptions,
   SessionClickOptions,
   SnapshotCacheEntry,
@@ -584,17 +585,16 @@ export class McpRuntime {
     for (const field of fields) {
       const resolved = this.resolveTarget(field.target);
       if (field.type === "textbox") {
-        await session.hover(resolved, {
-          moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
-        });
-        const hoverDelayMs = jitter(humanOpts.hoverBeforeClickMs);
-        if (hoverDelayMs > 0) {
-          await delay(hoverDelayMs);
+        await humanizedFieldActivation(session, resolved, humanOpts);
+        const metadata = await session.formFieldMetadata?.(resolved).catch(() => undefined);
+        if (isDirectValueFillMetadata(metadata)) {
+          await session.fillForm([{
+            target: resolved,
+            type: "value",
+            value: field.value
+          }]);
+          continue;
         }
-        await session.click(resolved, {
-          clickHoldMs: jitter(humanOpts.clickHoldMs),
-          moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
-        });
         await session.focus(resolved);
         await session.clear(resolved);
         await session.type(resolved, field.value, {
@@ -603,6 +603,23 @@ export class McpRuntime {
           varianceMs: humanOpts.typingVarianceMs
         });
         continue;
+      }
+      if (field.type === "checkbox" || field.type === "radio") {
+        await humanizedFieldActivation(session, resolved, humanOpts);
+        await session.check(resolved, field.value === "true");
+        continue;
+      }
+      if (field.type === "combobox") {
+        await humanizedFieldActivation(session, resolved, humanOpts);
+        await session.fillForm([{
+          target: resolved,
+          type: field.type,
+          value: field.value
+        }]);
+        continue;
+      }
+      if (field.type === "slider") {
+        await humanizedFieldActivation(session, resolved, humanOpts);
       }
       await session.fillForm([{
         target: resolved,
@@ -832,6 +849,33 @@ export class McpRuntime {
       boxes: args.boxes ?? null
     });
   }
+}
+
+function isDirectValueFillMetadata(metadata: { tagName: string; inputType?: string | undefined } | undefined): boolean {
+  if (!metadata || metadata.tagName !== "input") {
+    return false;
+  }
+  return new Set(["color", "date", "time", "datetime-local", "month", "range", "week"]).has(
+    metadata.inputType ?? ""
+  );
+}
+
+async function humanizedFieldActivation(
+  session: ConnectedBrowserSession,
+  target: ClickTarget,
+  humanOpts: ReturnType<typeof resolveHumanizationOptions>
+): Promise<void> {
+  await session.hover(target, {
+    moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
+  });
+  const hoverDelayMs = jitter(humanOpts.hoverBeforeClickMs);
+  if (hoverDelayMs > 0) {
+    await delay(hoverDelayMs);
+  }
+  await session.click(target, {
+    clickHoldMs: jitter(humanOpts.clickHoldMs),
+    moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
+  });
 }
 
 export class McpRuntimeManager {

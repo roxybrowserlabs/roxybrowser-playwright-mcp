@@ -99,7 +99,7 @@ const fillForm = defineTool({
         name: z.string().describe("Human-readable field name"),
         type: z.enum(["textbox", "checkbox", "radio", "combobox", "slider"]).describe("Type of the field"),
         target: z.string().describe("Exact target element reference from the page snapshot, or a unique element selector"),
-        value: z.string().describe("Value to fill in the field. If the field is a checkbox, the value should be `true` or `false`. If the field is a combobox, the value should be the text of the option.")
+        value: z.string().describe("Value to fill in the field. If the field is a checkbox, the value should be `true` or `false`. If the field is a combobox, the value should be the text of the option. Native value inputs such as date, month, week, time, datetime-local, color, and range are normalized internally from the actual DOM input type.")
       })).describe("Fields to fill in")
     })
   },

@@ -118,7 +118,12 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   checkCalls: Array<{ target: ClickTarget; checked: boolean }> = [];
   goBackCount = 0;
   goForwardCount = 0;
-  scrollCalls: Array<{ target: ClickTarget | null; deltaX: number; deltaY: number }> = [];
+  scrollCalls: Array<{
+    target: ClickTarget | null;
+    deltaX: number;
+    deltaY: number;
+    options?: { stepPx: number; stepDelayMs: number };
+  }> = [];
   screenshotCount = 0;
   uploadFileCalls: Array<{ target: ClickTarget; paths: string[] }> = [];
   prepareForFileUploadCalls: ClickTarget[] = [];
@@ -128,10 +133,12 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   waitForRequestFinishedCalls: Array<{ requestId: string; timeoutMs: number }> = [];
   waitForRequestResponseCalls: Array<{ requestId: string; timeoutMs: number }> = [];
   fillFormCalls: SessionFormField[][] = [];
+  formFieldMetadataByTarget = new Map<string, { tagName: string; inputType?: string; isContentEditable?: boolean }>();
   pendingFileChooserTarget: ClickTarget | undefined;
   consumePendingChooserReturnsUndefinedOnce = false;
   networkRequestsList: BrowserNetworkRequest[] = [];
   requestCollectionStates: Array<{ requests: BrowserNetworkRequest[]; requestKeys: string[] }> = [];
+  closeCount = 0;
 
   protected collectRequest(request: BrowserNetworkRequest): void {
     for (const collector of this.requestCollectionStates) {
@@ -193,6 +200,11 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     this.clearCalls.push(target);
   }
 
+  async formFieldMetadata(target: ClickTarget) {
+    const key = "selector" in target ? target.selector : "nodeToken" in target ? target.nodeToken : String(target.backendNodeId);
+    return this.formFieldMetadataByTarget.get(key) ?? { tagName: "input", inputType: "text" };
+  }
+
   async navigate(url: string): Promise<void> {
     this.navigateCalls.push(url);
     const activeTab = this.tabs.find((tab) => tab.active);
@@ -235,8 +247,13 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     this.goForwardCount++;
   }
 
-  async scroll(target: ClickTarget | null, deltaX: number, deltaY: number): Promise<void> {
-    this.scrollCalls.push({ target, deltaX, deltaY });
+  async scroll(
+    target: ClickTarget | null,
+    deltaX: number,
+    deltaY: number,
+    options?: { stepPx: number; stepDelayMs: number }
+  ): Promise<void> {
+    this.scrollCalls.push({ target, deltaX, deltaY, options });
   }
 
   async resize(width: number, height: number): Promise<void> {
@@ -344,7 +361,9 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    this.closeCount += 1;
+  }
 }
 
 class SwitchingActiveTabSession extends FakeConnectedBrowserSession {
@@ -676,6 +695,7 @@ describe("MCP server", () => {
       "browser_press_key",
       "browser_resize",
       "browser_run_code_unsafe",
+      "browser_scroll",
       "browser_select_option",
       "browser_snapshot",
       "browser_tabs",
@@ -698,6 +718,7 @@ describe("MCP server", () => {
 
     const tools = await client.listTools();
     const hoverTool = tools.tools.find((tool) => tool.name === "browser_hover");
+    const scrollTool = tools.tools.find((tool) => tool.name === "browser_scroll");
     const uploadTool = tools.tools.find((tool) => tool.name === "browser_file_upload");
 
     expect(hoverTool?.inputSchema).toEqual({
@@ -715,6 +736,25 @@ describe("MCP server", () => {
       required: ["target"],
       $schema: "http://json-schema.org/draft-07/schema#"
     });
+
+    expect(scrollTool?.inputSchema.properties).toMatchObject({
+      element: {
+        description: "Human-readable element description used to obtain permission to interact with the element",
+        type: "string"
+      },
+      target: {
+        description: "Exact target element reference from the page snapshot, or a unique element selector. Omit to scroll the page.",
+        type: "string"
+      },
+      deltaX: {
+        type: "number"
+      },
+      deltaY: {
+        type: "number"
+      }
+    });
+    expect(scrollTool?.inputSchema.properties).not.toHaveProperty("ref");
+    expect(scrollTool?.inputSchema.required ?? []).not.toContain("target");
 
     expect(uploadTool?.inputSchema).toEqual({
       $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -805,6 +845,81 @@ describe("MCP server", () => {
     });
     expect(hoverResult.isError).toBe(true);
     expect(textFromResult(hoverResult)).toContain("[stale_ref]");
+  });
+
+  it("clears previous browser context when roxy_browser_connect reconnects", async () => {
+    const sessions: FakeConnectedBrowserSession[] = [];
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: async (args) => {
+        const session = new FakeConnectedBrowserSession(args);
+        sessions.push(session);
+        return session;
+      }
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+
+    const firstConnect = await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        endpoint: "ws://first-browser.invalid/devtools/browser/1",
+        browser: "chrome"
+      }
+    });
+    expect(firstConnect.isError).toBeUndefined();
+
+    await client.callTool({
+      name: "browser_click",
+      arguments: { target: "button.upload-button" }
+    });
+
+    const blockedBeforeReconnect = await client.callTool({
+      name: "browser_hover",
+      arguments: { target: "button.other-action" }
+    });
+    expect(blockedBeforeReconnect.isError).toBe(true);
+    expect(textFromResult(blockedBeforeReconnect)).toContain(
+      'Tool "browser_hover" does not handle the modal state.'
+    );
+
+    const secondConnect = await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        endpoint: "ws://second-browser.invalid/session",
+        browser: "firefox",
+        sessionId: "session-2"
+      }
+    });
+    expect(secondConnect.isError).toBeUndefined();
+    expect(textFromResult(secondConnect)).toContain("Connected to firefox via bidi.");
+
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0]!.closeCount).toBe(1);
+
+    const hoverAfterReconnect = await client.callTool({
+      name: "browser_hover",
+      arguments: { target: "button.other-action" }
+    });
+    expect(hoverAfterReconnect.isError).toBeUndefined();
+
+    const clickAfterReconnect = await client.callTool({
+      name: "browser_click",
+      arguments: { target: "e1" }
+    });
+    expect(clickAfterReconnect.isError).toBeUndefined();
+    expect(sessions[0]!.clickCalls).toHaveLength(1);
+    expect(sessions[1]!.clickCalls[0]?.target).toEqual({ nodeToken: "tab-1:node-1" });
+
+    const tabsAfterReconnect = await client.callTool({
+      name: "browser_tabs",
+      arguments: { action: "list" }
+    });
+    const tabsText = textFromResult(tabsAfterReconnect);
+    expect(tabsText).toContain("ws://second-browser.invalid/session/home");
+    expect(tabsText).not.toContain("ws://first-browser.invalid/devtools/browser/1/home");
   });
 
   it("passes Playwright-style snapshot args through the MCP layer and can save to a file", async () => {
@@ -1644,6 +1759,93 @@ describe("MCP server", () => {
       expect(getSession().pressKeyCalls).toEqual([]);
       expect(getSession().typeCalls[0]!.text).toBe("world");
     });
+
+    it("uses Playwright-style direct value setter for native picker inputs while keeping hover/click", async () => {
+      const { client, getSession } = await setupTrackingClient();
+      getSession().formFieldMetadataByTarget.set("input[type=month]", {
+        tagName: "input",
+        inputType: "month"
+      });
+
+      const result = await client.callTool({
+        name: "browser_fill_form",
+        arguments: {
+          fields: [{ target: "input[type=month]", type: "textbox", value: "2026-07", name: "Month" }]
+        }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(getSession().hoverCalls).toEqual([{ selector: "input[type=month]" }]);
+      expect(getSession().clickCalls).toHaveLength(1);
+      expect(getSession().focusCalls).toHaveLength(0);
+      expect(getSession().clearCalls).toHaveLength(0);
+      expect(getSession().typeCalls).toHaveLength(0);
+      expect(getSession().fillFormCalls).toEqual([[
+        { target: { selector: "input[type=month]" }, type: "value", value: "2026-07" }
+      ]]);
+    });
+
+    it("keeps humanized typing for normal text inputs", async () => {
+      const { client, getSession } = await setupTrackingClient();
+      getSession().formFieldMetadataByTarget.set("#name", {
+        tagName: "input",
+        inputType: "text"
+      });
+
+      await client.callTool({
+        name: "browser_fill_form",
+        arguments: {
+          fields: [{ target: "#name", type: "textbox", value: "Ada", name: "Name" }]
+        }
+      });
+
+      expect(getSession().fillFormCalls).toEqual([]);
+      expect(getSession().clearCalls).toEqual([{ selector: "#name" }]);
+      expect(getSession().typeCalls[0]).toMatchObject({
+        target: { selector: "#name" },
+        text: "Ada",
+        options: { slowly: true }
+      });
+    });
+
+    it("humanizes checkbox, radio, combobox, and slider fields before applying values", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_fill_form",
+        arguments: {
+          fields: [
+            { target: "#opt-in", type: "checkbox", value: "true", name: "Opt in" },
+            { target: "#blue", type: "radio", value: "true", name: "Blue" },
+            { target: "#country", type: "combobox", value: "CA", name: "Country" },
+            { target: "#volume", type: "slider", value: "73", name: "Volume" }
+          ]
+        }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(getSession().hoverCalls).toEqual([
+        { selector: "#opt-in" },
+        { selector: "#blue" },
+        { selector: "#country" },
+        { selector: "#volume" }
+      ]);
+      expect(getSession().clickCalls.map((call) => call.target)).toEqual([
+        { selector: "#opt-in" },
+        { selector: "#blue" },
+        { selector: "#country" },
+        { selector: "#volume" }
+      ]);
+      expect(getSession().checkCalls).toEqual([
+        { target: { selector: "#opt-in" }, checked: true },
+        { target: { selector: "#blue" }, checked: true }
+      ]);
+      expect(getSession().selectOptionCalls).toEqual([]);
+      expect(getSession().fillFormCalls).toEqual([
+        [{ target: { selector: "#country" }, type: "combobox", value: "CA" }],
+        [{ target: { selector: "#volume" }, type: "slider", value: "73" }]
+      ]);
+    });
   });
 
   describe("browser_press_key", () => {
@@ -1660,6 +1862,59 @@ describe("MCP server", () => {
       expect(textFromResult(result)).toContain("### Snapshot");
     });
 
+  });
+
+  describe("browser_scroll", () => {
+    it("scrolls the page when target is omitted and passes humanized options", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_scroll",
+        arguments: { deltaY: 600, human: { profile: "fast" } }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(getSession().scrollCalls).toHaveLength(1);
+      expect(getSession().scrollCalls[0]).toMatchObject({
+        target: null,
+        deltaX: 0,
+        deltaY: 600,
+        options: {
+          stepPx: 240
+        }
+      });
+      expect(getSession().scrollCalls[0]!.options?.stepDelayMs).toBeGreaterThanOrEqual(0);
+      expect(textFromResult(result)).toContain("### Snapshot");
+    });
+
+    it("scrolls a target element resolved from the current snapshot", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_scroll",
+        arguments: { target: "e1", deltaX: 25, deltaY: -120 }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(getSession().scrollCalls).toHaveLength(1);
+      expect(getSession().scrollCalls[0]!.target).toHaveProperty("nodeToken");
+      expect(getSession().scrollCalls[0]!.deltaX).toBe(25);
+      expect(getSession().scrollCalls[0]!.deltaY).toBe(-120);
+    });
+
+    it("rejects no-op scroll deltas", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_scroll",
+        arguments: { target: "e1" }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain("[invalid_input]");
+      expect(textFromResult(result)).toContain("At least one of deltaX or deltaY must be non-zero.");
+      expect(getSession().scrollCalls).toHaveLength(0);
+    });
   });
 
   describe("browser_drag", () => {
