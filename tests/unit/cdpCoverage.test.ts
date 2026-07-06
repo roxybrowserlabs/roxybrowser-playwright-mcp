@@ -230,6 +230,61 @@ describe("CDP coverage", () => {
     }));
   });
 
+  it("does not resolve CDP clicks before the mouse release command finishes", async () => {
+    const { pageClient } = await createCdpPageClients();
+    vi.useFakeTimers();
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    let releaseMouse: (() => void) | undefined;
+    let clickSettled = false;
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      getActivePageClient(): Promise<typeof pageClient>;
+      getActiveTabId(): Promise<string>;
+      bringTabToFront(tabId: string): Promise<void>;
+      getActiveUtilityContextId(client: typeof pageClient): Promise<number>;
+      moveMouseAlongHumanPath(): Promise<void>;
+      pageDialogStates: Map<string, unknown>;
+      dialogWaiters: Map<string, Set<unknown>>;
+      click(
+        target: { selector: string },
+        options: { clickHoldMs: number; moveDelayMs: number }
+      ): Promise<void>;
+    };
+    session.getActivePageClient = async () => pageClient;
+    session.getActiveTabId = async () => "tab-1";
+    session.bringTabToFront = async () => {};
+    session.getActiveUtilityContextId = async () => 1;
+    session.moveMouseAlongHumanPath = async () => {};
+    session.pageDialogStates = new Map();
+    session.dialogWaiters = new Map();
+
+    pageClient.Runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: true } })
+      .mockResolvedValueOnce({ result: { value: { ok: true, x: 10, y: 20 } } });
+    pageClient.Input.dispatchMouseEvent.mockImplementation(async (event: { type: string }) => {
+      if (event.type === "mouseReleased") {
+        return new Promise<void>((resolve) => {
+          releaseMouse = resolve;
+        });
+      }
+      return {};
+    });
+
+    const clickPromise = session.click(
+      { selector: "button" },
+      { clickHoldMs: 0, moveDelayMs: 0 }
+    ).then(() => {
+      clickSettled = true;
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(clickSettled).toBe(false);
+
+    releaseMouse?.();
+    await clickPromise;
+
+    expect(clickSettled).toBe(true);
+  });
+
   it("navigates MCP CDP sessions back through navigation history like Playwright", async () => {
     const { pageClient } = await createCdpPageClients();
     const module = await import("../../src/mcp/connectedBrowser.js");

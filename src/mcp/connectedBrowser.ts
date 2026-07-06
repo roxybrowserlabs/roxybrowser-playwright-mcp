@@ -1399,6 +1399,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         modifiers: modifiersMask
       });
       await delay(options.clickHoldMs);
+      let releaseSettled = false;
       const releasePromise = pageClient.Input.dispatchMouseEvent({
         type: "mouseReleased",
         x: point.x,
@@ -1406,11 +1407,21 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         button: cdpButton,
         clickCount,
         modifiers: modifiersMask
+      }).finally(() => {
+        releaseSettled = true;
       });
-      await Promise.race([
-        releasePromise,
-        this.waitForDialog(tabId, options.clickHoldMs + 1000)
-      ]);
+      const dialogWaiter = this.waitForDialog(tabId);
+      try {
+        await Promise.race([
+          releasePromise,
+          dialogWaiter.promise
+        ]);
+      } finally {
+        dialogWaiter.cancel();
+        if (!releaseSettled) {
+          releasePromise.catch(() => {});
+        }
+      }
     }
   }
 
@@ -2014,25 +2025,32 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return this.pageDialogStates.size > 0;
   }
 
-  private waitForDialog(tabId: string, timeoutMs: number): Promise<void> {
+  private waitForDialog(tabId: string): { promise: Promise<void>; cancel(): void } {
     if (this.pageDialogStates.has(tabId)) {
-      return Promise.resolve();
+      return { promise: Promise.resolve(), cancel: () => {} };
     }
-    return new Promise((resolve) => {
-      const waiter: DialogWaiter = {
+    let waiter: DialogWaiter | undefined;
+    const promise = new Promise<void>((resolve) => {
+      waiter = {
         resolve: () => {
-          if (waiter.timer) {
-            clearTimeout(waiter.timer);
+          if (waiter) {
+            this.removeDialogWaiter(tabId, waiter);
           }
-          this.removeDialogWaiter(tabId, waiter);
           resolve();
         }
       };
-      waiter.timer = setTimeout(() => waiter.resolve(), timeoutMs);
       const waiters = this.dialogWaiters.get(tabId) ?? new Set<DialogWaiter>();
       waiters.add(waiter);
       this.dialogWaiters.set(tabId, waiters);
     });
+    return {
+      promise,
+      cancel: () => {
+        if (waiter) {
+          this.removeDialogWaiter(tabId, waiter);
+        }
+      }
+    };
   }
 
   private resolveDialogWaiters(tabId: string): void {
