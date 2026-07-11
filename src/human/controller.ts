@@ -1,10 +1,4 @@
-import type {
-  ClickOptions,
-  FillOptions,
-  HoverOptions,
-  PressOptions,
-  TypeOptions
-} from "../types/options.js";
+import type { FillOptions, PressOptions } from "../types/options.js";
 import { resolveHumanizationOptions } from "./profile.js";
 import { defaultRng } from "./random.js";
 import { buildTypingPlan } from "./typing.js";
@@ -12,6 +6,9 @@ import type {
   HumanActionTarget,
   HumanActionOptions,
   HumanController,
+  HumanizedClickOptions,
+  HumanizedHoverOptions,
+  HumanizedTypeOptions,
   ResolvedHumanizationOptions
 } from "./types.js";
 import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "./bubbleCursor.js";
@@ -21,7 +18,7 @@ export class DefaultHumanController implements HumanController {
 
   constructor(private readonly defaults: ResolvedHumanizationOptions) {}
 
-  async click(target: HumanActionTarget, options?: ClickOptions): Promise<void> {
+  async click(target: HumanActionTarget, options?: HumanizedClickOptions & HumanActionOptions): Promise<void> {
     const defaults = this.resolveDefaults(options);
     await this.ensureVisualization(target);
     const action = async () => {
@@ -37,7 +34,7 @@ export class DefaultHumanController implements HumanController {
     await this.enqueue(action);
   }
 
-  async hover(target: HumanActionTarget, options?: HoverOptions): Promise<void> {
+  async hover(target: HumanActionTarget, options?: HumanizedHoverOptions & HumanActionOptions): Promise<void> {
     const defaults = this.resolveDefaults(options);
     await this.ensureVisualization(target);
     await target.hover(this.withHumanMove(options, defaults));
@@ -46,7 +43,7 @@ export class DefaultHumanController implements HumanController {
   async fill(
     target: HumanActionTarget,
     value: string,
-    options?: FillOptions
+    options?: FillOptions & HumanActionOptions
   ): Promise<void> {
     await target.fill(value, options);
   }
@@ -54,7 +51,7 @@ export class DefaultHumanController implements HumanController {
   async type(
     target: HumanActionTarget,
     value: string,
-    options?: TypeOptions
+    options?: HumanizedTypeOptions & HumanActionOptions
   ): Promise<void> {
     const defaults = this.resolveDefaults(options);
     await this.typeText(target, value, options, defaults);
@@ -63,7 +60,7 @@ export class DefaultHumanController implements HumanController {
   async press(
     target: HumanActionTarget,
     key: string,
-    options?: PressOptions
+    options?: PressOptions & HumanActionOptions
   ): Promise<void> {
     const defaults = this.resolveDefaults(options);
     await target.press(key, {
@@ -89,7 +86,7 @@ export class DefaultHumanController implements HumanController {
   private async typeText(
     target: HumanActionTarget,
     value: string,
-    options: TypeOptions | FillOptions | undefined,
+    options: (HumanizedTypeOptions | (FillOptions & HumanActionOptions)) | undefined,
     defaults: ResolvedHumanizationOptions
   ): Promise<void> {
     const delay =
@@ -115,7 +112,7 @@ export class DefaultHumanController implements HumanController {
       // Forward per-keystroke variance so the backend jitters each character's dwell.
       // Mirrors the __roxyHumanMove convention; omitted when variance is disabled.
       ...(variance > 0 ? { __roxyTypeVariance: variance } : {})
-    } as TypeOptions);
+    } as HumanizedTypeOptions);
   }
 
   private async enqueue<TResult>(action: () => Promise<TResult>): Promise<TResult> {
@@ -127,7 +124,7 @@ export class DefaultHumanController implements HumanController {
     return run;
   }
 
-  private withHumanMove<TOptions extends (ClickOptions | HoverOptions) | undefined>(
+  private withHumanMove<TOptions extends (HumanizedClickOptions | HumanizedHoverOptions) | undefined>(
     options: TOptions,
     defaults: ResolvedHumanizationOptions
   ): TOptions {

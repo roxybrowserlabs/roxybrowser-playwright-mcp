@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { RoxyBrowser } from "../../src/browser.js";
 import { RoxyBrowserContext } from "../../src/browserContext.js";
 import {
-  DEFAULT_HUMAN_OPTIONS,
   createBrowser,
   createBrowserAdapterStub,
   createBrowserContextAdapterStub,
@@ -12,28 +11,21 @@ import {
 } from "../helpers/fakes.js";
 
 describe("RoxyBrowser", () => {
-  it("creates a browser context with inherited human defaults", async () => {
+  it("creates a browser context with Playwright-style options", async () => {
     const session = createBrowserSessionStub();
     const contextAdapter = createBrowserContextAdapterStub();
     session.newContext = async (options) => {
       expect(options).toMatchObject({
         acceptDownloads: true,
-        locale: "zh-CN",
-        human: {
-          profile: "fast",
-          typingDelayMs: 10
-        }
+        locale: "zh-CN"
       });
+      expect(options).not.toHaveProperty("human");
       return contextAdapter;
     };
 
     const browser = createBrowser({ session });
     const context = await browser.newContext({
-      locale: "zh-CN",
-      human: {
-        profile: "fast",
-        typingDelayMs: 10
-      }
+      locale: "zh-CN"
     });
 
     expect(context).toBeInstanceOf(RoxyBrowserContext);
@@ -216,6 +208,36 @@ describe("RoxyBrowser", () => {
       expect(contextAdapter.ready).toHaveBeenCalledTimes(1);
       // Pre-existing pages emitted during ready() must be visible immediately
       expect(context.pages()).toHaveLength(1);
+    });
+
+    it("installs cursor visualization for context preload and already-discovered pages", async () => {
+      const session = createBrowserSessionStub();
+      const contextAdapter = createBrowserContextAdapterStub();
+      const pageAdapter = createPageAdapterStub();
+      const order: string[] = [];
+      contextAdapter.addInitScript = vi.fn(async () => {
+        order.push("preload");
+        return {
+          dispose: vi.fn(async () => {})
+        };
+      });
+      contextAdapter.ready = vi.fn(async () => {
+        order.push("ready");
+        await contextAdapter.emitPage(pageAdapter);
+      });
+      session.newContext = async () => contextAdapter;
+      const browser = createBrowser({ session });
+
+      await browser.newContext({ reuseDefaultUserContext: true });
+
+      expect(order).toEqual(["preload", "ready"]);
+      expect(contextAdapter.addInitScript).toHaveBeenCalledWith(
+        expect.stringContaining("__roxyBubbleCursor")
+      );
+      const cursorEvaluations = vi.mocked(pageAdapter.evaluate).mock.calls.filter(([source]) =>
+        String(source).includes("__roxyBubbleCursor")
+      );
+      expect(cursorEvaluations).toHaveLength(1);
     });
 
     it("returns the context even when the adapter does not implement ready()", async () => {
@@ -439,14 +461,13 @@ describe("RoxyBrowser", () => {
     });
   });
 
-  it("constructs with all six constructor parameters", () => {
+  it("constructs with all core constructor parameters", () => {
     const session = createBrowserSessionStub();
     const adapter = createBrowserAdapterStub();
     const browserType = {} as never;
     const browser = new RoxyBrowser(
       session,
       adapter,
-      DEFAULT_HUMAN_OPTIONS,
       "chromium",
       browserType,
       "Chrome/123.0.0.0"

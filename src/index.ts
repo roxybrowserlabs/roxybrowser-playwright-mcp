@@ -41,7 +41,6 @@ export type {
   FillOptions,
   HeadersArray,
   HoverOptions,
-  HumanizationOptions,
   LaunchOptions,
   PageCloseOptions,
   PageGotoOptions,

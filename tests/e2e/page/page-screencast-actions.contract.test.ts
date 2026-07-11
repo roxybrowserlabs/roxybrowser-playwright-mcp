@@ -7,7 +7,7 @@ describe("page screencast actions contract e2e", () => {
       await page.setContent('<button style="margin: 40px">Click me</button>');
       await page.screencast.showActions({ duration: 250 });
 
-      const clickPromise = page.click("button", { human: { enabled: false } });
+      const clickPromise = page.click("button");
       await page.waitForFunction(() => {
         const highlight = document.querySelector("x-pw-highlight");
         const point = document.querySelector("x-pw-action-point");
@@ -58,7 +58,7 @@ describe("page screencast actions contract e2e", () => {
         cursor: "none"
       });
 
-      const clickPromise = page.click("button", { human: { enabled: false } });
+      const clickPromise = page.click("button");
       await page.waitForFunction(`() => {
         const title = document.querySelector("x-pw-title");
         const cursor = document.querySelector("x-pw-action-cursor");
@@ -101,7 +101,7 @@ describe("page screencast actions contract e2e", () => {
       await page.setContent('<textarea style="margin: 40px"></textarea>');
       await page.screencast.showActions({ duration: 80 });
 
-      const fillPromise = page.fill("textarea", "hello", { human: { enabled: false } });
+      const fillPromise = page.fill("textarea", "hello");
       await page.waitForFunction(
         `() => document.querySelector("x-pw-title")?.textContent === "fill"`
       );
@@ -109,7 +109,7 @@ describe("page screencast actions contract e2e", () => {
 
       await page.screencast.hideActions();
       await page.setContent('<button style="margin: 40px">Click me</button>');
-      await page.click("button", { human: { enabled: false } });
+      await page.click("button");
 
       expect(
         await page.evaluate(`() => ({
@@ -130,7 +130,7 @@ describe("page screencast actions contract e2e", () => {
       );
       await page.screencast.showActions({ duration: 120 });
 
-      const firstClick = page.click("#a", { force: true, human: { enabled: false } });
+      const firstClick = page.click("#a", { force: true });
       await page.waitForFunction(() => {
         const cursor = document.querySelector("x-pw-action-cursor");
         return (
@@ -147,7 +147,7 @@ describe("page screencast actions contract e2e", () => {
       await firstClick;
 
       await page.setContent('<button id="nav" style="margin:40px">After Nav</button>');
-      const secondClick = page.click("#nav", { human: { enabled: false } });
+      const secondClick = page.click("#nav");
       await page.waitForFunction(() => {
         const cursor = document.querySelector("x-pw-action-cursor");
         const title = document.querySelector("x-pw-title");

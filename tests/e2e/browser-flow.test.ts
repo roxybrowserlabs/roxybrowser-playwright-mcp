@@ -18,13 +18,7 @@ describe("browser e2e", () => {
       headless: true,
       ...(process.env.ROXY_E2E_EXECUTABLE_PATH
         ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {}),
-      human: {
-        hoverBeforeClickMs: 0,
-        clickHoldMs: 0,
-        typingDelayMs: 0,
-        typingVarianceMs: 0
-      }
+        : {})
     });
 
     try {
@@ -78,7 +72,7 @@ describe("browser e2e", () => {
     }
   });
 
-  it("applies optional context human defaults without requiring per-call human options", async () => {
+  it("drives page interactions from an additional context", async () => {
     const browser = await chromium.launch({
       headless: true,
       ...(process.env.ROXY_E2E_EXECUTABLE_PATH
@@ -87,15 +81,7 @@ describe("browser e2e", () => {
     });
 
     try {
-      const context = await browser.newContext({
-        human: {
-          enabled: true,
-          hoverBeforeClickMs: 0,
-          clickHoldMs: 0,
-          typingDelayMs: 0,
-          typingVarianceMs: 0
-        }
-      });
+      const context = await browser.newContext();
 
       try {
         const page = await context.newPage();

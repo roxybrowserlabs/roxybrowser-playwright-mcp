@@ -47,6 +47,15 @@ function createCdpClientStub() {
     },
     Page: {
       enable: vi.fn(async () => ({})),
+      createIsolatedWorld: vi.fn(async () => ({ executionContextId: 7 })),
+      getFrameTree: vi.fn(async () => ({
+        frameTree: {
+          frame: {
+            id: "frame-1",
+            url: "about:blank"
+          }
+        }
+      })),
       setLifecycleEventsEnabled: vi.fn(async () => ({})),
       domContentEventFired: vi.fn(),
       javascriptDialogOpening: vi.fn(),
@@ -197,6 +206,42 @@ describe("CDP coverage", () => {
     expect(pageClient.send).toHaveBeenCalledWith("HeapProfiler.collectGarbage");
   });
 
+  it("does not install cursor visualization from bare CDP browser session connect", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browserClient = createCdpClientStub();
+    const pageClient = createCdpClientStub();
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "tab-1",
+          type: "page",
+          title: "Ready",
+          url: "https://example.test/"
+        }
+      ]
+    });
+    chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+      if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+        return browserClient;
+      }
+      return pageClient;
+    });
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/123.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    await module.CdpConnectedBrowserSession.connect({
+      browser: "chromium",
+      protocol: "cdp",
+      endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    expect(pageClient.Runtime.evaluate).not.toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining("__roxyBubbleCursor")
+    }));
+  });
+
   it("uses keyboard events instead of insertText for modified printable keys", async () => {
     const { pageClient } = await createCdpPageClients();
     const module = await import("../../src/mcp/connectedBrowser.js");
@@ -308,12 +353,11 @@ describe("CDP coverage", () => {
     expect(pageClient.Page.navigateToHistoryEntry).toHaveBeenCalledWith({ entryId: 10 });
   });
 
-  it("executes humanized typing plans through keyboard events and insertText", async () => {
+  it("ignores internal typing plan hints and follows plain keyboard typing", async () => {
     const { page, pageClient } = await createCdpPageClients();
 
-    await page.keyboardType("ignored", {
+    await page.keyboardType("abc", {
       __roxyTypingPlan: [
-        { type: "char", value: "a", delay: 0 },
         { type: "backspace", delay: 0 },
         { type: "char", value: "指", delay: 0 }
       ]
@@ -324,10 +368,17 @@ describe("CDP coverage", () => {
       key: "a"
     }));
     expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalledWith(expect.objectContaining({
-      type: "rawKeyDown",
+      type: "keyDown",
+      key: "b"
+    }));
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "keyDown",
+      key: "c"
+    }));
+    expect(pageClient.Input.dispatchKeyEvent).not.toHaveBeenCalledWith(expect.objectContaining({
       key: "Backspace"
     }));
-    expect(pageClient.Input.insertText).toHaveBeenCalledWith({ text: "指" });
+    expect(pageClient.Input.insertText).not.toHaveBeenCalledWith({ text: "指" });
   });
 
   it("emits browser log entries as Playwright-style console events", async () => {

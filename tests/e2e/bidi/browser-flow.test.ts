@@ -44,29 +44,21 @@ describe("browser e2e (bidi/firefox)", () => {
     });
   });
 
-  it("applies optional context human defaults without requiring per-call human options", async () => {
+  it("drives page interactions from an additional context", async () => {
     await withBidiPage(async (_page, _context, browser) => {
-      const humanContext = await browser.newContext({
-        human: {
-          enabled: true,
-          hoverBeforeClickMs: 0,
-          clickHoldMs: 0,
-          typingDelayMs: 0,
-          typingVarianceMs: 0
-        }
-      });
+      const extraContext = await browser.newContext();
 
       try {
-        const humanPage = await humanContext.newPage();
-        await humanPage.goto(fixture.url, { waitUntil: "load" });
-        await humanPage.fill("#name", "");
-        await humanPage.type("#name", "ContextHuman");
-        await humanPage.press("#name", "Enter");
-        await humanPage.getByRole("button", { name: "Send" }).click();
+        const extraPage = await extraContext.newPage();
+        await extraPage.goto(fixture.url, { waitUntil: "load" });
+        await extraPage.fill("#name", "");
+        await extraPage.type("#name", "ContextHuman");
+        await extraPage.press("#name", "Enter");
+        await extraPage.getByRole("button", { name: "Send" }).click();
 
-        expect(await humanPage.locator("#status").textContent()).toBe("clicked:ContextHuman");
+        expect(await extraPage.locator("#status").textContent()).toBe("clicked:ContextHuman");
       } finally {
-        await humanContext.close();
+        await extraContext.close();
       }
     });
   });

@@ -4,6 +4,7 @@ import { RoxyBrowserType } from "../../src/browserType.js";
 import type { ProtocolBrowserAdapterFactory } from "../../src/protocol/adapter.js";
 import {
   createBrowserAdapterStub,
+  createBrowserContextAdapterStub,
   createBrowserSessionStub
 } from "../helpers/fakes.js";
 
@@ -48,10 +49,7 @@ describe("RoxyBrowserType", () => {
       protocol: "bidi",
       channel: "chrome",
       executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      headless: false,
-      human: {
-        profile: "fast"
-      }
+      headless: false
     });
 
     expect(bidiFactory.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -59,10 +57,10 @@ describe("RoxyBrowserType", () => {
       protocol: "bidi",
       channel: "chrome",
       executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      headless: false,
-      human: {
-        profile: "fast"
-      }
+      headless: false
+    }));
+    expect(bidiFactory.create).toHaveBeenCalledWith(expect.not.objectContaining({
+      human: expect.anything()
     }));
     expect(cdpFactory.create).not.toHaveBeenCalled();
   });
@@ -104,6 +102,30 @@ describe("RoxyBrowserType", () => {
     expect(bidiFactory.create).not.toHaveBeenCalled();
   });
 
+  it("keeps the explicit connectOverCDP endpoint even if options contain wsEndpoint", async () => {
+    const cdpAdapter = createBrowserAdapterStub();
+    cdpAdapter.browser = vi.fn(async () => createBrowserSessionStub());
+    const cdpFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn(() => cdpAdapter)
+    };
+    const browserType = new RoxyBrowserType("chromium", {
+      cdp: cdpFactory,
+      bidi: { create: vi.fn() }
+    });
+
+    await browserType.connectOverCDP(
+      "ws://127.0.0.1:9222/devtools/browser/example",
+      {
+        wsEndpoint: undefined
+      } as never
+    );
+
+    expect(cdpFactory.create).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: "cdp",
+      wsEndpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    }));
+  });
+
   it("connects firefox over connect() using the bidi factory", async () => {
     const cdpFactory: ProtocolBrowserAdapterFactory = {
       create: vi.fn()
@@ -134,9 +156,57 @@ describe("RoxyBrowserType", () => {
     expect(cdpFactory.create).not.toHaveBeenCalled();
   });
 
+  it("keeps the explicit firefox connect endpoint even if options contain wsEndpoint", async () => {
+    const cdpFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const bidiAdapter = createBrowserAdapterStub();
+    bidiAdapter.browser = vi.fn(async () => createBrowserSessionStub());
+    const bidiFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn(() => bidiAdapter)
+    };
+    const browserType = new RoxyBrowserType("firefox", {
+      cdp: cdpFactory,
+      bidi: bidiFactory
+    });
+
+    await browserType.connect("ws://127.0.0.1:9222", {
+      wsEndpoint: undefined
+    } as never);
+
+    expect(bidiFactory.create).toHaveBeenCalledWith(expect.objectContaining({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:9222"
+    }));
+    expect(cdpFactory.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects firefox connect without an endpoint before creating an adapter", async () => {
+    const cdpFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const bidiFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const browserType = new RoxyBrowserType("firefox", {
+      cdp: cdpFactory,
+      bidi: bidiFactory
+    });
+
+    await expect(browserType.connect(undefined as never)).rejects.toThrow(
+      "BrowserType.connect(endpointURL) requires a browser WebSocket endpoint."
+    );
+    expect(cdpFactory.create).not.toHaveBeenCalled();
+    expect(bidiFactory.create).not.toHaveBeenCalled();
+  });
+
   it("connects chromium over connect() using the cdp factory", async () => {
     const cdpAdapter = createBrowserAdapterStub();
-    cdpAdapter.browser = vi.fn(async () => createBrowserSessionStub());
+    const contextAdapter = createBrowserContextAdapterStub();
+    const session = createBrowserSessionStub();
+    session.newContext = vi.fn(async () => contextAdapter);
+    cdpAdapter.browser = vi.fn(async () => session);
     const cdpFactory: ProtocolBrowserAdapterFactory = {
       create: vi.fn(() => cdpAdapter)
     };
@@ -158,6 +228,54 @@ describe("RoxyBrowserType", () => {
     expect(cdpAdapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
     expect(browser.contexts()).toHaveLength(1);
+    expect(contextAdapter.addInitScript).toHaveBeenCalledWith(
+      expect.stringContaining("__roxyBubbleCursor")
+    );
+    expect(bidiFactory.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects chromium connect without an endpoint before creating an adapter", async () => {
+    const cdpFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const bidiFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const browserType = new RoxyBrowserType("chromium", {
+      cdp: cdpFactory,
+      bidi: bidiFactory
+    });
+
+    await expect(browserType.connect(undefined as never)).rejects.toThrow(
+      "BrowserType.connect(endpointURL) requires a browser WebSocket endpoint."
+    );
+    expect(cdpFactory.create).not.toHaveBeenCalled();
+    expect(bidiFactory.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps the explicit chromium connect endpoint even if options contain wsEndpoint", async () => {
+    const cdpAdapter = createBrowserAdapterStub();
+    cdpAdapter.browser = vi.fn(async () => createBrowserSessionStub());
+    const cdpFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn(() => cdpAdapter)
+    };
+    const bidiFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const browserType = new RoxyBrowserType("chromium", {
+      cdp: cdpFactory,
+      bidi: bidiFactory
+    });
+
+    await browserType.connect("ws://127.0.0.1:9222/devtools/browser/example", {
+      wsEndpoint: undefined
+    } as never);
+
+    expect(cdpFactory.create).toHaveBeenCalledWith(expect.objectContaining({
+      browserName: "chromium",
+      protocol: "cdp",
+      wsEndpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    }));
     expect(bidiFactory.create).not.toHaveBeenCalled();
   });
 

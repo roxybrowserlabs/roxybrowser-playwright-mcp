@@ -119,9 +119,6 @@ import {
 } from "../../utilityScriptSerializers.js";
 import type { InternalScreenshotOptions } from "../../screenshotOptions.js";
 import type { NormalizedSelectOption } from "../../selectOptionValues.js";
-import { buildHumanMousePath } from "../../human/mousePath.js";
-import { buildTypingDelays } from "../../human/typing.js";
-import { defaultRng } from "../../human/random.js";
 import type CDP from "chrome-remote-interface";
 
 const chromeRemoteInterface = ("default" in cdpModule
@@ -5663,38 +5660,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     text: string,
     options?: {
       delay?: number;
-      __roxyTypeVariance?: number;
-      __roxyTypingPlan?: TypeOptions["__roxyTypingPlan"];
     }
   ): Promise<void> {
     await this.bringToFront();
-    if (options?.__roxyTypingPlan) {
-      for (const action of options.__roxyTypingPlan) {
-        if (action.type === "pause") {
-          if (action.delay) {
-            await delay(action.delay);
-          }
-          continue;
-        }
-        if (action.type === "backspace") {
-          await this.keyboardPress("Backspace", { delay: action.delay });
-          continue;
-        }
-        await this.keyboardType(action.value, { delay: action.delay });
-      }
-      return;
-    }
     const chars = [...text];
-    // Humanized path: per-keystroke dwell jittered around the base delay (shared with BiDi).
-    // Absent variance (e.g. raw page.keyboard.type) → flat delay, identical to before.
-    const variance = options?.__roxyTypeVariance;
-    const delays =
-      variance !== undefined && variance > 0
-        ? buildTypingDelays(text, { delayMs: options?.delay ?? 0, varianceMs: variance }, defaultRng)
-        : undefined;
     for (let index = 0; index < chars.length; index += 1) {
       const character = chars[index]!;
-      const charDelay = delays ? delays[index] : options?.delay;
+      const charDelay = options?.delay;
       if (isUsKeyboardLayoutKey(character)) {
         await this.keyboardPress(
           character,
@@ -6372,37 +6344,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private async performMouseMoveTo(
     point: ActionPoint,
-    options?: {
+    options?: HoverOptions & {
       steps?: number;
-      __roxyHumanMove?: {
-        durationMs: number;
-        stepPx: number;
-      };
     }
   ): Promise<void> {
-    const humanMove = options?.steps === undefined ? options?.__roxyHumanMove : undefined;
     const start = this.currentMousePosition;
-    if (humanMove) {
-      // ⚠️ DIVERGENCE FROM PLAYWRIGHT: humanized curved cursor path (randomized Bézier +
-      // tremor + overshoot) via the shared src/human/mousePath algorithm. Endpoints stay exact.
-      // Parity: BiDi uses the SAME generator; the only difference is dispatch — CDP awaits real
-      // timers per point, BiDi emits equivalent `pause` actions summing to the same duration.
-      const path = buildHumanMousePath(
-        start,
-        point,
-        { stepPx: humanMove.stepPx, durationMs: humanMove.durationMs },
-        defaultRng
-      );
-      for (let index = 0; index < path.length; index += 1) {
-        const step = path[index]!;
-        await this.moveMouseInternal({ x: step.x, y: step.y });
-        if (step.delayMs > 0 && index < path.length - 1) {
-          await delay(step.delayMs);
-        }
-      }
-      return;
-    }
-    // Non-humanized (explicit steps or single hop): linear tween — byte-identical to Playwright.
     const steps = Math.max(options?.steps ?? 1, 1);
     for (let index = 1; index <= steps; index += 1) {
       await this.moveMouseInternal(interpolateMousePoint(start, point, index / steps));
@@ -11888,8 +11834,7 @@ function createScreencastHighlightBox(point: ActionPoint): {
   };
 }
 
-// Linear tween for the non-humanized path (explicit steps / single hop). The humanized curve
-// now lives in src/human/mousePath.ts and is shared with the BiDi backend.
+// Linear tween for protocol-level pointer movement interpolation.
 function interpolateMousePoint(start: ActionPoint, end: ActionPoint, progress: number): ActionPoint {
   return {
     x: start.x + (end.x - start.x) * progress,

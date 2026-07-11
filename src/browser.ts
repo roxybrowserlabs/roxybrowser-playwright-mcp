@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { AssetManager } from "./assets/manager.js";
 import { RoxyBrowserContext } from "./browserContext.js";
-import { resolveHumanizationOptions } from "./human/profile.js";
+import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "./human/bubbleCursor.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import type {
   ProtocolBrowserAdapter,
@@ -9,7 +9,6 @@ import type {
 } from "./protocol/adapter.js";
 import type { Browser, BrowserContext, BrowserType, Page } from "./types/api.js";
 import type { BrowserContextOptions } from "./types/options.js";
-import type { ResolvedHumanizationOptions } from "./human/types.js";
 
 type BrowserEventName = 'context' | 'disconnected';
 
@@ -28,7 +27,6 @@ export class RoxyBrowser implements Browser {
   constructor(
     private readonly session: ProtocolBrowserSession,
     private readonly adapter: ProtocolBrowserAdapter,
-    private readonly humanDefaults: ResolvedHumanizationOptions,
     private readonly _browserName: "chromium" | "firefox",
     private readonly _browserType: BrowserType,
     private readonly _version: string,
@@ -130,7 +128,7 @@ export class RoxyBrowser implements Browser {
     const contextAdapter = await this.session.newContext(normalizedOptions);
     const context = new RoxyBrowserContext(
       contextAdapter,
-      resolveHumanizationOptions(normalizedOptions.human, this.humanDefaults),
+      undefined,
       normalizedOptions,
       this._browserName
     );
@@ -139,6 +137,7 @@ export class RoxyBrowser implements Browser {
       const index = this._contexts.indexOf(context);
       if (index !== -1) this._contexts.splice(index, 1);
     });
+    await this.installCursorVisualizationPreload(context);
     this._emit('context', context);
     // Wait for the adapter's initial page discovery to complete before returning.
     // For CDP contexts this means waiting until all pre-existing tabs have been
@@ -147,6 +146,7 @@ export class RoxyBrowser implements Browser {
     // The onPage listener is already registered above (via new RoxyBrowserContext),
     // so pages emitted during ready() will be captured correctly.
     await contextAdapter.ready?.();
+    await this.ensureCursorVisualizationOnCurrentPages(context);
     return context;
   }
 
@@ -204,6 +204,18 @@ export class RoxyBrowser implements Browser {
     if (!entries?.size) return false;
     for (const entry of Array.from(entries)) entry.wrapped(payload);
     return true;
+  }
+
+  private async installCursorVisualizationPreload(context: BrowserContext): Promise<void> {
+    await context.addInitScript(CURSOR_VISUALIZATION_INSTALL_SOURCE);
+  }
+
+  private async ensureCursorVisualizationOnCurrentPages(context: BrowserContext): Promise<void> {
+    await Promise.all(
+      context.pages().map(async (page) => {
+        await page.evaluate<boolean>(CURSOR_VISUALIZATION_INSTALL_SOURCE).catch(() => undefined);
+      })
+    );
   }
 }
 

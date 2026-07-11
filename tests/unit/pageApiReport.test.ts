@@ -12,8 +12,6 @@ describe("generatePageApiReport", () => {
       const report = generateApiSurfaceReport(interfaceName);
       const normalize = (signature: string) =>
         signature
-          .replace(/; human\?: HumanizationOptions(?=;)/g, "")
-          .replace(/human\?: HumanizationOptions; /g, "")
           .replace(/\{\s*,/g, "{")
           .replace(/,\s*\}/g, " }")
           .replace(/\s+/g, " ")
@@ -204,13 +202,13 @@ describe("generatePageApiReport", () => {
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
 
-  it("allows optional human extensions on Page action signatures while preserving upstream shape", () => {
+  it("does not expose human extensions on Page action signatures", () => {
     const report = generateApiSurfaceReport("Page");
     const actionSignatures = Object.values(report.currentMethodSignatures)
       .flat()
       .filter((signature) => /^(click|dblclick|fill|hover|press|tap)\(/.test(signature));
 
-    expect(actionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(true);
+    expect(actionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(false);
   });
 
   it("matches upstream Playwright Page selector query and state signatures", () => {
@@ -273,7 +271,7 @@ describe("generatePageApiReport", () => {
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
 
-  it("allows optional human extensions on Frame and Locator action signatures while preserving upstream shape", () => {
+  it("does not expose human extensions on Frame and Locator action signatures", () => {
     const frameReport = generateApiSurfaceReport("Frame");
     const locatorReport = generateApiSurfaceReport("Locator");
     const frameActionSignatures = Object.values(frameReport.currentMethodSignatures)
@@ -283,8 +281,8 @@ describe("generatePageApiReport", () => {
       .flat()
       .filter((signature) => /^(click|dblclick|fill|hover|press|tap)\(/.test(signature));
 
-    expect(frameActionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(true);
-    expect(locatorActionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(true);
+    expect(frameActionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(false);
+    expect(locatorActionSignatures.some((signature) => signature.includes("human?: HumanizationOptions"))).toBe(false);
   });
 
   it("matches upstream Playwright Frame remaining forwarded signatures", () => {

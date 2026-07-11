@@ -19,7 +19,7 @@ import type {
 } from "./types.js";
 import { resolveHumanizationOptions, jitter } from "../human/profile.js";
 import type { AssetOptions } from "../assets/types.js";
-import type { HumanizationOptions } from "../types/options.js";
+import type { HumanizationOptions } from "../human/types.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,6 +104,10 @@ export class McpRuntime {
       this.fileUploadPending = false;
     }
     return this.tabs;
+  }
+
+  async ensureActiveCursorVisualization(): Promise<void> {
+    await this.requireConnected().ensureActiveCursorVisualization();
   }
 
   async newTab(url?: string): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {

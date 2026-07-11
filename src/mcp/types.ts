@@ -141,6 +141,7 @@ export interface ConnectedBrowserSession {
   waitForMainFrameLoad?(timeoutMs: number): Promise<void>;
   waitForRequestFinished?(requestId: string, timeoutMs: number): Promise<void>;
   waitForRequestResponse?(requestId: string, timeoutMs: number): Promise<void>;
+  ensureActiveCursorVisualization(): Promise<void>;
   runCodeUnsafe(code: string): Promise<unknown>;
   close(): Promise<void>;
 }

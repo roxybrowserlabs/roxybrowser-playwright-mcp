@@ -58,15 +58,6 @@ function workerProfileName(): string {
   return `${ROXYBROWSER_PROFILE_NAME} [worker ${workerLabel()}]`;
 }
 
-function bidiHumanOptions() {
-  return {
-    hoverBeforeClickMs: 0,
-    clickHoldMs: 0,
-    typingDelayMs: 0,
-    typingVarianceMs: 0
-  };
-}
-
 function assertRoxyBrowserBidiEnvironment(): void {
   if (!ROXYBROWSER_API_TOKEN) {
     throw new Error(
@@ -121,8 +112,7 @@ export async function openBidiBrowser(): Promise<Browser> {
       browserName: "firefox",
       protocol: "bidi",
       wsEndpoint: session.endpoint,
-      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
-      human: bidiHumanOptions()
+      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {})
     });
   } catch (error) {
     await cleanupStaleBidiTestArtifacts();
@@ -137,8 +127,7 @@ export async function openBidiBrowser(): Promise<Browser> {
       browserName: "firefox",
       protocol: "bidi",
       wsEndpoint: retriedSession.endpoint,
-      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {}),
-      human: bidiHumanOptions()
+      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {})
     });
   }
 

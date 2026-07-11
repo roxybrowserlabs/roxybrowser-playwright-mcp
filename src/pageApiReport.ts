@@ -67,16 +67,6 @@ function normalizeSignature(signature: string): string {
     .replace(/\s*\|\s*/g, "|");
 }
 
-function normalizeOptionalHumanExtension(signature: string): string {
-  return signature
-    .replace(/; human\?: HumanizationOptions(?=;)/g, "")
-    .replace(/human\?: HumanizationOptions; /g, "")
-    .replace(/\{\s*,/g, "{")
-    .replace(/,\s*\}/g, " }")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function findDeclarationEnd(source: string, start: number): number {
   let parenDepth = 0;
   let braceDepth = 0;
@@ -238,13 +228,7 @@ export function generateApiMethodSignatureReport(interfaceName: string, methodNa
   return {
     interfaceName,
     upstreamMethodSignatures: extractMethodSignatures(upstreamSource, interfaceName, methodNames),
-    currentMethodSignatures: Object.fromEntries(
-      Object.entries(extractMethodSignatures(currentSource, interfaceName, methodNames))
-        .map(([methodName, signatures]) => [
-          methodName,
-          signatures.map((signature) => normalizeOptionalHumanExtension(signature))
-        ])
-    )
+    currentMethodSignatures: extractMethodSignatures(currentSource, interfaceName, methodNames)
   };
 }
 

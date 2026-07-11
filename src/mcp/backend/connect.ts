@@ -23,6 +23,7 @@ const connect = defineTool({
       browser: params.browser === "chrome" ? "chromium" : params.browser,
       ...(params.sessionId ? { sessionId: params.sessionId } : {})
     });
+    await context.runtime.ensureActiveCursorVisualization().catch(() => undefined);
     response.addTextResult(
       formatConnectResult({
         ...result,

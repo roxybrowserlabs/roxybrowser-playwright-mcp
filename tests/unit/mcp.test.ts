@@ -139,6 +139,7 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   networkRequestsList: BrowserNetworkRequest[] = [];
   requestCollectionStates: Array<{ requests: BrowserNetworkRequest[]; requestKeys: string[] }> = [];
   closeCount = 0;
+  cursorVisualizationCount = 0;
 
   protected collectRequest(request: BrowserNetworkRequest): void {
     for (const collector of this.requestCollectionStates) {
@@ -358,6 +359,10 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
 
   async runCodeUnsafe(code: string): Promise<unknown> {
     return `ran:${code}`;
+  }
+
+  async ensureActiveCursorVisualization(): Promise<void> {
+    this.cursorVisualizationCount++;
   }
 
 
@@ -845,6 +850,31 @@ describe("MCP server", () => {
     });
     expect(hoverResult.isError).toBe(true);
     expect(textFromResult(hoverResult)).toContain("[stale_ref]");
+  });
+
+  it("installs cursor visualization after roxy_browser_connect succeeds", async () => {
+    let capturedSession: FakeConnectedBrowserSession | undefined;
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: async (args) => {
+        capturedSession = new FakeConnectedBrowserSession(args);
+        return capturedSession;
+      }
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+
+    const connected = await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        endpoint: "ws://cursor.invalid/devtools/browser/1"
+      }
+    });
+
+    expect(connected.isError).toBeUndefined();
+    expect(capturedSession?.cursorVisualizationCount).toBe(1);
   });
 
   it("clears previous browser context when roxy_browser_connect reconnects", async () => {
@@ -1442,6 +1472,64 @@ describe("MCP server", () => {
         ])
       }));
       expect(result.isError).toBeUndefined();
+    });
+
+    it("does not install cursor visualization from bare BiDi browser session connect", async () => {
+      const module = await import("../../src/mcp/connectedBrowser.js");
+      const scriptEvaluate = vi.fn(async (params: { expression: string }) => {
+        if (params.expression.includes("document.title")) {
+          return {
+            type: "success",
+            result: {
+              value: "tab title"
+            }
+          };
+        }
+        return {
+          type: "success",
+          result: {
+            value: true
+          }
+        };
+      });
+      const createBidiClient = vi.fn(async () => ({
+        capabilities: { browserName: "firefox" },
+        close: vi.fn(),
+        on: vi.fn(),
+        removeListener: vi.fn(),
+        sessionStatus: vi.fn(async () => ({})),
+        sessionEnd: vi.fn(async () => ({})),
+        browsingContextGetTree: vi.fn(async () => ({
+          contexts: [
+            {
+              context: "tab-1",
+              url: "https://example.test/",
+              children: []
+            }
+          ]
+        })),
+        browsingContextActivate: vi.fn(async () => ({})),
+        browsingContextCreate: vi.fn(async () => ({ context: "tab-1" })),
+        browsingContextNavigate: vi.fn(async () => ({})),
+        sessionSubscribe: vi.fn(async () => ({})),
+        networkAddDataCollector: vi.fn(async () => ({ collector: "collector-1" })),
+        networkRemoveDataCollector: vi.fn(async () => ({})),
+        scriptAddPreloadScript: vi.fn(async () => ({ script: "script-1" })),
+        scriptRemovePreloadScript: vi.fn(async () => ({})),
+        scriptEvaluate
+      }));
+
+      setBidiClientFactoryForTests(createBidiClient);
+
+      await module.BidiConnectedBrowserSession.connect({
+        endpoint: "ws://127.0.0.1:63631/session/existing",
+        browser: "firefox",
+        protocol: "bidi"
+      });
+
+      expect(scriptEvaluate).not.toHaveBeenCalledWith(expect.objectContaining({
+        expression: expect.stringContaining("__roxyBubbleCursor")
+      }));
     });
 
     it("passes a provided Firefox BiDi session id through the MCP connect tool", async () => {

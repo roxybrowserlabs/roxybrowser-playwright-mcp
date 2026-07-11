@@ -1,8 +1,8 @@
 import type {
   HumanProfileName,
-  HumanizationOptions
-} from "../types/options.js";
-import type { ResolvedHumanizationOptions } from "./types.js";
+  HumanizationOptions,
+  ResolvedHumanizationOptions
+} from "./types.js";
 
 const PROFILE_DEFAULTS: Record<HumanProfileName, ResolvedHumanizationOptions> = {
   cautious: {

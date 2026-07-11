@@ -2,7 +2,6 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { TimeoutError } from "./errors.js";
 import { assertFillValue } from "./assertions.js";
-import { DefaultHumanController } from "./human/controller.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import { RoxyJSHandle, createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
@@ -19,7 +18,6 @@ import {
   screenshotOptionsWithFitsViewport,
   validateScreenshotOptions
 } from "./screenshotOptions.js";
-import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   ProtocolElementHandleAdapter,
   ProtocolElementHandleReference
@@ -53,15 +51,10 @@ export interface ElementHandleFrameResolver {
 }
 
 export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T> {
-  private readonly humanController: DefaultHumanController;
-
   constructor(
     private readonly adapter: ProtocolElementHandleAdapter,
-    private readonly humanDefaults: ResolvedHumanizationOptions,
     private readonly frameResolver?: ElementHandleFrameResolver
-  ) {
-    this.humanController = new DefaultHumanController(humanDefaults);
-  }
+  ) {}
 
   reference(): ProtocolElementHandleReference {
     return this.adapter.reference();
@@ -79,14 +72,14 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   async $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
   async $(selector: string): Promise<ElementHandle | null> {
     const handle = await this.adapter.query(parseSelectorChain(selector));
-    return handle ? new RoxyElementHandle(handle, this.humanDefaults, this.frameResolver) : null;
+    return handle ? new RoxyElementHandle(handle, this.frameResolver) : null;
   }
 
   async $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
   async $$(selector: string): Promise<ElementHandle<SVGElement | HTMLElement>[]>;
   async $$(selector: string): Promise<ElementHandle[]> {
     const handles = await this.adapter.queryAll(parseSelectorChain(selector));
-    return handles.map((handle) => new RoxyElementHandle(handle, this.humanDefaults, this.frameResolver));
+    return handles.map((handle) => new RoxyElementHandle(handle, this.frameResolver));
   }
 
   async $eval<K extends keyof HTMLElementTagNameMap, R, Arg>(selector: K, pageFunction: PageFunctionOn<HTMLElementTagNameMap[K], Arg, R>, arg: Arg): Promise<R>;
@@ -166,7 +159,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
           typeof pageFunction === "function"
         ),
         (reference) => this.frameResolver?.createElementHandleFromReference(reference)
-          ?? new RoxyElementHandle(this.adapter, this.humanDefaults, this.frameResolver)
+          ?? new RoxyElementHandle(this.adapter, this.frameResolver)
       ) as unknown as SmartHandle<R>;
     }
     const value = await this.adapter.evaluate<R>(
@@ -466,7 +459,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async click(options?: ClickOptions): Promise<void> {
-    await this.humanController.click(this.adapter, options);
+    await this.adapter.click(options);
   }
 
   async dblclick(options?: ClickOptions): Promise<void> {
@@ -486,20 +479,20 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async hover(options?: HoverOptions): Promise<void> {
-    await this.humanController.hover(this.adapter, options);
+    await this.adapter.hover(options);
   }
 
   async fill(value: string, options?: FillOptions): Promise<void> {
     assertFillValue(value);
-    await this.humanController.fill(this.adapter, value, options);
+    await this.adapter.fill(value, options);
   }
 
   async type(value: string, options?: TypeOptions): Promise<void> {
-    await this.humanController.type(this.adapter, value, options);
+    await this.adapter.type(value, options);
   }
 
   async press(key: string, options?: PressOptions): Promise<void> {
-    await this.humanController.press(this.adapter, key, options);
+    await this.adapter.press(key, options);
   }
 
   async textContent(): Promise<string | null> {

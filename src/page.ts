@@ -11,7 +11,6 @@ import {
 import { TimeoutError } from "./errors.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyFrame, type RoxyFrameSnapshot } from "./frame.js";
-import { DefaultHumanController } from "./human/controller.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import { RoxyJSHandle, createRemoteJSHandle } from "./jsHandle.js";
@@ -30,7 +29,6 @@ import {
   type SerializedValue
 } from "./utilityScriptSerializers.js";
 import type { RoxyBrowserContext } from "./browserContext.js";
-import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   LocatorSelector,
   ProtocolElementHandleAdapter,
@@ -870,7 +868,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   readonly screencast: Screencast;
   readonly sessionStorage: WebStorage;
   readonly touchscreen: Touchscreen;
-  private readonly humanController: DefaultHumanController;
   private readonly eventObservations = new Map<PageEventName, EventObservation<PageEventName>>();
   private readonly adapterDisposers = new Map<PageEventName, () => void>();
   private readonly pendingHandlers = new Map<PageEventName, Set<Promise<void>>>();
@@ -982,11 +979,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   constructor(
     private readonly adapter: ProtocolPageAdapter,
-    private readonly humanDefaults: ResolvedHumanizationOptions,
+    _unusedSecondArgument?: unknown,
     private readonly browserContext?: RoxyBrowserContext,
     private readonly contextOptions: BrowserContextOptions = {}
   ) {
-    this.humanController = new DefaultHumanController(humanDefaults);
+    void _unusedSecondArgument;
     this.clock = browserContext?.clock ?? new RoxyClock(createUnsupportedClockDelegate("page.clock"));
     this.coverage = new UnsupportedCoverage(adapter);
     this.keyboard = new RoxyKeyboard(adapter);
@@ -3022,7 +3019,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   createElementHandle(adapter: ProtocolElementHandleAdapter): RoxyElementHandle {
-    return new RoxyElementHandle(adapter, this.humanDefaults, this);
+    return new RoxyElementHandle(adapter, this);
   }
 
   createElementHandleFromReference(reference: ProtocolElementHandleReference): ElementHandle {
@@ -4936,12 +4933,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
     return new RoxyLocator(
       adapter,
-      this.humanController,
+      undefined,
       chain,
       async (locator, options) => {
         return await this.maybeRunLocatorHandlers(locator, options);
       },
-      this.humanDefaults,
+      undefined,
       this,
       this,
       frameIdentity
@@ -4963,12 +4960,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
     return new RoxyLocator(
       current,
-      this.humanController,
+      undefined,
       chain,
       async (locator, options) => {
         return await this.maybeRunLocatorHandlers(locator, options);
       },
-      this.humanDefaults,
+      undefined,
       this,
       this,
       frameIdentity
@@ -4977,7 +4974,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private rootLocatorForFrame(frame: RoxyFrameSnapshot): RoxyLocator {
     if (!frame.referenceChain.length) {
-      return new RoxyLocator(this.adapter.locator({ strategy: "css", value: ":root" }), this.humanController, null, undefined, this.humanDefaults, this, this, frame.id);
+      return new RoxyLocator(this.adapter.locator({ strategy: "css", value: ":root" }), undefined, null, undefined, undefined, this, this, frame.id);
     }
     return this.createLocatorFromChain(frame.referenceChain, frame.id) as RoxyLocator;
   }

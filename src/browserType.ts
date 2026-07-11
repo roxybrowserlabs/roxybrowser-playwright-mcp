@@ -1,6 +1,5 @@
 import { RoxyBrowser } from "./browser.js";
 import { AssetManager } from "./assets/manager.js";
-import { resolveHumanizationOptions } from "./human/profile.js";
 import { BidiBrowserAdapterFactory } from "./protocol/bidi/backend.js";
 import { CdpBrowserAdapterFactory } from "./protocol/cdp/backend.js";
 import type { ProtocolBrowserAdapterFactory } from "./protocol/adapter.js";
@@ -50,11 +49,12 @@ export class RoxyBrowserType implements BrowserType {
    * `options.protocol` may still be passed to override the per-browser default.
    */
   async connect(endpointURL: string, options?: ConnectOverCDPOptions): Promise<Browser> {
+    const endpoint = requireConnectEndpoint(endpointURL);
     return this.connectBrowser({
+      ...options,
       browserName: this.browserName,
       protocol: this.browserName === "chromium" ? "cdp" : "bidi",
-      wsEndpoint: endpointURL,
-      ...options
+      wsEndpoint: endpoint
     });
   }
 
@@ -95,10 +95,10 @@ export class RoxyBrowserType implements BrowserType {
     await progress?.log?.(`Connecting over CDP to ${endpoint.origin}.`);
 
     return this.connectBrowser({
+      ...options,
       browserName: this.browserName,
       protocol: "cdp",
-      wsEndpoint: endpointURL,
-      ...options
+      wsEndpoint: endpointURL
     });
   }
 
@@ -128,7 +128,6 @@ export class RoxyBrowserType implements BrowserType {
     const browser = new RoxyBrowser(
       session,
       adapter,
-      resolveHumanizationOptions(options.human),
       options.browserName ?? this.browserName,
       this,
       versionStr,
@@ -152,3 +151,11 @@ export const firefox: BrowserType = new RoxyBrowserType("firefox", {
   cdp: new CdpBrowserAdapterFactory(),
   bidi: new BidiBrowserAdapterFactory()
 });
+
+function requireConnectEndpoint(endpointURL: string): string {
+  if (typeof endpointURL !== "string" || endpointURL.trim() === "") {
+    throw new Error("BrowserType.connect(endpointURL) requires a browser WebSocket endpoint.");
+  }
+
+  return endpointURL;
+}

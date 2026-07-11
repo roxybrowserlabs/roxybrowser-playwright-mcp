@@ -2359,6 +2359,17 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return client;
   }
 
+  async ensureActiveCursorVisualization(): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    await evaluateCdp<boolean>(
+      pageClient,
+      ENSURE_BUBBLE_CURSOR_SOURCE,
+      undefined,
+      contextId
+    );
+  }
+
   private installFileChooserCollection(tabId: string, client: CdpClient): void {
     client.Page.fileChooserOpened?.((event: {
       backendNodeId?: number;
@@ -4562,6 +4573,15 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       ...tab,
       active: tab.id === this.activeTabId
     }));
+  }
+
+  async ensureActiveCursorVisualization(): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await evaluateBiDi<boolean>(
+      this.client,
+      tabId,
+      ENSURE_BUBBLE_CURSOR_SOURCE
+    );
   }
 
   private async getActiveTabId(): Promise<string> {

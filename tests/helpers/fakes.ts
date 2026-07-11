@@ -11,7 +11,6 @@ import type {
   ProtocolPageAdapter
 } from "../../src/protocol/adapter.js";
 import type { ProtocolCapabilities } from "../../src/protocol/capabilities.js";
-import type { ResolvedHumanizationOptions } from "../../src/human/types.js";
 import type {
   RawPageEventListener,
   RawPageEventMap,
@@ -46,20 +45,9 @@ export function createBrowserSessionStub(): ProtocolBrowserSession {
   };
 }
 
-export const DEFAULT_HUMAN_OPTIONS: ResolvedHumanizationOptions = {
-  profile: "balanced",
-  moveJitterMs: 140,
-  clickHoldMs: 180,
-  scrollStepPx: 180,
-  typingDelayMs: 140,
-  typingVarianceMs: 55,
-  hoverBeforeClickMs: 380
-};
-
 interface CreateBrowserOptions {
   session?: ProtocolBrowserSession;
   adapter?: ProtocolBrowserAdapter;
-  humanDefaults?: ResolvedHumanizationOptions;
   browserName?: "chromium" | "firefox";
   browserType?: BrowserType;
   version?: string;
@@ -69,7 +57,6 @@ export function createBrowser(options: CreateBrowserOptions = {}): RoxyBrowser {
   return new RoxyBrowser(
     options.session ?? createBrowserSessionStub(),
     options.adapter ?? createBrowserAdapterStub(),
-    options.humanDefaults ?? DEFAULT_HUMAN_OPTIONS,
     options.browserName ?? "chromium",
     options.browserType ?? ({} as BrowserType),
     options.version ?? "Chrome/123.0.0.0"

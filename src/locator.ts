@@ -2,9 +2,6 @@ import { readFile, stat } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 import { TimeoutError } from "./errors.js";
 import { assertFillValue } from "./assertions.js";
-import type { HumanController } from "./human/types.js";
-import { resolveHumanizationOptions } from "./human/profile.js";
-import type { ResolvedHumanizationOptions } from "./human/types.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyElementHandle, serializeEvaluationArgument, type ElementHandleFrameResolver } from "./elementHandle.js";
 import { convertInputFiles, type InputFiles } from "./inputFiles.js";
@@ -68,7 +65,6 @@ const LAST_SELECTOR: LocatorSelector = {
   value: "pick",
   pick: { kind: "last" }
 };
-const DEFAULT_LOCATOR_HUMAN_DEFAULTS = resolveHumanizationOptions();
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 
 type ActionOptionsLike = { force?: boolean; timeout?: number } | undefined;
@@ -264,14 +260,16 @@ export class RoxyLocator implements Locator {
 
   constructor(
     private readonly adapter: ProtocolLocatorAdapter,
-    private readonly humanController: HumanController,
+    _unusedSecondArgument?: unknown,
     selectorChain: LocatorSelector[] | null = null,
     private readonly beforeAction?: (locator: RoxyLocator, options?: ActionOptionsLike) => Promise<boolean | void>,
-    private readonly humanDefaults: ResolvedHumanizationOptions = DEFAULT_LOCATOR_HUMAN_DEFAULTS,
+    _unusedFifthArgument?: unknown,
     private readonly frameResolver?: ElementHandleFrameResolver,
     private readonly ownerPage?: Page,
     private readonly frameIdentity?: string
   ) {
+    void _unusedSecondArgument;
+    void _unusedFifthArgument;
     this.selectorChain = selectorChain ? cloneLocatorSelectorChain(selectorChain) : null;
   }
 
@@ -296,10 +294,10 @@ export class RoxyLocator implements Locator {
   ): RoxyLocator {
     return new RoxyLocator(
       adapter,
-      this.humanController,
+      undefined,
       selectorChain,
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -328,10 +326,10 @@ export class RoxyLocator implements Locator {
     const chain = parseSelectorChain(selector);
     const locator = new RoxyLocator(
       chainLocator(this.adapter, selector),
-      this.humanController,
+      undefined,
       [...(this.selectorChain ?? []), ...chain],
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -360,10 +358,10 @@ export class RoxyLocator implements Locator {
       this,
       new RoxyLocator(
         this.adapter.locator(ENTER_FRAME_SELECTOR),
-        this.humanController,
+        undefined,
         [...(this.selectorChain ?? []), ENTER_FRAME_SELECTOR],
         this.beforeAction,
-        this.humanDefaults,
+        undefined,
         this.frameResolver,
         this.ownerPage,
         this.frameIdentity
@@ -374,10 +372,10 @@ export class RoxyLocator implements Locator {
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {
     return new RoxyLocator(
       this.adapter.getByText(text, options),
-      this.humanController,
+      undefined,
       this.extendSelectorChain("getByText", text, options),
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -387,10 +385,10 @@ export class RoxyLocator implements Locator {
   getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator {
     return new RoxyLocator(
       this.adapter.getByAltText(text, options),
-      this.humanController,
+      undefined,
       this.extendSelectorChain("getByAltText", text, options),
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -400,10 +398,10 @@ export class RoxyLocator implements Locator {
   getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator {
     return new RoxyLocator(
       this.adapter.getByLabel(text, options),
-      this.humanController,
+      undefined,
       this.extendSelectorChain("getByLabel", text, options),
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -413,10 +411,10 @@ export class RoxyLocator implements Locator {
   getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): Locator {
     return new RoxyLocator(
       this.adapter.getByPlaceholder(text, options),
-      this.humanController,
+      undefined,
       this.extendSelectorChain("getByPlaceholder", text, options),
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -426,10 +424,10 @@ export class RoxyLocator implements Locator {
   getByTestId(testId: string | RegExp): Locator {
     return new RoxyLocator(
       this.adapter.getByTestId(testId),
-      this.humanController,
+      undefined,
       this.extendSelectorChain("getByTestId", testId),
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -439,10 +437,10 @@ export class RoxyLocator implements Locator {
   getByRole(role: string, options?: GetByRoleOptions): Locator {
     return new RoxyLocator(
       this.adapter.getByRole(role, options),
-      this.humanController,
+      undefined,
       this.extendSelectorChain("getByRole", role, options),
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -452,10 +450,10 @@ export class RoxyLocator implements Locator {
   getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator {
     return new RoxyLocator(
       this.adapter.getByTitle(text, options),
-      this.humanController,
+      undefined,
       this.extendSelectorChain("getByTitle", text, options),
       this.beforeAction,
-      this.humanDefaults,
+      undefined,
       this.frameResolver,
       this.ownerPage,
       this.frameIdentity
@@ -678,7 +676,7 @@ export class RoxyLocator implements Locator {
           typeof pageFunction === "function"
         ),
         (reference) => this.frameResolver?.createElementHandleFromReference(reference)
-          ?? new RoxyElementHandle(this.adapter.elementHandle() as never, this.humanDefaults, this.frameResolver)
+          ?? new RoxyElementHandle(this.adapter.elementHandle() as never, this.frameResolver)
       ) as unknown as SmartHandle<R>;
     }
     return createSmartHandle(await this.evaluate(pageFunction as PageFunctionOn<SVGElement | HTMLElement, Arg, R>, hasArg ? argOrOptions as Arg : undefined as Arg));
@@ -723,29 +721,29 @@ export class RoxyLocator implements Locator {
   async click(options?: ClickOptions): Promise<void> {
     const actionOptions = this.withBeforeActionRetry(options);
     await this.beforeAction?.(this, actionOptions);
-    await this.humanController.click(this.adapter, actionOptions);
+    await this.adapter.click(actionOptions);
   }
 
   async hover(options?: HoverOptions): Promise<void> {
     const actionOptions = this.withBeforeActionRetry(options);
     await this.beforeAction?.(this, actionOptions);
-    await this.humanController.hover(this.adapter, actionOptions);
+    await this.adapter.hover(actionOptions);
   }
 
   async fill(value: string, options?: FillOptions): Promise<void> {
     assertFillValue(value);
     await this.beforeAction?.(this, options);
-    await this.humanController.fill(this.adapter, value, options);
+    await this.adapter.fill(value, options);
   }
 
   async type(value: string, options?: TypeOptions): Promise<void> {
     await this.beforeAction?.(this, options);
-    await this.humanController.type(this.adapter, value, options);
+    await this.adapter.type(value, options);
   }
 
   async press(key: string, options?: PressOptions): Promise<void> {
     await this.beforeAction?.(this, options);
-    await this.humanController.press(this.adapter, key, options);
+    await this.adapter.press(key, options);
   }
 
   async pressSequentially(text: string, options?: LocatorPressSequentiallyOptions): Promise<void> {
@@ -1040,7 +1038,7 @@ export class RoxyLocator implements Locator {
     let lastError: unknown;
     while (timeout === 0 || Date.now() - startTime <= timeout) {
       try {
-        return new RoxyElementHandle(await this.adapter.elementHandle(), this.humanDefaults, this.frameResolver);
+        return new RoxyElementHandle(await this.adapter.elementHandle(), this.frameResolver);
       } catch (error) {
         lastError = error;
         if (timeout === 0) {
@@ -1057,7 +1055,7 @@ export class RoxyLocator implements Locator {
 
   async elementHandles(): Promise<Array<ElementHandle>> {
     const handles = await this.adapter.elementHandles();
-    return handles.map((handle) => new RoxyElementHandle(handle, this.humanDefaults, this.frameResolver));
+    return handles.map((handle) => new RoxyElementHandle(handle, this.frameResolver));
   }
 
   toString(): string {

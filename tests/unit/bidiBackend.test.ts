@@ -399,7 +399,7 @@ describe("BidiBrowserAdapterFactory", () => {
     ]);
   });
 
-  it("executes humanized typing plans through BiDi key actions", async () => {
+  it("ignores internal typing plan hints and follows plain keyboard typing", async () => {
     const inputPerformActions = vi.fn(async () => ({}));
     const client = createBidiClientStub({
       browsingContextCreate: vi.fn(async () => ({
@@ -425,21 +425,20 @@ describe("BidiBrowserAdapterFactory", () => {
     const context = await browser.newContext({ reuseDefaultUserContext: true });
     const page = await context.newPage();
 
-    await page.keyboardType("ignored", {
+    await page.keyboardType("abc", {
       __roxyTypingPlan: [
-        { type: "char", value: "a", delay: 0 },
         { type: "backspace", delay: 0 },
-        { type: "char", value: "b", delay: 0 }
+        { type: "char", value: "z", delay: 0 }
       ]
     } as never);
 
     expect(inputPerformActions.mock.calls.map((call) => call[0])).toEqual([
       keyActions("ctx-1", [{ type: "keyDown", value: "a" }]),
       keyActions("ctx-1", [{ type: "keyUp", value: "a" }]),
-      keyActions("ctx-1", [{ type: "keyDown", value: "\uE003" }]),
-      keyActions("ctx-1", [{ type: "keyUp", value: "\uE003" }]),
       keyActions("ctx-1", [{ type: "keyDown", value: "b" }]),
-      keyActions("ctx-1", [{ type: "keyUp", value: "b" }])
+      keyActions("ctx-1", [{ type: "keyUp", value: "b" }]),
+      keyActions("ctx-1", [{ type: "keyDown", value: "c" }]),
+      keyActions("ctx-1", [{ type: "keyUp", value: "c" }])
     ]);
   });
 

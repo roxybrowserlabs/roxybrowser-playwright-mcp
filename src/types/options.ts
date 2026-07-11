@@ -17,7 +17,6 @@ export type WaitUntilState = "load" | "domcontentloaded" | "networkidle" | "comm
 export type LoadState = Exclude<WaitUntilState, "commit">;
 export type MouseButton = "left" | "right" | "middle";
 export type KeyboardModifier = "Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift";
-export type HumanProfileName = "cautious" | "balanced" | "fast";
 
 export interface Header {
   name: string;
@@ -45,20 +44,6 @@ export interface Rect extends Point {
   height: number;
 }
 
-export interface HumanizationOptions {
-  profile?: HumanProfileName;
-  moveJitterMs?: number;
-  clickHoldMs?: number;
-  scrollStepPx?: number;
-  typingDelayMs?: number;
-  typingVarianceMs?: number;
-  hoverBeforeClickMs?: number;
-}
-
-export interface HumanizedOption {
-  human?: HumanizationOptions;
-}
-
 export interface LaunchOptions extends AssetOptions {
   browserName?: BrowserName;
   protocol?: SupportedProtocol;
@@ -70,7 +55,6 @@ export interface LaunchOptions extends AssetOptions {
   sessionId?: string;
   host?: string;
   port?: number;
-  human?: HumanizationOptions;
 }
 
 export interface ConnectOverCDPOptions extends AssetOptions {
@@ -104,7 +88,6 @@ export interface BrowserContextOptions {
   strictSelectors?: boolean;
   acceptDownloads?: boolean;
   downloadsDir?: string;
-  human?: HumanizationOptions;
 }
 
 export interface TimeoutOptions {
@@ -153,16 +136,12 @@ export interface WaitForSelectorOptions extends TimeoutOptions {
   waitFor?: WaitForSelectorState;
 }
 
-export interface HoverOptions extends SelectorStrictOptions, HumanizedOption {
+export interface HoverOptions extends SelectorStrictOptions {
   force?: boolean;
   modifiers?: KeyboardModifier[];
   trial?: boolean;
   position?: Point;
   __roxyBeforeActionRetry?: () => Promise<boolean | void>;
-  __roxyHumanMove?: {
-    durationMs: number;
-    stepPx: number;
-  };
 }
 
 export interface ClickOptions extends HoverOptions {
@@ -173,7 +152,7 @@ export interface ClickOptions extends HoverOptions {
   steps?: number;
 }
 
-export interface FillOptions extends SelectorStrictOptions, HumanizedOption {
+export interface FillOptions extends SelectorStrictOptions {
   force?: boolean;
   noWaitAfter?: boolean;
   timeout?: number;
@@ -187,23 +166,11 @@ export interface SelectOption {
 
 export type SelectOptionValue = string | SelectOption;
 
-type InternalTypingAction =
-  | { type: "char"; value: string; delay: number }
-  | { type: "pause"; delay: number }
-  | { type: "backspace"; delay: number };
-
-export interface TypeOptions extends SelectorStrictOptions, HumanizedOption {
+export interface TypeOptions extends SelectorStrictOptions {
   delay?: number;
-  // Internal: per-keystroke delay variance (ms) attached by DefaultHumanController so the
-  // protocol backend can jitter each character's dwell independently. Not part of the public
-  // Playwright surface; mirrors the __roxyHumanMove convention.
-  __roxyTypeVariance?: number;
-  // Internal: full humanized typing action sequence. Carries typo/correction behavior while
-  // keeping the public Page.type/Locator.type API small.
-  __roxyTypingPlan?: InternalTypingAction[];
 }
 
-export interface PressOptions extends SelectorStrictOptions, HumanizedOption {
+export interface PressOptions extends SelectorStrictOptions {
   delay?: number;
   noWaitAfter?: boolean;
 }

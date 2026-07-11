@@ -43,5 +43,3 @@ export {
   resolveExecutableCandidates
 } from "./protocol/cdp/backend.js";
 export { looksLikeFunctionExpression } from "./protocol/evaluate.js";
-export { DefaultHumanController } from "./human/controller.js";
-export { resolveHumanizationOptions } from "./human/profile.js";

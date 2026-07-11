@@ -58,14 +58,7 @@ describe("RoxyLocator", () => {
     const rootAdapter = createLocatorAdapterStub();
     const childAdapter = createLocatorAdapterStub();
     rootAdapter.locator = vi.fn(() => childAdapter);
-    const controller = {
-      click: vi.fn(),
-      hover: vi.fn(),
-      fill: vi.fn(),
-      type: vi.fn(),
-      press: vi.fn()
-    };
-    const locator = new RoxyLocator(rootAdapter, controller);
+    const locator = new RoxyLocator(rootAdapter);
 
     const nested = locator.locator(".child");
 
@@ -77,13 +70,7 @@ describe("RoxyLocator", () => {
   });
 
   it("throws on capture with nth like Playwright", () => {
-    const locator = new RoxyLocator(createLocatorAdapterStub(), {
-      click: vi.fn(),
-      hover: vi.fn(),
-      fill: vi.fn(),
-      type: vi.fn(),
-      press: vi.fn()
-    });
+    const locator = new RoxyLocator(createLocatorAdapterStub());
 
     expect(() => locator.locator("*css=div >> p").nth(1)).toThrow("Can't query n-th element");
   });
@@ -92,14 +79,7 @@ describe("RoxyLocator", () => {
     const rootAdapter = createLocatorAdapterStub();
     rootAdapter.locator = vi.fn(() => rootAdapter);
     rootAdapter.getByRole = vi.fn(() => rootAdapter);
-    const controller = {
-      click: vi.fn(),
-      hover: vi.fn(),
-      fill: vi.fn(),
-      type: vi.fn(),
-      press: vi.fn()
-    };
-    const locator = new RoxyLocator(rootAdapter, controller);
+    const locator = new RoxyLocator(rootAdapter);
 
     expect(locator.locator("button").description()).toBe(null);
     expect(locator.locator("button").describe("Submit button").description()).toBe("Submit button");
@@ -534,16 +514,9 @@ describe("RoxyLocator", () => {
     expect(rootAdapter.getByTitle).toHaveBeenCalledWith("Hint", undefined);
   });
 
-  it("delegates actions and state reads to the human controller and adapter", async () => {
+  it("delegates actions and state reads directly to the adapter", async () => {
     const adapter = createLocatorAdapterStub();
-    const controller = {
-      click: vi.fn(async () => {}),
-      hover: vi.fn(async () => {}),
-      fill: vi.fn(async () => {}),
-      type: vi.fn(async () => {}),
-      press: vi.fn(async () => {})
-    };
-    const locator = new RoxyLocator(adapter, controller);
+    const locator = new RoxyLocator(adapter);
 
     expect(locator.first()).toBeInstanceOf(RoxyLocator);
     expect(locator.last()).toBeInstanceOf(RoxyLocator);
@@ -558,13 +531,13 @@ describe("RoxyLocator", () => {
     await locator.press("Enter");
     await locator.focus();
 
-    expect(controller.click).toHaveBeenCalledWith(adapter, { delay: 5 });
+    expect(adapter.click).toHaveBeenCalledWith({ delay: 5 });
     expect(adapter.dblclick).toHaveBeenCalledWith(undefined);
     expect(adapter.check).toHaveBeenCalledWith(undefined);
-    expect(controller.hover).toHaveBeenCalledWith(adapter, undefined);
-    expect(controller.fill).toHaveBeenCalledWith(adapter, "value", undefined);
-    expect(controller.type).toHaveBeenCalledWith(adapter, "typed", undefined);
-    expect(controller.press).toHaveBeenCalledWith(adapter, "Enter", undefined);
+    expect(adapter.hover).toHaveBeenCalledWith(undefined);
+    expect(adapter.fill).toHaveBeenCalledWith("value", undefined);
+    expect(adapter.type).toHaveBeenCalledWith("typed", undefined);
+    expect(adapter.press).toHaveBeenCalledWith("Enter", undefined);
     expect(adapter.focus).toHaveBeenCalledTimes(1);
     expect(await locator.getAttribute("data-id")).toBe("attr-value");
     expect(await locator.innerHTML()).toBe("<span>html-value</span>");
@@ -582,91 +555,61 @@ describe("RoxyLocator", () => {
     expect(await locator.isVisible()).toBe(true);
   });
 
-  it("forwards optional human overrides through locator and element handle actions", async () => {
+  it("does not inject humanization through locator and element handle actions", async () => {
     const locatorAdapter = createLocatorAdapterStub();
     const elementAdapter = createElementHandleAdapterStub();
-    const controller = {
-      click: vi.fn(async () => {}),
-      hover: vi.fn(async () => {}),
-      fill: vi.fn(async () => {}),
-      type: vi.fn(async () => {}),
-      press: vi.fn(async () => {})
-    };
-    const locator = new RoxyLocator(locatorAdapter, controller);
-    const elementHandle = new RoxyElementHandle(
-      elementAdapter,
-      {
-        profile: "balanced",
-        moveJitterMs: 16,
-        clickHoldMs: 60,
-        scrollStepPx: 280,
-        typingDelayMs: 95,
-        typingVarianceMs: 35,
-        hoverBeforeClickMs: 110
-      }
-    );
+    const locator = new RoxyLocator(locatorAdapter);
+    const elementHandle = new RoxyElementHandle(elementAdapter);
 
-    await locator.click({ human: { profile: "fast" }, trial: true });
-    await locator.hover({ human: { profile: "fast" }, timeout: 22 });
-    await locator.fill("value", { human: { profile: "fast" }, force: true });
-    await locator.type("typed", { human: { profile: "fast" }, delay: 12 });
-    await locator.press("Enter", { human: { profile: "fast" }, delay: 8 });
-    await locator.tap({ human: { profile: "fast" }, trial: true });
-    await locator.check({ human: { profile: "fast" }, trial: true });
-    await locator.uncheck({ human: { profile: "fast" }, trial: true });
-    await locator.setChecked(true, { human: { profile: "fast" }, trial: true });
-    await locator.clear({ human: { profile: "fast" }, timeout: 12 });
-    await locator.dblclick({ human: { profile: "fast" }, delay: 5 });
-    await locator.pressSequentially("slow", { human: { profile: "fast" }, delay: 3 });
+    await locator.click({ trial: true });
+    await locator.hover({ timeout: 22 });
+    await locator.fill("value", { force: true });
+    await locator.type("typed", { delay: 12 });
+    await locator.press("Enter", { delay: 8 });
+    await locator.tap({ trial: true });
+    await locator.check({ trial: true });
+    await locator.uncheck({ trial: true });
+    await locator.setChecked(true, { trial: true });
+    await locator.clear({ timeout: 12 });
+    await locator.dblclick({ delay: 5 });
+    await locator.pressSequentially("slow", { delay: 3 });
 
-    expect(controller.click).toHaveBeenCalledWith(locatorAdapter, { human: { profile: "fast" }, trial: true });
-    expect(controller.hover).toHaveBeenCalledWith(locatorAdapter, { human: { profile: "fast" }, timeout: 22 });
-    expect(controller.fill).toHaveBeenCalledWith(locatorAdapter, "value", { human: { profile: "fast" }, force: true });
-    expect(controller.type).toHaveBeenCalledWith(locatorAdapter, "typed", { human: { profile: "fast" }, delay: 12 });
-    expect(controller.press).toHaveBeenCalledWith(locatorAdapter, "Enter", { human: { profile: "fast" }, delay: 8 });
-    expect(locatorAdapter.tap).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
-    expect(locatorAdapter.check).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
-    expect(locatorAdapter.uncheck).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
-    expect(locatorAdapter.check).toHaveBeenNthCalledWith(2, { human: { profile: "fast" }, trial: true });
-    expect(controller.fill).toHaveBeenNthCalledWith(2, locatorAdapter, "", { human: { profile: "fast" }, timeout: 12 });
-    expect(locatorAdapter.dblclick).toHaveBeenCalledWith({ human: { profile: "fast" }, delay: 5 });
-    expect(controller.type).toHaveBeenNthCalledWith(2, locatorAdapter, "slow", { human: { profile: "fast" }, delay: 3 });
+    expect(locatorAdapter.click).toHaveBeenCalledWith({ trial: true });
+    expect(locatorAdapter.hover).toHaveBeenCalledWith({ timeout: 22 });
+    expect(locatorAdapter.fill).toHaveBeenCalledWith("value", { force: true });
+    expect(locatorAdapter.type).toHaveBeenCalledWith("typed", { delay: 12 });
+    expect(locatorAdapter.press).toHaveBeenCalledWith("Enter", { delay: 8 });
+    expect(locatorAdapter.tap).toHaveBeenCalledWith({ trial: true });
+    expect(locatorAdapter.check).toHaveBeenCalledWith({ trial: true });
+    expect(locatorAdapter.uncheck).toHaveBeenCalledWith({ trial: true });
+    expect(locatorAdapter.check).toHaveBeenNthCalledWith(2, { trial: true });
+    expect(locatorAdapter.fill).toHaveBeenNthCalledWith(2, "", { timeout: 12 });
+    expect(locatorAdapter.dblclick).toHaveBeenCalledWith({ delay: 5 });
+    expect(locatorAdapter.type).toHaveBeenNthCalledWith(2, "slow", { delay: 3 });
 
-    await elementHandle.click({ human: { profile: "fast" }, trial: true });
-    await elementHandle.hover({ human: { profile: "fast" }, timeout: 14 });
-    await elementHandle.fill("value", { human: { profile: "fast" }, force: true });
-    await elementHandle.type("typed", { human: { profile: "fast" }, delay: 11 });
-    await elementHandle.press("Enter", { human: { profile: "fast" }, delay: 7 });
-    await elementHandle.tap({ human: { profile: "fast" }, trial: true });
-    await elementHandle.check({ human: { profile: "fast" }, trial: true });
-    await elementHandle.uncheck({ human: { profile: "fast" }, trial: true });
-    await elementHandle.setChecked(true, { human: { profile: "fast" }, trial: true });
-    await elementHandle.dblclick({ human: { profile: "fast" }, delay: 6 });
+    await elementHandle.click({ trial: true });
+    await elementHandle.hover({ timeout: 14 });
+    await elementHandle.fill("value", { force: true });
+    await elementHandle.type("typed", { delay: 11 });
+    await elementHandle.press("Enter", { delay: 7 });
+    await elementHandle.tap({ trial: true });
+    await elementHandle.check({ trial: true });
+    await elementHandle.uncheck({ trial: true });
+    await elementHandle.setChecked(true, { trial: true });
+    await elementHandle.dblclick({ delay: 6 });
 
-    expect(elementAdapter.click).toHaveBeenCalledWith(expect.objectContaining({
-      human: { profile: "fast" },
-      trial: true
-    }));
-    expect(elementAdapter.hover).toHaveBeenCalledWith(expect.objectContaining({
-      human: { profile: "fast" },
-      timeout: 14
-    }));
-    // fill stays atomic (not humanized) — it goes straight to the adapter's fill, never type.
-    expect(elementAdapter.fill).toHaveBeenCalledWith("value", { human: { profile: "fast" }, force: true });
+    expect(elementAdapter.click).toHaveBeenCalledWith({ trial: true });
+    expect(elementAdapter.hover).toHaveBeenCalledWith({ timeout: 14 });
+    expect(elementAdapter.fill).toHaveBeenCalledWith("value", { force: true });
     expect(elementAdapter.type).toHaveBeenCalledWith(
       "typed",
-      expect.objectContaining({
-        human: { profile: "fast" },
-        delay: 11,
-        __roxyTypeVariance: 35,
-        __roxyTypingPlan: expect.any(Array)
-      })
+      { delay: 11 }
     );
-    expect(elementAdapter.press).toHaveBeenCalledWith("Enter", { human: { profile: "fast" }, delay: 7 });
-    expect(elementAdapter.check).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
-    expect(elementAdapter.uncheck).toHaveBeenCalledWith({ human: { profile: "fast" }, trial: true });
-    expect(elementAdapter.check).toHaveBeenNthCalledWith(2, { human: { profile: "fast" }, trial: true });
-    expect(elementAdapter.dblclick).toHaveBeenCalledWith({ human: { profile: "fast" }, delay: 6 });
+    expect(elementAdapter.press).toHaveBeenCalledWith("Enter", { delay: 7 });
+    expect(elementAdapter.check).toHaveBeenCalledWith({ trial: true });
+    expect(elementAdapter.uncheck).toHaveBeenCalledWith({ trial: true });
+    expect(elementAdapter.check).toHaveBeenNthCalledWith(2, { trial: true });
+    expect(elementAdapter.dblclick).toHaveBeenCalledWith({ delay: 6 });
   });
 
   it("dispatches drop through an element handle with normalized payloads", async () => {

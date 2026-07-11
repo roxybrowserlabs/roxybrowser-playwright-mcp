@@ -13,7 +13,6 @@ import { serializePageFunction } from "./evaluation.js";
 import type { RouteHandlerEntry, RouteMatcher } from "./routeHandler.js";
 import { urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
-import type { ResolvedHumanizationOptions } from "./human/types.js";
 import type {
   ProtocolBrowserContextAdapter,
   ProtocolPageAdapter
@@ -85,10 +84,11 @@ export class RoxyBrowserContext implements BrowserContext {
 
   constructor(
     private readonly adapter: ProtocolBrowserContextAdapter,
-    private readonly humanDefaults: ResolvedHumanizationOptions,
+    _unusedSecondArgument?: unknown,
     private readonly options: BrowserContextOptions = {},
     browserName: BrowserName = "chromium"
   ) {
+    void _unusedSecondArgument;
     this.clockDelegate = new RoxyBrowserContextClockDelegate(this, browserName);
     this.clock = new RoxyClock(this.clockDelegate);
     this.disposeAdapterPageListener =
@@ -491,7 +491,7 @@ export class RoxyBrowserContext implements BrowserContext {
   }
 
   private async createPage(pageAdapter: ProtocolPageAdapter): Promise<RoxyPage> {
-    const page = new RoxyPage(pageAdapter, this.humanDefaults, this, this.options);
+    const page = new RoxyPage(pageAdapter, undefined, this, this.options);
     this.pageSet.add(page);
     this.pageByAdapter.set(pageAdapter, page);
     this.adapterByPage.set(page, pageAdapter);
