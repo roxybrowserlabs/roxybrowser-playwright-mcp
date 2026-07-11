@@ -759,10 +759,12 @@ class BidiBrowserSession implements ProtocolBrowserSession {
     options: BrowserContextOptions = {}
   ): Promise<ProtocolBrowserContextAdapter> {
     if (options.reuseDefaultUserContext) {
+      await applyBidiDownloadBehavior(this.client, undefined, options);
       return new BidiBrowserContextAdapter(this.client, undefined, options);
     }
 
     const response = await this.client.browserCreateUserContext({});
+    await applyBidiDownloadBehavior(this.client, response.userContext, options);
     return new BidiBrowserContextAdapter(this.client, response.userContext, options);
   }
 
@@ -771,6 +773,30 @@ class BidiBrowserSession implements ProtocolBrowserSession {
       await this.client.sessionEnd({});
     }
   }
+}
+
+async function applyBidiDownloadBehavior(
+  client: BidiProtocolClient,
+  userContext: string | undefined,
+  options: BrowserContextOptions
+): Promise<void> {
+  if (options.acceptDownloads === false) {
+    await client.browserSetDownloadBehavior({
+      downloadBehavior: { type: "denied" },
+      userContexts: [userContext ?? "default"]
+    }).catch(() => undefined);
+    return;
+  }
+  if (!options.downloadsDir) {
+    return;
+  }
+  await client.browserSetDownloadBehavior({
+    downloadBehavior: {
+      type: "allowed",
+      destinationFolder: options.downloadsDir
+    },
+    userContexts: [userContext ?? "default"]
+  }).catch(() => undefined);
 }
 
 class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {

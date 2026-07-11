@@ -1,14 +1,12 @@
 import type { McpRuntime } from "../runtime.js";
 import type { SnapshotMode } from "../types.js";
+import type { AssetKind, AssetOptions } from "../../assets/types.js";
 import type { ToolCapability } from "./tool.js";
 import { Tab } from "./tab.js";
-import { configuredOutputDir, resolveOutputFilePath, resolveTempFilePath } from "../output.js";
 
-export type ContextConfig = {
+export type ContextConfig = AssetOptions & {
   capabilities?: ToolCapability[];
   skillMode?: boolean;
-  outputDir?: string;
-  tempDir?: string;
   snapshot?: {
     mode?: SnapshotMode;
   };
@@ -43,25 +41,15 @@ export class Context {
     return new Tab(this);
   }
 
-  outputDir(): string {
-    return configuredOutputDir({
-      outputDir: this.config.outputDir ?? this.runtime.getOutputDir()
-    });
+  assetDir(kind: AssetKind): string {
+    return this.runtime.getAssetManager().rootFor(kind);
   }
 
-  tempDir(): string {
-    return this.runtime.getTempDir();
-  }
-
-  async resolveOutputFile(filename: string): Promise<string> {
-    return resolveOutputFilePath(filename, {
-      outputDir: this.config.outputDir ?? this.runtime.getOutputDir()
-    });
+  async resolveOutputFile(filename: string, kind: AssetKind = "script"): Promise<string> {
+    return (await this.runtime.getAssetManager().resolveFile(kind, filename)).absolutePath;
   }
 
   async resolveTempFile(filename: string): Promise<string> {
-    return resolveTempFilePath(filename, {
-      tempDir: this.config.tempDir ?? this.runtime.getTempDir()
-    });
+    return (await this.runtime.getAssetManager().resolveFile("temporary", filename)).absolutePath;
   }
 }

@@ -32,9 +32,9 @@ import {
 import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "../human/bubbleCursor.js";
 import { buildTypingDelays } from "../human/typing.js";
 import { defaultRng } from "../human/random.js";
+import { resolveAssetRoots } from "../assets/manager.js";
 import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
-import { configuredTempDir } from "./output.js";
 import type {
   BrowserConsoleEntry,
   BrowserNetworkRequest,
@@ -1235,9 +1235,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     private readonly connection: CdpConnectionDetails,
     tempDir?: string
   ) {
-    this.tempDir = configuredTempDir({
-      ...(tempDir !== undefined ? { tempDir } : {})
-    });
+    this.tempDir = tempDir ?? resolveAssetRoots().tempDir;
   }
 
   static async connect(args: RoxyBrowserConnectArgs): Promise<CdpConnectedBrowserSession> {
@@ -1257,7 +1255,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       target: connection.browserWsEndpoint
     });
 
-    const session = new CdpConnectedBrowserSession(browserClient, connection, args.tempDir);
+    const session = new CdpConnectedBrowserSession(browserClient, connection, args.assetRoots?.tempDir);
     session.versionString = version.Browser;
     await session.refreshTabs();
     await session.getActivePageClient().catch(() => undefined);
@@ -3633,9 +3631,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     private readonly client: BidiProtocolClient,
     tempDir?: string
   ) {
-    this.tempDir = configuredTempDir({
-      ...(tempDir !== undefined ? { tempDir } : {})
-    });
+    this.tempDir = tempDir ?? resolveAssetRoots().tempDir;
   }
 
   static async connect(args: RoxyBrowserConnectArgs): Promise<BidiConnectedBrowserSession> {
@@ -3659,7 +3655,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       webSocketUrl: normalizeFirefoxBidiEndpoint(args.endpoint, args.sessionId)
     });
 
-    const session = new BidiConnectedBrowserSession(client, args.tempDir);
+    const session = new BidiConnectedBrowserSession(client, args.assetRoots?.tempDir);
     session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint, args.sessionId);
     await session.initialize();
     await session.refreshTabs();

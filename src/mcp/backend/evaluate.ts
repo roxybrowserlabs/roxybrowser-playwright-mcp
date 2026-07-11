@@ -20,7 +20,7 @@ const evaluate = defineTool({
     const result = await context.runtime.evaluate(params.function, params.target);
     const text = JSON.stringify(result, null, 2) ?? "undefined";
     if (params.filename) {
-      const resolvedFilename = await context.resolveOutputFile(params.filename);
+      const resolvedFilename = await context.resolveOutputFile(params.filename, "script");
       await writeFile(resolvedFilename, text);
       response.addTextResult(`Saved evaluation result to "${resolvedFilename}".`);
       return;

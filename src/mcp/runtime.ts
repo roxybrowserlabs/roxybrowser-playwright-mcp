@@ -1,5 +1,6 @@
 import { connectBrowserSession } from "./connectedBrowser.js";
 import { McpToolError } from "./errors.js";
+import { AssetManager } from "../assets/manager.js";
 import type {
   BrowserConsoleEntry,
   BrowserNetworkRequest,
@@ -17,8 +18,8 @@ import type {
   SnapshotMode
 } from "./types.js";
 import { resolveHumanizationOptions, jitter } from "../human/profile.js";
+import type { AssetOptions } from "../assets/types.js";
 import type { HumanizationOptions } from "../types/options.js";
-import { configuredOutputDir, configuredTempDir } from "./output.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -48,28 +49,18 @@ export class McpRuntime {
   private pendingFileUploadTarget: ClickTarget | undefined;
   private fileUploadPending = false;
   private readonly snapshotMode: SnapshotMode;
-  private readonly outputDir: string;
-  private readonly tempDir: string;
+  private readonly assetManager: AssetManager;
 
   constructor(
     private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession,
-    options: { snapshotMode?: SnapshotMode; outputDir?: string; tempDir?: string } = {}
+    options: { snapshotMode?: SnapshotMode } & AssetOptions = {}
   ) {
     this.snapshotMode = options.snapshotMode ?? "full";
-    this.outputDir = configuredOutputDir({
-      ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {})
-    });
-    this.tempDir = configuredTempDir({
-      ...(options.tempDir !== undefined ? { tempDir: options.tempDir } : {})
-    });
+    this.assetManager = new AssetManager(options);
   }
 
-  getOutputDir(): string {
-    return this.outputDir;
-  }
-
-  getTempDir(): string {
-    return this.tempDir;
+  getAssetManager(): AssetManager {
+    return this.assetManager;
   }
 
   async connect(args: Parameters<BrowserSessionFactory>[0]): Promise<{
@@ -82,7 +73,7 @@ export class McpRuntime {
     await this.close();
     const session = await this.sessionFactory({
       ...args,
-      tempDir: this.tempDir
+      assetRoots: this.assetManager.roots
     });
     this.connection = {
       session
@@ -883,7 +874,7 @@ export class McpRuntimeManager {
 
   constructor(
     private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"],
-    private readonly options: { snapshotMode?: SnapshotMode; outputDir?: string; tempDir?: string } = {}
+    private readonly options: { snapshotMode?: SnapshotMode } & AssetOptions = {}
   ) {}
 
   getRuntime(sessionId = "default"): McpRuntime {
@@ -894,8 +885,19 @@ export class McpRuntimeManager {
 
     const runtime = new McpRuntime(this.sessionFactory, {
       ...(this.options.snapshotMode !== undefined ? { snapshotMode: this.options.snapshotMode } : {}),
-      ...(this.options.outputDir !== undefined ? { outputDir: this.options.outputDir } : {}),
-      ...(this.options.tempDir !== undefined ? { tempDir: this.options.tempDir } : {})
+      ...(this.options.artifactsDir !== undefined ? { artifactsDir: this.options.artifactsDir } : {}),
+      ...(this.options.downloadsDir !== undefined ? { downloadsDir: this.options.downloadsDir } : {}),
+      ...(this.options.screenshotsDir !== undefined ? { screenshotsDir: this.options.screenshotsDir } : {}),
+      ...(this.options.snapshotsDir !== undefined ? { snapshotsDir: this.options.snapshotsDir } : {}),
+      ...(this.options.tracesDir !== undefined ? { tracesDir: this.options.tracesDir } : {}),
+      ...(this.options.videosDir !== undefined ? { videosDir: this.options.videosDir } : {}),
+      ...(this.options.networkDir !== undefined ? { networkDir: this.options.networkDir } : {}),
+      ...(this.options.consoleDir !== undefined ? { consoleDir: this.options.consoleDir } : {}),
+      ...(this.options.scriptsDir !== undefined ? { scriptsDir: this.options.scriptsDir } : {}),
+      ...(this.options.tempDir !== undefined ? { tempDir: this.options.tempDir } : {}),
+      ...(this.options.allowAbsoluteAssetPaths !== undefined
+        ? { allowAbsoluteAssetPaths: this.options.allowAbsoluteAssetPaths }
+        : {})
     });
     this.runtimes.set(sessionId, runtime);
     return runtime;

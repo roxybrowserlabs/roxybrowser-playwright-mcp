@@ -923,8 +923,13 @@ describe("MCP server", () => {
   });
 
   it("passes Playwright-style snapshot args through the MCP layer and can save to a file", async () => {
+    const snapshotsDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-snapshots-"));
+    cleanupCallbacks.push(async () => {
+      await rm(snapshotsDir, { recursive: true, force: true });
+    });
     const bundle = await createRoxyBrowserMcpInMemory({
-      sessionFactory: fakeSessionFactory
+      sessionFactory: fakeSessionFactory,
+      snapshotsDir
     });
     cleanupCallbacks.push(async () => bundle.close());
 
@@ -938,11 +943,8 @@ describe("MCP server", () => {
       }
     });
 
-    const tempDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-"));
-    cleanupCallbacks.push(async () => {
-      await rm(tempDir, { recursive: true, force: true });
-    });
-    const filename = join(tempDir, "snapshot.md");
+    const filename = "snapshot.md";
+    const resolvedFilename = join(snapshotsDir, filename);
 
     const result = await client.callTool({
       name: "browser_snapshot",
@@ -955,9 +957,9 @@ describe("MCP server", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(textFromResult(result)).toContain(`Saved snapshot to "${filename}".`);
+    expect(textFromResult(result)).toContain(`Saved snapshot to "${resolvedFilename}".`);
 
-    const savedSnapshot = await readFile(filename, "utf8");
+    const savedSnapshot = await readFile(resolvedFilename, "utf8");
     expect(savedSnapshot).toContain("[target=tab-1:node-1]");
     expect(savedSnapshot).toContain("[depth=2]");
     expect(savedSnapshot).toContain("[box=0,0,120,32]");
@@ -966,18 +968,18 @@ describe("MCP server", () => {
     expect(savedSnapshot.startsWith("- button")).toBe(true);
   });
 
-  it("resolves relative browser_snapshot filenames into the configured temp dir", async () => {
-    const outputDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-output-"));
-    const tempDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-temp-"));
+  it("resolves relative browser_snapshot filenames into the configured snapshots dir", async () => {
+    const screenshotsDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-screenshots-"));
+    const snapshotsDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-snapshots-"));
     cleanupCallbacks.push(async () => {
-      await rm(outputDir, { recursive: true, force: true });
-      await rm(tempDir, { recursive: true, force: true });
+      await rm(screenshotsDir, { recursive: true, force: true });
+      await rm(snapshotsDir, { recursive: true, force: true });
     });
 
     const bundle = await createRoxyBrowserMcpInMemory({
       sessionFactory: fakeSessionFactory,
-      outputDir,
-      tempDir
+      screenshotsDir,
+      snapshotsDir
     });
     cleanupCallbacks.push(async () => bundle.close());
 
@@ -992,7 +994,7 @@ describe("MCP server", () => {
     });
 
     const relativeFilename = "nested/snapshot.md";
-    const resolvedFilename = join(tempDir, "nested", "snapshot.md");
+    const resolvedFilename = join(snapshotsDir, "nested", "snapshot.md");
 
     const result = await client.callTool({
       name: "browser_snapshot",
@@ -1003,10 +1005,50 @@ describe("MCP server", () => {
 
     expect(result.isError).toBeUndefined();
     expect(textFromResult(result)).toContain(`Saved snapshot to "${resolvedFilename}".`);
-    expect(textFromResult(result)).not.toContain(outputDir);
+    expect(textFromResult(result)).not.toContain(screenshotsDir);
 
     const savedSnapshot = await readFile(resolvedFilename, "utf8");
     expect(savedSnapshot).toContain("- button");
+  });
+
+  it("passes unified asset roots to connected browser sessions", async () => {
+    const artifactsDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-artifacts-"));
+    const downloadsDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-downloads-"));
+    const snapshotsDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-snapshots-"));
+    cleanupCallbacks.push(async () => {
+      await rm(artifactsDir, { recursive: true, force: true });
+      await rm(downloadsDir, { recursive: true, force: true });
+      await rm(snapshotsDir, { recursive: true, force: true });
+    });
+
+    let capturedArgs: RoxyBrowserConnectArgs | undefined;
+    const trackingFactory: BrowserSessionFactory = async (args) => {
+      capturedArgs = args;
+      return new FakeConnectedBrowserSession(args);
+    };
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: trackingFactory,
+      artifactsDir,
+      downloadsDir,
+      snapshotsDir
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+    await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        endpoint: "ws://asset-roots.invalid/devtools/browser/1"
+      }
+    });
+
+    expect(capturedArgs?.assetRoots).toMatchObject({
+      artifactsDir,
+      downloadsDir,
+      snapshotsDir
+    });
   });
 
   it("validates tab index operations through the tool layer", async () => {
@@ -2035,9 +2077,9 @@ describe("MCP server", () => {
   });
 
   describe("browser_take_screenshot", () => {
-    it("auto-saves screenshot to the output dir and returns an image content item", async () => {
-      const outputDir = await mkdtemp(join(tmpdir(), "roxy-screenshot-auto-"));
-      cleanupCallbacks.push(async () => rm(outputDir, { recursive: true, force: true }));
+    it("auto-saves screenshot to the screenshots dir and returns an image content item", async () => {
+      const screenshotsDir = await mkdtemp(join(tmpdir(), "roxy-screenshot-auto-"));
+      cleanupCallbacks.push(async () => rm(screenshotsDir, { recursive: true, force: true }));
 
       let capturedSession: FakeConnectedBrowserSession | undefined;
       const trackingFactory: BrowserSessionFactory = async (args) => {
@@ -2047,7 +2089,7 @@ describe("MCP server", () => {
 
       const bundle = await createRoxyBrowserMcpInMemory({
         sessionFactory: trackingFactory,
-        outputDir
+        screenshotsDir
       });
       cleanupCallbacks.push(async () => bundle.close());
 
@@ -2066,7 +2108,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       const text = textFromResult(result);
-      expect(text).toMatch(new RegExp(`${outputDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.+page-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}Z\\.png`));
+      expect(text).toMatch(new RegExp(`${screenshotsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.+page-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}Z\\.png`));
       const imageItems = (result.content as Array<{ type: string; data?: string; mimeType?: string }>)
         .filter((item) => item.type === "image");
       expect(imageItems.length).toBe(1);
@@ -2076,10 +2118,22 @@ describe("MCP server", () => {
     });
 
     it("saves screenshot to file when filename is given", async () => {
-      const { client } = await setupTrackingClient();
-      const tempDir = await mkdtemp(join(tmpdir(), "roxy-screenshot-"));
-      cleanupCallbacks.push(async () => rm(tempDir, { recursive: true, force: true }));
-      const filename = join(tempDir, "screen.png");
+      const screenshotsDir = await mkdtemp(join(tmpdir(), "roxy-screenshot-"));
+      cleanupCallbacks.push(async () => rm(screenshotsDir, { recursive: true, force: true }));
+      const bundle = await createRoxyBrowserMcpInMemory({
+        sessionFactory: fakeSessionFactory,
+        screenshotsDir
+      });
+      cleanupCallbacks.push(async () => bundle.close());
+      const client = createClient();
+      cleanupCallbacks.push(async () => client.close());
+      await client.connect(bundle.clientTransport);
+      await client.callTool({
+        name: "roxy_browser_connect",
+        arguments: { endpoint: "ws://x.invalid/1" }
+      });
+      const filename = "screen.png";
+      const resolvedFilename = join(screenshotsDir, filename);
 
       const result = await client.callTool({
         name: "browser_take_screenshot",
@@ -2087,14 +2141,14 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(textFromResult(result)).toContain(filename);
-      const saved = await readFile(filename);
+      expect(textFromResult(result)).toContain(resolvedFilename);
+      const saved = await readFile(resolvedFilename);
       expect(saved.length).toBeGreaterThan(0);
     });
 
-    it("resolves relative screenshot filenames into the configured output dir", async () => {
-      const outputDir = await mkdtemp(join(tmpdir(), "roxy-screenshot-output-"));
-      cleanupCallbacks.push(async () => rm(outputDir, { recursive: true, force: true }));
+    it("resolves relative screenshot filenames into the configured screenshots dir", async () => {
+      const screenshotsDir = await mkdtemp(join(tmpdir(), "roxy-screenshot-output-"));
+      cleanupCallbacks.push(async () => rm(screenshotsDir, { recursive: true, force: true }));
 
       let capturedSession: FakeConnectedBrowserSession | undefined;
       const trackingFactory: BrowserSessionFactory = async (args) => {
@@ -2104,7 +2158,7 @@ describe("MCP server", () => {
 
       const bundle = await createRoxyBrowserMcpInMemory({
         sessionFactory: trackingFactory,
-        outputDir
+        screenshotsDir
       });
       cleanupCallbacks.push(async () => bundle.close());
 
@@ -2117,7 +2171,7 @@ describe("MCP server", () => {
       });
 
       const relativeFilename = "images/screen.png";
-      const resolvedFilename = join(outputDir, "images", "screen.png");
+      const resolvedFilename = join(screenshotsDir, "images", "screen.png");
 
       const result = await client.callTool({
         name: "browser_take_screenshot",
@@ -2133,12 +2187,12 @@ describe("MCP server", () => {
     });
 
     it("treats an empty filename as auto-generated output", async () => {
-      const outputDir = await mkdtemp(join(tmpdir(), "roxy-screenshot-empty-"));
-      cleanupCallbacks.push(async () => rm(outputDir, { recursive: true, force: true }));
+      const screenshotsDir = await mkdtemp(join(tmpdir(), "roxy-screenshot-empty-"));
+      cleanupCallbacks.push(async () => rm(screenshotsDir, { recursive: true, force: true }));
 
       const bundle = await createRoxyBrowserMcpInMemory({
         sessionFactory: fakeSessionFactory,
-        outputDir
+        screenshotsDir
       });
       cleanupCallbacks.push(async () => bundle.close());
 
@@ -2157,7 +2211,7 @@ describe("MCP server", () => {
 
       expect(result.isError).toBeUndefined();
       const text = textFromResult(result);
-      expect(text).toMatch(new RegExp(`${outputDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.+page-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}Z\\.png`));
+      expect(text).toMatch(new RegExp(`${screenshotsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.+page-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}Z\\.png`));
       const imageItems = (result.content as Array<{ type: string; data?: string; mimeType?: string }>)
         .filter((item) => item.type === "image");
       expect(imageItems.length).toBe(1);

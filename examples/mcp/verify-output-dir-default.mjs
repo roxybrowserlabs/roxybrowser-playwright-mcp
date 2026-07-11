@@ -1,5 +1,5 @@
-// Child helper for verify-output-dir.mjs — runs with NO outputDir so the
-// server falls back to `<cwd>/.roxybrowser-playwright-mcp/`. Asserts the file lands there.
+// Child helper for verify-output-dir.mjs — runs with NO snapshotsDir so the
+// server falls back to `<cwd>/roxybrowser-playwright-artifacts/snapshots/`.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createRoxyBrowserMcpInMemory } from "@roxybrowser/playwright/mcp";
 import { readFile, readdir } from "node:fs/promises";
@@ -32,7 +32,7 @@ function textOf(result) {
 }
 
 async function main() {
-  const expectedDir = join(process.cwd(), ".roxybrowser-playwright-mcp");
+  const expectedDir = join(process.cwd(), "roxybrowser-playwright-artifacts", "snapshots");
   console.log(`[default] expecting default dir = ${expectedDir}`);
 
   const bundle = await createRoxyBrowserMcpInMemory({
@@ -65,7 +65,7 @@ async function main() {
     if (!entries.includes("snap.md")) {
       throw new Error(`FAIL: snap.md missing in default dir: ${entries}`);
     }
-    console.log("[default] PASS — file landed in default .roxybrowser-playwright-mcp/");
+    console.log("[default] PASS — file landed in default snapshots asset dir");
   } finally {
     await client.close();
     await bundle.close();

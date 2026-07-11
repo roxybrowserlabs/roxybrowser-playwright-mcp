@@ -22,10 +22,10 @@ describe("RoxyBrowserType", () => {
 
     const browser = await browserType.launch();
 
-    expect(factory.create).toHaveBeenCalledWith({
+    expect(factory.create).toHaveBeenCalledWith(expect.objectContaining({
       browserName: "chromium",
       protocol: "cdp"
-    });
+    }));
     expect(adapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
   });
@@ -54,7 +54,7 @@ describe("RoxyBrowserType", () => {
       }
     });
 
-    expect(bidiFactory.create).toHaveBeenCalledWith({
+    expect(bidiFactory.create).toHaveBeenCalledWith(expect.objectContaining({
       browserName: "chromium",
       protocol: "bidi",
       channel: "chrome",
@@ -63,7 +63,7 @@ describe("RoxyBrowserType", () => {
       human: {
         profile: "fast"
       }
-    });
+    }));
     expect(cdpFactory.create).not.toHaveBeenCalled();
   });
 
@@ -90,14 +90,14 @@ describe("RoxyBrowserType", () => {
       }
     );
 
-    expect(cdpFactory.create).toHaveBeenCalledWith({
+    expect(cdpFactory.create).toHaveBeenCalledWith(expect.objectContaining({
       browserName: "chromium",
       protocol: "cdp",
       wsEndpoint: "ws://127.0.0.1:9222/devtools/browser/example",
       isLocal: true,
       noDefaults: true,
       slowMo: 25
-    });
+    }));
     expect(cdpAdapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
     expect(browser.contexts()).toHaveLength(1);
@@ -123,11 +123,11 @@ describe("RoxyBrowserType", () => {
     // firefox→bidi). See the divergence comment on RoxyBrowserType.connect().
     const browser = await browserType.connect("ws://127.0.0.1:9222");
 
-    expect(bidiFactory.create).toHaveBeenCalledWith({
+    expect(bidiFactory.create).toHaveBeenCalledWith(expect.objectContaining({
       browserName: "firefox",
       protocol: "bidi",
       wsEndpoint: "ws://127.0.0.1:9222"
-    });
+    }));
     expect(bidiAdapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
     expect(browser.contexts()).toHaveLength(1);
@@ -150,11 +150,11 @@ describe("RoxyBrowserType", () => {
 
     const browser = await browserType.connect("ws://127.0.0.1:9222/devtools/browser/example");
 
-    expect(cdpFactory.create).toHaveBeenCalledWith({
+    expect(cdpFactory.create).toHaveBeenCalledWith(expect.objectContaining({
       browserName: "chromium",
       protocol: "cdp",
       wsEndpoint: "ws://127.0.0.1:9222/devtools/browser/example"
-    });
+    }));
     expect(cdpAdapter.connect).toHaveBeenCalledTimes(1);
     expect(browser).toBeInstanceOf(RoxyBrowser);
     expect(browser.contexts()).toHaveLength(1);
@@ -209,10 +209,10 @@ describe("RoxyBrowserType", () => {
 
     const browser = await browserType.launch();
 
-    expect(bidiFactory.create).toHaveBeenCalledWith({
+    expect(bidiFactory.create).toHaveBeenCalledWith(expect.objectContaining({
       browserName: "firefox",
       protocol: "bidi"
-    });
+    }));
     expect(browser).toBeInstanceOf(RoxyBrowser);
     expect(cdpFactory.create).not.toHaveBeenCalled();
   });

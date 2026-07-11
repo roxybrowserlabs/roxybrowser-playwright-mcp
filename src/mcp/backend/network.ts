@@ -38,7 +38,7 @@ const networkRequests = defineTool({
     }
     const text = lines.join("\n");
     if (args.filename) {
-      const resolvedFilename = await context.resolveOutputFile(args.filename);
+      const resolvedFilename = await context.resolveOutputFile(args.filename, "network");
       await writeFile(resolvedFilename, text);
       response.addTextResult(`Saved network requests to "${resolvedFilename}".`);
       return;
@@ -72,7 +72,7 @@ const networkRequest = defineTool({
         ? (await context.runtime.fetchResponseBody(args.index) ?? "")
         : renderRequestPart(request, args.part);
       if (args.filename) {
-        const resolvedFilename = await context.resolveOutputFile(args.filename);
+        const resolvedFilename = await context.resolveOutputFile(args.filename, "network");
         await writeFile(resolvedFilename, partText);
         response.addTextResult(`Saved network request to "${resolvedFilename}".`);
       } else {
@@ -82,7 +82,7 @@ const networkRequest = defineTool({
     }
     const text = renderRequestDetails(request);
     if (args.filename) {
-      const resolvedFilename = await context.resolveOutputFile(args.filename);
+      const resolvedFilename = await context.resolveOutputFile(args.filename, "network");
       await writeFile(resolvedFilename, text);
       response.addTextResult(`Saved network request to "${resolvedFilename}".`);
       return;

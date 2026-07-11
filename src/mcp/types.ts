@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Server as HttpServer } from "node:http";
 import type { Readable, Writable } from "node:stream";
+import type { AssetOptions, AssetRoots } from "../assets/types.js";
 
 export type RoxyMcpProtocol = "cdp" | "bidi";
 
@@ -11,7 +12,7 @@ export interface RoxyBrowserConnectArgs {
   endpoint: string;
   browser?: "chromium" | "firefox";
   sessionId?: string;
-  tempDir?: string;
+  assetRoots?: AssetRoots;
 }
 
 export interface BrowserTab {
@@ -208,15 +209,13 @@ export type BrowserSessionFactory = (
 
 export type SnapshotMode = "full" | "none";
 
-export interface CreateRoxyBrowserMcpServerOptions {
+export interface CreateRoxyBrowserMcpServerOptions extends AssetOptions {
   sessionFactory?: BrowserSessionFactory;
   serverInfo?: {
     name?: string;
     version?: string;
   };
   snapshotMode?: SnapshotMode;
-  outputDir?: string;
-  tempDir?: string;
 }
 
 export interface StartRoxyBrowserMcpHttpOptions extends CreateRoxyBrowserMcpServerOptions {

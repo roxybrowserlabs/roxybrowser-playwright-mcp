@@ -1,4 +1,5 @@
 import type { Locator } from "./api.js";
+import type { AssetOptions } from "../assets/types.js";
 
 export type SupportedProtocol = "cdp" | "bidi";
 export type BrowserName = "chromium" | "firefox";
@@ -58,7 +59,7 @@ export interface HumanizedOption {
   human?: HumanizationOptions;
 }
 
-export interface LaunchOptions {
+export interface LaunchOptions extends AssetOptions {
   browserName?: BrowserName;
   protocol?: SupportedProtocol;
   headless?: boolean;
@@ -72,7 +73,7 @@ export interface LaunchOptions {
   human?: HumanizationOptions;
 }
 
-export interface ConnectOverCDPOptions {
+export interface ConnectOverCDPOptions extends AssetOptions {
   slowMo?: number;
   headers?: HeadersArray;
   isLocal?: boolean;
@@ -101,6 +102,8 @@ export interface BrowserContextOptions {
   recordVideo?: RecordVideoOptions;
   reuseDefaultUserContext?: boolean;
   strictSelectors?: boolean;
+  acceptDownloads?: boolean;
+  downloadsDir?: string;
   human?: HumanizationOptions;
 }
 

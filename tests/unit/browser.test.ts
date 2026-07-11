@@ -16,7 +16,8 @@ describe("RoxyBrowser", () => {
     const session = createBrowserSessionStub();
     const contextAdapter = createBrowserContextAdapterStub();
     session.newContext = async (options) => {
-      expect(options).toEqual({
+      expect(options).toMatchObject({
+        acceptDownloads: true,
         locale: "zh-CN",
         human: {
           profile: "fast",
@@ -54,7 +55,8 @@ describe("RoxyBrowser", () => {
     const session = createBrowserSessionStub();
     const contextAdapter = createBrowserContextAdapterStub();
     session.newContext = async (options) => {
-      expect(options).toEqual({
+      expect(options).toMatchObject({
+        acceptDownloads: true,
         extraHTTPHeaders: {
           Foo: "Bar"
         }
@@ -75,7 +77,8 @@ describe("RoxyBrowser", () => {
     const session = createBrowserSessionStub();
     const contextAdapter = createBrowserContextAdapterStub();
     session.newContext = async (options) => {
-      expect(options).toEqual({
+      expect(options).toMatchObject({
+        acceptDownloads: true,
         recordVideo: {
           dir: resolve("videos"),
           size: {

@@ -91,9 +91,9 @@ The full upstream Playwright source lives at `library/playwright/` (a git submod
 
 `library/playwright/` `src/vendor/playwright/source/` mirrors the Playwright files we depend on (notably `injected/injectedScript.snapshot.ts`) and is **excluded from `tsconfig.json`**. `scripts/generate-playwright-snapshot-source.mjs` bundles that entry with vite into `src/vendor/playwright/generated/injectedScriptSource.ts` (the aria-snapshot injected script). Regenerate via `pnpm build:vendor:snapshot` only when the vendored source changes; the generated file is checked in.
 
-### Output and temp directories
+### Asset directories
 
-MCP tools that write durable files (screenshots, network/console dumps, evaluate output) honor `outputDir`; short-lived runtime files (snapshots saved with `filename`, console logs referenced by snapshots) honor `tempDir`. Resolution (`src/mcp/output.ts`): env `ROXY_MCP_OUTPUT_DIR` / `PLAYWRIGHT_MCP_OUTPUT_DIR` (default `.roxybrowser-playwright-mcp` under cwd, or `os.tmpdir()` if cwd unwritable) and `ROXY_MCP_TEMP_DIR` / `PLAYWRIGHT_MCP_TEMP_DIR` (default `os.tmpdir()`). Relative `filename` args resolve inside the dir; absolute paths pass through. Both default dirs are gitignored.
+Page API and MCP tools share one asset model (`src/assets/`). Screenshots, downloads, snapshots, traces, videos, network exports, console exports, script outputs, and temporary runtime files resolve through `AssetManager`. API options (`artifactsDir`, `downloadsDir`, `screenshotsDir`, `snapshotsDir`, `tracesDir`, `videosDir`, `networkDir`, `consoleDir`, `scriptsDir`, `tempDir`) take precedence over `ROXY_PLAYWRIGHT_*` environment variables. `SANDBOX_OUTPUT_DIR` is the agent sandbox default when explicit options are absent. The old MCP-only `outputDir` / `ROXY_MCP_*` / `PLAYWRIGHT_MCP_*` model has been removed; do not reintroduce it. Relative filenames resolve inside the relevant asset kind directory, and absolute asset paths are rejected unless `allowAbsoluteAssetPaths` is enabled.
 
 ### RoxyBrowser local API
 

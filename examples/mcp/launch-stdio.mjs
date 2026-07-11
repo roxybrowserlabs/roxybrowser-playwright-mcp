@@ -8,25 +8,25 @@ import { fileURLToPath } from "node:url";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 /**
- * Starts the RoxyBrowser MCP server over stdio with a custom `outputDir`,
+ * Starts the RoxyBrowser MCP server over stdio with a custom `snapshotsDir`,
  * then drives it from an in-process MCP client.
  *
- * `outputDir` is where the server writes snapshot/console artifacts for the
+ * `snapshotsDir` is where the server writes snapshot artifacts for the
  * session, so we point it at a fresh temp directory for this run.
  */
 async function run() {
-  const outputDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-stdio-"));
-  console.error(`[example] outputDir = ${outputDir}`);
+  const snapshotsDir = await mkdtemp(join(tmpdir(), "roxybrowser-mcp-stdio-"));
+  console.error(`[example] snapshotsDir = ${snapshotsDir}`);
 
-  // Spawn the built CLI as the server process, forwarding --output-dir.
-  // (You could also call `startRoxyBrowserMcpStdio({ outputDir })` in-process;
+  // Spawn the built CLI as the server process, forwarding --snapshots-dir.
+  // (You could also call `startRoxyBrowserMcpStdio({ snapshotsDir })` in-process;
   // spawning the bin keeps the example close to how a host would launch it.)
   const transport = new StdioClientTransport({
     command: "node",
     args: [
       join(repoRoot, "dist/bin/roxybrowser-mcp.js"),
-      "--output-dir",
-      outputDir
+      "--snapshots-dir",
+      snapshotsDir
     ],
     cwd: repoRoot
   });
@@ -54,8 +54,8 @@ async function run() {
     }
   } finally {
     await client.close();
-    console.error("[example] cleaning up outputDir");
-    await rm(outputDir, { recursive: true, force: true });
+    console.error("[example] cleaning up snapshotsDir");
+    await rm(snapshotsDir, { recursive: true, force: true });
   }
 }
 

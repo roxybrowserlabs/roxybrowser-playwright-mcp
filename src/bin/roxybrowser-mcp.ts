@@ -3,6 +3,7 @@
 import { parseArgs } from "node:util";
 import { startRoxyBrowserMcpHttp, startRoxyBrowserMcpStdio } from "../mcp/index.js";
 import type {
+  CreateRoxyBrowserMcpServerOptions,
   SnapshotMode,
   StartRoxyBrowserMcpHttpOptions,
   StartRoxyBrowserMcpStdioOptions
@@ -15,7 +16,15 @@ interface CliOptions {
   host?: string;
   port?: number;
   path?: string;
-  outputDir?: string;
+  artifactsDir?: string;
+  downloadsDir?: string;
+  screenshotsDir?: string;
+  snapshotsDir?: string;
+  tracesDir?: string;
+  videosDir?: string;
+  networkDir?: string;
+  consoleDir?: string;
+  scriptsDir?: string;
   tempDir?: string;
   snapshotMode?: SnapshotMode;
 }
@@ -28,7 +37,15 @@ function parseCliOptions(argv: string[]): CliOptions {
       host: { type: "string" },
       port: { type: "string" },
       path: { type: "string" },
-      "output-dir": { type: "string" },
+      "artifacts-dir": { type: "string" },
+      "downloads-dir": { type: "string" },
+      "screenshots-dir": { type: "string" },
+      "snapshots-dir": { type: "string" },
+      "traces-dir": { type: "string" },
+      "videos-dir": { type: "string" },
+      "network-dir": { type: "string" },
+      "console-dir": { type: "string" },
+      "scripts-dir": { type: "string" },
       "temp-dir": { type: "string" },
       "snapshot-mode": { type: "string" }
     },
@@ -61,7 +78,15 @@ function parseCliOptions(argv: string[]): CliOptions {
     ...(values.host !== undefined ? { host: values.host } : {}),
     ...(port !== undefined ? { port } : {}),
     ...(values.path !== undefined ? { path: values.path } : {}),
-    ...(values["output-dir"] !== undefined ? { outputDir: values["output-dir"] } : {}),
+    ...(values["artifacts-dir"] !== undefined ? { artifactsDir: values["artifacts-dir"] } : {}),
+    ...(values["downloads-dir"] !== undefined ? { downloadsDir: values["downloads-dir"] } : {}),
+    ...(values["screenshots-dir"] !== undefined ? { screenshotsDir: values["screenshots-dir"] } : {}),
+    ...(values["snapshots-dir"] !== undefined ? { snapshotsDir: values["snapshots-dir"] } : {}),
+    ...(values["traces-dir"] !== undefined ? { tracesDir: values["traces-dir"] } : {}),
+    ...(values["videos-dir"] !== undefined ? { videosDir: values["videos-dir"] } : {}),
+    ...(values["network-dir"] !== undefined ? { networkDir: values["network-dir"] } : {}),
+    ...(values["console-dir"] !== undefined ? { consoleDir: values["console-dir"] } : {}),
+    ...(values["scripts-dir"] !== undefined ? { scriptsDir: values["scripts-dir"] } : {}),
     ...(values["temp-dir"] !== undefined ? { tempDir: values["temp-dir"] } : {}),
     ...(snapshotMode !== undefined ? { snapshotMode: snapshotMode as SnapshotMode } : {})
   };
@@ -69,13 +94,31 @@ function parseCliOptions(argv: string[]): CliOptions {
 
 function sharedOptions(options: CliOptions): Pick<
   StartRoxyBrowserMcpStdioOptions,
-  "outputDir" | "snapshotMode" | "tempDir"
+  | "artifactsDir"
+  | "downloadsDir"
+  | "screenshotsDir"
+  | "snapshotsDir"
+  | "tracesDir"
+  | "videosDir"
+  | "networkDir"
+  | "consoleDir"
+  | "scriptsDir"
+  | "snapshotMode"
+  | "tempDir"
 > {
   return {
-    ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {}),
+    ...(options.artifactsDir !== undefined ? { artifactsDir: options.artifactsDir } : {}),
+    ...(options.downloadsDir !== undefined ? { downloadsDir: options.downloadsDir } : {}),
+    ...(options.screenshotsDir !== undefined ? { screenshotsDir: options.screenshotsDir } : {}),
+    ...(options.snapshotsDir !== undefined ? { snapshotsDir: options.snapshotsDir } : {}),
+    ...(options.tracesDir !== undefined ? { tracesDir: options.tracesDir } : {}),
+    ...(options.videosDir !== undefined ? { videosDir: options.videosDir } : {}),
+    ...(options.networkDir !== undefined ? { networkDir: options.networkDir } : {}),
+    ...(options.consoleDir !== undefined ? { consoleDir: options.consoleDir } : {}),
+    ...(options.scriptsDir !== undefined ? { scriptsDir: options.scriptsDir } : {}),
     ...(options.tempDir !== undefined ? { tempDir: options.tempDir } : {}),
     ...(options.snapshotMode !== undefined ? { snapshotMode: options.snapshotMode } : {})
-  };
+  } satisfies Partial<CreateRoxyBrowserMcpServerOptions>;
 }
 
 async function main(): Promise<void> {

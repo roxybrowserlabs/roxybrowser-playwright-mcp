@@ -25,7 +25,7 @@ const consoleMessages = defineTool({
       ...messages.map((message) => message.formattedText)
     ].join("\n");
     if (params.filename) {
-      const resolvedFilename = await context.resolveOutputFile(params.filename);
+      const resolvedFilename = await context.resolveOutputFile(params.filename, "console");
       await writeFile(resolvedFilename, text);
       response.addTextResult(`Saved console messages to "${resolvedFilename}".`);
       return;

@@ -90,8 +90,9 @@ Useful environment variables:
 - `ROXY_HEADLESS=false`
 - `ROXY_CDP_ENDPOINT=ws://127.0.0.1:9222/devtools/browser/<id>`
 - `ROXY_BIDI_ENDPOINT=ws://127.0.0.1:9222/session/<id>`
-- `ROXY_MCP_OUTPUT_DIR=/absolute/path/to/output`
-- `ROXY_MCP_TEMP_DIR=/absolute/path/to/temp`
+- `ROXY_PLAYWRIGHT_ARTIFACTS_DIR=/absolute/path/to/artifacts`
+- `ROXY_PLAYWRIGHT_DOWNLOADS_DIR=/absolute/path/to/downloads`
+- `ROXY_PLAYWRIGHT_TEMP_DIR=/absolute/path/to/temp`
 
 ## Connecting the MCP server to a browser
 
@@ -103,35 +104,35 @@ Before other MCP tools can act on a page, attach the session to a running browse
 
 Endpoints typically come from the RoxyBrowser desktop app's local API, which opens a profile and returns a debugging endpoint. Once connected, the standard `browser_*` tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`, and so on) operate on the active tab.
 
-## MCP output directory
+## Asset directories
 
-The MCP tools that produce durable output files, such as `browser_take_screenshot`,
-`browser_network_requests`, `browser_network_request`, `browser_console_messages`,
-and `browser_evaluate`, support a shared output directory.
+Page API and MCP tools share one asset model. Screenshots, downloads, snapshots,
+traces, videos, network exports, console exports, script outputs, and temporary
+runtime files are resolved by the same asset manager.
 
-- Set `ROXY_MCP_OUTPUT_DIR` to choose the default directory for MCP-generated files.
-- `PLAYWRIGHT_MCP_OUTPUT_DIR` is also recognized for compatibility with Playwright MCP.
-- If a tool receives a relative `filename`, it will be resolved inside the output directory.
-- If a tool receives an absolute `filename`, it will be used as-is.
-- If no output directory is configured, the default is `.roxybrowser-playwright-mcp` under the current working directory, or the system temp directory when the cwd is not writable.
+API options take precedence over environment variables. Relative `filename`
+arguments are resolved inside the relevant asset directory. Absolute asset paths
+are rejected by default.
 
-## MCP temp directory
+Supported environment variables:
 
-Some MCP runtime files are intentionally kept separate from `outputDir`.
-These are short-lived files created during automation, such as:
+- `ROXY_PLAYWRIGHT_ARTIFACTS_DIR`: default durable asset root.
+- `ROXY_PLAYWRIGHT_DOWNLOADS_DIR`: browser downloads.
+- `ROXY_PLAYWRIGHT_SCREENSHOTS_DIR`: screenshots.
+- `ROXY_PLAYWRIGHT_SNAPSHOTS_DIR`: accessibility snapshots and snapshot markdown files.
+- `ROXY_PLAYWRIGHT_TRACES_DIR`: traces.
+- `ROXY_PLAYWRIGHT_VIDEOS_DIR`: videos and screencast recordings.
+- `ROXY_PLAYWRIGHT_NETWORK_DIR`: network exports.
+- `ROXY_PLAYWRIGHT_CONSOLE_DIR`: console exports.
+- `ROXY_PLAYWRIGHT_SCRIPTS_DIR`: script and evaluate outputs.
+- `ROXY_PLAYWRIGHT_TEMP_DIR`: short-lived runtime files.
+- `SANDBOX_OUTPUT_DIR`: agent sandbox output directory. When set and no API asset option is provided, it becomes the default artifacts/downloads/scripts root.
 
-- `browser_snapshot` files saved with `filename`
-- browser console event log files referenced from snapshots
+The old MCP-specific variables `ROXY_MCP_OUTPUT_DIR`,
+`PLAYWRIGHT_MCP_OUTPUT_DIR`, `ROXY_MCP_TEMP_DIR`, and
+`PLAYWRIGHT_MCP_TEMP_DIR` are not supported.
 
-Temp directory behavior:
-
-- Set `ROXY_MCP_TEMP_DIR` to choose the default directory for MCP runtime temp files.
-- `PLAYWRIGHT_MCP_TEMP_DIR` is also recognized for compatibility with Playwright MCP.
-- If a tool receives a relative `filename`, it will be resolved inside the temp directory.
-- If a tool receives an absolute `filename`, it will be used as-is.
-- If no temp directory is configured, the default is the system temp directory from Node.js `os.tmpdir()`.
-
-You can also set `outputDir` and `tempDir` directly when creating the MCP server or transports:
+You can also set asset directories directly when creating the MCP server or transports:
 
 ```ts
 import {
@@ -141,27 +142,42 @@ import {
   startRoxyBrowserMcpStdio
 } from "@roxybrowser/playwright/mcp";
 
-const outputDir = "/absolute/path/to/output";
+const artifactsDir = "/absolute/path/to/artifacts";
+const downloadsDir = "/absolute/path/to/downloads";
+const screenshotsDir = "/absolute/path/to/screenshots";
+const snapshotsDir = "/absolute/path/to/snapshots";
 const tempDir = "/absolute/path/to/temp";
 
 createRoxyBrowserMcpServer({
-  outputDir,
+  artifactsDir,
+  downloadsDir,
+  screenshotsDir,
+  snapshotsDir,
   tempDir
 });
 
 await createRoxyBrowserMcpInMemory({
-  outputDir,
+  artifactsDir,
+  downloadsDir,
+  screenshotsDir,
+  snapshotsDir,
   tempDir
 });
 
 await startRoxyBrowserMcpHttp({
   port: 3000,
-  outputDir,
+  artifactsDir,
+  downloadsDir,
+  screenshotsDir,
+  snapshotsDir,
   tempDir
 });
 
 await startRoxyBrowserMcpStdio({
-  outputDir,
+  artifactsDir,
+  downloadsDir,
+  screenshotsDir,
+  snapshotsDir,
   tempDir
 });
 ```
@@ -215,7 +231,15 @@ node ./dist/bin/roxybrowser-mcp.js --transport http --port 3333 --host 127.0.0.1
 
 Optional flags:
 
-- `--output-dir /absolute/path`
+- `--artifacts-dir /absolute/path`
+- `--downloads-dir /absolute/path`
+- `--screenshots-dir /absolute/path`
+- `--snapshots-dir /absolute/path`
+- `--traces-dir /absolute/path`
+- `--videos-dir /absolute/path`
+- `--network-dir /absolute/path`
+- `--console-dir /absolute/path`
+- `--scripts-dir /absolute/path`
 - `--temp-dir /absolute/path`
 - `--snapshot-mode full`
 - `--snapshot-mode none`

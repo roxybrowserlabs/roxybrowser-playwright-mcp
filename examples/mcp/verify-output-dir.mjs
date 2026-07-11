@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 /**
- * Verifies that the `outputDir` option actually routes file-producing tool
+ * Verifies that the `snapshotsDir` option actually routes snapshot tool
  * output to the requested directory — no real browser needed.
  *
  * Strategy:
@@ -14,9 +14,8 @@ import { spawn } from "node:child_process";
  *     (only `listTabs` / `version` / `snapshot` / `close` are exercised).
  *   - Call `roxy_browser_connect` then `browser_snapshot` with a `filename`.
  *   - `browser_snapshot` with a filename writes the snapshot text to
- *     `outputDir/filename` and echoes `Saved snapshot to "<abs path>".` back.
- *   - Assert the file exists INSIDE the custom outputDir (and NOT in the cwd
- *     default `.roxybrowser-playwright-mcp/`).
+ *     `snapshotsDir/filename` and echoes `Saved snapshot to "<abs path>".` back.
+ *   - Assert the file exists INSIDE the custom snapshotsDir.
  */
 
 function makeFakeSession() {
@@ -37,7 +36,7 @@ function makeFakeSession() {
   };
 }
 
-async function snapshotWithFilename(client, outputDir, filename) {
+async function snapshotWithFilename(client, filename) {
   const connect = await client.callTool({
     name: "roxy_browser_connect",
     arguments: { endpoint: "ws://fake.test", browser: "chrome" }
@@ -58,11 +57,11 @@ function textOf(result) {
     .join("\n");
 }
 
-async function runOne({ label, outputDir }) {
+async function runOne({ label, snapshotsDir }) {
   const filename = "snap.md";
   const bundle = await createRoxyBrowserMcpInMemory({
     sessionFactory: async () => makeFakeSession(),
-    ...(outputDir !== undefined ? { outputDir } : {})
+    ...(snapshotsDir !== undefined ? { snapshotsDir } : {})
   });
 
   const client = new Client(
@@ -73,7 +72,7 @@ async function runOne({ label, outputDir }) {
 
   let resolvedPath;
   try {
-    const responseText = await snapshotWithFilename(client, outputDir, filename);
+    const responseText = await snapshotWithFilename(client, filename);
     const match = responseText.match(/Saved snapshot to "(.+)"\./);
     if (!match) {
       throw new Error(`server did not echo saved path. response:\n${responseText}`);
@@ -93,10 +92,10 @@ async function runOne({ label, outputDir }) {
 }
 
 async function main() {
-  // Case 1: custom outputDir — file MUST land inside it.
+  // Case 1: custom snapshotsDir — file MUST land inside it.
   const customDir = await mkdtemp(join(tmpdir(), "roxy-verify-custom-"));
-  console.log(`\n=== Case 1: custom outputDir = ${customDir} ===`);
-  const custom = await runOne({ label: "custom", outputDir: customDir });
+  console.log(`\n=== Case 1: custom snapshotsDir = ${customDir} ===`);
+  const custom = await runOne({ label: "custom", snapshotsDir: customDir });
 
   if (!custom.resolvedPath.startsWith(customDir)) {
     throw new Error(
@@ -107,11 +106,11 @@ async function main() {
   if (!customEntries.includes("snap.md")) {
     throw new Error(`FAIL: snap.md not found in ${customDir}: ${customEntries}`);
   }
-  console.log("[custom] PASS — file landed inside custom outputDir");
+  console.log("[custom] PASS — file landed inside custom snapshotsDir");
 
-  // Case 2: no outputDir — file MUST default to cwd's `.roxybrowser-playwright-mcp/`.
+  // Case 2: no snapshotsDir — file MUST default to cwd's artifact snapshot dir.
   // Run in a throwaway cwd so we don't pollute the repo.
-  console.log(`\n=== Case 2: no outputDir (default cwd basedir) ===`);
+  console.log(`\n=== Case 2: no snapshotsDir (default cwd asset root) ===`);
   const defaultDir = await mkdtemp(join(tmpdir(), "roxy-verify-default-"));
   await runInChild(defaultDir);
 
@@ -121,7 +120,7 @@ async function main() {
 }
 
 // Run case 2 in a child process so `process.cwd()` is the throwaway dir,
-// matching how `configuredOutputDir` picks the default `.roxybrowser-playwright-mcp/`.
+// matching how AssetManager picks the default cwd asset root.
 function runInChild(cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [new URL("./verify-output-dir-default.mjs", import.meta.url).pathname], {

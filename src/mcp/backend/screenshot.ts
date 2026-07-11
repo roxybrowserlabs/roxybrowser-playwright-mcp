@@ -25,7 +25,8 @@ const screenshot = defineTool({
     });
     const requestedFilename = args.filename?.trim();
     const resolvedFilename = await context.resolveOutputFile(
-      requestedFilename || `page-${new Date().toISOString().replaceAll(":", "-")}.${args.type}`
+      requestedFilename || `page-${new Date().toISOString().replaceAll(":", "-")}.${args.type}`,
+      "screenshot"
     );
     await writeFile(resolvedFilename, Buffer.from(result.data, "base64"));
     if (requestedFilename) {

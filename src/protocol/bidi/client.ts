@@ -31,6 +31,7 @@ export interface BidiProtocolClient {
     params: Commands[T]["params"]
   ): Promise<BidiCommandResponse<T>>;
 
+  browserSetDownloadBehavior(params: unknown): Promise<unknown>;
   browserCreateUserContext(params: unknown): Promise<Commands["browser.createUserContext"]["returnType"]>;
   browserRemoveUserContext(params: unknown): Promise<Commands["browser.removeUserContext"]["returnType"]>;
   browsingContextActivate(params: unknown): Promise<Commands["browsingContext.activate"]["returnType"]>;
@@ -204,6 +205,11 @@ export class WebSocketBidiClient implements BidiProtocolClient {
 
   async browserCreateUserContext(params: unknown) {
     return (await this.sendCommand("browser.createUserContext", params as Commands["browser.createUserContext"]["params"])).result;
+  }
+
+  async browserSetDownloadBehavior(params: unknown) {
+    const method = "browser.setDownloadBehavior" as BidiCommandName;
+    return (await this.sendCommand(method, params as Commands[typeof method]["params"])).result;
   }
 
   async browserRemoveUserContext(params: unknown) {

@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { AssetManager } from "./assets/manager.js";
 import { RoxyBrowserContext } from "./browserContext.js";
 import { resolveHumanizationOptions } from "./human/profile.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
@@ -30,7 +31,8 @@ export class RoxyBrowser implements Browser {
     private readonly humanDefaults: ResolvedHumanizationOptions,
     private readonly _browserName: "chromium" | "firefox",
     private readonly _browserType: BrowserType,
-    private readonly _version: string
+    private readonly _version: string,
+    private readonly assetManager = new AssetManager()
   ) {}
 
   on(event: 'context', listener: (context: BrowserContext) => any): this;
@@ -110,6 +112,8 @@ export class RoxyBrowser implements Browser {
 
   async newContext(options: BrowserContextOptions = {}): Promise<BrowserContext> {
     const normalizedOptions: BrowserContextOptions = {
+      acceptDownloads: options.acceptDownloads ?? true,
+      downloadsDir: options.downloadsDir ?? this.assetManager.roots.downloadsDir,
       ...options,
       ...(options.extraHTTPHeaders
         ? { extraHTTPHeaders: normalizeExtraHTTPHeaders(options.extraHTTPHeaders) }

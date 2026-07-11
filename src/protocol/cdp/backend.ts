@@ -1142,6 +1142,52 @@ class CdpBrowserSession implements ProtocolBrowserSession {
   async close(): Promise<void> {}
 }
 
+async function applyCdpBrowserDownloadBehavior(
+  browserClient: CdpClient,
+  browserContextId: string | undefined,
+  options: BrowserContextOptions
+): Promise<void> {
+  const behavior = cdpDownloadBehavior(options);
+  if (!behavior) {
+    return;
+  }
+  const client = browserClient as CdpClient & {
+    send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  };
+  await client.send("Browser.setDownloadBehavior", {
+    ...behavior,
+    eventsEnabled: true,
+    ...(browserContextId ? { browserContextId } : {})
+  }).catch(() => undefined);
+}
+
+async function applyCdpPageDownloadBehavior(
+  pageClient: CdpClient,
+  options: BrowserContextOptions
+): Promise<void> {
+  const behavior = cdpDownloadBehavior(options);
+  if (!behavior) {
+    return;
+  }
+  const client = pageClient as CdpClient & {
+    send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  };
+  await client.send("Page.setDownloadBehavior", behavior).catch(() => undefined);
+}
+
+function cdpDownloadBehavior(options: BrowserContextOptions): Record<string, unknown> | undefined {
+  if (options.acceptDownloads === false) {
+    return { behavior: "deny" };
+  }
+  if (!options.downloadsDir) {
+    return undefined;
+  }
+  return {
+    behavior: "allow",
+    downloadPath: options.downloadsDir
+  };
+}
+
 class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Map<string, ProtocolPageAdapter>();
   private readonly pageSessionIds = new Map<string, string>();
@@ -1464,6 +1510,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   }
 
   private async initializeTargetDiscovery(): Promise<void> {
+    await applyCdpBrowserDownloadBehavior(this.state.browserClient, this.browserContextId, this.options);
     this.state.browserClient.Target.attachedToTarget?.((event: {
       sessionId: string;
       targetInfo: {
@@ -1831,6 +1878,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       try {
         const createPagePromise = (async () => {
           const client = options.client ?? await connectToTarget(this.state.connection, targetId);
+          await applyCdpPageDownloadBehavior(client, this.options);
           return CdpPageAdapter.create({
             browserClient: this.state.browserClient,
             client,

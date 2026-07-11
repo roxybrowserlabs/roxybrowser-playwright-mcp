@@ -1,4 +1,5 @@
 import { RoxyBrowser } from "./browser.js";
+import { AssetManager } from "./assets/manager.js";
 import { resolveHumanizationOptions } from "./human/profile.js";
 import { BidiBrowserAdapterFactory } from "./protocol/bidi/backend.js";
 import { CdpBrowserAdapterFactory } from "./protocol/cdp/backend.js";
@@ -103,9 +104,20 @@ export class RoxyBrowserType implements BrowserType {
 
   private async connectBrowser(options: BrowserConnectOptions): Promise<Browser> {
     const protocol = options.protocol ?? "cdp";
+    const assetManager = new AssetManager(options);
     const adapterFactory = this.adapterFactories[protocol];
     const adapter = adapterFactory.create({
       ...options,
+      artifactsDir: assetManager.roots.artifactsDir,
+      downloadsDir: assetManager.roots.downloadsDir,
+      screenshotsDir: assetManager.roots.screenshotsDir,
+      snapshotsDir: assetManager.roots.snapshotsDir,
+      tracesDir: assetManager.roots.tracesDir,
+      videosDir: assetManager.roots.videosDir,
+      networkDir: assetManager.roots.networkDir,
+      consoleDir: assetManager.roots.consoleDir,
+      scriptsDir: assetManager.roots.scriptsDir,
+      tempDir: assetManager.roots.tempDir,
       protocol
     });
 
@@ -119,7 +131,8 @@ export class RoxyBrowserType implements BrowserType {
       resolveHumanizationOptions(options.human),
       options.browserName ?? this.browserName,
       this,
-      versionStr
+      versionStr,
+      assetManager
     );
 
     if (options.wsEndpoint) {

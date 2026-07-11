@@ -15,11 +15,11 @@ const FIXTURE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctyp
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Roxy MCP Output Dir</title>
+    <title>Roxy MCP Screenshots Dir</title>
   </head>
   <body>
     <main>
-      <h1>Output directory fixture</h1>
+      <h1>Screenshots directory fixture</h1>
       <button type="button">Take screenshot</button>
     </main>
   </body>
@@ -54,11 +54,11 @@ afterEach(async () => {
   }
 });
 
-describe("mcp output dir", () => {
-  (HAS_REAL_CDP_ENV ? it : it.skip)("writes relative screenshot filenames under the configured output dir", async ({}, testInfo) => {
+describe("mcp screenshots dir", () => {
+  (HAS_REAL_CDP_ENV ? it : it.skip)("writes relative screenshot filenames under the configured screenshots dir", async ({}, testInfo) => {
     const cdpEndpoint = await createPreparedPage(FIXTURE_URL);
-    const outputDir = testInfo.outputPath("output");
-    const roxy = await createRoxyMcpClient(outputDir);
+    const screenshotsDir = testInfo.outputPath("screenshots");
+    const roxy = await createRoxyMcpClient(screenshotsDir);
 
     await connectRoxyToCdp(roxy.client, cdpEndpoint);
 
@@ -66,7 +66,7 @@ describe("mcp output dir", () => {
       filename: "images/page.png"
     });
 
-    const resolved = join(outputDir, "images", "page.png");
+    const resolved = join(screenshotsDir, "images", "page.png");
     expect(result.isError).toBeUndefined();
     expect(textFromResult(result)).toContain(resolved);
 
@@ -82,10 +82,10 @@ async function createPreparedPage(url: string): Promise<string> {
   return cdpEndpoint;
 }
 
-async function createRoxyMcpClient(outputDir: string): Promise<{ client: Client }> {
+async function createRoxyMcpClient(screenshotsDir: string): Promise<{ client: Client }> {
   const roxyBundle = await createRoxyBrowserMcpInMemory({
     snapshotMode: "none",
-    outputDir
+    screenshotsDir
   });
   cleanupCallbacks.push(async () => roxyBundle.close());
 

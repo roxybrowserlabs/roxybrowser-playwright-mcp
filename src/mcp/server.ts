@@ -18,6 +18,7 @@ import type {
   CreateRoxyBrowserMcpServerOptions,
   RoxyBrowserMcpServerBundle
 } from "./types.js";
+import type { AssetOptions } from "../assets/types.js";
 
 type RegisteredTool = LegacyTool | BackendTool;
 
@@ -33,10 +34,10 @@ function toolErrorResult(error: unknown): CallToolResult {
 export function createRoxyBrowserMcpServer(
   options: CreateRoxyBrowserMcpServerOptions = {}
 ): RoxyBrowserMcpServerBundle {
+  const assetOptions = pickAssetOptions(options);
   const runtimeManager = new McpRuntimeManager(options.sessionFactory, {
     ...(options.snapshotMode !== undefined ? { snapshotMode: options.snapshotMode } : {}),
-    ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {}),
-    ...(options.tempDir !== undefined ? { tempDir: options.tempDir } : {})
+    ...assetOptions
   });
   const server = new McpServer({
     name: options.serverInfo?.name ?? "roxybrowser-mcp",
@@ -80,8 +81,7 @@ export function createRoxyBrowserMcpServer(
           lastSessionId = extra.sessionId;
           const runtime = runtimeManager.getRuntime(extra.sessionId);
           const context = new Context(runtime, {
-            ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {}),
-            ...(options.tempDir !== undefined ? { tempDir: options.tempDir } : {}),
+            ...assetOptions,
             ...(options.snapshotMode !== undefined
               ? {
                   snapshot: {
@@ -112,6 +112,24 @@ export function createRoxyBrowserMcpServer(
         await server.close();
       }
     }
+  };
+}
+
+function pickAssetOptions(options: AssetOptions): AssetOptions {
+  return {
+    ...(options.artifactsDir !== undefined ? { artifactsDir: options.artifactsDir } : {}),
+    ...(options.downloadsDir !== undefined ? { downloadsDir: options.downloadsDir } : {}),
+    ...(options.screenshotsDir !== undefined ? { screenshotsDir: options.screenshotsDir } : {}),
+    ...(options.snapshotsDir !== undefined ? { snapshotsDir: options.snapshotsDir } : {}),
+    ...(options.tracesDir !== undefined ? { tracesDir: options.tracesDir } : {}),
+    ...(options.videosDir !== undefined ? { videosDir: options.videosDir } : {}),
+    ...(options.networkDir !== undefined ? { networkDir: options.networkDir } : {}),
+    ...(options.consoleDir !== undefined ? { consoleDir: options.consoleDir } : {}),
+    ...(options.scriptsDir !== undefined ? { scriptsDir: options.scriptsDir } : {}),
+    ...(options.tempDir !== undefined ? { tempDir: options.tempDir } : {}),
+    ...(options.allowAbsoluteAssetPaths !== undefined
+      ? { allowAbsoluteAssetPaths: options.allowAbsoluteAssetPaths }
+      : {})
   };
 }
 
