@@ -1,0 +1,4 @@
+interface:
+  display_name: "RoxyBrowser MCP"
+  short_description: "Use browser automation MCP well"
+  default_prompt: "Use $using-roxybrowser-mcp to browse, interact with, and debug a real website through RoxyBrowser MCP."
