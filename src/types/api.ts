@@ -228,6 +228,7 @@ export interface APIRequestFetchOptions extends APIRequestOptions {
 export interface BrowserContext {
   clock: Clock;
   request: APIRequestContext;
+  tracing: Tracing;
   addInitScript<Arg>(
     script: PageFunction<Arg, any> | { path?: string; content?: string },
     arg?: Arg

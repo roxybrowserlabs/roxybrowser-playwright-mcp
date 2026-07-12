@@ -9,6 +9,7 @@ import { RoxyClock } from "./clock.js";
 import { TimeoutError } from "./errors.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import { RoxyPage } from "./page.js";
+import { RoxyTracing } from "./tracing/index.js";
 import { serializePageFunction } from "./evaluation.js";
 import type { RouteHandlerEntry, RouteMatcher } from "./routeHandler.js";
 import { urlMatches } from "./urlMatch.js";
@@ -81,6 +82,7 @@ export class RoxyBrowserContext implements BrowserContext {
   private videoOutputDirPromise: Promise<string> | null = null;
   readonly clock: Clock;
   readonly request = new RoxyAPIRequestContext();
+  readonly tracing: RoxyTracing = new RoxyTracing("browserContext", this);
 
   constructor(
     private readonly adapter: ProtocolBrowserContextAdapter,
@@ -91,6 +93,7 @@ export class RoxyBrowserContext implements BrowserContext {
     void _unusedSecondArgument;
     this.clockDelegate = new RoxyBrowserContextClockDelegate(this, browserName);
     this.clock = new RoxyClock(this.clockDelegate);
+    this.tracing.attachContext(this);
     this.disposeAdapterPageListener =
       this.adapter.onPage?.((pageAdapter, openerAdapter, hasWindowOpener) =>
         this.attachDiscoveredPage(
@@ -204,6 +207,7 @@ export class RoxyBrowserContext implements BrowserContext {
         })
       );
     } finally {
+      await this.tracing.exportAllHars();
       await this.request.dispose();
       await this.adapter.close();
       this.emit("close", this);
@@ -500,6 +504,7 @@ export class RoxyBrowserContext implements BrowserContext {
     this.pageByAdapter.set(pageAdapter, page);
     this.adapterByPage.set(page, pageAdapter);
     this.attachPageEventBubbling(page);
+    this.tracing.attachPage(page);
     try {
       for (const entry of this.initScripts) {
         const disposable = await page.addInitScript(entry.source);

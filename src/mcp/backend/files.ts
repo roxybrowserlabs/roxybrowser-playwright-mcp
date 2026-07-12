@@ -30,11 +30,13 @@ export const uploadFile = defineTabTool({
 
   handle: async (tab, params, response) => {
     response.setIncludeSnapshot();
-    response.addTextResult(`Uploaded ${params.paths?.length ?? 0} file(s).`);
-    response.addCode(`await fileChooser.setFiles(${JSON.stringify(params.paths ?? [])});`);
+    response.addCode(`await fileChooser.setFiles(${JSON.stringify(params.paths)});`);
     await tab.waitForCompletion(async () => {
-      await tab.uploadFile(params.paths ?? []);
+      await tab.uploadFile(params.paths);
     });
+    response.addTextResult(params.paths
+      ? `Uploaded ${params.paths.length} file(s).`
+      : "File chooser cancelled.");
   }
 });
 

@@ -77,6 +77,13 @@ describe("generatePageApiReport", () => {
     expect(report.currentProperties).toContain("tracing");
   });
 
+  it("matches upstream Playwright BrowserContext tracing property", () => {
+    const report = generateApiSurfaceReport("BrowserContext");
+
+    expect(report.missingProperties).not.toContain("tracing");
+    expect(report.currentProperties).toContain("tracing");
+  });
+
   it("matches upstream Playwright FileChooser.setFiles signature", () => {
     const report = generateApiMethodSignatureReport("FileChooser", ["setFiles"]);
 
@@ -91,6 +98,10 @@ describe("generatePageApiReport", () => {
 
   it("exports ConsoleMessage by the upstream Playwright name", () => {
     expect(currentIndexTypes()).toMatch(/\bConsoleMessage\b/);
+  });
+
+  it("exports Tracing by the upstream Playwright name", () => {
+    expect(currentIndexTypes()).toMatch(/\bTracing\b/);
   });
 
   it("does not expose legacy waitForSelector waitFor option publicly", () => {

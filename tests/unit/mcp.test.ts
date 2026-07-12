@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -725,6 +725,7 @@ describe("MCP server", () => {
     const hoverTool = tools.tools.find((tool) => tool.name === "browser_hover");
     const scrollTool = tools.tools.find((tool) => tool.name === "browser_scroll");
     const uploadTool = tools.tools.find((tool) => tool.name === "browser_file_upload");
+    const runCodeTool = tools.tools.find((tool) => tool.name === "browser_run_code_unsafe");
 
     expect(hoverTool?.inputSchema).toEqual({
       type: "object",
@@ -773,6 +774,18 @@ describe("MCP server", () => {
       },
       additionalProperties: false
     });
+
+    expect(runCodeTool?.inputSchema.properties).toMatchObject({
+      code: {
+        type: "string",
+        description: expect.stringContaining("JavaScript")
+      },
+      filename: {
+        type: "string",
+        description: expect.stringContaining("Load code")
+      }
+    });
+    expect(runCodeTool?.inputSchema.required ?? []).not.toContain("code");
   });
 
   it("passes drop file paths through to the session", async () => {
@@ -2432,6 +2445,31 @@ describe("MCP server", () => {
       expect(textFromResult(result)).toContain("[no_file_chooser]");
     });
 
+    it("cancels a pending file chooser when paths are omitted", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      await client.callTool({
+        name: "browser_click",
+        arguments: { target: "input[type=file]" }
+      });
+
+      const result = await client.callTool({
+        name: "browser_file_upload",
+        arguments: {}
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(getSession().uploadFileCalls).toEqual([]);
+      expect(getSession().finishFileUploadCalls).toEqual([{ selector: "input[type=file]" }]);
+      expect(textFromResult(result)).toContain("### Snapshot");
+
+      const hover = await client.callTool({
+        name: "browser_hover",
+        arguments: { target: "button.after-cancel" }
+      });
+      expect(hover.isError).toBeUndefined();
+    });
+
     it("cleans up request collection when upload callback fails", async () => {
       const { client, getSession } = await setupTrackingClient();
       const session = getSession();
@@ -2472,6 +2510,134 @@ describe("MCP server", () => {
       expect(result.isError).toBe(true);
       expect(textFromResult(result)).toContain('Tool "browser_hover" does not handle the modal state.');
       expect(getSession().hoverCalls).toEqual([{ selector: "input[type=file]" }]);
+    });
+  });
+
+  describe("browser_network_request tools", () => {
+    it("numbers requests by list position and resolves details by the printed number", async () => {
+      const { client, getSession } = await setupTrackingClient();
+      getSession().networkRequestsList.push(
+        {
+          index: 42,
+          requestId: "request-a",
+          method: "GET",
+          url: "https://example.test/api/first",
+          resourceType: "fetch",
+          requestHeaders: { accept: "application/json" },
+          status: 200,
+          statusText: "OK",
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: '{"first":true}',
+          mimeType: "application/json"
+        },
+        {
+          index: 99,
+          requestId: "request-b",
+          method: "POST",
+          url: "https://example.test/api/second",
+          resourceType: "xhr",
+          requestHeaders: { "content-type": "application/json" },
+          requestBody: '{"second":true}',
+          status: 201,
+          statusText: "Created",
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: '{"created":true}',
+          mimeType: "application/json"
+        }
+      );
+
+      const list = await client.callTool({
+        name: "browser_network_requests",
+        arguments: {}
+      });
+
+      expect(list.isError).toBeUndefined();
+      expect(textFromResult(list)).toContain("1. [GET] https://example.test/api/first => [200] OK");
+      expect(textFromResult(list)).toContain("2. [POST] https://example.test/api/second => [201] Created");
+      expect(textFromResult(list)).not.toContain("42. [GET]");
+      expect(textFromResult(list)).not.toContain("99. [POST]");
+
+      const details = await client.callTool({
+        name: "browser_network_request",
+        arguments: { index: 1 }
+      });
+
+      expect(details.isError).toBeUndefined();
+      expect(textFromResult(details)).toContain("#1 [GET] https://example.test/api/first");
+      expect(textFromResult(details)).not.toContain("#42 [GET]");
+    });
+
+    it("returns response bodies using the printed request number", async () => {
+      const { client, getSession } = await setupTrackingClient();
+      getSession().networkRequestsList.push({
+        index: 42,
+        requestId: "request-a",
+        method: "GET",
+        url: "https://example.test/api/first",
+        resourceType: "fetch",
+        requestHeaders: {},
+        status: 200,
+        statusText: "OK",
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: '{"first":true}'
+      });
+
+      const result = await client.callTool({
+        name: "browser_network_request",
+        arguments: { index: 1, part: "response-body" }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(textFromResult(result)).toBe('{"first":true}');
+    });
+  });
+
+  describe("browser_run_code_unsafe", () => {
+    it("loads code from filename", async () => {
+      const { client } = await setupTrackingClient();
+      const dir = await mkdtemp(join(tmpdir(), "roxy-run-code-"));
+      cleanupCallbacks.push(async () => rm(dir, { recursive: true, force: true }));
+      const filename = join(dir, "snippet.js");
+      await writeFile(filename, "async page => page.url()", "utf8");
+
+      const result = await client.callTool({
+        name: "browser_run_code_unsafe",
+        arguments: { filename }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(textFromResult(result)).toContain('"ran:async page => page.url()"');
+    });
+
+    it("prefers filename over inline code", async () => {
+      const { client } = await setupTrackingClient();
+      const dir = await mkdtemp(join(tmpdir(), "roxy-run-code-"));
+      cleanupCallbacks.push(async () => rm(dir, { recursive: true, force: true }));
+      const filename = join(dir, "snippet.js");
+      await writeFile(filename, "async page => 'from-file'", "utf8");
+
+      const result = await client.callTool({
+        name: "browser_run_code_unsafe",
+        arguments: {
+          code: "async page => 'inline'",
+          filename
+        }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(textFromResult(result)).toContain("\"ran:async page => 'from-file'\"");
+    });
+
+    it("requires either code or filename", async () => {
+      const { client } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_run_code_unsafe",
+        arguments: {}
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textFromResult(result)).toContain("Either code or filename is required");
     });
   });
 

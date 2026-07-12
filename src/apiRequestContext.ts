@@ -4,59 +4,17 @@ import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { Readable } from "node:stream";
 import { writeFile } from "node:fs/promises";
+import { RoxyTracing } from "./tracing/index.js";
 import type {
   APIRequestContext,
   APIRequestFetchOptions,
   APIRequestOptions,
   APIResponse,
-  Disposable,
   Request,
-  Tracing
 } from "./types/api.js";
 import type { FilePayload } from "./types/options.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-
-// ⚠️ DIVERGENCE FROM PLAYWRIGHT: upstream APIRequestContext exposes a functional
-// tracing controller. Roxy currently exposes the matching property for API shape
-// parity, but request-context tracing is not implemented in the protocol layer yet.
-class UnsupportedTracing implements Tracing {
-  private unsupported(): never {
-    throw new Error("APIRequestContext.tracing is not implemented.");
-  }
-
-  async group(): Promise<Disposable> {
-    this.unsupported();
-  }
-
-  async groupEnd(): Promise<void> {
-    this.unsupported();
-  }
-
-  async start(): Promise<void> {
-    this.unsupported();
-  }
-
-  async startChunk(): Promise<void> {
-    this.unsupported();
-  }
-
-  async startHar(): Promise<Disposable> {
-    this.unsupported();
-  }
-
-  async stop(): Promise<void> {
-    this.unsupported();
-  }
-
-  async stopChunk(): Promise<void> {
-    this.unsupported();
-  }
-
-  async stopHar(): Promise<void> {
-    this.unsupported();
-  }
-}
 
 interface StoredCookie {
   domain: string;
@@ -71,18 +29,19 @@ interface StoredCookie {
 }
 
 export class RoxyAPIRequestContext implements APIRequestContext {
-  readonly tracing: Tracing = new UnsupportedTracing();
+  readonly tracing = new RoxyTracing("apiRequestContext");
   private closedReason: string | null = null;
   private readonly cookies: StoredCookie[] = [];
 
   async delete(url: string, options?: APIRequestOptions): Promise<APIResponse> {
-    return this.fetch(url, {
+    return this.fetchWithApiName("apiRequestContext.delete", url, {
       ...options,
       method: "DELETE"
     });
   }
 
   async dispose(options?: { reason?: string }): Promise<void> {
+    await this.tracing.exportAllHars();
     this.closedReason = options?.reason ?? "APIRequestContext disposed";
   }
 
@@ -90,10 +49,19 @@ export class RoxyAPIRequestContext implements APIRequestContext {
     urlOrRequest: string | Request,
     options: APIRequestFetchOptions = {}
   ): Promise<APIResponse> {
+    return this.fetchWithApiName("apiRequestContext.fetch", urlOrRequest, options);
+  }
+
+  private async fetchWithApiName(
+    apiName: string,
+    urlOrRequest: string | Request,
+    options: APIRequestFetchOptions = {}
+  ): Promise<APIResponse> {
     if (this.closedReason) {
       throw new Error(this.closedReason);
     }
 
+    const startedAt = Date.now();
     const sourceRequest = typeof urlOrRequest === "string" ? null : urlOrRequest;
     const method = options.method ?? sourceRequest?.method() ?? "GET";
     const url = appendQueryParams(
@@ -124,10 +92,32 @@ export class RoxyAPIRequestContext implements APIRequestContext {
       });
       this.storeResponseCookies(url, response);
       const apiResponse = createApiResponse(response);
+      const responseBody = await apiResponse.body();
+      await this.tracing.recordApiRequest({
+        apiName,
+        ...(body ? { body } : {}),
+        method,
+        requestHeaders: headers,
+        response: apiResponse,
+        responseBody,
+        startedAt,
+        url
+      });
       if (options.failOnStatusCode && !(apiResponse.status() >= 200 && apiResponse.status() < 400)) {
         throw new Error(await formatFailOnStatusCodeMessage(apiResponse, method));
       }
       return apiResponse;
+    } catch (error) {
+      await this.tracing.recordApiRequest({
+        apiName,
+        ...(body ? { body } : {}),
+        error: error instanceof Error ? error : new Error(String(error)),
+        method,
+        requestHeaders: headers,
+        startedAt,
+        url
+      });
+      throw error;
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
@@ -136,35 +126,35 @@ export class RoxyAPIRequestContext implements APIRequestContext {
   }
 
   async get(url: string, options?: APIRequestOptions): Promise<APIResponse> {
-    return this.fetch(url, {
+    return this.fetchWithApiName("apiRequestContext.get", url, {
       ...options,
       method: "GET"
     });
   }
 
   async head(url: string, options?: APIRequestOptions): Promise<APIResponse> {
-    return this.fetch(url, {
+    return this.fetchWithApiName("apiRequestContext.head", url, {
       ...options,
       method: "HEAD"
     });
   }
 
   async patch(url: string, options?: APIRequestOptions): Promise<APIResponse> {
-    return this.fetch(url, {
+    return this.fetchWithApiName("apiRequestContext.patch", url, {
       ...options,
       method: "PATCH"
     });
   }
 
   async post(url: string, options?: APIRequestOptions): Promise<APIResponse> {
-    return this.fetch(url, {
+    return this.fetchWithApiName("apiRequestContext.post", url, {
       ...options,
       method: "POST"
     });
   }
 
   async put(url: string, options?: APIRequestOptions): Promise<APIResponse> {
-    return this.fetch(url, {
+    return this.fetchWithApiName("apiRequestContext.put", url, {
       ...options,
       method: "PUT"
     });

@@ -141,7 +141,7 @@ export class Tab {
     await this.context.runtime.pressKey(key, modifiers);
   }
 
-  async uploadFile(paths: string[]): Promise<void> {
+  async uploadFile(paths: string[] | undefined): Promise<void> {
     await this.context.runtime.performFileUpload(paths);
   }
 }

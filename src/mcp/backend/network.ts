@@ -13,7 +13,9 @@ const networkRequests = defineTool({
     description: "Returns a numbered list of network requests since loading the page. Use browser_network_request with the number to get full details.",
     inputSchema: z.object({
       static: z.boolean().default(false).describe("Whether to include successful static resources like images, fonts, scripts, etc. Defaults to false."),
-      filter: z.string().optional().describe('Only return requests whose URL matches this regexp (e.g. "/api/.*user").'),
+      filter: z.string().optional().refine((value) => value === undefined || isValidRegexString(value), {
+        message: "Invalid regular expression"
+      }).describe('Only return requests whose URL matches this regexp (e.g. "/api/.*user").'),
       filename: z.string().optional().describe("Filename to save the network requests to. If not provided, requests are returned as text.")
     }),
     type: "readOnly"
@@ -23,7 +25,11 @@ const networkRequests = defineTool({
     const filter = args.filter ? new RegExp(args.filter) : undefined;
     const lines: string[] = [];
     let hiddenStaticCount = 0;
-    for (const request of requests) {
+    for (let index = 0; index < requests.length; index++) {
+      const request = requests[index];
+      if (!request) {
+        continue;
+      }
       if (!args.static && !isFetch(request) && isSuccessfulResponse(request)) {
         hiddenStaticCount++;
         continue;
@@ -31,7 +37,7 @@ const networkRequests = defineTool({
       if (filter && !filter.test(request.url)) {
         continue;
       }
-      lines.push(`${request.index}. ${renderRequestLine(request)}`);
+      lines.push(`${index + 1}. ${renderRequestLine(request)}`);
     }
     if (hiddenStaticCount > 0) {
       lines.push(`\nNote: ${hiddenStaticCount} static request${hiddenStaticCount === 1 ? "" : "s"} not shown, run with "static" option to see ${hiddenStaticCount === 1 ? "it" : "them"}.`);
@@ -61,7 +67,8 @@ const networkRequest = defineTool({
     type: "readOnly"
   },
   handle: async (context, args, response) => {
-    const request = await context.runtime.networkRequest(args.index);
+    const requests = await context.runtime.networkRequests();
+    const request = requests[args.index - 1];
     if (!request) {
       response.addError(`Request #${args.index} not found. Use browser_network_requests to see available indexes.`);
       return;
@@ -69,7 +76,7 @@ const networkRequest = defineTool({
     if (args.part) {
       response.setRawResults();
       const partText = args.part === "response-body"
-        ? (await context.runtime.fetchResponseBody(args.index) ?? "")
+        ? (request.responseBody ?? await context.runtime.fetchResponseBody(args.index) ?? "")
         : renderRequestPart(request, args.part);
       if (args.filename) {
         const resolvedFilename = await context.resolveOutputFile(args.filename, "network");
@@ -80,7 +87,7 @@ const networkRequest = defineTool({
       }
       return;
     }
-    const text = renderRequestDetails(request);
+    const text = renderRequestDetails(args.index, request);
     if (args.filename) {
       const resolvedFilename = await context.resolveOutputFile(args.filename, "network");
       await writeFile(resolvedFilename, text);
@@ -99,6 +106,15 @@ function isFetch(request: BrowserNetworkRequest): boolean {
   return request.resourceType === "fetch" || request.resourceType === "xhr";
 }
 
+function isValidRegexString(value: string): boolean {
+  try {
+    new RegExp(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function renderRequestLine(request: BrowserNetworkRequest): string {
   let line = `[${request.method.toUpperCase()}] ${request.url}`;
   if (request.status !== undefined) {
@@ -109,9 +125,9 @@ function renderRequestLine(request: BrowserNetworkRequest): string {
   return line;
 }
 
-function renderRequestDetails(request: BrowserNetworkRequest): string {
+function renderRequestDetails(index: number, request: BrowserNetworkRequest): string {
   const lines: string[] = [];
-  lines.push(`#${request.index} [${request.method.toUpperCase()}] ${request.url}`);
+  lines.push(`#${index} [${request.method.toUpperCase()}] ${request.url}`);
   lines.push("");
   lines.push("  General");
   if (request.status !== undefined) {

@@ -15,9 +15,15 @@ export type {
   ElementHandle,
   ElementArrayCallback,
   ElementCallback,
+  APIRequestContext,
+  APIResponse,
+  Download,
   Locator,
   Page,
   PageNavigationResult,
+  Request,
+  Response,
+  Tracing,
   ResolvedAriaRef
 } from "./types/api.js";
 

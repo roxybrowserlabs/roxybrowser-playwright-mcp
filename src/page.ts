@@ -19,6 +19,7 @@ import { RoxyLocator } from "./locator.js";
 import { RoxyScreencast } from "./screencast.js";
 import { preparePageForScreenshot } from "./screenshotPreparation.js";
 import { determineScreenshotType, normalizePageScreenshotOptions, validateScreenshotOptions } from "./screenshotOptions.js";
+import { RoxyTracing } from "./tracing/index.js";
 import { isRegExp, isURLPattern, resolveGlobToRegexPattern, type URLMatch, urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
 import { RoxyWorker } from "./worker.js";
@@ -931,6 +932,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private readonly detachedContextFallback: BrowserContext = {
     clock: new RoxyClock(createUnsupportedClockDelegate("page.clock")),
     request: new RoxyAPIRequestContext(),
+    tracing: new RoxyTracing("browserContext"),
     newPage: async () => {
       throw new Error("Page is not attached to a browser context.");
     },

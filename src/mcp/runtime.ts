@@ -531,7 +531,7 @@ export class McpRuntime {
     });
   }
 
-  async performFileUpload(paths: string[]): Promise<void> {
+  async performFileUpload(paths: string[] | undefined): Promise<void> {
     const session = this.requireConnected();
     if (!this.fileUploadPending && !this.pendingFileUploadTarget) {
       throw new McpToolError(
@@ -554,7 +554,9 @@ export class McpRuntime {
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;
     try {
-      await session.uploadFile(target, paths);
+      if (paths !== undefined) {
+        await session.uploadFile(target, paths);
+      }
     } finally {
       await session.finishFileUpload?.(target);
     }
