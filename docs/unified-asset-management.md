@@ -242,7 +242,7 @@ Update `src/protocol/cdp/backend.ts`.
   - Prefer `Browser.setDownloadBehavior`.
   - Fall back to `Page.setDownloadBehavior`.
 - Apply behavior to:
-  - Existing pages discovered during `connectOverCDP`.
+  - Existing pages discovered during `connect()`.
   - Pages created by `newPage()`.
   - Popup pages and late-attached targets.
 - Do not silently ignore download behavior failures when downloads are accepted.

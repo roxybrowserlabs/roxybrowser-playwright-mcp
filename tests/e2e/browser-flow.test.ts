@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chromium } from "../../src/index.js";
+import { connectTestBrowser } from "../helpers/browser.js";
 import { createTestPageFixture } from "../helpers/server.js";
 
 describe("browser e2e", () => {
@@ -13,13 +13,8 @@ describe("browser e2e", () => {
     await fixture.close();
   });
 
-  it("launches a real browser and drives page interactions through CDP", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+  it("connects to a real browser and drives page interactions through CDP", async () => {
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext({
@@ -73,12 +68,7 @@ describe("browser e2e", () => {
   });
 
   it("drives page interactions from an additional context", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext();

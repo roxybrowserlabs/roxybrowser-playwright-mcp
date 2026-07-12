@@ -1,11 +1,19 @@
 import { firefox } from "@roxybrowser/playwright";
 import { createExampleFixture } from "./helpers/fixture.mjs";
 
-// This example demonstrates launching Firefox with the BiDi (WebDriver BiDi) protocol.
-// BiDi is automatically used when you launch Firefox through the firefox browser type.
+// This example demonstrates connecting to Firefox with the BiDi (WebDriver BiDi) protocol.
 //
 // Usage:
+//    export ROXY_BIDI_ENDPOINT=ws://127.0.0.1:9222/session
 //    node examples/page/launch-firefox-bidi.mjs
+
+const endpointURL = process.env.ROXY_BIDI_ENDPOINT ?? process.env.ROXY_BIDI_WS_ENDPOINT;
+
+if (!endpointURL) {
+  throw new Error(
+    "Set ROXY_BIDI_ENDPOINT to a ws://... BiDi endpoint, or run through `pnpm examples page launch-firefox-bidi`."
+  );
+}
 
 async function closeQuietly(resource, label) {
   if (!resource) {
@@ -27,17 +35,11 @@ async function run() {
   let page;
 
   try {
-    console.log("Launching Firefox with BiDi protocol...");
+    console.log("Connecting to Firefox with BiDi protocol...");
 
-    // Launch Firefox - BiDi protocol is used automatically
-    browser = await firefox.launch({
-      headless: false, // Set to true for headless mode
-      ...(process.env.ROXY_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_EXECUTABLE_PATH }
-        : {})
-    });
+    browser = await firefox.connect(endpointURL);
 
-    console.log("Firefox launched! Browser version:", await browser.version());
+    console.log("Firefox connected! Browser version:", await browser.version());
 
     // Create a new browser context with custom settings
     context = await browser.newContext({

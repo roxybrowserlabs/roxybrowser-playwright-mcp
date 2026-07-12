@@ -3,7 +3,6 @@ import { firefox } from "@roxybrowser/playwright";
 import { createExampleFixture } from "./helpers/fixture.mjs";
 
 const wsEndpoint = process.env.ROXY_BIDI_ENDPOINT ?? process.env.ROXY_BIDI_WS_ENDPOINT;
-const sessionId = process.env.ROXY_BIDI_SESSION_ID;
 const reuseDefaultUserContext = process.env.ROXY_BIDI_REUSE_DEFAULT_USER_CONTEXT === "1";
 
 if (!wsEndpoint) {
@@ -85,17 +84,11 @@ async function run() {
   try {
     console.log("BiDi probe starting...");
     console.log("wsEndpoint:", wsEndpoint);
-    console.log("sessionId:", sessionId ?? "<none>");
     console.log("reuseDefaultUserContext:", reuseDefaultUserContext);
     console.log("fileUrl:", fixture.url);
     console.log("httpUrl:", httpUrl);
 
-    browser = await firefox.connect({
-      browserName: "firefox",
-      protocol: "bidi",
-      wsEndpoint,
-      ...(sessionId ? { sessionId } : {})
-    });
+    browser = await firefox.connect(wsEndpoint);
 
     console.log("browserVersion:", await browser.version());
 

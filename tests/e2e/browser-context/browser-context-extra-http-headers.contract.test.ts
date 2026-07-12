@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { chromium } from "../../../src/index.js";
+import { connectTestBrowser } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
 
 describe("browser context extra http headers contract e2e", () => {
@@ -18,12 +18,7 @@ describe("browser context extra http headers contract e2e", () => {
   });
 
   it("sends runtime context extra http headers", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext();

@@ -1,15 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { chromium } from "../../../src/index.js";
+import { connectTestBrowser } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
-
-function launchBrowser() {
-  return chromium.launch({
-    headless: true,
-    ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-      ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-      : {})
-  });
-}
 
 describe("browser context contract e2e", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;
@@ -27,7 +18,7 @@ describe("browser context contract e2e", () => {
   });
 
   it("isolates localStorage and cookies across contexts", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const contextOne = await browser.newContext();
       const contextTwo = await browser.newContext();
@@ -67,7 +58,7 @@ describe("browser context contract e2e", () => {
   });
 
   it("clicks independently across two contexts in parallel", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const contextOne = await browser.newContext();
       const contextTwo = await browser.newContext();

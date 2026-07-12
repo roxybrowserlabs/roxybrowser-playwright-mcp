@@ -45,10 +45,7 @@ async function run() {
     console.log(`Connecting to Firefox via BiDi at ${wsEndpoint}...`);
 
     // Connect to Firefox using BiDi protocol
-    browser = await firefox.connect({
-      wsEndpoint,
-      browserName: "firefox"
-    });
+    browser = await firefox.connect(wsEndpoint);
 
     console.log("Connected! Browser version:", await browser.version());
 

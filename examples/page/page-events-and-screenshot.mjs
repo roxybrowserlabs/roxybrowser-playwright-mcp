@@ -4,7 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, firefox } from "@roxybrowser/playwright";
 
-const browserType = process.env.ROXY_BROWSER_NAME === "firefox" ? firefox : chromium;
+const isFirefox = process.env.ROXY_BROWSER_NAME === "firefox";
+const browserType = isFirefox ? firefox : chromium;
+const endpointURL = isFirefox
+  ? process.env.ROXY_BIDI_ENDPOINT ?? process.env.ROXY_BIDI_WS_ENDPOINT
+  : process.env.ROXY_CDP_ENDPOINT ?? process.env.ROXY_CDP_WS_ENDPOINT;
+
+if (!endpointURL) {
+  throw new Error(
+    isFirefox
+      ? "Set ROXY_BIDI_ENDPOINT to a ws://... BiDi endpoint."
+      : "Set ROXY_CDP_ENDPOINT to a ws://.../devtools/browser/<id> endpoint."
+  );
+}
 
 async function closeQuietly(resource, label) {
   if (!resource) {
@@ -122,13 +134,7 @@ async function run() {
   let page;
 
   try {
-    browser = await browserType.launch({
-      headless: true,
-      ...(process.env.ROXY_BROWSER_CHANNEL ? { channel: process.env.ROXY_BROWSER_CHANNEL } : {}),
-      ...(process.env.ROXY_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_EXECUTABLE_PATH }
-        : {})
-    });
+    browser = await browserType.connect(endpointURL);
 
     context = await browser.newContext({
       viewport: {

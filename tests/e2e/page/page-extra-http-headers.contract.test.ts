@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { chromium } from "../../../src/index.js";
+import { connectTestBrowser } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
 
 describe("page extra http headers contract e2e", () => {
@@ -18,12 +18,7 @@ describe("page extra http headers contract e2e", () => {
   });
 
   it("sends page-level extra http headers", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext();
@@ -52,12 +47,7 @@ describe("page extra http headers contract e2e", () => {
   });
 
   it("overrides context extra http headers with page headers", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext({
@@ -92,12 +82,7 @@ describe("page extra http headers contract e2e", () => {
   });
 
   it("sends page-level extra http headers with redirects", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       fixture.server.setRedirect("/foo.html", "/empty.html");
@@ -128,12 +113,7 @@ describe("page extra http headers contract e2e", () => {
   });
 
   it("uses extra headers from browser context", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext();
@@ -162,12 +142,7 @@ describe("page extra http headers contract e2e", () => {
   });
 
   it("throws for non-string header values", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext();
@@ -199,12 +174,7 @@ describe("page extra http headers contract e2e", () => {
   });
 
   it("does not duplicate referer header", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext();

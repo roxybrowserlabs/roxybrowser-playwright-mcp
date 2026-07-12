@@ -1,15 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { chromium } from "../../../src/index.js";
+import { connectTestBrowser } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
-
-function launchBrowser() {
-  return chromium.launch({
-    headless: true,
-    ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-      ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-      : {})
-  });
-}
 
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -49,7 +40,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("intercepts through context.route like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {

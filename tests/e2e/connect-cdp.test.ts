@@ -1,9 +1,9 @@
 /**
- * E2E regression tests for chromium.connectOverCDP().
+ * E2E regression tests for chromium.connect().
  *
  * These tests verify two bugs that only manifest against a real Chrome process:
  *
- * Bug #1 — context.pages() was always empty immediately after connectOverCDP.
+ * Bug #1 — context.pages() was always empty immediately after connect().
  *   Root cause: the page-init Promises created by attachedToTarget event
  *   handlers were fire-and-forget; targetDiscoveryReady resolved before any
  *   pages were registered in pageSet.
@@ -29,7 +29,7 @@ import {
 } from "../../src/protocol/cdp/backend.js";
 import { createTestPageFixture } from "../helpers/server.js";
 
-describe("chromium.connectOverCDP — existing browser", () => {
+describe("chromium.connect — existing browser", () => {
   let chromeProcess: ChildProcess;
   let userDataDir: string;
   let wsEndpoint: string;
@@ -53,7 +53,7 @@ describe("chromium.connectOverCDP — existing browser", () => {
 
     // Pass fixture.url as a positional argument so Chrome opens one real tab in
     // the default browser context. This is the pre-existing page that Bug #1
-    // expects context.pages() to discover immediately after connectOverCDP.
+    // expects context.pages() to discover immediately after connect().
     //
     // buildChromiumLaunchArgs includes --no-startup-window which prevents Chrome
     // from opening any tab on startup (including positional URL arguments). We
@@ -78,12 +78,12 @@ describe("chromium.connectOverCDP — existing browser", () => {
   });
 
   // Regression test — Bug #1:
-  // Before the fix: context.pages() returned [] immediately after connectOverCDP
+  // Before the fix: context.pages() returned [] immediately after connect()
   // even though Chrome had an open tab.
   // After the fix: targetDiscoveryReady now awaits the initial page-init batch,
   // so pages are registered in pageSet before ready() resolves.
-  it("context.pages() is non-empty immediately after connectOverCDP", async () => {
-    const browser = await chromium.connectOverCDP(wsEndpoint);
+  it("context.pages() is non-empty immediately after connect", async () => {
+    const browser = await chromium.connect(wsEndpoint);
 
     try {
       // The default context must be auto-enrolled on connect.
@@ -106,8 +106,8 @@ describe("chromium.connectOverCDP — existing browser", () => {
   // process that Chrome pauses and we never unblocked.
   // After the fix: reuseDefaultUserContext contexts use waitForDebuggerOnStart: false,
   // so new renderer processes run freely and goto() completes normally.
-  it("page.goto() completes without timeout after connectOverCDP", async () => {
-    const browser = await chromium.connectOverCDP(wsEndpoint);
+  it("page.goto() completes without timeout after connect", async () => {
+    const browser = await chromium.connect(wsEndpoint);
 
     try {
       const context = browser.contexts()[0];

@@ -2,10 +2,9 @@ import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { chromium } from "../../../src/index.js";
 import type { Browser, BrowserContext, Page } from "../../../src/types/api.js";
 import type { BrowserContextOptions } from "../../../src/types/options.js";
-import { withPage } from "../../helpers/browser.js";
+import { connectTestBrowser, withPage } from "../../helpers/browser.js";
 
 describe("page screencast recording contract e2e", () => {
   it("writes a recording file when path is provided", async () => {
@@ -104,12 +103,7 @@ async function withPageWithContextOptions(
   contextOptions: BrowserContextOptions,
   run: (page: Page, context: BrowserContext, browser: Browser) => Promise<void>
 ): Promise<void> {
-  const browser = await chromium.launch({
-    headless: true,
-    ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-      ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-      : {})
-  });
+  const browser = await connectTestBrowser();
 
   try {
     const context = await browser.newContext(contextOptions);

@@ -467,7 +467,7 @@ function createClient(name: string): Client {
 }
 
 async function preparePageWithPlaywright(cdpEndpoint: string, url: string): Promise<void> {
-  const browser = await chromium.connectOverCDP(cdpEndpoint);
+  const browser = await chromium.connect(cdpEndpoint);
   try {
     const context = browser.contexts()[0] ?? await browser.newContext();
     const page = context.pages()[0] ?? await context.newPage();

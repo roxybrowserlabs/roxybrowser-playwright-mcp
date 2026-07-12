@@ -3,12 +3,15 @@ import { AssetManager } from "./assets/manager.js";
 import { BidiBrowserAdapterFactory } from "./protocol/bidi/backend.js";
 import { CdpBrowserAdapterFactory } from "./protocol/cdp/backend.js";
 import type { ProtocolBrowserAdapterFactory } from "./protocol/adapter.js";
-import type { Browser, BrowserType } from "./types/api.js";
+import type { Browser, BrowserContext, BrowserServer, BrowserType } from "./types/api.js";
 import type {
   BrowserConnectOptions,
+  BrowserContextOptions,
   ConnectOverCDPOptions,
+  LaunchServerOptions,
   LaunchOptions,
   Progress,
+  RoxyConnectOptions,
   SupportedProtocol
 } from "./types/options.js";
 
@@ -18,12 +21,23 @@ export class RoxyBrowserType implements BrowserType {
     private readonly adapterFactories: Record<SupportedProtocol, ProtocolBrowserAdapterFactory>
   ) {}
 
-  async launch(options: LaunchOptions = {}): Promise<Browser> {
-    return this.connectBrowser({
-      ...options,
-      browserName: this.browserName,
-      protocol: options.protocol ?? (this.browserName === "firefox" ? "bidi" : "cdp")
-    });
+  executablePath(): string {
+    throw new Error(EXECUTABLE_PATH_UNSUPPORTED_ERROR);
+  }
+
+  async launch(_options: LaunchOptions = {}): Promise<Browser> {
+    throw new Error(LAUNCH_UNSUPPORTED_ERROR);
+  }
+
+  async launchPersistentContext(
+    _userDataDir: string,
+    _options: LaunchOptions & BrowserContextOptions = {}
+  ): Promise<BrowserContext> {
+    throw new Error(LAUNCH_PERSISTENT_CONTEXT_UNSUPPORTED_ERROR);
+  }
+
+  async launchServer(_options: LaunchServerOptions = {}): Promise<BrowserServer> {
+    throw new Error(LAUNCH_SERVER_UNSUPPORTED_ERROR);
   }
 
   /**
@@ -31,10 +45,9 @@ export class RoxyBrowserType implements BrowserType {
    *
    * ⚠️ DIVERGENCE FROM PLAYWRIGHT — DO NOT "FIX" THIS BACK TO CDP-ONLY:
    *
-   * In upstream Playwright, `BrowserType.connect()` is a CDP-only operation: it
-   * connects to a running Chromium over the DevTools Protocol. Firefox/WebKit are
-   * not supported here (Playwright routes BiDi through `connectOverCDP`-style
-   * helpers or its own internal plumbing, not this method).
+   * In upstream Playwright, `connectOverCDP()` is the public way to attach to an
+   * existing browser over the DevTools Protocol. Roxy intentionally makes
+   * `connect()` that attach API for every supported browser/protocol.
    *
    * Roxy intentionally changes that semantics. This method dispatches on
    * `browserName` so a single entry point serves both browser families:
@@ -43,12 +56,8 @@ export class RoxyBrowserType implements BrowserType {
    *
    * This is deliberate, not a bug. If you are an agent "normalizing" this code to
    * match Playwright upstream, STOP — the dual-protocol dispatch is the feature.
-   * To force CDP specifically, call `connectOverCDP()` instead, which remains
-   * chromium-only and CDP-only by design (see the guard below).
-   *
-   * `options.protocol` may still be passed to override the per-browser default.
    */
-  async connect(endpointURL: string, options?: ConnectOverCDPOptions): Promise<Browser> {
+  async connect(endpointURL: string, options?: RoxyConnectOptions): Promise<Browser> {
     const endpoint = requireConnectEndpoint(endpointURL);
     return this.connectBrowser({
       ...options,
@@ -68,38 +77,11 @@ export class RoxyBrowserType implements BrowserType {
     options?: ConnectOverCDPOptions
   ): Promise<Browser>;
   async connectOverCDP(
-    progressOrEndpointURL: Progress | string,
-    endpointURLOrOptions?: string | ConnectOverCDPOptions,
-    maybeOptions: ConnectOverCDPOptions = {}
+    _progressOrEndpointURL: Progress | string,
+    _endpointURLOrOptions?: string | ConnectOverCDPOptions,
+    _maybeOptions: ConnectOverCDPOptions = {}
   ): Promise<Browser> {
-    const [progress, endpointURL, options] =
-      typeof progressOrEndpointURL === "string"
-        ? [undefined, progressOrEndpointURL, (endpointURLOrOptions ?? {}) as ConnectOverCDPOptions]
-        : [progressOrEndpointURL, endpointURLOrOptions as string, maybeOptions];
-
-    const endpoint = new URL(endpointURL);
-    if (!["ws:", "wss:"].includes(endpoint.protocol)) {
-      throw new Error(
-        `Only ws:// and wss:// CDP endpoints are currently supported. Received "${endpoint.protocol}".`
-      );
-    }
-
-    if (options.headers?.length) {
-      throw new Error("Custom headers are not supported for WebSocket CDP endpoints yet.");
-    }
-
-    if (this.browserName !== "chromium") {
-      throw new Error('connectOverCDP() is only supported for the "chromium" browser type.');
-    }
-
-    await progress?.log?.(`Connecting over CDP to ${endpoint.origin}.`);
-
-    return this.connectBrowser({
-      ...options,
-      browserName: this.browserName,
-      protocol: "cdp",
-      wsEndpoint: endpointURL
-    });
+    throw new Error(CONNECT_OVER_CDP_UNSUPPORTED_ERROR);
   }
 
   private async connectBrowser(options: BrowserConnectOptions): Promise<Browser> {
@@ -140,6 +122,10 @@ export class RoxyBrowserType implements BrowserType {
 
     return browser;
   }
+
+  name(): string {
+    return this.browserName;
+  }
 }
 
 export const chromium: BrowserType = new RoxyBrowserType("chromium", {
@@ -159,3 +145,18 @@ function requireConnectEndpoint(endpointURL: string): string {
 
   return endpointURL;
 }
+
+const LAUNCH_UNSUPPORTED_ERROR =
+  "BrowserType.launch() is not supported in RoxyBrowser. Use BrowserType.connect(endpointURL) instead.";
+
+const CONNECT_OVER_CDP_UNSUPPORTED_ERROR =
+  "BrowserType.connectOverCDP() is not supported in RoxyBrowser. Use BrowserType.connect(endpointURL) instead.";
+
+const EXECUTABLE_PATH_UNSUPPORTED_ERROR =
+  "BrowserType.executablePath() is not supported in RoxyBrowser because RoxyBrowser does not manage bundled browser executables. Use BrowserType.connect(endpointURL) with an endpoint opened by RoxyBrowser or another browser process.";
+
+const LAUNCH_PERSISTENT_CONTEXT_UNSUPPORTED_ERROR =
+  "BrowserType.launchPersistentContext() is not supported in RoxyBrowser because RoxyBrowser does not launch persistent profiles. Open the profile in RoxyBrowser or another browser process and use BrowserType.connect(endpointURL) instead.";
+
+const LAUNCH_SERVER_UNSUPPORTED_ERROR =
+  "BrowserType.launchServer() is not supported in RoxyBrowser because RoxyBrowser does not launch Playwright protocol servers. Use BrowserType.connect(endpointURL) with a CDP or BiDi endpoint instead.";

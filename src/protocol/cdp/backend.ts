@@ -1589,7 +1589,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     // setAutoAttach only triggers attachedToTarget for new targets, not for
     // tabs that were already open before our session connected).
     // This is the primary mechanism that populates context.pages() after
-    // connectOverCDP — without it, pages() is always empty on connect.
+    // connect — without it, pages() is always empty on connect.
     await this.discoverTargets();
 
     this.targetPollTimer = setInterval(() => {
@@ -1829,7 +1829,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     // Chrome 119+ assigns a non-empty UUID to ALL targets — including those in the
     // default context — so the old check `!targetInfo.browserContextId` incorrectly
     // excluded every tab that had been given a default-context UUID, making
-    // context.pages() always empty after connectOverCDP.
+    // context.pages() always empty after connect.
     //
     // Isolated contexts are tracked in state.isolatedBrowserContextIds (populated
     // in CdpBrowserSession.newContext when Target.createBrowserContext is called).

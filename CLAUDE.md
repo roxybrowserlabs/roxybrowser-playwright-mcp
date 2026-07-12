@@ -68,7 +68,7 @@ E2e tests run serially (`fileParallelism: false`, `maxWorkers: 1`) and have a gl
 - `src/protocol/bidi/{backend,client}.ts` — WebDriver BiDi backend (firefox).
 - `src/browserType.ts` — `RoxyBrowserType` dispatches to the right adapter factory per `browserName` + `protocol`. Default protocol: chromium→cdp, firefox→bidi.
 
-**Deliberate divergence from Playwright — do not "fix":** `BrowserType.connect()` dispatches on `browserName` (chromium→CDP, firefox→BiDi) instead of being CDP-only. `connectOverCDP()` remains chromium/CDP-only by design. There are explicit `⚠️ DIVERGENCE FROM PLAYWRIGHT` comments marking these; respect them.
+**Deliberate divergence from Playwright — do not "fix":** `BrowserType.connect()` is Roxy's only public browser entry point and dispatches on `browserName` (chromium→CDP, firefox→BiDi). `launch()` and `connectOverCDP()` intentionally throw migration errors telling callers to use `connect()`. There are explicit `⚠️ DIVERGENCE FROM PLAYWRIGHT` comments marking this; respect them.
 
 ### Humanization (the headline feature)
 

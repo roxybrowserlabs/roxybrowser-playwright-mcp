@@ -22,6 +22,7 @@ import type {
   GetByTitleOptions,
   HoverOptions,
   LaunchOptions,
+  LaunchServerOptions,
   LocatorScreenshotOptions,
   PageCloseOptions,
   PageGotoOptions,
@@ -29,6 +30,7 @@ import type {
   PageSetContentOptions,
   PressOptions,
   Rect,
+  RoxyConnectOptions,
   SelectOptionValue,
   ScreenshotOptions,
   SetInputFilesOptions,
@@ -112,15 +114,36 @@ export type ElementArrayCallback<TResult, TArg = unknown> = (
 ) => TResult | Promise<TResult>;
 
 export interface BrowserType {
+  executablePath(): string;
+  /**
+   * @deprecated RoxyBrowser only supports attaching to an existing browser. Use
+   * `connect(endpointURL)` instead; this method always rejects at runtime.
+   */
   launch(options?: LaunchOptions): Promise<Browser>;
+  launchPersistentContext(
+    userDataDir: string,
+    options?: LaunchOptions & BrowserContextOptions
+  ): Promise<BrowserContext>;
+  launchServer(options?: LaunchServerOptions): Promise<BrowserServer>;
   connect(
     endpointURL: string,
-    options?: ConnectOverCDPOptions
+    options?: RoxyConnectOptions
   ): Promise<Browser>;
+  /**
+   * @deprecated RoxyBrowser uses `connect(endpointURL)` for both CDP and BiDi.
+   * This method always rejects at runtime.
+   */
   connectOverCDP(
     endpointURL: string,
     options?: ConnectOverCDPOptions
   ): Promise<Browser>;
+  name(): string;
+}
+
+export interface BrowserServer {
+  close(): Promise<void>;
+  kill(): Promise<void>;
+  wsEndpoint(): string;
 }
 
 export interface Browser {

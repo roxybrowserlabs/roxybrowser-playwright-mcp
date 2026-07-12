@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { chromium } from "../../../src/index.js";
+import { connectTestBrowser } from "../../helpers/browser.js";
 import type { Browser, BrowserContext, Page } from "../../../src/types/api.js";
 import { cleanupLocalTestBrowserProcessesWithTimeout } from "../../helpers/browser-process-cleanup.js";
 
@@ -156,12 +156,7 @@ describe("page tap contract e2e", () => {
 async function withTapPage<T>(
   run: (page: Page, context: BrowserContext, browser: Browser) => Promise<T>
 ): Promise<T> {
-  const browser = await chromium.launch({
-    headless: true,
-    ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-      ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-      : {})
-  });
+  const browser = await connectTestBrowser();
 
   try {
     const context = await browser.newContext();

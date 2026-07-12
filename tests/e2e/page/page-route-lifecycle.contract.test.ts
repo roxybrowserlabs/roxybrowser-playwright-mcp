@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { chromium } from "../../../src/index.js";
-import { withPage } from "../../helpers/browser.js";
+import { connectTestBrowser, withPage } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
 
 async function withTimeout<T>(
@@ -41,12 +40,7 @@ describe("page route lifecycle contract e2e", () => {
   });
 
   it("page.close does not wait for active route handlers on the owning context like Playwright", async () => {
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext();

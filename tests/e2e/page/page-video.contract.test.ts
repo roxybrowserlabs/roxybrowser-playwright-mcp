@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/prom
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { chromium } from "../../../src/index.js";
+import { connectTestBrowser } from "../../helpers/browser.js";
 
 describe("page video contract e2e", () => {
   it("does not throw without recordVideo.dir", async () => {
@@ -11,12 +11,7 @@ describe("page video contract e2e", () => {
     const previousFfmpegPath = process.env.ROXY_FFMPEG_PATH;
     process.env.ROXY_FFMPEG_PATH = ffmpegPath;
 
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext({
@@ -50,12 +45,7 @@ describe("page video contract e2e", () => {
     const previousFfmpegPath = process.env.ROXY_FFMPEG_PATH;
     process.env.ROXY_FFMPEG_PATH = ffmpegPath;
 
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext({
@@ -109,12 +99,7 @@ describe("page video contract e2e", () => {
     const previousFfmpegPath = process.env.ROXY_FFMPEG_PATH;
     process.env.ROXY_FFMPEG_PATH = ffmpegPath;
 
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext({
@@ -158,12 +143,7 @@ describe("page video contract e2e", () => {
     const previousFfmpegPath = process.env.ROXY_FFMPEG_PATH;
     process.env.ROXY_FFMPEG_PATH = ffmpegPath;
 
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext({
@@ -217,12 +197,7 @@ describe("page video contract e2e", () => {
     const previousFfmpegPath = process.env.ROXY_FFMPEG_PATH;
     process.env.ROXY_FFMPEG_PATH = ffmpegPath;
 
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.ROXY_E2E_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH }
-        : {})
-    });
+    const browser = await connectTestBrowser();
 
     try {
       const context = await browser.newContext({

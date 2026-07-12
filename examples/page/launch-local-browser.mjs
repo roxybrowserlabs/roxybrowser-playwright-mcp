@@ -1,7 +1,19 @@
 import { chromium, firefox } from "@roxybrowser/playwright";
 import { createExampleFixture } from "./helpers/fixture.mjs";
 
-const browserType = process.env.ROXY_BROWSER_NAME === "firefox" ? firefox : chromium;
+const isFirefox = process.env.ROXY_BROWSER_NAME === "firefox";
+const browserType = isFirefox ? firefox : chromium;
+const endpointURL = isFirefox
+  ? process.env.ROXY_BIDI_ENDPOINT ?? process.env.ROXY_BIDI_WS_ENDPOINT
+  : process.env.ROXY_CDP_ENDPOINT ?? process.env.ROXY_CDP_WS_ENDPOINT;
+
+if (!endpointURL) {
+  throw new Error(
+    isFirefox
+      ? "Set ROXY_BIDI_ENDPOINT to a ws://... BiDi endpoint."
+      : "Set ROXY_CDP_ENDPOINT to a ws://.../devtools/browser/<id> endpoint."
+  );
+}
 
 async function closeQuietly(resource, label) {
   if (!resource) {
@@ -23,20 +35,7 @@ async function run() {
   let page;
 
   try {
-    browser = await browserType.launch({
-      headless: false,
-      // headless: process.env.ROXY_HEADLESS === "false" ? false : true,
-      ...(process.env.ROXY_BROWSER_CHANNEL ? { channel: process.env.ROXY_BROWSER_CHANNEL } : {}),
-      ...(process.env.ROXY_EXECUTABLE_PATH
-        ? { executablePath: process.env.ROXY_EXECUTABLE_PATH }
-        : {}),
-      human: {
-        hoverBeforeClickMs: 0,
-        clickHoldMs: 0,
-        typingDelayMs: 0,
-        typingVarianceMs: 0
-      }
-    });
+    browser = await browserType.connect(endpointURL);
 
     context = await browser.newContext({
       viewport: {

@@ -29,7 +29,7 @@ async function run() {
   let page;
 
   try {
-    browser = await chromium.connectOverCDP(endpointURL);
+    browser = await chromium.connect(endpointURL);
     context = await browser.newContext();
     page = await context.newPage();
 

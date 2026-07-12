@@ -253,7 +253,7 @@ async function cdpBrowserConnection(endpoint: string): Promise<{
 }
 
 async function preparePageWithPlaywright(cdpEndpoint: string, url: string): Promise<void> {
-  const browser = await chromium.connectOverCDP(cdpEndpoint);
+  const browser = await chromium.connect(cdpEndpoint);
   try {
     const context = browser.contexts()[0] ?? await browser.newContext();
     const page = context.pages()[0] ?? await context.newPage();
@@ -266,7 +266,7 @@ async function preparePageWithPlaywright(cdpEndpoint: string, url: string): Prom
 }
 
 async function emitDeterministicConsole(cdpEndpoint: string): Promise<void> {
-  const browser = await chromium.connectOverCDP(cdpEndpoint);
+  const browser = await chromium.connect(cdpEndpoint);
   try {
     const page = browser.contexts()[0]?.pages()[0];
     if (!page) {

@@ -1,6 +1,6 @@
 # Firefox BiDi 示例
 
-这个示例展示了如何使用 WebDriver BiDi 协议连接到 Firefox 浏览器。
+这个示例展示了如何使用 WebDriver BiDi 协议连接到已运行的 Firefox 浏览器。
 
 ## 运行示例
 
@@ -12,7 +12,7 @@ node examples/page/launch-firefox-bidi.mjs
 
 该示例演示了以下功能：
 
-1. **启动 Firefox**：使用 BiDi 协议启动 Firefox 浏览器
+1. **连接 Firefox**：使用 BiDi WebSocket 端点连接 Firefox 浏览器
 2. **页面导航**：导航到本地 HTML 文件
 3. **表单交互**：填充输入框并点击按钮
 4. **元素查询**：读取页面元素的文本内容
@@ -26,11 +26,13 @@ node examples/page/launch-firefox-bidi.mjs
 ```javascript
 import { firefox } from "@roxybrowser/playwright";
 
-// 启动 Firefox
-const browser = await firefox.launch({
-  headless: true,
-  protocol: "bidi"
-});
+const endpointURL = process.env.ROXY_BIDI_ENDPOINT;
+if (!endpointURL) {
+  throw new Error("Set ROXY_BIDI_ENDPOINT to a ws://... BiDi endpoint.");
+}
+
+// 连接 Firefox
+const browser = await firefox.connect(endpointURL);
 
 // 创建上下文和页面
 const context = await browser.newContext();
@@ -64,32 +66,25 @@ WebDriver BiDi 是 WebDriver 的下一代协议，提供：
 
 ### 实现要点
 
-1. **直接启动 Firefox**：库会直接拉起本地 Firefox 并开启 BiDi 远程调试端口
-2. **WebSocket 连接**：BiDi 使用 WebSocket 进行通信
+1. **连接 Firefox**：RoxyBrowser 通过已暴露的 BiDi WebSocket 端点连接 Firefox
+2. **WebSocket 通信**：BiDi 使用 WebSocket 进行双向通信
 3. **事件订阅**：可以订阅浏览器事件（导航、网络请求等）
 
 ## 故障排除
 
-### 问题：Firefox 启动失败
+### 问题：Firefox 连接失败
 
-确保 Firefox 已安装在标准位置：
-- macOS: `/Applications/Firefox.app/Contents/MacOS/firefox`
-- Windows: `C:\Program Files\Mozilla Firefox\firefox.exe`
-- Linux: `firefox`
+确保 Firefox 已经以 BiDi/远程调试模式运行，并且 `ROXY_BIDI_ENDPOINT` 指向正确的 WebSocket 端点。
 
-或者指定自定义路径：
+例如：
 
-```javascript
-const browser = await firefox.launch({
-  executablePath: "/path/to/firefox",
-  protocol: "bidi"
-});
+```bash
+export ROXY_BIDI_ENDPOINT=ws://127.0.0.1:9222/session
 ```
 
 ### 问题：BiDi 端口未暴露
 
-确认 Firefox 能够以远程调试模式启动，并检查 stderr 中是否出现 `WebDriver BiDi listening`。
-如果本机有多个 Firefox 实例，也可以先完全退出 Firefox，再重试示例。
+确认 Firefox 已以远程调试模式运行，并检查 stderr 中是否出现 `WebDriver BiDi listening`。
 
 ## 相关资源
 

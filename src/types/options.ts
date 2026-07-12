@@ -57,14 +57,21 @@ export interface LaunchOptions extends AssetOptions {
   port?: number;
 }
 
-export interface ConnectOverCDPOptions extends AssetOptions {
+export interface RoxyConnectOptions extends AssetOptions {
   slowMo?: number;
   headers?: HeadersArray;
   isLocal?: boolean;
   noDefaults?: boolean;
+  timeout?: number;
 }
 
-export interface BrowserConnectOptions extends LaunchOptions, ConnectOverCDPOptions {}
+export type ConnectOverCDPOptions = RoxyConnectOptions;
+
+export interface LaunchServerOptions extends LaunchOptions {
+  wsPath?: string;
+}
+
+export interface BrowserConnectOptions extends LaunchOptions, RoxyConnectOptions {}
 
 export interface RecordVideoOptions {
   dir?: string;

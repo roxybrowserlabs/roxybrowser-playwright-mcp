@@ -42,40 +42,30 @@ The e2e suite writes a temporary HTML fixture, launches Chrome or Edge in headle
 
 The BiDi e2e suite prefers connecting to an existing Firefox BiDi websocket when `ROXY_BIDI_WS_ENDPOINT` is set. Without that variable, it launches a local Firefox binary with a temporary test profile and will use `ROXY_BIDI_EXECUTABLE_PATH` when provided. Set `ROXY_BIDI_USE_ROXYBROWSER_API=1` to opt into opening a Firefox profile through the RoxyBrowser local API; the helper closes the connected browser/profile after each test by default so repeated local runs do not leak Firefox windows. Set `ROXY_BIDI_KEEP_BROWSER_OPEN=1` only when deliberately debugging a shared endpoint and you intentionally want the Firefox window to stay open after a test. See `.env.example` for the supported local settings.
 
-## Browser launch
+## Browser connect
 
-`chromium.launch()` uses a locally installed Chromium-family browser. Launch resolution order is:
+RoxyBrowser uses `browserType.connect(endpointURL)` as the only browser entry point. `launch()` and `connectOverCDP()` are intentionally unsupported and throw migration errors that point callers to `connect()`.
 
-- `executablePath`: use an explicit browser binary.
-- `channel`: resolve a known local install such as `chrome`, `chrome-beta`, `chrome-dev`, `chrome-canary`, `msedge`, `msedge-beta`, `msedge-dev`, `msedge-canary`, or `chromium`.
-- auto-detection: fall back to the default Chrome, Chromium, and Edge candidate paths for the current platform.
+`chromium.connect()` attaches to a Chromium/CDP WebSocket endpoint such as `ws://127.0.0.1:9222/devtools/browser/<id>`.
 
-`firefox.launch()` uses the WebDriver BiDi backend by default and launches a locally installed Firefox binary directly. The Firefox BiDi path supports browser launch, context creation, page creation, navigation, title lookup, script evaluation, and locator-based `click`, `hover`, `fill`, `type`, `press`, `textContent`, and `isVisible` flows.
-
-Firefox launch requires a local Firefox binary with BiDi remote debugging support. If auto-detection is not enough for your machine or CI image, set `ROXY_EXECUTABLE_PATH` or pass `executablePath` explicitly.
-
-## CDP connect
-
-`chromium.connectOverCDP()` currently supports direct WebSocket DevTools endpoints such as `ws://127.0.0.1:9222/devtools/browser/<id>`.
+`firefox.connect()` attaches to a Firefox/WebDriver BiDi WebSocket endpoint. The Firefox BiDi path supports context creation, page creation, navigation, title lookup, script evaluation, and locator-based `click`, `hover`, `fill`, `type`, `press`, `textContent`, and `isVisible` flows.
 
 - `ws://` and `wss://` endpoints are supported.
-- `http://` discovery endpoints are not supported yet.
-- custom `headers` are not supported for WebSocket endpoints yet.
+- `launch()` is not supported by the public Roxy API.
+- `connectOverCDP()` is not supported by the public Roxy API; use `connect()` for CDP and BiDi.
 
 ## Examples
 
-The [`examples`](./examples) directory contains runnable `.mjs` scripts grouped by entry point. Run them directly with Node:
+The [`examples`](./examples) directory contains runnable `.mjs` scripts grouped by entry point. Prefer the shared runner so endpoint environment variables are loaded and injected consistently:
 
-- `node examples/page/launch-local-browser.mjs`
-  Launches a locally installed browser, opens a temporary `file://` fixture, and prints the result.
 - `pnpm examples page connect-over-cdp`
-  Connects to an existing CDP WebSocket endpoint from `ROXY_CDP_ENDPOINT` and runs the same flow.
+  Connects to an existing CDP WebSocket endpoint from `ROXY_CDP_ENDPOINT` with `chromium.connect()` and runs the same flow.
 - `pnpm examples page verify-baidu-search`
   Drives Baidu search through the Page API and types into the search box with `page.type(...)`.
-- `node examples/page/page-events-and-screenshot.mjs`
-  Launches a local browser, starts a temporary HTTP fixture, logs `page.on(...)` events, removes a `request` listener, and writes a screenshot to a temporary file.
-- `node examples/page/launch-firefox-bidi.mjs` / `node examples/page/connect-firefox-bidi.mjs`
-  Exercise the Firefox WebDriver BiDi backend by launching a local Firefox binary or connecting to an existing BiDi websocket.
+- `pnpm examples page page-events-and-screenshot`
+  Connects to an endpoint, starts a temporary HTTP fixture, logs `page.on(...)` events, removes a `request` listener, and writes a screenshot to a temporary file.
+- `pnpm examples page connect-firefox-bidi`
+  Exercises the Firefox WebDriver BiDi backend by connecting to an existing BiDi websocket.
 - `pnpm examples mcp verify-baidu-search`
   Drive the MCP server end-to-end (Baidu search, drag, file upload, humanized typing) and double as integration checks.
 
