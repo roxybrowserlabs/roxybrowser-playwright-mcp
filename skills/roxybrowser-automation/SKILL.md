@@ -1,9 +1,9 @@
 ---
-name: using-roxybrowser-mcp
+name: roxybrowser-automation
 description: Use when an agent has access to RoxyBrowser MCP tools such as roxy_browser_connect or browser_* and needs to browse, inspect, automate, test, upload files, debug pages, or interact with websites through a real browser session.
 ---
 
-# Using RoxyBrowser MCP
+# RoxyBrowser Automation
 
 ## Core Idea
 
