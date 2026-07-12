@@ -1,4 +1,5 @@
 import type { ReadStream } from "node:fs";
+import type { Readable } from "node:stream";
 import type {
   AddLocatorHandlerOptions,
   AddScriptTagOptions,
@@ -51,7 +52,8 @@ import type {
 import type { LocatorSelector } from "../protocol/adapter.js";
 
 export interface Disposable {
-  dispose(): Promise<void> | void;
+  dispose(): Promise<void>;
+  [Symbol.asyncDispose](): Promise<void>;
 }
 
 /**
@@ -145,6 +147,7 @@ export interface Browser {
 }
 
 export interface APIRequestContext {
+  tracing: Tracing;
   delete(
     url: string,
     options?: APIRequestOptions
@@ -325,10 +328,43 @@ export interface FileChooser {
   element(): ElementHandle;
   isMultiple(): boolean;
   page(): Page;
-  setFiles(
-    files: string | FilePayload | string[] | FilePayload[],
-    options?: SetInputFilesOptions
-  ): Promise<void>;
+  setFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+}
+
+export interface Tracing {
+  group(name: string, options?: {
+    location?: {
+      file: string;
+      line?: number;
+      column?: number;
+    };
+  }): Promise<Disposable>;
+  groupEnd(): Promise<void>;
+  start(options?: {
+    live?: boolean;
+    name?: string;
+    screenshots?: boolean;
+    snapshots?: boolean;
+    sources?: boolean;
+    title?: string;
+  }): Promise<void>;
+  startChunk(options?: {
+    name?: string;
+    title?: string;
+  }): Promise<void>;
+  startHar(path: string, options?: {
+    content?: "omit"|"embed"|"attach";
+    mode?: "full"|"minimal";
+    resourcesDir?: string;
+    urlFilter?: string|RegExp;
+  }): Promise<Disposable>;
+  stop(options?: {
+    path?: string;
+  }): Promise<void>;
+  stopChunk(options?: {
+    path?: string;
+  }): Promise<void>;
+  stopHar(): Promise<void>;
 }
 
 export interface Clock {
@@ -566,7 +602,7 @@ export interface Dialog {
 
 export interface Download {
   cancel(): Promise<void>;
-  createReadStream(): Promise<ReadStream | null>;
+  createReadStream(): Promise<Readable>;
   delete(): Promise<void>;
   failure(): Promise<string | null>;
   page(): Page;

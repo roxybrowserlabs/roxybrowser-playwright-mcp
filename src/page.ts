@@ -2457,14 +2457,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     };
     this.routeHandlers.push(entry);
     await this.installRouteInterceptors();
-    return {
-      dispose: async () => {
-        const index = this.routeHandlers.indexOf(entry);
-        if (index >= 0) {
-          this.routeHandlers.splice(index, 1);
-        }
-        await this.syncRouteInterception();
+    const dispose = async () => {
+      const index = this.routeHandlers.indexOf(entry);
+      if (index >= 0) {
+        this.routeHandlers.splice(index, 1);
       }
+      await this.syncRouteInterception();
+    };
+    return {
+      dispose,
+      [Symbol.asyncDispose]: dispose
     };
   }
 
@@ -5322,11 +5324,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.installExposedBinding(name);
     this.startBindingPump();
 
+    const dispose = async () => {
+      this.exposedBindings.delete(name);
+      await this.removeExposedBinding(name);
+    };
     return {
-      dispose: async () => {
-        this.exposedBindings.delete(name);
-        await this.removeExposedBinding(name);
-      }
+      dispose,
+      [Symbol.asyncDispose]: dispose
     };
   }
 

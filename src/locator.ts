@@ -159,8 +159,12 @@ function selectorChainForSameFrameLocator(
 class DisposableStub implements Disposable {
   constructor(private readonly callback: () => Promise<void> | void) {}
 
-  dispose(): Promise<void> | void {
-    return this.callback();
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.dispose();
+  }
+
+  async dispose(): Promise<void> {
+    await this.callback();
   }
 }
 

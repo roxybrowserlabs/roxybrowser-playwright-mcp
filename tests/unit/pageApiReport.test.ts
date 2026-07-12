@@ -1,9 +1,14 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   generateApiMethodSignatureReport,
   generateApiSurfaceReport,
   generatePageApiReport
 } from "../../src/pageApiReport.js";
+
+const currentApiTypes = () => readFileSync("src/types/api.ts", "utf8");
+const currentIndexTypes = () => readFileSync("src/index.ts", "utf8");
+const currentOptionsTypes = () => readFileSync("src/types/options.ts", "utf8");
 
 describe("generatePageApiReport", () => {
   it.each(["Page", "Frame", "Locator", "FrameLocator", "ElementHandle", "JSHandle"])(
@@ -62,6 +67,41 @@ describe("generatePageApiReport", () => {
     expect(report.currentProperties).toContain("touchscreen");
     expect(report.extraMethods).toEqual([]);
     expect(report.extraProperties).toEqual([]);
+  });
+
+  it("matches upstream Playwright APIRequestContext properties used by page.request", () => {
+    const report = generateApiSurfaceReport("APIRequestContext");
+
+    expect(report.missingProperties).toEqual([]);
+    expect(report.extraProperties).toEqual([]);
+    expect(report.currentProperties).toContain("tracing");
+  });
+
+  it("matches upstream Playwright FileChooser.setFiles signature", () => {
+    const report = generateApiMethodSignatureReport("FileChooser", ["setFiles"]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("matches upstream Playwright Download.createReadStream signature", () => {
+    const report = generateApiMethodSignatureReport("Download", ["createReadStream"]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("exports ConsoleMessage by the upstream Playwright name", () => {
+    expect(currentIndexTypes()).toMatch(/\bConsoleMessage\b/);
+  });
+
+  it("does not expose legacy waitForSelector waitFor option publicly", () => {
+    expect(currentOptionsTypes()).not.toContain("waitFor?: WaitForSelectorState");
+  });
+
+  it("matches upstream Playwright Disposable async-dispose surface", () => {
+    const disposableSource = currentApiTypes().match(/export interface Disposable \{[\s\S]*?\n\}/)?.[0] ?? "";
+
+    expect(disposableSource).toContain("dispose(): Promise<void>;");
+    expect(disposableSource).toContain("[Symbol.asyncDispose](): Promise<void>;");
   });
 
   it.each(["ElementHandle", "FrameLocator", "JSHandle", "Locator"])(

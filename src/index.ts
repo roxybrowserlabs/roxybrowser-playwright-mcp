@@ -22,6 +22,7 @@ export type {
 } from "./types/api.js";
 
 export type {
+  ConsoleMessage,
   PageConsoleMessage,
   PageEventListener,
   PageEventMap,

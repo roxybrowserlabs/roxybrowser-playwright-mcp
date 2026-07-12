@@ -125,15 +125,17 @@ export class RoxyBrowserContext implements BrowserContext {
       const disposable = await page.addInitScript(source);
       entry.disposablesByPage.set(page, disposable);
     }));
-    return {
-      dispose: async () => {
-        if (!this.initScripts.delete(entry)) {
-          return;
-        }
-        await Promise.all(Array.from(this.pageSet, async (page) => {
-          await entry.disposablesByPage.get(page)?.dispose();
-        }));
+    const dispose = async () => {
+      if (!this.initScripts.delete(entry)) {
+        return;
       }
+      await Promise.all(Array.from(this.pageSet, async (page) => {
+        await entry.disposablesByPage.get(page)?.dispose();
+      }));
+    };
+    return {
+      dispose,
+      [Symbol.asyncDispose]: dispose
     };
   }
 
@@ -225,14 +227,16 @@ export class RoxyBrowserContext implements BrowserContext {
       remainingTimes: options.times ?? null
     });
     await this.installRouteInterceptorsOnPages();
-    return {
-      dispose: async () => {
-        const index = this.routeHandlers.findIndex((entry) => entry.matcher === url && entry.handler === handler);
-        if (index >= 0) {
-          this.routeHandlers.splice(index, 1);
-        }
-        await this.syncRouteInterceptionOnPages();
+    const dispose = async () => {
+      const index = this.routeHandlers.findIndex((entry) => entry.matcher === url && entry.handler === handler);
+      if (index >= 0) {
+        this.routeHandlers.splice(index, 1);
       }
+      await this.syncRouteInterceptionOnPages();
+    };
+    return {
+      dispose,
+      [Symbol.asyncDispose]: dispose
     };
   }
 

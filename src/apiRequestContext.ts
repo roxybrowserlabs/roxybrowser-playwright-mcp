@@ -9,11 +9,54 @@ import type {
   APIRequestFetchOptions,
   APIRequestOptions,
   APIResponse,
-  Request
+  Disposable,
+  Request,
+  Tracing
 } from "./types/api.js";
 import type { FilePayload } from "./types/options.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+// ⚠️ DIVERGENCE FROM PLAYWRIGHT: upstream APIRequestContext exposes a functional
+// tracing controller. Roxy currently exposes the matching property for API shape
+// parity, but request-context tracing is not implemented in the protocol layer yet.
+class UnsupportedTracing implements Tracing {
+  private unsupported(): never {
+    throw new Error("APIRequestContext.tracing is not implemented.");
+  }
+
+  async group(): Promise<Disposable> {
+    this.unsupported();
+  }
+
+  async groupEnd(): Promise<void> {
+    this.unsupported();
+  }
+
+  async start(): Promise<void> {
+    this.unsupported();
+  }
+
+  async startChunk(): Promise<void> {
+    this.unsupported();
+  }
+
+  async startHar(): Promise<Disposable> {
+    this.unsupported();
+  }
+
+  async stop(): Promise<void> {
+    this.unsupported();
+  }
+
+  async stopChunk(): Promise<void> {
+    this.unsupported();
+  }
+
+  async stopHar(): Promise<void> {
+    this.unsupported();
+  }
+}
 
 interface StoredCookie {
   domain: string;
@@ -28,6 +71,7 @@ interface StoredCookie {
 }
 
 export class RoxyAPIRequestContext implements APIRequestContext {
+  readonly tracing: Tracing = new UnsupportedTracing();
   private closedReason: string | null = null;
   private readonly cookies: StoredCookie[] = [];
 

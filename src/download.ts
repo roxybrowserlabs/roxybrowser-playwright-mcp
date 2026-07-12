@@ -1,4 +1,4 @@
-import type { ReadStream } from "node:fs";
+import type { Readable } from "node:stream";
 import type { Page } from "./types/api.js";
 import type { RoxyArtifact } from "./artifact.js";
 
@@ -34,8 +34,12 @@ export class RoxyDownload {
     return this.artifact.failure();
   }
 
-  createReadStream(): Promise<ReadStream | null> {
-    return this.artifact.createReadStream();
+  async createReadStream(): Promise<Readable> {
+    const stream = await this.artifact.createReadStream();
+    if (!stream) {
+      throw new Error("Download stream is not available.");
+    }
+    return stream;
   }
 
   cancel(): Promise<void> {

@@ -864,18 +864,20 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       throw error;
     }
 
-    return {
-      dispose: async () => {
-        if (!this.initScripts.delete(entry)) {
-          return;
-        }
-        await Promise.all(Array.from(this.pages, async (page) => {
-          await entry.pageDisposables.get(page)?.dispose();
-        }));
-        if (entry.scriptId) {
-          await this.client.scriptRemovePreloadScript({ script: entry.scriptId }).catch(() => {});
-        }
+    const dispose = async () => {
+      if (!this.initScripts.delete(entry)) {
+        return;
       }
+      await Promise.all(Array.from(this.pages, async (page) => {
+        await entry.pageDisposables.get(page)?.dispose();
+      }));
+      if (entry.scriptId) {
+        await this.client.scriptRemovePreloadScript({ script: entry.scriptId }).catch(() => {});
+      }
+    };
+    return {
+      dispose,
+      [Symbol.asyncDispose]: dispose
     };
   }
 
@@ -1089,13 +1091,15 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       contexts: [this.contextId]
     });
     const script = (result as { script?: string }).script;
-    return {
-      dispose: async () => {
-        if (!script) {
-          return;
-        }
-        await this.client.scriptRemovePreloadScript({ script }).catch(() => {});
+    const dispose = async () => {
+      if (!script) {
+        return;
       }
+      await this.client.scriptRemovePreloadScript({ script }).catch(() => {});
+    };
+    return {
+      dispose,
+      [Symbol.asyncDispose]: dispose
     };
   }
 

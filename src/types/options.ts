@@ -133,7 +133,6 @@ export type WaitForSelectorState = "attached" | "detached" | "hidden" | "visible
 export interface WaitForSelectorOptions extends TimeoutOptions {
   state?: WaitForSelectorState;
   strict?: boolean;
-  waitFor?: WaitForSelectorState;
 }
 
 export interface HoverOptions extends SelectorStrictOptions {

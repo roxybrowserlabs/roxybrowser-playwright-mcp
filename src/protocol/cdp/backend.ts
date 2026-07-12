@@ -1434,15 +1434,17 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       const disposable = await page.addInitScript(source);
       entry.disposablesByPage.set(page, disposable);
     }));
-    return {
-      dispose: async () => {
-        if (!this.initScripts.delete(entry)) {
-          return;
-        }
-        await Promise.all(Array.from(this.pages.values(), async (page) => {
-          await entry.disposablesByPage.get(page)?.dispose();
-        }));
+    const dispose = async () => {
+      if (!this.initScripts.delete(entry)) {
+        return;
       }
+      await Promise.all(Array.from(this.pages.values(), async (page) => {
+        await entry.disposablesByPage.get(page)?.dispose();
+      }));
+    };
+    return {
+      dispose,
+      [Symbol.asyncDispose]: dispose
     };
   }
 
@@ -4262,8 +4264,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       })) as { identifier?: string };
     } catch (error) {
       if (this.options.suppressClosedInitScriptErrors && isClosedCdpConnectionError(error)) {
+        const dispose = async () => {};
         return {
-          dispose: async () => {}
+          dispose,
+          [Symbol.asyncDispose]: dispose
         };
       }
       throw error;
@@ -4277,15 +4281,17 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       });
     }
     const identifier = (result as { identifier?: string }).identifier;
-    return {
-      dispose: async () => {
-        if (!identifier) {
-          return;
-        }
-        await this.options.client.Page.removeScriptToEvaluateOnNewDocument?.({
-          identifier
-        }).catch(() => {});
+    const dispose = async () => {
+      if (!identifier) {
+        return;
       }
+      await this.options.client.Page.removeScriptToEvaluateOnNewDocument?.({
+        identifier
+      }).catch(() => {});
+    };
+    return {
+      dispose,
+      [Symbol.asyncDispose]: dispose
     };
   }
 
@@ -9873,6 +9879,10 @@ class CdpJSHandleAdapter<T = unknown> implements ProtocolJSHandleAdapter<T> {
         objectId: this.remoteObject.objectId
       }, this.runtimeSessionId).catch(() => {});
     }
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.dispose();
   }
 }
 

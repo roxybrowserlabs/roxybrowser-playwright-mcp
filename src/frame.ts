@@ -40,7 +40,7 @@ import type {
   WaitForSelectorOptions
 } from "./types/options.js";
 import { urlMatches } from "./urlMatch.js";
-import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
+import { normalizeWaitForSelectorOptions, type LegacyWaitForSelectorOptions } from "./waitForSelector.js";
 
 type LocatorOptions = {
   has?: Locator;
@@ -367,7 +367,7 @@ export class RoxyFrame implements Frame {
   ): Promise<null | ElementHandle<SVGElement | HTMLElement>>;
   async waitForSelector(
     selector: string,
-    options: WaitForSelectorOptions = {}
+    options: LegacyWaitForSelectorOptions = {}
   ): Promise<ElementHandle | null> {
     const { state, timeout } = normalizeWaitForSelectorOptions(options, this.roxyPage.defaultTimeout());
     const startTime = Date.now();

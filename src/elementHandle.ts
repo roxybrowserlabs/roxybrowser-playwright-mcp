@@ -5,7 +5,7 @@ import { assertFillValue } from "./assertions.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import { RoxyJSHandle, createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
-import { normalizeWaitForSelectorOptions } from "./waitForSelector.js";
+import { normalizeWaitForSelectorOptions, type LegacyWaitForSelectorOptions } from "./waitForSelector.js";
 import { normalizeSelectOptionValues } from "./selectOptionValues.js";
 import {
   prepareElementDocumentForScreenshot,
@@ -232,7 +232,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   ): Promise<null | ElementHandle<SVGElement | HTMLElement>>;
   async waitForSelector(
     selector: string,
-    options: WaitForSelectorOptions = {}
+    options: LegacyWaitForSelectorOptions = {}
   ): Promise<ElementHandle | null> {
     const { state, timeout } = normalizeWaitForSelectorOptions(options, DEFAULT_WAIT_TIMEOUT_MS);
     const startTime = Date.now();

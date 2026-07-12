@@ -27,7 +27,10 @@ class ClockHost {
   }
   async addInitScript(source: string | ((arg?: unknown) => unknown), arg?: unknown) {
     this.initScripts.push({ source: typeof source === "string" ? source : source.toString(), arg });
-    return { dispose() {} };
+    return {
+      async dispose() {},
+      async [Symbol.asyncDispose]() {}
+    };
   }
 
   async evaluate<TResult>(pageFunction: string | ((arg?: unknown) => TResult), arg?: unknown): Promise<TResult> {

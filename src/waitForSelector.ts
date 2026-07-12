@@ -3,6 +3,10 @@ import type {
   WaitForSelectorState
 } from "./types/options.js";
 
+export type LegacyWaitForSelectorOptions = WaitForSelectorOptions & {
+  waitFor?: WaitForSelectorState;
+};
+
 const SUPPORTED_WAIT_FOR_SELECTOR_STATES = new Set<WaitForSelectorState>([
   "attached",
   "detached",
@@ -16,7 +20,7 @@ export interface NormalizedWaitForSelectorOptions {
 }
 
 export function normalizeWaitForSelectorOptions(
-  options: WaitForSelectorOptions,
+  options: LegacyWaitForSelectorOptions,
   defaultTimeout: number
 ): NormalizedWaitForSelectorOptions {
   if ("visibility" in (options as Record<string, unknown>)) {
