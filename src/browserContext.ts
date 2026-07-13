@@ -14,6 +14,7 @@ import { serializePageFunction } from "./evaluation.js";
 import type { RouteHandlerEntry, RouteMatcher } from "./routeHandler.js";
 import { urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
+import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "./human/bubbleCursor.js";
 import type {
   ProtocolBrowserContextAdapter,
   ProtocolPageAdapter
@@ -140,6 +141,17 @@ export class RoxyBrowserContext implements BrowserContext {
       dispose,
       [Symbol.asyncDispose]: dispose
     };
+  }
+
+  async _ensureCursorVisualizationOnCurrentPages(): Promise<void> {
+    await Promise.all(Array.from(this.pageSet, async (page) => {
+      const pageAdapter = this.adapterByPage.get(page);
+      await pageAdapter?.evaluate<boolean>(
+        CURSOR_VISUALIZATION_INSTALL_SOURCE,
+        undefined,
+        false
+      ).catch(() => undefined);
+    }));
   }
 
   async addCookies(cookies: ReadonlyArray<{

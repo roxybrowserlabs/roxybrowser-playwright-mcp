@@ -14,7 +14,7 @@ function sharedPreamble(mode: CursorVisualizationMode): string {
   return [
     "const globalState = globalThis;",
     "const existing = globalState.__roxyBubbleCursor;",
-    `if (existing?.installed && existing.mode === ${JSON.stringify(mode)}) return true;`,
+    `if ((existing?.installed || existing?.pending) && existing.mode === ${JSON.stringify(mode)}) return true;`,
     "existing?.destroy?.();",
     "const prefersReducedMotion = globalState.matchMedia?.('(prefers-reduced-motion: reduce)');",
     "if (prefersReducedMotion?.matches) {",
@@ -24,10 +24,38 @@ function sharedPreamble(mode: CursorVisualizationMode): string {
   ].join("\n");
 }
 
+function deferredInstallSource(mode: CursorVisualizationMode): string[] {
+  return [
+    "if (document.readyState === 'loading') {",
+    "  const installWhenReady = () => {",
+    "    const state = globalState.__roxyBubbleCursor;",
+    `    if (!state?.pending || state.mode !== ${JSON.stringify(mode)}) return;`,
+    "    install();",
+    "  };",
+    "  document.addEventListener('DOMContentLoaded', installWhenReady, { once: true });",
+    "  globalState.__roxyBubbleCursor = {",
+    "    installed: false,",
+    "    pending: true,",
+    `    mode: ${JSON.stringify(mode)},`,
+    "    destroy: () => {",
+    "      document.removeEventListener('DOMContentLoaded', installWhenReady);",
+    "      if (globalState.__roxyBubbleCursor?.destroy === destroyPending) {",
+    "        delete globalState.__roxyBubbleCursor;",
+    "      }",
+    "    }",
+    "  };",
+    "  const destroyPending = globalState.__roxyBubbleCursor.destroy;",
+    "  return true;",
+    "}",
+    "return install();"
+  ];
+}
+
 function buildBubbleInstallSource(): string {
   return [
     "(() => {",
     sharedPreamble("bubble"),
+    "const install = () => {",
     "class Particle {",
     "  constructor(x, y) {",
     "    this.initialLifeSpan = Math.floor(Math.random() * 60 + 60);",
@@ -103,6 +131,8 @@ function buildBubbleInstallSource(): string {
     "  }",
     "};",
     "return true;",
+    "};",
+    ...deferredInstallSource("bubble"),
     "})()"
   ].join("\n");
 }
@@ -111,6 +141,7 @@ function buildArrowInstallSource(): string {
   return [
     "(() => {",
     sharedPreamble("arrow"),
+    "const install = () => {",
     "const isTouchDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(globalState.navigator.userAgent);",
     "if (isTouchDevice) {",
     "  globalState.__roxyBubbleCursor = { installed: false, touchDevice: true, mode: 'arrow' };",
@@ -196,6 +227,8 @@ function buildArrowInstallSource(): string {
     "  }",
     "};",
     "return true;",
+    "};",
+    ...deferredInstallSource("arrow"),
     "})()"
   ].join("\n");
 }

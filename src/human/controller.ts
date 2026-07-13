@@ -11,7 +11,6 @@ import type {
   HumanizedTypeOptions,
   ResolvedHumanizationOptions
 } from "./types.js";
-import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "./bubbleCursor.js";
 
 export class DefaultHumanController implements HumanController {
   private actionQueue = Promise.resolve();
@@ -20,7 +19,6 @@ export class DefaultHumanController implements HumanController {
 
   async click(target: HumanActionTarget, options?: HumanizedClickOptions & HumanActionOptions): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    await this.ensureVisualization(target);
     const action = async () => {
       await target.click({
         ...this.withHumanMove(options, defaults),
@@ -36,7 +34,6 @@ export class DefaultHumanController implements HumanController {
 
   async hover(target: HumanActionTarget, options?: HumanizedHoverOptions & HumanActionOptions): Promise<void> {
     const defaults = this.resolveDefaults(options);
-    await this.ensureVisualization(target);
     await target.hover(this.withHumanMove(options, defaults));
   }
 
@@ -71,16 +68,6 @@ export class DefaultHumanController implements HumanController {
 
   private resolveDefaults(options?: HumanActionOptions): ResolvedHumanizationOptions {
     return resolveHumanizationOptions(options?.human, this.defaults);
-  }
-
-  private async ensureVisualization(target: HumanActionTarget): Promise<void> {
-    const evaluatableTarget = target as HumanActionTarget & {
-      evaluate?: (expression: string, arg?: unknown, isFunction?: boolean) => Promise<unknown>;
-    };
-    if (typeof evaluatableTarget.evaluate !== "function") {
-      return;
-    }
-    await evaluatableTarget.evaluate(CURSOR_VISUALIZATION_INSTALL_SOURCE, undefined, false);
   }
 
   private async typeText(

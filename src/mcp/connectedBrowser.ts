@@ -104,11 +104,38 @@ type PendingFileChooserTarget = {
   backendNodeId: number;
 };
 
+export interface CursorVisualizationCdpPage {
+  Page: {
+    addScriptToEvaluateOnNewDocument(options: { source: string }): Promise<unknown>;
+  };
+  Runtime: {
+    evaluate(options: {
+      expression: string;
+      returnByValue: boolean;
+      awaitPromise: boolean;
+    }): Promise<unknown>;
+  };
+}
+
+export async function installCursorVisualizationInCdpPage(
+  client: CursorVisualizationCdpPage
+): Promise<void> {
+  await client.Page.addScriptToEvaluateOnNewDocument({
+    source: CURSOR_VISUALIZATION_INSTALL_SOURCE
+  });
+  await client.Runtime.evaluate({
+    expression: CURSOR_VISUALIZATION_INSTALL_SOURCE,
+    returnByValue: true,
+    awaitPromise: true
+  });
+}
+
 type CdpClient = {
   close(): Promise<void>;
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   Page: {
     enable(): Promise<void>;
+    addScriptToEvaluateOnNewDocument(options: { source: string }): Promise<unknown>;
     setInterceptFileChooserDialog?(options: { enabled: boolean }): Promise<void>;
     fileChooserOpened?(
       listener: (event: {
@@ -727,7 +754,8 @@ const SCROLL_ELEMENT_SOURCE = String.raw`(payload) => {
   return { ok: true };
 }`;
 
-const ENSURE_BUBBLE_CURSOR_SOURCE = CURSOR_VISUALIZATION_INSTALL_SOURCE;
+const CURSOR_VISUALIZATION_FUNCTION_SOURCE =
+  `() => { return ${CURSOR_VISUALIZATION_INSTALL_SOURCE}; }`;
 
 const GET_ELEMENT_OBJECT_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
@@ -1350,7 +1378,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
-    await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const point = await evaluateCdp<{ ok: boolean; reason?: string; x?: number; y?: number }>(
@@ -1426,7 +1453,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   async drag(start: ClickTarget, end: ClickTarget, options: SessionDragOptions): Promise<void> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
-    await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
     const startPoint = await this.actionPoint(pageClient, contextId, start);
     const endPoint = await this.actionPoint(pageClient, contextId, end);
     await this.moveMouseAlongHumanPath(pageClient, startPoint, 0, "none", options.moveDelayMs);
@@ -1478,7 +1504,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
-    await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     const point = await evaluateCdp<{ ok: boolean; reason?: string; x?: number; y?: number }>(
@@ -1846,7 +1871,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = target ? this.targetArg(target) : {};
-    await evaluateCdp<boolean>(pageClient, ENSURE_BUBBLE_CURSOR_SOURCE, undefined, contextId).catch(() => false);
     const chunks = await splitScrollDeltas(deltaX, deltaY, options?.stepPx ?? Math.max(Math.abs(deltaX), Math.abs(deltaY), 1));
     for (const [index, chunk] of chunks.entries()) {
       await evaluateCdp<{ ok: boolean }>(
@@ -2355,19 +2379,13 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       client.Network?.enable({}).catch(() => undefined),
       client.Log?.enable().catch(() => undefined)
     ]);
+    await installCursorVisualizationInCdpPage(client);
     this.pageClients.set(activeTab.id, client);
     return client;
   }
 
   async ensureActiveCursorVisualization(): Promise<void> {
-    const pageClient = await this.getActivePageClient();
-    const contextId = await this.getActiveUtilityContextId(pageClient);
-    await evaluateCdp<boolean>(
-      pageClient,
-      ENSURE_BUBBLE_CURSOR_SOURCE,
-      undefined,
-      contextId
-    );
+    await this.getActivePageClient();
   }
 
   private installFileChooserCollection(tabId: string, client: CdpClient): void {
@@ -3634,6 +3652,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private readonly pageLoadStates = new Map<string, { loaded: boolean }>();
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
   private responseDataCollector: string | undefined;
+  private cursorVisualizationPreloadScript: string | undefined;
   private activeTabId: string | undefined;
   private ownsSession = false;
   private readonly tempDir: string;
@@ -3669,7 +3688,11 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const session = new BidiConnectedBrowserSession(client, args.assetRoots?.tempDir);
     session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint, args.sessionId);
     await session.initialize();
-    await session.refreshTabs();
+    const tabs = await session.refreshTabs();
+    await Promise.all(tabs.map(async (tab) => {
+      await evaluateBiDi<boolean>(client, tab.id, CURSOR_VISUALIZATION_FUNCTION_SOURCE)
+        .catch(() => false);
+    }));
     return session;
   }
 
@@ -4046,6 +4069,12 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       await this.client.networkRemoveDataCollector({ collector: this.responseDataCollector }).catch(() => {});
       this.responseDataCollector = undefined;
     }
+    if (this.cursorVisualizationPreloadScript) {
+      await this.client.scriptRemovePreloadScript({
+        script: this.cursorVisualizationPreloadScript
+      }).catch(() => {});
+      this.cursorVisualizationPreloadScript = undefined;
+    }
     if (this.ownsSession) {
       await this.client.sessionEnd({}).catch(() => {});
     }
@@ -4204,7 +4233,6 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
     const tabId = await this.getActiveTabId();
     const arg = target ? ("nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector }) : {};
-    await evaluateBiDi<boolean>(this.client, tabId, ENSURE_BUBBLE_CURSOR_SOURCE).catch(() => false);
     const chunks = await splitScrollDeltas(deltaX, deltaY, options?.stepPx ?? Math.max(Math.abs(deltaX), Math.abs(deltaY), 1));
     for (const [index, chunk] of chunks.entries()) {
       await evaluateBiDi<{ ok: boolean }>(this.client, tabId, SCROLL_ELEMENT_SOURCE, {
@@ -4518,6 +4546,10 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     // TODO(bidi): 即便修了顺序，BiDi 网络捕获仍有状态时序问题，见
     // handleResponseCompleted / networkRequests 的 TODO。
     this.attachBiDiListeners();
+    const cursorScript = await this.client.scriptAddPreloadScript({
+      functionDeclaration: CURSOR_VISUALIZATION_FUNCTION_SOURCE
+    });
+    this.cursorVisualizationPreloadScript = (cursorScript as { script?: string }).script;
     await this.client.sessionSubscribe({
       events: [
         "browsingContext.navigationStarted",
@@ -4580,7 +4612,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     await evaluateBiDi<boolean>(
       this.client,
       tabId,
-      ENSURE_BUBBLE_CURSOR_SOURCE
+      CURSOR_VISUALIZATION_FUNCTION_SOURCE
     );
   }
 

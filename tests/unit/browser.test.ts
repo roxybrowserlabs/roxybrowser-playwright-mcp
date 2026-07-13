@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { RoxyBrowser } from "../../src/browser.js";
 import { RoxyBrowserContext } from "../../src/browserContext.js";
+import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "../../src/human/bubbleCursor.js";
 import {
   createBrowser,
   createBrowserAdapterStub,
@@ -232,12 +233,13 @@ describe("RoxyBrowser", () => {
 
       expect(order).toEqual(["preload", "ready"]);
       expect(contextAdapter.addInitScript).toHaveBeenCalledWith(
-        expect.stringContaining("__roxyBubbleCursor")
+        CURSOR_VISUALIZATION_INSTALL_SOURCE
       );
-      const cursorEvaluations = vi.mocked(pageAdapter.evaluate).mock.calls.filter(([source]) =>
-        String(source).includes("__roxyBubbleCursor")
+      expect(pageAdapter.evaluate).toHaveBeenCalledWith(
+        CURSOR_VISUALIZATION_INSTALL_SOURCE,
+        undefined,
+        false
       );
-      expect(cursorEvaluations).toHaveLength(1);
     });
 
     it("returns the context even when the adapter does not implement ready()", async () => {

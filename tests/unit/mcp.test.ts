@@ -1396,6 +1396,7 @@ describe("MCP server", () => {
         capabilities: { browserName: "firefox" }
       }));
       const sessionSubscribe = vi.fn(async () => ({}));
+      const scriptAddPreloadScript = vi.fn(async () => ({ script: "script-1" }));
       const createBidiClient = vi.fn(async () => ({
         capabilities: { browserName: "firefox" },
         close: vi.fn(),
@@ -1422,7 +1423,7 @@ describe("MCP server", () => {
         sessionSubscribe,
         networkAddDataCollector: vi.fn(async () => ({ collector: "collector-1" })),
         networkRemoveDataCollector: vi.fn(async () => ({})),
-        scriptAddPreloadScript: vi.fn(async () => ({ script: "script-1" })),
+        scriptAddPreloadScript,
         scriptRemovePreloadScript: vi.fn(async () => ({})),
         scriptEvaluate: vi.fn(async (params: { expression: string }) => {
           if (params.expression.includes("document.title")) {
@@ -1484,11 +1485,15 @@ describe("MCP server", () => {
           "network.fetchError"
         ])
       }));
+      expect(scriptAddPreloadScript).toHaveBeenCalledWith({
+        functionDeclaration: expect.stringContaining("__roxyBubbleCursor")
+      });
       expect(result.isError).toBeUndefined();
     });
 
-    it("does not install cursor visualization from bare BiDi browser session connect", async () => {
+    it("installs persistent cursor visualization from bare BiDi browser session connect", async () => {
       const module = await import("../../src/mcp/connectedBrowser.js");
+      const scriptAddPreloadScript = vi.fn(async () => ({ script: "script-1" }));
       const scriptEvaluate = vi.fn(async (params: { expression: string }) => {
         if (params.expression.includes("document.title")) {
           return {
@@ -1527,7 +1532,7 @@ describe("MCP server", () => {
         sessionSubscribe: vi.fn(async () => ({})),
         networkAddDataCollector: vi.fn(async () => ({ collector: "collector-1" })),
         networkRemoveDataCollector: vi.fn(async () => ({})),
-        scriptAddPreloadScript: vi.fn(async () => ({ script: "script-1" })),
+        scriptAddPreloadScript,
         scriptRemovePreloadScript: vi.fn(async () => ({})),
         scriptEvaluate
       }));
@@ -1540,7 +1545,10 @@ describe("MCP server", () => {
         protocol: "bidi"
       });
 
-      expect(scriptEvaluate).not.toHaveBeenCalledWith(expect.objectContaining({
+      expect(scriptAddPreloadScript).toHaveBeenCalledWith({
+        functionDeclaration: expect.stringContaining("__roxyBubbleCursor")
+      });
+      expect(scriptEvaluate).toHaveBeenCalledWith(expect.objectContaining({
         expression: expect.stringContaining("__roxyBubbleCursor")
       }));
     });

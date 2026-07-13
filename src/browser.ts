@@ -146,7 +146,7 @@ export class RoxyBrowser implements Browser {
     // The onPage listener is already registered above (via new RoxyBrowserContext),
     // so pages emitted during ready() will be captured correctly.
     await contextAdapter.ready?.();
-    await this.ensureCursorVisualizationOnCurrentPages(context);
+    await context._ensureCursorVisualizationOnCurrentPages();
     return context;
   }
 
@@ -210,13 +210,6 @@ export class RoxyBrowser implements Browser {
     await context.addInitScript(CURSOR_VISUALIZATION_INSTALL_SOURCE);
   }
 
-  private async ensureCursorVisualizationOnCurrentPages(context: BrowserContext): Promise<void> {
-    await Promise.all(
-      context.pages().map(async (page) => {
-        await page.evaluate<boolean>(CURSOR_VISUALIZATION_INSTALL_SOURCE).catch(() => undefined);
-      })
-    );
-  }
 }
 
 async function withCloseTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

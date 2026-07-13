@@ -38,8 +38,7 @@ describe("DefaultHumanController", () => {
     await vi.advanceTimersByTimeAsync(25);
     await pending;
 
-    expect(target.evaluate).toHaveBeenCalledTimes(1);
-    expect(target.evaluate).toHaveBeenCalledWith(expect.any(String), undefined, false);
+    expect(target.evaluate).not.toHaveBeenCalled();
     expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).toHaveBeenCalledWith({
       button: "right",
@@ -65,7 +64,7 @@ describe("DefaultHumanController", () => {
 
     await controller.click(target, { delay: 9 });
 
-    expect(target.evaluate).toHaveBeenCalledTimes(1);
+    expect(target.evaluate).not.toHaveBeenCalled();
     expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).toHaveBeenCalledWith({
       delay: 9,
@@ -126,7 +125,7 @@ describe("DefaultHumanController", () => {
     await typePromise;
     await pressPromise;
 
-    expect(target.evaluate).toHaveBeenCalledTimes(1);
+    expect(target.evaluate).not.toHaveBeenCalled();
     expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).toHaveBeenCalledWith({
       human: { profile: "fast" },
@@ -209,7 +208,7 @@ describe("DefaultHumanController", () => {
     const secondClick = controller.click(target);
 
     await firstClickStarted;
-    expect(target.evaluate).toHaveBeenCalledTimes(2);
+    expect(target.evaluate).not.toHaveBeenCalled();
     expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).toHaveBeenCalledTimes(1);
 
@@ -217,7 +216,7 @@ describe("DefaultHumanController", () => {
     await firstClick;
     await secondClick;
 
-    expect(target.evaluate).toHaveBeenCalledTimes(2);
+    expect(target.evaluate).not.toHaveBeenCalled();
     expect(target.hover).not.toHaveBeenCalled();
     expect(target.click).toHaveBeenCalledTimes(2);
   });

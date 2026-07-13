@@ -303,7 +303,6 @@ describe("CDP coverage", () => {
     session.dialogWaiters = new Map();
 
     pageClient.Runtime.evaluate
-      .mockResolvedValueOnce({ result: { value: true } })
       .mockResolvedValueOnce({ result: { value: { ok: true, x: 10, y: 20 } } });
     pageClient.Input.dispatchMouseEvent.mockImplementation(async (event: { type: string }) => {
       if (event.type === "mouseReleased") {
