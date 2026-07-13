@@ -8,7 +8,7 @@ import {
   type ElementHandleFrameResolver,
   serializeEvaluationArgument
 } from "./elementHandle.js";
-import { TimeoutError } from "./errors.js";
+import { TargetClosedError, TimeoutError } from "./errors.js";
 import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
 import { RoxyFrame, type RoxyFrameSnapshot } from "./frame.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
@@ -23,6 +23,7 @@ import { RoxyTracing } from "./tracing/index.js";
 import { isRegExp, isURLPattern, resolveGlobToRegexPattern, type URLMatch, urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
 import { RoxyWorker } from "./worker.js";
+import { LongStandingScope, ManualPromise } from "./vendor/playwright/manualPromise.js";
 import type { RouteHandlerInvocation, RouteHandlerEntry, RouteMatcher } from "./routeHandler.js";
 import { RoxyClock, createUnsupportedClockDelegate } from "./clock.js";
 import {
@@ -56,6 +57,7 @@ import type {
   RawPageEventListener,
   RawPageEventName
 } from "./types/events.js";
+import type { InternalRequestFinishedEvent } from "./types/events.js";
 import type {
   BindingSource,
   ElementArrayCallback,
@@ -503,8 +505,7 @@ interface ObservedRequestState {
   request: Request;
   resourceType: string;
   response: Response | null;
-  responsePromise: Promise<Response | null>;
-  responsePromiseResolve: (value: Response | null) => void;
+  responsePromise: ManualPromise<Response | null>;
   timingStartTime: number;
   url: string;
   method: string;
@@ -532,6 +533,7 @@ const DEFAULT_EVENT_TIMEOUT_MS = 30_000;
 const MAX_CONSOLE_MESSAGE_HISTORY = 1_000;
 const INTERNAL_RECORDED_EVENTS = [
   "console",
+  "crash",
   "domcontentloaded",
   "frameattached",
   "framedetached",
@@ -872,6 +874,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private readonly eventObservations = new Map<PageEventName, EventObservation<PageEventName>>();
   private readonly adapterDisposers = new Map<PageEventName, () => void>();
   private readonly pendingHandlers = new Map<PageEventName, Set<Promise<void>>>();
+  private readonly internalRequestFinishedListeners = new Set<
+    (event: InternalRequestFinishedEvent) => Promise<void> | void
+  >();
+  private readonly responseFinishedPromises = new WeakMap<Response, ManualPromise<null>>();
+  private readonly openScope = new LongStandingScope();
   private rejectionHandler: ((error: Error) => void) | undefined;
   private readonly internalDisposers = new Map<PageEventName, () => void>();
   private readonly activeDialogs = new Set<Dialog>();
@@ -2918,6 +2925,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.pickLocatorState = null;
     currentPick?.reject(this.createClosedError());
     this.closed = true;
+    this.openScope.close(this.createClosedError());
 
     const stopRecording = this.stopPageVideoRecording;
     this.stopPageVideoRecording = null;
@@ -3942,6 +3950,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     };
   }
 
+  attachInternalRequestFinishedListener(
+    listener: (event: InternalRequestFinishedEvent) => Promise<void> | void
+  ): () => void {
+    this.internalRequestFinishedListeners.add(listener);
+    return () => {
+      this.internalRequestFinishedListeners.delete(listener);
+    };
+  }
+
   addInternalFrameWaitListener<K extends "close" | "framedetached">(
     event: K,
     listener: PageEventListener<K>
@@ -4200,7 +4217,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       if (state.response !== null || state.failure !== null) {
         continue;
       }
-      state.responsePromiseResolve(null);
+      state.responsePromise.resolve(null);
     }
   }
 
@@ -4209,6 +4226,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       const dispose = this.adapter.on(
         event,
         (async (payload?: RawPageEventMap[typeof event]) => {
+          if (event === "crash") {
+            this.openScope.close(new Error("Page crashed"));
+          }
           if (event === "framenavigated" && this.isRawMainFrameNavigation(payload)) {
             this.resetHistorySinceNavigation();
           }
@@ -4440,10 +4460,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       payload.postData ?? null,
       payload.postDataBufferBase64 ?? null
     );
-    let responsePromiseResolve!: (value: Response | null) => void;
-    const responsePromise = new Promise<Response | null>((resolve) => {
-      responsePromiseResolve = resolve;
-    });
+    const responsePromise = new ManualPromise<Response | null>();
     const state: ObservedRequestState = {
       failure: null,
       frameId: payload.frameId ?? null,
@@ -4458,7 +4475,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       resourceType: payload.resourceType ?? "other",
       response: null,
       responsePromise,
-      responsePromiseResolve,
       timingStartTime: Date.now(),
       postDataBuffer: postData.buffer,
       postDataText: postData.text,
@@ -4500,7 +4516,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const response = this.createObservedResponse(payload, state?.request ?? null);
     if (state && !state.response) {
       state.response = response;
-      state.responsePromiseResolve(response);
+      state.responsePromise.resolve(response);
       const location = response.headers()["location"];
       if (response.status() >= 300 && response.status() < 400 && location) {
         const redirectTarget = resolveRedirectUrl(state.url, location);
@@ -4519,7 +4535,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private observeRequestCompletion(payload: PageRequest): Request {
     const state = this.findObservedRequestState(payload.url, payload.method, payload.requestId);
-    return state?.request ?? this.observeAdapterRequest(payload);
+    const request = state?.request ?? this.observeAdapterRequest(payload);
+    const response = request.existingResponse();
+    if (response) {
+      this.responseFinishedPromises.get(response)?.resolve(null);
+    }
+    const event = { request, response };
+    for (const listener of Array.from(this.internalRequestFinishedListeners)) {
+      this.trackPendingHandler("requestfinished", listener(event));
+    }
+    return request;
   }
 
   private observeRequestFailure(payload: {
@@ -4532,7 +4557,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       this.findObservedRequestState(payload.url, payload.method, payload.requestId ?? null) ??
       this.observeSyntheticObservedRequest(payload.url, payload.method, payload.requestId ?? null);
     state.failure = { errorText: payload.errorText };
-    state.responsePromiseResolve(null);
+    state.responsePromise.resolve(null);
+    if (state.response) {
+      this.responseFinishedPromises.get(state.response)?.resolve(null);
+    }
     return state.request;
   }
 
@@ -4623,10 +4651,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       headerEntries,
       async () => (await readBodyBuffer()).toString("utf8")
     );
-    return {
+    const finishedPromise = new ManualPromise<null>();
+    const response: Response = {
       allHeaders: async () => this.raceAgainstPageClose(async () => ({ ...headers })),
       body: async () => this.raceAgainstPageClose(async () => readBodyBuffer()),
-      finished: async () => this.raceAgainstPageClose(async () => waitForResponseCompletion(readBodyText)),
+      finished: async () => this.openScope.race(finishedPromise),
       frame: () => request.frame(),
       fromServiceWorker: () => payload.fromServiceWorker ?? false,
       headers: () => ({ ...headers }),
@@ -4647,6 +4676,8 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       text: () => this.raceAgainstPageClose(async () => readBodyText()),
       url: () => responseUrl
     };
+    this.responseFinishedPromises.set(response, finishedPromise);
+    return response;
   }
 
   private createObservedRequestForResponseOnly(
@@ -7119,19 +7150,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private async raceAgainstPageClose<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.isClosed()) {
-      throw this.createClosedError();
-    }
-    return await Promise.race([
-      operation(),
-      this.waitForEvent("close").then(() => {
-        throw this.createClosedError();
-      })
-    ]);
+    return await this.openScope.race(operation());
   }
 
   private createClosedError(): Error {
-    return new Error(this.closeReason ?? "Target page, context or browser has been closed");
+    return new TargetClosedError(this.closeReason);
   }
 
   private locatorKey(locator: Locator): string {

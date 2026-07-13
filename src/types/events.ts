@@ -186,6 +186,11 @@ export interface BrowserContextEventMap {
   response: Response;
 }
 
+export interface InternalRequestFinishedEvent {
+  request: Request;
+  response: Response | null;
+}
+
 export type RawPageEventName = keyof RawPageEventMap;
 export type PageEventName = keyof PageEventMap;
 export type BrowserContextEventName = keyof BrowserContextEventMap;

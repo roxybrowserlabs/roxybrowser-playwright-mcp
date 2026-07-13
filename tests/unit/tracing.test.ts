@@ -237,4 +237,83 @@ describe("RoxyTracing", () => {
       ])
     );
   });
+
+  it("does not collect page network bodies before tracing or HAR starts", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const pageAdapter = createPageAdapterStub();
+    const readBody = vi.fn(async () => Buffer.from("unused"));
+    adapter.newPage = async () => pageAdapter;
+    const context = new RoxyBrowserContext(adapter);
+
+    await context.newPage();
+    pageAdapter.emit("request", {
+      headers: [],
+      method: "GET",
+      requestId: "inactive-request",
+      url: "https://example.com/inactive"
+    });
+    pageAdapter.emit("response", {
+      body: readBody,
+      fromCache: false,
+      headers: [],
+      mimeType: "text/plain",
+      requestId: "inactive-request",
+      status: 200,
+      statusText: "OK",
+      text: async () => "unused",
+      url: "https://example.com/inactive"
+    });
+    pageAdapter.emit("requestfinished", {
+      headers: [],
+      method: "GET",
+      requestId: "inactive-request",
+      url: "https://example.com/inactive"
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(readBody).not.toHaveBeenCalled();
+    await context.close();
+  });
+
+  it("finishes HAR recording when Chromium finishes a request without a response", async () => {
+    vi.useFakeTimers();
+    const directory = await mkdtemp(join(tmpdir(), "roxy-tracing-no-response-"));
+    const harPath = join(directory, "no-response.har");
+    const adapter = createBrowserContextAdapterStub();
+    const pageAdapter = createPageAdapterStub();
+    adapter.newPage = async () => pageAdapter;
+    const context = new RoxyBrowserContext(adapter);
+
+    try {
+      await context.tracing.startHar(harPath);
+      const page = await context.newPage();
+      page.setDefaultTimeout(5);
+      pageAdapter.emit("request", {
+        headers: [],
+        method: "GET",
+        requestId: "finished-without-response",
+        url: "https://example.com/no-response"
+      });
+      pageAdapter.emit("requestfinished", {
+        headers: [],
+        method: "GET",
+        requestId: "finished-without-response",
+        url: "https://example.com/no-response"
+      });
+
+      const outcome = context.tracing.stopHar().then(
+        () => "resolved",
+        (error: unknown) => error
+      );
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(await outcome).toBe("resolved");
+      const har = JSON.parse(await readFile(harPath, "utf8"));
+      expect(har.log.entries).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      await context.close();
+    }
+  });
 });

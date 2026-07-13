@@ -3465,6 +3465,12 @@ describe("RoxyPage", () => {
       text: async () => "redirect body",
       url: "https://example.com/start"
     });
+    adapter.emit("requestfinished", {
+      headers: [],
+      method: "GET",
+      requestId: "redirect-body-1",
+      url: "https://example.com/start"
+    });
     adapter.emit("request", {
       headers: [],
       method: "GET",
@@ -3493,7 +3499,7 @@ describe("RoxyPage", () => {
     await expect(redirectedResponse!.finished()).resolves.toBeNull();
   });
 
-  it("waits for response completion and surfaces body read failures", async () => {
+  it("tracks response completion independently from reading the body", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
       enabled: true,
@@ -3506,7 +3512,7 @@ describe("RoxyPage", () => {
       hoverBeforeClickMs: 110
     });
 
-    let resolveBody!: (value: string) => void;
+    const readBody = vi.fn(async () => "done");
     const responsePromise = page.waitForResponse(/slow$/);
     adapter.emit("request", {
       headers: [],
@@ -3521,10 +3527,7 @@ describe("RoxyPage", () => {
       requestId: "slow-response-1",
       status: 200,
       statusText: "OK",
-      text: () =>
-        new Promise<string>((resolve) => {
-          resolveBody = resolve;
-        }),
+      text: readBody,
       url: "https://example.com/slow"
     });
 
@@ -3537,9 +3540,15 @@ describe("RoxyPage", () => {
     await Promise.resolve();
     expect(finished).toBe(false);
 
-    resolveBody("done");
+    adapter.emit("requestfinished", {
+      headers: [],
+      method: "GET",
+      requestId: "slow-response-1",
+      url: "https://example.com/slow"
+    });
     await expect(finishedPromise).resolves.toBeNull();
     expect(finished).toBe(true);
+    expect(readBody).not.toHaveBeenCalled();
 
     const brokenResponsePromise = page.waitForResponse(/broken-response$/);
     adapter.emit("request", {
@@ -3562,9 +3571,14 @@ describe("RoxyPage", () => {
     });
 
     const brokenResponse = await brokenResponsePromise;
-    const error = await brokenResponse.finished();
-    expect(error).toBeInstanceOf(Error);
-    expect(error?.message).toBe("socket closed");
+    adapter.emit("requestfinished", {
+      headers: [],
+      method: "GET",
+      requestId: "broken-response-1",
+      url: "https://example.com/broken-response"
+    });
+    await expect(brokenResponse.finished()).resolves.toBeNull();
+    await expect(brokenResponse.body()).rejects.toThrow("socket closed");
   });
 
   it("rejects request.response() when the page closes", async () => {
@@ -3595,6 +3609,66 @@ describe("RoxyPage", () => {
     await page.close();
 
     expect((await responsePromise).message).toContain("Target page, context or browser has been closed");
+  });
+
+  it("does not apply the page event timeout to request.response()", async () => {
+    vi.useFakeTimers();
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    try {
+      page.setDefaultTimeout(5);
+      const requestPromise = page.waitForRequest(/slow-response\.css$/);
+      adapter.emit("request", {
+        headers: [],
+        method: "GET",
+        requestId: "slow-response-timeout-1",
+        resourceType: "stylesheet",
+        url: "https://example.com/slow-response.css"
+      });
+      const request = await requestPromise;
+      let settled = false;
+      const responsePromise = request.response().then(
+        (response) => {
+          settled = true;
+          return response;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        }
+      );
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(settled).toBe(false);
+
+      adapter.emit("response", {
+        fromCache: false,
+        headers: [],
+        mimeType: "text/css",
+        requestId: "slow-response-timeout-1",
+        status: 200,
+        statusText: "OK",
+        text: async () => "body {}",
+        url: "https://example.com/slow-response.css"
+      });
+
+      const response = await responsePromise;
+      expect(response).not.toBeInstanceOf(Error);
+      expect((response as Response).status()).toBe(200);
+    } finally {
+      vi.useRealTimers();
+      await page.close();
+    }
   });
 
   it("rejects request.allHeaders() when the page closes", async () => {
@@ -3640,7 +3714,6 @@ describe("RoxyPage", () => {
       hoverBeforeClickMs: 110
     });
 
-    let resolveBody!: (value: string) => void;
     const responsePromise = page.waitForResponse(/close-finished$/);
     adapter.emit("request", {
       headers: [],
@@ -3655,10 +3728,7 @@ describe("RoxyPage", () => {
       requestId: "close-finished-1",
       status: 200,
       statusText: "OK",
-      text: () =>
-        new Promise<string>((resolve) => {
-          resolveBody = resolve;
-        }),
+      text: async () => "late",
       url: "https://example.com/close-finished"
     });
 
@@ -3666,7 +3736,6 @@ describe("RoxyPage", () => {
     const finishedPromise = response.finished().catch((error) => error as Error);
 
     await page.close();
-    resolveBody("late");
 
     expect((await finishedPromise).message).toContain("Target page, context or browser has been closed");
   });

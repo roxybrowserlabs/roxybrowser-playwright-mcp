@@ -14,21 +14,21 @@ import type {
   TraceOptions,
   TraceablePage
 } from "./types.js";
-import type { BrowserContext, Page, Request } from "../types/api.js";
+import type { BrowserContext, Page, Request, Response } from "../types/api.js";
 
 export class PlaywrightTracingChannel {
   private readonly harTracer = new HarTracer();
-  private readonly pageDisposers = new WeakMap<Page, Array<() => void>>();
+  private readonly pageDisposers = new Map<Page, Array<() => void>>();
   private readonly pageIds = new WeakMap<Page, string>();
   private readonly pendingOperations = new Set<Promise<void>>();
   private readonly pendingPageRequests = new WeakMap<Request, PendingPageRequest>();
-  private contextDisposers: Array<() => void> = [];
   private readonly snapshotter: Snapshotter;
   private chunk: TraceChunk | null = null;
   private groupStack: string[] = [];
   private nextCallId = 0;
   private nextPageId = 0;
   private traceName: string | null = null;
+  private harRecording = false;
   private tracingOptions: TraceOptions = {};
 
   constructor(
@@ -47,6 +47,7 @@ export class PlaywrightTracingChannel {
     }
     this.traceName = options.name ?? `trace-${Date.now()}`;
     this.tracingOptions = { ...options };
+    this.syncNetworkCollection();
     if (options.snapshots) {
       await this.snapshotter.start();
     }
@@ -115,6 +116,7 @@ export class PlaywrightTracingChannel {
   async tracingStop(): Promise<void> {
     this.snapshotter.stop();
     this.traceName = null;
+    this.syncNetworkCollection();
   }
 
   tracingGroup(params: { name: string; location?: { file: string; line?: number; column?: number } }): void {
@@ -145,38 +147,38 @@ export class PlaywrightTracingChannel {
   }
 
   harStart(path: string, options: HarOptions = {}): string {
-    return this.harTracer.start(path, options);
+    const result = this.harTracer.start(path, options);
+    this.harRecording = true;
+    for (const page of this.context?.pages() ?? []) {
+      this.harTracer.addPage({ id: this.pageId(page), title: safePageUrl(page) });
+    }
+    this.syncNetworkCollection();
+    return result;
   }
 
   async harExport(): Promise<void> {
-    await this.drainPendingOperations();
-    await this.harTracer.stop();
+    try {
+      await this.drainPendingOperations();
+      await this.harTracer.stop();
+    } finally {
+      this.harRecording = false;
+      this.syncNetworkCollection();
+    }
   }
 
   async exportAllHars(): Promise<void> {
-    await this.drainPendingOperations();
-    await this.harTracer.exportAll();
+    try {
+      await this.drainPendingOperations();
+      await this.harTracer.exportAll();
+    } finally {
+      this.harRecording = false;
+      this.syncNetworkCollection();
+    }
   }
 
   attachContext(context: BrowserContext): void {
-    if (!this.contextDisposers.length) {
-      const onRequest = (request: Request) => {
-        this.pendingPageRequests.set(request, { request, startedAt: Date.now() });
-      };
-      const onRequestFinished = (request: Request) => {
-        void this.track(this.recordPageRequest(request, false));
-      };
-      const onRequestFailed = (request: Request) => {
-        void this.track(this.recordPageRequest(request, true));
-      };
-      context.on("request", onRequest);
-      context.on("requestfinished", onRequestFinished);
-      context.on("requestfailed", onRequestFailed);
-      this.contextDisposers = [
-        () => context.removeListener("request", onRequest),
-        () => context.removeListener("requestfinished", onRequestFinished),
-        () => context.removeListener("requestfailed", onRequestFailed)
-      ];
+    if (!this.isNetworkCollectionActive()) {
+      return;
     }
     for (const page of context.pages()) {
       this.attachPage(page);
@@ -184,25 +186,21 @@ export class PlaywrightTracingChannel {
   }
 
   attachPage(page: Page): void {
-    if (this.pageDisposers.has(page)) {
+    if (!this.isNetworkCollectionActive() || this.pageDisposers.has(page)) {
       return;
     }
     const pageId = this.pageId(page);
     this.harTracer.addPage({ id: pageId, title: safePageUrl(page) });
-    if (this.context) {
-      this.pageDisposers.set(page, []);
-      return;
-    }
     const traceablePage = page as TraceablePage;
     const disposers = [
       traceablePage.attachInternalListener("request", (request: Request) => {
         this.pendingPageRequests.set(request, { request, startedAt: Date.now() });
       }),
-      traceablePage.attachInternalListener("requestfinished", (request: Request) =>
-        this.track(this.recordPageRequest(request, false))
+      traceablePage.attachInternalRequestFinishedListener(({ request, response }) =>
+        this.track(this.recordPageRequest(request, response, false))
       ),
       traceablePage.attachInternalListener("requestfailed", (request: Request) =>
-        this.track(this.recordPageRequest(request, true))
+        this.track(this.recordPageRequest(request, null, true))
       )
     ];
     this.pageDisposers.set(page, disposers);
@@ -250,10 +248,16 @@ export class PlaywrightTracingChannel {
     });
   }
 
-  private async recordPageRequest(request: Request, failed: boolean): Promise<void> {
+  private async recordPageRequest(
+    request: Request,
+    response: Response | null,
+    failed: boolean
+  ): Promise<void> {
     const pending = this.pendingPageRequests.get(request) ?? { request, startedAt: Date.now() };
     this.pendingPageRequests.delete(request);
-    const response = failed ? null : await request.response();
+    if (!failed && !response) {
+      return;
+    }
     const body = response ? await response.body().catch(() => Buffer.alloc(0)) : Buffer.alloc(0);
     await this.recordNetwork({
       body,
@@ -295,16 +299,33 @@ export class PlaywrightTracingChannel {
   }
 
   private track(operation: Promise<void>): Promise<void> {
-    this.pendingOperations.add(operation);
-    operation.finally(() => {
-      this.pendingOperations.delete(operation);
+    let tracked!: Promise<void>;
+    tracked = operation.catch(() => {}).finally(() => {
+      this.pendingOperations.delete(tracked);
     });
-    return operation;
+    this.pendingOperations.add(tracked);
+    return tracked;
   }
 
   private async drainPendingOperations(): Promise<void> {
     while (this.pendingOperations.size > 0) {
       await Promise.all(Array.from(this.pendingOperations));
+    }
+  }
+
+  private isNetworkCollectionActive(): boolean {
+    return this.traceName !== null || this.harRecording;
+  }
+
+  private syncNetworkCollection(): void {
+    if (this.isNetworkCollectionActive()) {
+      for (const page of this.context?.pages() ?? []) {
+        this.attachPage(page);
+      }
+      return;
+    }
+    for (const page of Array.from(this.pageDisposers.keys())) {
+      this.detachPage(page);
     }
   }
 }

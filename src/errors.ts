@@ -12,6 +12,13 @@ export class TimeoutError extends Error {
   }
 }
 
+export class TargetClosedError extends Error {
+  constructor(cause?: string) {
+    super(cause || "Target page, context or browser has been closed");
+    this.name = "TargetClosedError";
+  }
+}
+
 export class LocatorError extends Error {
   constructor(message: string) {
     super(message);

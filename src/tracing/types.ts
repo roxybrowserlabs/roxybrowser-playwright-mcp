@@ -1,11 +1,15 @@
 import type { APIResponse, BrowserContext, Page, Request } from "../types/api.js";
+import type { InternalRequestFinishedEvent } from "../types/events.js";
 
 export type Header = { name: string; value: string };
 
 export type TraceablePage = Page & {
-  attachInternalListener<K extends "request" | "requestfinished" | "requestfailed">(
+  attachInternalListener<K extends "request" | "requestfailed">(
     event: K,
     listener: (request: Request) => Promise<void> | void
+  ): () => void;
+  attachInternalRequestFinishedListener(
+    listener: (event: InternalRequestFinishedEvent) => Promise<void> | void
   ): () => void;
 };
 
