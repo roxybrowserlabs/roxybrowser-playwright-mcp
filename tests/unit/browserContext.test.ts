@@ -249,6 +249,30 @@ describe("RoxyBrowserContext", () => {
     expect(popup.context()).toBe(context);
   });
 
+  it("removes closed adapter pages from pages like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const pageAdapter = createPageAdapterStub();
+    adapter.newPage = async () => pageAdapter;
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const page = await context.newPage();
+    pageAdapter.emit("close", undefined);
+
+    await vi.waitFor(() => {
+      expect(context.pages()).toEqual([]);
+    });
+    expect(page.isClosed()).toBe(true);
+  });
+
   it("closes via the context adapter", async () => {
     const adapter = createBrowserContextAdapterStub();
     const context = new RoxyBrowserContext(adapter, {

@@ -1608,11 +1608,6 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       url?: string;
     };
     waitingForDebugger?: boolean;
-    // When true, suppresses the automatic emitPage call inside getOrCreatePage.
-    // discoverTargets() sets this so it can control emission order itself,
-    // emitting pages in getTargets() order (i.e. Chrome creation order) rather
-    // than in async-initialization-completion order.
-    _suppressEmit?: boolean;
   }): Promise<void> {
     const { targetInfo } = event;
     if (this.closing) {
@@ -1652,9 +1647,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       fallbackUrl: targetInfo.url ?? "about:blank",
       hasWindowOpener: targetInfo.canAccessOpener ?? true,
       openerTargetId: targetInfo.openerId ?? null,
-      // Suppress auto-emit when called from discoverTargets() — it will emit
-      // pages itself in getTargets() order once all initializations complete.
-      emitPage: event._suppressEmit ? false : !this.manuallyCreatedTargetIds.has(targetInfo.targetId),
+      emitPage: !this.manuallyCreatedTargetIds.has(targetInfo.targetId),
       sessionId: event.sessionId
     });
     this.pageSessionIds.set(targetInfo.targetId, event.sessionId);
@@ -1727,11 +1720,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       )
     ).filter((s): s is { targetInfo: (typeof unattached)[number]; sessionId: string } => s !== null);
 
-    // Kick off page initialization for all targets concurrently, but suppress the
-    // automatic emitPage call inside getOrCreatePage. We will emit pages below in
-    // getTargets() order — which Chrome guarantees is tab-creation order — so that
-    // context.pages() has a stable, predictable ordering regardless of which tab's
-    // CDP initialization happens to complete first.
+    // Kick off page initialization for all targets concurrently. Do not reorder
+    // the resulting page events: Playwright's client-side BrowserContext.pages()
+    // follows the order in which page events are reported, not the browser UI tab
+    // strip order or a Target.getTargets() snapshot order.
     //
     // handleTargetAttached runs synchronously until its first internal await, so
     // pendingPages entries are populated for all targets before this loop ends.
@@ -1739,8 +1731,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       void this.handleTargetAttached({
         sessionId,
         targetInfo,
-        waitingForDebugger: false,
-        _suppressEmit: true
+        waitingForDebugger: false
       });
     }
 
@@ -1750,21 +1741,10 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       .filter((p): p is Promise<ProtocolPageAdapter> => p !== undefined);
 
     // Wait for all initializations concurrently — mirrors Playwright's
-    // Promise.all(crPages.map(crPage => crPage._page.waitForInitializedOrError()))
+    // Promise.all(crPages.map(crPage => crPage._page.waitForInitializedOrError())).
+    // Individual page events are emitted by getOrCreatePage as each page becomes
+    // reportable.
     await Promise.allSettled(pagePromises);
-
-    // Emit pages in the order getTargets() returned them (Chrome creation order).
-    // This gives context.pages() a stable ordering that matches the visual tab bar.
-    for (const { targetInfo } of sessions) {
-      const page = this.pages.get(targetInfo.targetId);
-      if (!page) {
-        continue;
-      }
-      const opener = targetInfo.openerId
-        ? await this.resolveKnownPage(targetInfo.openerId)
-        : null;
-      await this.emitPage(page, opener, targetInfo.canAccessOpener ?? true);
-    }
   }
 
   private async handleTargetCreated(targetInfo: {

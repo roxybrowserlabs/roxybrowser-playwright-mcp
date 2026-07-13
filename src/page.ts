@@ -2946,6 +2946,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     this.browserContext?.detachPage(this);
   }
 
+  async _didDisconnect(): Promise<void> {
+    await this.handleAdapterClosed();
+  }
+
   async maybeRunLocatorHandlers(
     locator: Locator,
     options?: { force?: boolean; timeout?: number; __roxyBeforeActionRetry?: () => Promise<boolean | void> }

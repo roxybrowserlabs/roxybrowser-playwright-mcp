@@ -21,6 +21,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import * as cdpModule from "chrome-remote-interface";
 import { chromium } from "../../src/index.js";
 import {
   buildChromiumLaunchArgs,
@@ -28,6 +29,24 @@ import {
   waitForDebuggerEndpoint
 } from "../../src/protocol/cdp/backend.js";
 import { createTestPageFixture } from "../helpers/server.js";
+
+const chromeRemoteInterface = ("default" in cdpModule
+  ? cdpModule.default
+  : cdpModule) as unknown as (options: {
+    target?: string;
+  }) => Promise<{
+    close(): Promise<void>;
+    Target: {
+      closeTarget(options: { targetId: string }): Promise<unknown>;
+      getTargets(): Promise<{
+        targetInfos: Array<{
+          targetId: string;
+          type: string;
+          url: string;
+        }>;
+      }>;
+    };
+  }>;
 
 describe("chromium.connect — existing browser", () => {
   let chromeProcess: ChildProcess;
@@ -131,6 +150,45 @@ describe("chromium.connect — existing browser", () => {
       }
     } finally {
       await browser.close();
+    }
+  });
+
+  it("reconnect reflects tabs closed while disconnected", async () => {
+    const browser = await chromium.connect(wsEndpoint);
+    const firstMarker = "roxy-disconnect-first";
+    const secondMarker = "roxy-disconnect-second";
+    const firstUrl = `data:text/html,<title>${firstMarker}</title>`;
+    const secondUrl = `data:text/html,<title>${secondMarker}</title>`;
+
+    try {
+      const context = browser.contexts()[0];
+      const firstPage = await context.newPage();
+      const secondPage = await context.newPage();
+      await firstPage.goto(firstUrl);
+      await secondPage.goto(secondUrl);
+    } finally {
+      await browser.close();
+    }
+
+    const client = await chromeRemoteInterface({ target: wsEndpoint });
+    try {
+      const targets = await client.Target.getTargets();
+      const targetToClose = targets.targetInfos.find(
+        target => target.type === "page" && target.url === firstUrl
+      );
+      expect(targetToClose).toBeDefined();
+      await client.Target.closeTarget({ targetId: targetToClose!.targetId });
+    } finally {
+      await client.close();
+    }
+
+    const reconnected = await chromium.connect(wsEndpoint);
+    try {
+      const urls = reconnected.contexts()[0].pages().map(page => page.url());
+      expect(urls).not.toContain(firstUrl);
+      expect(urls).toContain(secondUrl);
+    } finally {
+      await reconnected.close();
     }
   });
 });

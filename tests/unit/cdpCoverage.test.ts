@@ -12,6 +12,7 @@ vi.mock("chrome-remote-interface", () => ({
 
 import { CdpBrowserAdapterFactory } from "../../src/protocol/cdp/backend.js";
 import { RoxyPage } from "../../src/page.js";
+import { chromium } from "../../src/index.js";
 
 type Listener = (...args: any[]) => void;
 
@@ -240,6 +241,89 @@ describe("CDP coverage", () => {
     expect(pageClient.Runtime.evaluate).not.toHaveBeenCalledWith(expect.objectContaining({
       expression: expect.stringContaining("__roxyBubbleCursor")
     }));
+  });
+
+  it("orders initially discovered pages by page event order like Playwright", async () => {
+    const browserClient = createCdpClientStub();
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "slow-tab",
+          type: "page",
+          title: "Slow",
+          url: "https://slow.test/"
+        },
+        {
+          targetId: "fast-tab",
+          type: "page",
+          title: "Fast",
+          url: "https://fast.test/"
+        }
+      ]
+    });
+    browserClient.Target.attachToTarget = vi.fn(async ({ targetId }: { targetId: string }) => ({
+      sessionId: `session-${targetId}`
+    }));
+
+    let frameTreeCalls = 0;
+    browserClient.Page.getFrameTree = vi.fn(async () => {
+      frameTreeCalls += 1;
+      const isSlow = frameTreeCalls === 1;
+      if (isSlow) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const url = isSlow ? "https://slow.test/" : "https://fast.test/";
+      return {
+        frameTree: {
+          frame: {
+            id: isSlow ? "slow-frame" : "fast-frame",
+            url
+          }
+        }
+      };
+    });
+    browserClient.Page.addScriptToEvaluateOnNewDocument = vi.fn(async () => ({
+      identifier: "script-1"
+    }));
+    browserClient.send = vi.fn(async (method: string, _params?: unknown, sessionId?: string) => {
+      if (method === "Runtime.evaluate") {
+        return {
+          result: {
+            objectId: `global-${sessionId ?? "browser"}`,
+            type: "object"
+          }
+        };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        return {
+          result: {
+            type: "undefined",
+            value: { v: "undefined" }
+          }
+        };
+      }
+      if (method === "Runtime.releaseObject") {
+        return {};
+      }
+      return {};
+    });
+
+    chromeRemoteInterfaceMock.mockImplementation(async () => browserClient);
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/123.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    const browser = await chromium.connect("ws://127.0.0.1:9222/devtools/browser/example");
+
+    try {
+      expect(browser.contexts()[0]!.pages().map(page => page.url())).toEqual([
+        "https://fast.test/",
+        "https://slow.test/"
+      ]);
+    } finally {
+      await browser.close();
+    }
   });
 
   it("uses keyboard events instead of insertText for modified printable keys", async () => {
