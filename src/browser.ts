@@ -171,6 +171,7 @@ export class RoxyBrowser implements Browser {
     try {
       await withCloseTimeout(this.session.close(), BROWSER_SESSION_CLOSE_TIMEOUT_MS);
     } finally {
+      await this.didDisconnectContexts();
       await this.adapter.close();
       this._emit('disconnected', this);
     }
@@ -208,6 +209,17 @@ export class RoxyBrowser implements Browser {
 
   private async installCursorVisualizationPreload(context: BrowserContext): Promise<void> {
     await context.addInitScript(CURSOR_VISUALIZATION_INSTALL_SOURCE);
+  }
+
+  private async didDisconnectContexts(): Promise<void> {
+    await Promise.all(
+      this._contexts.map(async (context) => {
+        await (context as BrowserContext & {
+          _didDisconnect?: () => Promise<void>;
+        })._didDisconnect?.();
+      })
+    );
+    this._contexts.length = 0;
   }
 
 }

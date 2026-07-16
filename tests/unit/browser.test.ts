@@ -426,6 +426,22 @@ describe("RoxyBrowser", () => {
       expect(listener).toHaveBeenCalledTimes(1);
     });
 
+    it("does not leave disconnected context pages cached after close", async () => {
+      const session = createBrowserSessionStub();
+      const contextAdapter = createBrowserContextAdapterStub();
+      const pageAdapter = createPageAdapterStub();
+      contextAdapter.newPage = async () => pageAdapter;
+      session.newContext = async () => contextAdapter;
+      const browser = createBrowser({ session });
+      const context = await browser.newContext();
+      await context.newPage();
+
+      await browser.close();
+
+      expect(browser.contexts()).toEqual([]);
+      expect(context.pages()).toEqual([]);
+    });
+
     it("forces the adapter to close when the session close times out", async () => {
       const session = createBrowserSessionStub();
       const adapter = createBrowserAdapterStub();

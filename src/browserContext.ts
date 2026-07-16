@@ -226,6 +226,19 @@ export class RoxyBrowserContext implements BrowserContext {
     }
   }
 
+  async _didDisconnect(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.disposeAdapterPageListener?.();
+    for (const page of Array.from(this.pageSet)) {
+      await page._didDisconnect();
+    }
+    await this.request.dispose();
+    this.emit("close", this);
+  }
+
   async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
     await this.adapter.setExtraHTTPHeaders(normalizeExtraHTTPHeaders(headers));
   }

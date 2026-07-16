@@ -32,7 +32,6 @@ pnpm test:unit             # same, explicit config
 pnpm test:e2e              # real-browser CDP e2e (tests/e2e, excludes bidi)
 pnpm test:e2e:bidi         # Firefox BiDi e2e (loads .env)
 pnpm test:mcp-parity       # builds bundle, then compares this MCP vs @playwright/mcp against a shared RoxyBrowser profile
-pnpm test:unit:bundle      # builds bundle, runs unit tests against the bundled output
 pnpm test:coverage         # unit suite with v8 coverage
 
 # Run a single test file / test name:
@@ -47,7 +46,7 @@ pnpm inspector:http         # inspector against a separately-run `pnpm mcp:http`
 
 # Vendored Playwright snapshot source regen (rarely needed):
 pnpm build:vendor:snapshot
-pnpm build:bundle           # vite -> dist/roxybrowser.bundle.js (used by parity + bundle tests)
+pnpm build:bundle           # vite -> dist/roxybrowser.bundle.js (used by MCP parity tests)
 ```
 
 The unit config enforces **90% line/function/branch/statement coverage** thresholds on `src/**` (with `src/types/**`, the protocol backends, and adapter/capabilities files excluded from coverage). Don't lower the threshold to make CI pass — add tests.
