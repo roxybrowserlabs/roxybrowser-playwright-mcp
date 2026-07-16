@@ -326,6 +326,48 @@ describe("CDP coverage", () => {
     }
   });
 
+  it("handles context init scripts on transient closed popup pages like Playwright", async () => {
+    const browserClient = createCdpClientStub();
+    browserClient.Target.createBrowserContext.mockResolvedValue({ browserContextId: "ctx-1" });
+    browserClient.Target.getTargets.mockResolvedValue({ targetInfos: [] });
+
+    chromeRemoteInterfaceMock.mockImplementation(async () => browserClient);
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/123.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    const adapter = new CdpBrowserAdapterFactory().create({
+      browserName: "chromium",
+      protocol: "cdp",
+      wsEndpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext();
+    await context.ready?.();
+    await context.addInitScript("window.__contextScript = true;");
+
+    const closingPageClient = createCdpClientStub();
+    closingPageClient.Page.enable.mockRejectedValue(new Error("Target closed"));
+    closingPageClient.Page.addScriptToEvaluateOnNewDocument = vi.fn(async () => ({
+      identifier: "script-closed"
+    }));
+
+    await expect((context as any).getOrCreatePage("popup-target", {
+      client: closingPageClient,
+      emitPage: true,
+      fallbackUrl: "https://popup.test/",
+      hasWindowOpener: true,
+      openerTargetId: "opener-target"
+    })).resolves.toEqual(expect.objectContaining({
+      url: expect.any(Function)
+    }));
+
+    await context.close();
+    await adapter.close();
+  });
+
   it("uses keyboard events instead of insertText for modified printable keys", async () => {
     const { pageClient } = await createCdpPageClients();
     const module = await import("../../src/mcp/connectedBrowser.js");

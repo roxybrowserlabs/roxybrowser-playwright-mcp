@@ -157,7 +157,11 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async evaluate(expression: string): Promise<unknown> {
-    return `evaluated:${expression}`;
+    const isFunction = !expression.startsWith("(") || expression.includes("=>");
+    return {
+      result: isFunction ? `evaluated:${expression}` : 2,
+      isFunction
+    };
   }
 
   async isFileInput(target: ClickTarget): Promise<boolean> {
@@ -710,7 +714,7 @@ describe("MCP server", () => {
     ]);
   });
 
-  it("exposes Playwright-like schemas for hover and file upload", async () => {
+  it("exposes Playwright-like schemas for evaluate, hover, and file upload", async () => {
     const bundle = await createRoxyBrowserMcpInMemory({
       sessionFactory: fakeSessionFactory
     });
@@ -721,9 +725,30 @@ describe("MCP server", () => {
     await client.connect(bundle.clientTransport);
 
     const tools = await client.listTools();
+    const evaluateTool = tools.tools.find((tool) => tool.name === "browser_evaluate");
     const hoverTool = tools.tools.find((tool) => tool.name === "browser_hover");
     const uploadTool = tools.tools.find((tool) => tool.name === "browser_file_upload");
     const runCodeTool = tools.tools.find((tool) => tool.name === "browser_run_code_unsafe");
+
+    expect(evaluateTool).toMatchObject({
+      description: "Evaluate JavaScript expression on page or element",
+      inputSchema: {
+        properties: {
+          element: {
+            description: "Human-readable element description used to obtain permission to interact with the element"
+          },
+          target: {
+            description: "Exact target element reference from the page snapshot, or a unique element selector"
+          },
+          function: {
+            description: "() => { /* code */ } or (element) => { /* code */ } when element is provided"
+          },
+          filename: {
+            description: "Filename to save the result to. If not provided, result is returned as text."
+          }
+        }
+      }
+    });
 
     expect(hoverTool?.inputSchema).toEqual({
       type: "object",
@@ -765,6 +790,142 @@ describe("MCP server", () => {
       }
     });
     expect(runCodeTool?.inputSchema.required ?? []).not.toContain("code");
+  });
+
+  it("formats browser_evaluate failures through the Playwright-style response body", async () => {
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: async (args) => {
+        const session = new FakeConnectedBrowserSession(args);
+        session.evaluate = async () => {
+          throw new Error("Failed to execute 'querySelector' on 'Document': '\"consumechris\"' is not a valid selector.");
+        };
+        return session;
+      }
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+    await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        endpoint: "ws://evaluate-error.invalid/devtools/browser/1"
+      }
+    });
+
+    const result = await client.callTool({
+      name: "browser_evaluate",
+      arguments: {
+        function: "(currentUser) => currentUser",
+        target: "\"consumechris\""
+      }
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textFromResult(result)).toContain("### Error");
+    expect(textFromResult(result)).toContain("\"consumechris\"");
+  });
+
+  it("formats browser_evaluate function results and generated code like Playwright", async () => {
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: fakeSessionFactory
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+    await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        endpoint: "ws://evaluate-code.invalid/devtools/browser/1"
+      }
+    });
+
+    const result = await client.callTool({
+      name: "browser_evaluate",
+      arguments: {
+        function: "() => document.title"
+      }
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(textFromResult(result)).toContain("### Result\n\"evaluated:() => document.title\"");
+    expect(textFromResult(result)).toContain("### Code\n```js\nawait page.evaluate('() => document.title');\n```");
+  });
+
+  it("formats browser_evaluate expressions and target code like Playwright", async () => {
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: fakeSessionFactory
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+    await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        endpoint: "ws://evaluate-target.invalid/devtools/browser/1"
+      }
+    });
+
+    const expressionResult = await client.callTool({
+      name: "browser_evaluate",
+      arguments: {
+        function: "(1+1)"
+      }
+    });
+    expect(expressionResult.isError).toBeUndefined();
+    expect(textFromResult(expressionResult)).toContain("### Result\n2");
+    expect(textFromResult(expressionResult)).toContain("await page.evaluate('() => ((1+1))');");
+
+    const targetResult = await client.callTool({
+      name: "browser_evaluate",
+      arguments: {
+        function: "element => element.textContent",
+        element: "button",
+        target: "button"
+      }
+    });
+    expect(targetResult.isError).toBeUndefined();
+    expect(textFromResult(targetResult)).toContain("await page.locator('button').evaluate('element => element.textContent');");
+  });
+
+  it("formats browser_evaluate filename results like Playwright", async () => {
+    const scriptsDir = await mkdtemp(join(tmpdir(), "roxy-evaluate-results-"));
+    cleanupCallbacks.push(async () => rm(scriptsDir, { recursive: true, force: true }));
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: fakeSessionFactory,
+      scriptsDir
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+    await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: {
+        endpoint: "ws://evaluate-file.invalid/devtools/browser/1"
+      }
+    });
+
+    const result = await client.callTool({
+      name: "browser_evaluate",
+      arguments: {
+        function: "() => document.title",
+        filename: "result.json"
+      }
+    });
+
+    const text = textFromResult(result);
+    expect(result.isError).toBeUndefined();
+    expect(text).toContain("### Result\n- [Evaluation result](");
+    const match = text.match(/\- \[Evaluation result\]\(([^)]+)\)/);
+    expect(match?.[1]).toBeTruthy();
+    expect(await readFile(match![1]!, "utf8")).toBe("\"evaluated:() => document.title\"");
   });
 
   it("passes drop file paths through to the session", async () => {

@@ -32,6 +32,11 @@ export interface BrowserSnapshot {
   retryable?: boolean | undefined;
 }
 
+export interface BrowserEvaluateResult {
+  result: unknown;
+  isFunction: boolean;
+}
+
 export interface BrowserConsoleSummary {
   total: number;
   errors: number;
@@ -101,7 +106,7 @@ export interface ConnectedBrowserSession {
   closeTab(tabId: string): Promise<BrowserTab[]>;
   snapshot(request?: BrowserSnapshotRequest): Promise<BrowserSnapshot>;
   consoleMessages(level?: "error" | "warning" | "info" | "debug", all?: boolean): Promise<BrowserConsoleEntry[]>;
-  evaluate(expression: string, target?: ClickTarget): Promise<unknown>;
+  evaluate(expression: string, target?: ClickTarget): Promise<BrowserEvaluateResult>;
   isFileInput(target: ClickTarget): Promise<boolean>;
   prepareForFileUpload?(target: ClickTarget): Promise<void>;
   consumePendingFileChooserTarget?(options?: { timeoutMs?: number }): Promise<ClickTarget | undefined>;

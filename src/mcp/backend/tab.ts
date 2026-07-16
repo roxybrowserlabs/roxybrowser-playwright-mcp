@@ -1,8 +1,8 @@
-import type { ClickTarget } from "../types.js";
+import type { BrowserEvaluateResult, ClickTarget } from "../types.js";
 import type { McpRuntime } from "../runtime.js";
 import type { Context } from "./context.js";
 import type { ModalState } from "./tool.js";
-import { waitForCompletion } from "./utils.js";
+import { escapeWithQuotes, waitForCompletion } from "./utils.js";
 
 type TargetParams = { element?: string | undefined; target: string };
 type HumanOptions = { profile?: "cautious" | "balanced" | "fast" | undefined };
@@ -40,6 +40,10 @@ class Locator {
 
   async hover(_options?: { timeout?: number; human?: HumanOptions }): Promise<void> {
     await this.runtime.hover(this.target);
+  }
+
+  async evaluate(expression: string): Promise<BrowserEvaluateResult> {
+    return this.runtime.evaluate(expression, this.target);
   }
 
   async selectOption(values: string[], _options?: { timeout?: number }): Promise<string[]> {
@@ -85,9 +89,9 @@ class Locator {
 
 function resolvedLocator(target: string, resolved: ClickTarget): string {
   if ("selector" in resolved) {
-    return `locator(${JSON.stringify(resolved.selector)})`;
+    return `locator(${escapeWithQuotes(resolved.selector)})`;
   }
-  return `locator(${JSON.stringify(`aria-ref=${target}`)})`;
+  return `locator(${escapeWithQuotes(`aria-ref=${target}`)})`;
 }
 
 export class Tab {

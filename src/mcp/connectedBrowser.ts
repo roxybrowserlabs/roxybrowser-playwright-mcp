@@ -38,6 +38,7 @@ import { McpToolError } from "./errors.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
 import type {
   BrowserConsoleEntry,
+  BrowserEvaluateResult,
   BrowserNetworkRequest,
   BrowserSnapshot,
   BrowserSnapshotRequest,
@@ -2833,7 +2834,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       }));
   }
 
-  async evaluate(expression: string, target?: ClickTarget): Promise<unknown> {
+  async evaluate(expression: string, target?: ClickTarget): Promise<BrowserEvaluateResult> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     if (target && isBackendNodeTarget(target)) {
@@ -2849,14 +2850,18 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
               : null;
           if (!element) throw new Error('Element not found');
           const value = eval('(' + payload.expression + ')');
-          return typeof value === 'function' ? await value(element) : value;
+          const isFunction = typeof value === 'function';
+          const result = await (isFunction ? value(element) : value);
+          return { result, isFunction };
         }`
       : String.raw`async (payload) => {
           const value = eval('(' + payload.expression + ')');
-          return typeof value === 'function' ? await value() : value;
+          const isFunction = typeof value === 'function';
+          const result = await (isFunction ? value() : value);
+          return { result, isFunction };
         }`;
     const payload = target ? { ...this.targetArg(target), expression } : { expression };
-    return evaluateCdp<unknown>(pageClient, source, payload, contextId);
+    return evaluateCdp<BrowserEvaluateResult>(pageClient, source, payload, contextId);
   }
 
   async isFileInput(target: ClickTarget): Promise<boolean> {
@@ -3791,7 +3796,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       }));
   }
 
-  async evaluate(expression: string, target?: ClickTarget): Promise<unknown> {
+  async evaluate(expression: string, target?: ClickTarget): Promise<BrowserEvaluateResult> {
     const tabId = await this.getActiveTabId();
     if (target && isBackendNodeTarget(target)) {
       throw new Error("Internal backendNodeId targets are not valid for browser_evaluate.");
@@ -3804,14 +3809,18 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
             : document.querySelector(payload.selector);
           if (!element) throw new Error('Element not found');
           const value = eval('(' + payload.expression + ')');
-          return typeof value === 'function' ? await value(element) : value;
+          const isFunction = typeof value === 'function';
+          const result = await (isFunction ? value(element) : value);
+          return { result, isFunction };
         }`
       : String.raw`async (payload) => {
           const value = eval('(' + payload.expression + ')');
-          return typeof value === 'function' ? await value() : value;
+          const isFunction = typeof value === 'function';
+          const result = await (isFunction ? value() : value);
+          return { result, isFunction };
         }`;
     const payload = target ? { ...this.targetArg(target), expression } : { expression };
-    return evaluateBiDi<unknown>(this.client, tabId, source, payload);
+    return evaluateBiDi<BrowserEvaluateResult>(this.client, tabId, source, payload);
   }
 
   async isFileInput(target: ClickTarget): Promise<boolean> {

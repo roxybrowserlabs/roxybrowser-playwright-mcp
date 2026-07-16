@@ -3,6 +3,7 @@ import { McpToolError } from "./errors.js";
 import { AssetManager } from "../assets/manager.js";
 import type {
   BrowserConsoleEntry,
+  BrowserEvaluateResult,
   BrowserNetworkRequest,
   BrowserSessionFactory,
   BrowserSnapshot,
@@ -509,7 +510,7 @@ export class McpRuntime {
     return session.consoleMessages(level, all);
   }
 
-  async evaluate(expression: string, target?: string): Promise<unknown> {
+  async evaluate(expression: string, target?: string): Promise<BrowserEvaluateResult> {
     const session = this.requireConnected();
     const resolved = target ? this.resolveTarget(target) : undefined;
     return session.evaluate(expression, resolved);

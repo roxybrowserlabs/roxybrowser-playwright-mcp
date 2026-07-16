@@ -3,6 +3,21 @@ import type { Tab } from "./tab.js";
 
 const REQUESTS_WAIT_FOR_FINISH = new Set(["document", "stylesheet", "script", "xhr", "fetch"]);
 
+export function escapeWithQuotes(text: string, char = "'"): string {
+  const stringified = JSON.stringify(text);
+  const escapedText = stringified.substring(1, stringified.length - 1).replace(/\\"/g, "\"");
+  if (char === "'") {
+    return char + escapedText.replace(/[']/g, "\\'") + char;
+  }
+  if (char === "\"") {
+    return char + escapedText.replace(/["]/g, "\\\"") + char;
+  }
+  if (char === "`") {
+    return char + escapedText.replace(/[`]/g, "\\`") + char;
+  }
+  throw new Error("Invalid escape char");
+}
+
 export async function waitForCompletion<R>(tab: Tab, callback: () => Promise<R>): Promise<R> {
   const requests = await collectRequestsDuringAction(tab, callback);
 

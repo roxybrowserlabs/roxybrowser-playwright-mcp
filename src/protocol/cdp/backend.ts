@@ -546,6 +546,11 @@ interface CdpCssCoverageState {
   stylesheetUrls: Map<string, string>;
 }
 
+interface CdpContextInitScriptRegistration {
+  source: string;
+  onInstalled(disposable: Disposable): void;
+}
+
 interface CdpScreencastOverlayState {
   kind?: "chapter";
   html: string;
@@ -1858,12 +1863,20 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         const createPagePromise = (async () => {
           const client = options.client ?? await connectToTarget(this.state.connection, targetId);
           await applyCdpPageDownloadBehavior(client, this.options);
+          let constructedPage: ProtocolPageAdapter | undefined;
           return CdpPageAdapter.create({
             browserClient: this.state.browserClient,
             client,
             targetId,
             contextOptions: this.options,
-            contextInitScripts: Array.from(this.initScripts, (entry) => entry.source),
+            contextInitScripts: Array.from(this.initScripts, (entry) => ({
+              source: entry.source,
+              onInstalled: (disposable) => {
+                if (constructedPage) {
+                  entry.disposablesByPage.set(constructedPage, disposable);
+                }
+              }
+            })),
             initialRequestInterceptor: this.requestInterceptionEnabled
               ? this.requestInterceptor
               : null,
@@ -1872,6 +1885,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
               this.queueSyntheticPopup(targetId, url);
             },
             onPageConstructed: (page) => {
+              constructedPage = page;
               this.initializingPages.set(targetId, page);
             },
             pointerActionScheduler: this.pointerActionScheduler,
@@ -1934,9 +1948,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         await page.setRequestInterceptor?.(this.requestInterceptor);
       }
       for (const entry of this.initScripts) {
-        const installedDisposable = (page as CdpPageAdapter).takeContextInitScriptDisposable(entry.source);
-        if (installedDisposable) {
-          entry.disposablesByPage.set(page, installedDisposable);
+        if (entry.disposablesByPage.has(page)) {
           continue;
         }
         try {
@@ -2382,7 +2394,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       | RawPageEventMap["requestfailed"]
     >
   >();
-  private readonly contextInitScriptDisposables = new Map<string, Disposable[]>();
   private readonly requestMetadata = new Map<
     string,
     {
@@ -2631,7 +2642,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     client: CdpClient;
     targetId: string;
     contextOptions: BrowserContextOptions;
-    contextInitScripts?: string[];
+    contextInitScripts?: CdpContextInitScriptRegistration[];
     initialRequestInterceptor?: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null;
     suppressClosedInitScriptErrors?: boolean;
     onWindowOpenFallback?: (url: string) => void;
@@ -2665,7 +2676,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       client: CdpClient;
       targetId: string;
       contextOptions: BrowserContextOptions;
-      contextInitScripts?: string[];
+      contextInitScripts?: CdpContextInitScriptRegistration[];
       initialRequestInterceptor?: ((call: RoutedRequestCall) => Promise<RoutedRequestDecision>) | null;
       suppressClosedInitScriptErrors?: boolean;
       onWindowOpenFallback?: (url: string) => void;
@@ -2711,18 +2722,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.emit("close", undefined);
     this.resolveCloseSignal();
     this.options.onClosed(this.options.targetId);
-  }
-
-  takeContextInitScriptDisposable(source: string): Disposable | undefined {
-    const disposables = this.contextInitScriptDisposables.get(source);
-    if (!disposables?.length) {
-      return undefined;
-    }
-    const disposable = disposables.shift();
-    if (!disposables.length) {
-      this.contextInitScriptDisposables.delete(source);
-    }
-    return disposable;
   }
 
   private async initialize(): Promise<void> {
@@ -3842,13 +3841,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         waitForDebuggerOnStart: true,
         flatten: true
       }).catch(() => {})),
-      ...((this.options.contextInitScripts ?? []).map((source) =>
-        initializeCommand(this.installInitScript(source, {
+      ...((this.options.contextInitScripts ?? []).map((entry) =>
+        initializeCommand(this.installInitScript(entry.source, {
           evaluateInCurrentDocument: true
         }).then((disposable) => {
-          const disposables = this.contextInitScriptDisposables.get(source) ?? [];
-          disposables.push(disposable);
-          this.contextInitScriptDisposables.set(source, disposables);
+          entry.onInstalled(disposable);
         }).catch((error) => {
           if (isClosedCdpConnectionError(error)) {
             return;
