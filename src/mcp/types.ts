@@ -166,6 +166,7 @@ export interface SessionHoverOptions {
 export interface SessionTypeOptions {
   submit?: boolean;
   slowly?: boolean;
+  strategy?: "sequential" | "fill";
   delayMs?: number;
   /** Per-keystroke delay variance (ms) for humanized typing on the CDP per-char path. */
   varianceMs?: number;

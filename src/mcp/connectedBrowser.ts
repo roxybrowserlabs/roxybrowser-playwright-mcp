@@ -30,6 +30,7 @@ import {
   splitKeyboardShortcut
 } from "../protocol/keyboardInput.js";
 import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "../human/bubbleCursor.js";
+import { buildHumanMousePath } from "../human/mousePath.js";
 import { buildTypingDelays } from "../human/typing.js";
 import { defaultRng } from "../human/random.js";
 import { resolveAssetRoots } from "../assets/manager.js";
@@ -629,6 +630,7 @@ const CLEAR_ELEMENT_SOURCE = String.raw`(payload) => {
   el.focus();
   const tag = el.tagName.toLowerCase();
   if (tag === 'input' || tag === 'textarea') {
+    if (el.disabled || el.readOnly) return { ok: false, reason: 'not_input' };
     const proto = Object.getPrototypeOf(el);
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
       ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -654,6 +656,7 @@ const TYPE_INTO_ELEMENT_SOURCE = String.raw`(payload) => {
   el.focus();
   const tag = el.tagName.toLowerCase();
   if (tag === 'input' || tag === 'textarea') {
+    if (el.disabled || el.readOnly) return { ok: false, reason: 'not_input' };
     const proto = Object.getPrototypeOf(el);
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
       ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -1007,28 +1010,6 @@ const CDP_KEY_MAP: Record<string, { key: string; code: string; keyCode: number; 
   F11: { key: "F11", code: "F11", keyCode: 122 },
   F12: { key: "F12", code: "F12", keyCode: 123 },
 };
-
-function humanMousePath(
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-  moveDelayMs = 140
-): Array<{ x: number; y: number; pauseMs: number }> {
-  const distance = Math.hypot(end.x - start.x, end.y - start.y);
-  const steps = Math.max(Math.ceil(distance / 18), 1);
-  const perStepBase = Math.max(24, Math.round(moveDelayMs / 2.4));
-  const points: Array<{ x: number; y: number; pauseMs: number }> = [];
-  for (let index = 1; index <= steps; index += 1) {
-    const progress = index / steps;
-    const easedProgress = 1 - Math.pow(1 - progress, 2);
-    const drift = Math.sin(progress * Math.PI) * Math.min(18, distance * 0.08);
-    points.push({
-      x: start.x + ((end.x - start.x) * easedProgress) + drift * ((end.y - start.y) / Math.max(distance, 1)),
-      y: start.y + ((end.y - start.y) * easedProgress) - drift * ((end.x - start.x) / Math.max(distance, 1)),
-      pauseMs: index < steps ? perStepBase + Math.round((1 - progress) * Math.max(18, moveDelayMs * 0.35)) : 0
-    });
-  }
-  return points;
-}
 
 async function evaluateBiDi<TResult>(
   client: BidiProtocolClient,
@@ -1572,7 +1553,13 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     if (!this.hasMouseEnteredViewport) {
       await this.seedMouseEntryPosition(pageClient, moveDelayMs, modifiers, button);
     }
-    const points = humanMousePath(this.currentMousePosition, destination, moveDelayMs);
+    const points = buildHumanMousePath(
+      this.currentMousePosition,
+      destination,
+      { stepPx: 18, durationMs: moveDelayMs },
+      defaultRng
+    );
+    let nextDeadline = Date.now();
     for (const point of points) {
       await pageClient.Input.dispatchMouseEvent({
         type: "mouseMoved",
@@ -1581,8 +1568,10 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         button,
         modifiers
       });
-      if (point.pauseMs > 0) {
-        await delay(point.pauseMs);
+      nextDeadline += point.delayMs;
+      const remainingMs = nextDeadline - Date.now();
+      if (remainingMs > 0) {
+        await delay(remainingMs);
       }
     }
     this.currentMousePosition = { x: destination.x, y: destination.y };
@@ -1654,7 +1643,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
-    if (options?.slowly || options?.delayMs) {
+    if (options?.strategy !== "fill" && (options?.slowly || options?.delayMs)) {
       const refResult = await evaluateCdpRef(pageClient, FOCUS_AND_GET_ELEMENT_SOURCE, arg, contextId);
       if (!refResult.objectId) {
         const isSelector = "selector" in target;
@@ -1686,7 +1675,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const result = await evaluateCdp<{ ok: boolean; reason?: string }>(
       pageClient,
       TYPE_INTO_ELEMENT_SOURCE,
-      { ...arg, text, submit: options?.submit ?? false },
+      { ...arg, text, submit: false },
       contextId
     );
     if (!result.ok) {
@@ -1697,6 +1686,9 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
           ? (isSelector ? `Element "${target.selector}" could not be found.` : 'The referenced element is no longer valid. Call "browser_snapshot" again.')
           : `Element is not a typeable input.`
       );
+    }
+    if (options?.submit) {
+      await this.pressKey("Enter");
     }
   }
 
@@ -3656,6 +3648,8 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private activeTabId: string | undefined;
   private ownsSession = false;
   private readonly tempDir: string;
+  private currentMousePosition = { x: 0, y: 0 };
+  private hasMouseEnteredViewport = false;
 
   private constructor(
     private readonly client: BidiProtocolClient,
@@ -3832,6 +3826,64 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
   async prepareForFileUpload(_target: ClickTarget): Promise<void> {}
 
+  private async mousePointerPathActions(
+    tabId: string,
+    destination: { x: number; y: number },
+    moveDelayMs = 140
+  ): Promise<unknown[]> {
+    const actions: unknown[] = [];
+    if (!this.hasMouseEnteredViewport) {
+      actions.push(...(await this.seedMouseEntryActions(tabId, moveDelayMs)));
+    }
+
+    const points = buildHumanMousePath(
+      this.currentMousePosition,
+      destination,
+      { stepPx: 18, durationMs: moveDelayMs },
+      defaultRng
+    );
+    for (const point of points) {
+      actions.push({
+        type: "pointerMove",
+        x: Math.round(point.x),
+        y: Math.round(point.y),
+        origin: "viewport",
+        duration: Math.max(0, Math.round(point.delayMs))
+      });
+    }
+    this.currentMousePosition = { x: destination.x, y: destination.y };
+    return actions;
+  }
+
+  private async seedMouseEntryActions(tabId: string, moveDelayMs: number): Promise<unknown[]> {
+    const viewport = await evaluateBiDi<{ x: number; y: number; width: number; height: number }>(
+      this.client,
+      tabId,
+      VIEWPORT_BOX_SOURCE
+    ).catch(() => ({ x: 0, y: 0, width: 1280, height: 720 }));
+    const padding = Math.max(12, Math.round(Math.min(viewport.width, viewport.height) * 0.03));
+    const horizontal = viewport.x + padding + Math.random() * Math.max(1, viewport.width - padding * 2);
+    const vertical = viewport.y + padding + Math.random() * Math.max(1, viewport.height - padding * 2);
+    const edge = Math.floor(Math.random() * 4);
+    const entry =
+      edge === 0 ? { x: horizontal, y: viewport.y + 1 } :
+      edge === 1 ? { x: viewport.x + viewport.width - 1, y: vertical } :
+      edge === 2 ? { x: horizontal, y: viewport.y + viewport.height - 1 } :
+      { x: viewport.x + 1, y: vertical };
+
+    this.currentMousePosition = entry;
+    this.hasMouseEnteredViewport = true;
+    return [
+      {
+        type: "pointerMove",
+        x: Math.round(entry.x),
+        y: Math.round(entry.y),
+        origin: "viewport"
+      },
+      { type: "pause", duration: Math.max(60, Math.round(moveDelayMs * 0.8)) }
+    ];
+  }
+
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
     if (isBackendNodeTarget(target)) {
       throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
@@ -3873,14 +3925,11 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const keyDownActions = modifierKeys.map((value) => ({ type: "keyDown" as const, value }));
     const keyUpActions = modifierKeys.map((value) => ({ type: "keyUp" as const, value }));
 
-    const pointerActions: unknown[] = [
-      {
-        type: "pointerMove",
-        x: Math.round(point.x),
-        y: Math.round(point.y),
-        origin: "viewport"
-      }
-    ];
+    const pointerActions: unknown[] = await this.mousePointerPathActions(
+      tabId,
+      { x: point.x, y: point.y },
+      options.moveDelayMs ?? 140
+    );
     for (let i = 0; i < cycles; i++) {
       pointerActions.push({ type: "pointerDown", button: buttonCode });
       pointerActions.push({ type: "pause", duration: options.clickHoldMs });
@@ -3927,6 +3976,8 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const tabId = await this.getActiveTabId();
     const startPoint = await this.actionPoint(tabId, start);
     const endPoint = await this.actionPoint(tabId, end);
+    const startActions = await this.mousePointerPathActions(tabId, startPoint, options.moveDelayMs);
+    const endActions = await this.mousePointerPathActions(tabId, endPoint, options.moveDelayMs);
     await this.client.inputPerformActions({
       context: tabId,
       actions: [
@@ -3935,22 +3986,10 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
           id: "mouse",
           parameters: { pointerType: "mouse" },
           actions: [
-            {
-              type: "pointerMove",
-              x: Math.round(startPoint.x),
-              y: Math.round(startPoint.y),
-              origin: "viewport"
-            },
-            { type: "pause", duration: options.moveDelayMs },
+            ...startActions,
             { type: "pointerDown", button: 0 },
             { type: "pause", duration: options.holdDelayMs },
-            {
-              type: "pointerMove",
-              x: Math.round(endPoint.x),
-              y: Math.round(endPoint.y),
-              origin: "viewport"
-            },
-            { type: "pause", duration: options.moveDelayMs },
+            ...endActions,
             { type: "pointerUp", button: 0 }
           ]
         }
@@ -3978,7 +4017,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
   }
 
-  async hover(target: ClickTarget): Promise<void> {
+  async hover(target: ClickTarget, options?: SessionHoverOptions): Promise<void> {
     if (isBackendNodeTarget(target)) {
       throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
     }
@@ -4001,6 +4040,12 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       );
     }
 
+    const pointerActions = await this.mousePointerPathActions(
+      tabId,
+      { x: point.x, y: point.y },
+      options?.moveDelayMs ?? 140
+    );
+
     await this.client.inputPerformActions({
       context: tabId,
       actions: [
@@ -4008,14 +4053,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
           type: "pointer",
           id: "mouse",
           parameters: { pointerType: "mouse" },
-          actions: [
-            {
-              type: "pointerMove",
-              x: Math.round(point.x),
-              y: Math.round(point.y),
-              origin: "viewport"
-            }
-          ]
+          actions: pointerActions
         }
       ]
     });
@@ -4093,16 +4131,18 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
     const tabId = await this.getActiveTabId();
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
-    // ⚠️ CDP↔BiDi PARITY GAP: the CDP session.type has a real per-keystroke insertText loop that
-    // honors slowly/delayMs/varianceMs (humanized cadence). The BiDi MCP path sets the value via
-    // a single DOM operation (TYPE_INTO_ELEMENT_SOURCE) and does not emit per-character keystrokes,
-    // so humanized typing timing does not apply here. Root cause: this path never had a keystroke
-    // loop; matching CDP requires reworking it onto BiDi input actions (tracked as follow-up).
+    if (options?.strategy !== "fill" && (options?.slowly || options?.delayMs)) {
+      // ⚠️ CDP↔BiDi PARITY GAP: the CDP session.type has a real per-keystroke insertText loop that
+      // honors slowly/delayMs/varianceMs (humanized cadence). The BiDi MCP path sets the value via
+      // a single DOM operation (TYPE_INTO_ELEMENT_SOURCE) and does not emit per-character keystrokes,
+      // so humanized typing timing does not apply here. Root cause: this path never had a keystroke
+      // loop; matching CDP requires reworking it onto BiDi input actions (tracked as follow-up).
+    }
     const result = await evaluateBiDi<{ ok: boolean; reason?: string }>(
       this.client,
       tabId,
       TYPE_INTO_ELEMENT_SOURCE,
-      { ...arg, text, submit: options?.submit ?? false }
+      { ...arg, text, submit: false }
     );
     if (!result.ok) {
       const isSelector = "selector" in target;
@@ -4112,6 +4152,9 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
           ? (isSelector ? `Element "${target.selector}" could not be found.` : 'The referenced element is no longer valid.')
           : `Element is not a typeable input.`
       );
+    }
+    if (options?.submit) {
+      await this.pressKey("Enter");
     }
   }
 

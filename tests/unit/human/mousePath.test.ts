@@ -66,14 +66,13 @@ describe("buildHumanMousePath", () => {
     expect(path).toHaveLength(Math.ceil(dist / opts.stepPx));
   });
 
-  it("distributes delays summing to roughly durationMs, all non-negative", () => {
+  it("distributes delays across an exact total duration", () => {
     const path = buildHumanMousePath(start, end, opts, createSeededRng(4));
     const sum = path.reduce((total, p) => total + p.delayMs, 0);
     for (const p of path) {
       expect(p.delayMs).toBeGreaterThanOrEqual(0);
     }
-    expect(sum).toBeGreaterThan(opts.durationMs * 0.75);
-    expect(sum).toBeLessThan(opts.durationMs * 1.25);
+    expect(sum).toBeCloseTo(opts.durationMs, 8);
   });
 
   it("overshoots past the target then settles exactly on it", () => {

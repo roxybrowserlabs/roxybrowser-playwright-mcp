@@ -1833,6 +1833,7 @@ describe("MCP server", () => {
       expect(getSession().typeCalls.length).toBe(1);
       expect(getSession().typeCalls[0]!.text).toBe("hello");
       expect(getSession().typeCalls[0]!.target).toHaveProperty("nodeToken");
+      expect(getSession().typeCalls[0]!.options?.strategy).toBe("sequential");
       expect(getSession().focusCalls).toHaveLength(1);
       expect(getSession().clearCalls).toHaveLength(1);
       expect(getSession().pressKeyCalls).toEqual([]);
@@ -1848,6 +1849,63 @@ describe("MCP server", () => {
       });
 
       expect(getSession().typeCalls[0]!.options?.submit).toBe(true);
+    });
+
+    it("passes the selected human profile into sequential typing", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      await client.callTool({
+        name: "browser_type",
+        arguments: { target: "e1", text: "quick", human: { profile: "fast" } }
+      });
+
+      expect(getSession().typeCalls[0]!.options).toMatchObject({
+        strategy: "sequential",
+        varianceMs: 30
+      });
+      expect(getSession().typeCalls[0]!.options?.delayMs).toBeLessThanOrEqual(102);
+    });
+
+    it("keeps text under the 30 second typing budget on the sequential path", async () => {
+      const { client, getSession } = await setupTrackingClient();
+      const text = "x".repeat(200);
+
+      await client.callTool({
+        name: "browser_type",
+        arguments: { target: "e1", text }
+      });
+
+      expect(getSession().clearCalls).toHaveLength(1);
+      expect(getSession().typeCalls[0]!.options?.strategy).toBe("sequential");
+    });
+
+    it("uses fill strategy for large text without clearing character by character", async () => {
+      const { client, getSession } = await setupTrackingClient();
+      const text = "Large pasted paragraph. ".repeat(20);
+
+      await client.callTool({
+        name: "browser_type",
+        arguments: { target: "e1", text }
+      });
+
+      expect(getSession().clearCalls).toEqual([]);
+      expect(getSession().typeCalls).toEqual([{
+        target: expect.objectContaining({ nodeToken: expect.any(String) }),
+        text,
+        options: { strategy: "fill" }
+      }]);
+    });
+
+    it("submits large filled text with a real Enter key press", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      await client.callTool({
+        name: "browser_type",
+        arguments: { target: "e1", text: "x".repeat(300), submit: true }
+      });
+
+      expect(getSession().typeCalls[0]!.options).toEqual({ strategy: "fill" });
+      expect(getSession().pressKeyCalls).toEqual([{ key: "Enter", modifiers: undefined }]);
     });
 
     it("uses CSS selector when ref is not a snapshot ref", async () => {

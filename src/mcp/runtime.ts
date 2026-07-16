@@ -38,6 +38,32 @@ function normalizeNavigationUrl(url: string): string {
   }
 }
 
+const DEFAULT_SEQUENTIAL_TYPING_BUDGET_MS = 30_000;
+
+type SegmenterConstructor = new (
+  locale?: string,
+  options?: { granularity?: "grapheme" | "word" | "sentence" }
+) => {
+  segment(input: string): Iterable<unknown>;
+};
+
+function graphemeCount(text: string): number {
+  const Segmenter = (Intl as typeof Intl & { Segmenter?: SegmenterConstructor }).Segmenter;
+  if (Segmenter) {
+    return Array.from(new Segmenter(undefined, { granularity: "grapheme" }).segment(text)).length;
+  }
+  return [...text].length;
+}
+
+function chooseTypingStrategy(
+  text: string,
+  delayMs: number,
+  timeoutMs: number | undefined
+): "sequential" | "fill" {
+  const budget = Math.min(DEFAULT_SEQUENTIAL_TYPING_BUDGET_MS, timeoutMs ?? DEFAULT_SEQUENTIAL_TYPING_BUDGET_MS);
+  return graphemeCount(text) * Math.max(0, delayMs) > budget ? "fill" : "sequential";
+}
+
 export class McpRuntime {
   private connection:
     | {
@@ -343,11 +369,20 @@ export class McpRuntime {
   async type(
     ref: string,
     text: string,
-    opts?: { submit?: boolean; slowly?: boolean; human?: { profile?: string } }
+    opts?: {
+      submit?: boolean;
+      slowly?: boolean;
+      timeout?: number;
+      strategy?: "sequential" | "fill";
+      human?: { profile?: string };
+    }
   ): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const resolved = this.resolveTarget(ref);
     const humanOpts = resolveHumanizationOptions(opts?.human as HumanizationOptions | undefined);
+    const strategy =
+      opts?.strategy
+      ?? (opts?.slowly ? "sequential" : chooseTypingStrategy(text, humanOpts.typingDelayMs, opts?.timeout));
     await session.hover(resolved);
     const hoverDelayMs = jitter(humanOpts.hoverBeforeClickMs);
     if (hoverDelayMs > 0) {
@@ -358,13 +393,21 @@ export class McpRuntime {
       moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
     });
     await session.focus(resolved);
-    await session.clear(resolved);
-    await session.type(resolved, text, {
-      ...(opts?.submit !== undefined ? { submit: opts.submit } : {}),
-      slowly: true,
-      delayMs: jitter(humanOpts.typingDelayMs),
-      varianceMs: humanOpts.typingVarianceMs
-    });
+    if (strategy === "fill") {
+      await session.type(resolved, text, { strategy: "fill" });
+      if (opts?.submit) {
+        await session.pressKey("Enter");
+      }
+    } else {
+      await session.clear(resolved);
+      await session.type(resolved, text, {
+        ...(opts?.submit !== undefined ? { submit: opts.submit } : {}),
+        slowly: true,
+        strategy: "sequential",
+        delayMs: jitter(humanOpts.typingDelayMs),
+        varianceMs: humanOpts.typingVarianceMs
+      });
+    }
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;

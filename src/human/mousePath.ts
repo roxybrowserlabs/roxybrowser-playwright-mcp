@@ -136,6 +136,7 @@ export function buildHumanMousePath(
     last.y = end.y;
   }
 
+  normalizeDelays(points, durationMs);
   return points;
 }
 
@@ -144,4 +145,30 @@ function sampleDelay(base: number, rng: Rng): number {
     return 0;
   }
   return base * (0.85 + rng() * 0.3);
+}
+
+function normalizeDelays(points: HumanMovePoint[], durationMs: number): void {
+  if (durationMs <= 0 || points.length === 0) {
+    for (const point of points) {
+      point.delayMs = 0;
+    }
+    return;
+  }
+
+  const sampledTotal = points.reduce((total, point) => total + point.delayMs, 0);
+  if (sampledTotal <= 0) {
+    const perPoint = durationMs / points.length;
+    for (const point of points) {
+      point.delayMs = perPoint;
+    }
+    return;
+  }
+
+  const scale = durationMs / sampledTotal;
+  let normalizedTotal = 0;
+  for (const point of points) {
+    point.delayMs *= scale;
+    normalizedTotal += point.delayMs;
+  }
+  points[points.length - 1]!.delayMs += durationMs - normalizedTotal;
 }

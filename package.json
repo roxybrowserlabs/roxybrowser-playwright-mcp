@@ -1,6 +1,6 @@
 {
   "name": "@roxybrowser/playwright",
-  "version": "2.0.2-beta.36",
+  "version": "2.0.2-beta.37",
   "description": "MCP server for RoxyBrowser automation - manage browser instances and get CDP endpoints",
   "type": "module",
   "main": "./dist/index.js",

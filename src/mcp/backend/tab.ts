@@ -38,7 +38,7 @@ class Locator {
     });
   }
 
-  async hover(_options?: { timeout?: number }): Promise<void> {
+  async hover(_options?: { timeout?: number; human?: HumanOptions }): Promise<void> {
     await this.runtime.hover(this.target);
   }
 
@@ -51,18 +51,34 @@ class Locator {
     await this.runtime.drag(this.target, target.target);
   }
 
-  async fill(value: string, _options?: { timeout?: number }): Promise<void> {
-    await this.runtime.type(this.target, value);
+  async fill(value: string, options?: { timeout?: number; human?: HumanOptions }): Promise<void> {
+    await this.runtime.type(this.target, value, {
+      strategy: "fill",
+      ...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
+      ...(options?.human?.profile !== undefined ? { human: { profile: options.human.profile } } : {})
+    });
   }
 
-  async pressSequentially(value: string, _options?: { timeout?: number }): Promise<void> {
-    await this.runtime.type(this.target, value, { slowly: true });
+  async pressSequentially(value: string, options?: { timeout?: number; human?: HumanOptions }): Promise<void> {
+    await this.runtime.type(this.target, value, {
+      slowly: true,
+      strategy: "sequential",
+      ...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
+      ...(options?.human?.profile !== undefined ? { human: { profile: options.human.profile } } : {})
+    });
   }
 
-  async type(value: string, options?: { submit?: boolean; slowly?: boolean; timeout?: number }): Promise<void> {
+  async type(value: string, options?: {
+    submit?: boolean;
+    slowly?: boolean;
+    timeout?: number;
+    human?: HumanOptions;
+  }): Promise<void> {
     await this.runtime.type(this.target, value, {
       ...(options?.submit !== undefined ? { submit: options.submit } : {}),
-      ...(options?.slowly !== undefined ? { slowly: options.slowly } : {})
+      ...(options?.slowly !== undefined ? { slowly: options.slowly } : {}),
+      ...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
+      ...(options?.human?.profile !== undefined ? { human: { profile: options.human.profile } } : {})
     });
   }
 }
