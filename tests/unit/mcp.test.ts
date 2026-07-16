@@ -700,7 +700,6 @@ describe("MCP server", () => {
       "browser_press_key",
       "browser_resize",
       "browser_run_code_unsafe",
-      "browser_scroll",
       "browser_select_option",
       "browser_snapshot",
       "browser_tabs",
@@ -723,7 +722,6 @@ describe("MCP server", () => {
 
     const tools = await client.listTools();
     const hoverTool = tools.tools.find((tool) => tool.name === "browser_hover");
-    const scrollTool = tools.tools.find((tool) => tool.name === "browser_scroll");
     const uploadTool = tools.tools.find((tool) => tool.name === "browser_file_upload");
     const runCodeTool = tools.tools.find((tool) => tool.name === "browser_run_code_unsafe");
 
@@ -742,25 +740,6 @@ describe("MCP server", () => {
       required: ["target"],
       $schema: "http://json-schema.org/draft-07/schema#"
     });
-
-    expect(scrollTool?.inputSchema.properties).toMatchObject({
-      element: {
-        description: "Human-readable element description used to obtain permission to interact with the element",
-        type: "string"
-      },
-      target: {
-        description: "Exact target element reference from the page snapshot, or a unique element selector. Omit to scroll the page.",
-        type: "string"
-      },
-      deltaX: {
-        type: "number"
-      },
-      deltaY: {
-        type: "number"
-      }
-    });
-    expect(scrollTool?.inputSchema.properties).not.toHaveProperty("ref");
-    expect(scrollTool?.inputSchema.required ?? []).not.toContain("target");
 
     expect(uploadTool?.inputSchema).toEqual({
       $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -2032,59 +2011,6 @@ describe("MCP server", () => {
       expect(getSession().pressKeyCalls).toEqual([{ key: "Enter", modifiers: undefined }]);
     });
 
-  });
-
-  describe("browser_scroll", () => {
-    it("scrolls the page when target is omitted and passes humanized options", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      const result = await client.callTool({
-        name: "browser_scroll",
-        arguments: { deltaY: 600, human: { profile: "fast" } }
-      });
-
-      expect(result.isError).toBeUndefined();
-      expect(getSession().scrollCalls).toHaveLength(1);
-      expect(getSession().scrollCalls[0]).toMatchObject({
-        target: null,
-        deltaX: 0,
-        deltaY: 600,
-        options: {
-          stepPx: 240
-        }
-      });
-      expect(getSession().scrollCalls[0]!.options?.stepDelayMs).toBeGreaterThanOrEqual(0);
-      expect(textFromResult(result)).toContain("### Snapshot");
-    });
-
-    it("scrolls a target element resolved from the current snapshot", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      const result = await client.callTool({
-        name: "browser_scroll",
-        arguments: { target: "e1", deltaX: 25, deltaY: -120 }
-      });
-
-      expect(result.isError).toBeUndefined();
-      expect(getSession().scrollCalls).toHaveLength(1);
-      expect(getSession().scrollCalls[0]!.target).toHaveProperty("nodeToken");
-      expect(getSession().scrollCalls[0]!.deltaX).toBe(25);
-      expect(getSession().scrollCalls[0]!.deltaY).toBe(-120);
-    });
-
-    it("rejects no-op scroll deltas", async () => {
-      const { client, getSession } = await setupTrackingClient();
-
-      const result = await client.callTool({
-        name: "browser_scroll",
-        arguments: { target: "e1" }
-      });
-
-      expect(result.isError).toBe(true);
-      expect(textFromResult(result)).toContain("[invalid_input]");
-      expect(textFromResult(result)).toContain("At least one of deltaX or deltaY must be non-zero.");
-      expect(getSession().scrollCalls).toHaveLength(0);
-    });
   });
 
   describe("browser_drag", () => {

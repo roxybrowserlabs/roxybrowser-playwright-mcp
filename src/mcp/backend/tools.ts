@@ -8,7 +8,6 @@ import keyboard from "./keyboard.js";
 import navigate from "./navigate.js";
 import network from "./network.js";
 import runCode from "./runCode.js";
-import scroll from "./scroll.js";
 import screenshot from "./screenshot.js";
 import snapshot from "./snapshot.js";
 import tabs from "./tabs.js";
@@ -26,7 +25,6 @@ export const browserTools: Tool[] = [
   ...navigate,
   ...network,
   ...runCode,
-  ...scroll,
   ...screenshot,
   ...snapshot,
   ...tabs
