@@ -22,6 +22,10 @@ import type { AssetOptions } from "../assets/types.js";
 
 type RegisteredTool = LegacyTool | BackendTool;
 
+interface CreateRoxyBrowserMcpServerInternalOptions {
+  extraBackendTools?: BackendTool[];
+}
+
 function toolErrorResult(error: unknown): CallToolResult {
   if (isMcpToolError(error)) {
     return textResult(`[${error.code}] ${error.message}`, true);
@@ -32,7 +36,8 @@ function toolErrorResult(error: unknown): CallToolResult {
 }
 
 export function createRoxyBrowserMcpServer(
-  options: CreateRoxyBrowserMcpServerOptions = {}
+  options: CreateRoxyBrowserMcpServerOptions = {},
+  internalOptions: CreateRoxyBrowserMcpServerInternalOptions = {}
 ): RoxyBrowserMcpServerBundle {
   const assetOptions = pickAssetOptions(options);
   const runtimeManager = new McpRuntimeManager(options.sessionFactory, {
@@ -43,9 +48,13 @@ export function createRoxyBrowserMcpServer(
     name: options.serverInfo?.name ?? "roxybrowser-mcp",
     version: options.serverInfo?.version ?? "0.1.0"
   });
-  const backendToolNames = new Set(allBackendTools.map((tool) => tool.schema.name));
+  const backendTools = [
+    ...allBackendTools,
+    ...(internalOptions.extraBackendTools ?? [])
+  ];
+  const backendToolNames = new Set(backendTools.map((tool) => tool.schema.name));
   const legacyTools = allTools.filter((tool) => !backendToolNames.has(tool.schema.name));
-  const registeredTools: RegisteredTool[] = [...legacyTools, ...allBackendTools];
+  const registeredTools: RegisteredTool[] = [...legacyTools, ...backendTools];
   let lastSessionId: string | undefined;
 
   for (const tool of legacyTools) {
@@ -68,7 +77,7 @@ export function createRoxyBrowserMcpServer(
     );
   }
 
-  for (const tool of allBackendTools) {
+  for (const tool of backendTools) {
     server.registerTool(
       tool.schema.name,
       {

@@ -9,6 +9,7 @@ export class Response {
   private readonly errors: string[] = [];
   private readonly code: string[] = [];
   private readonly images: Array<{ data: string; mimeType: "image/png" | "image/jpeg" }> = [];
+  private structuredContent: Record<string, unknown> | undefined;
   private includeSnapshot: "none" | "full" = "none";
   private fullSnapshot:
     | {
@@ -29,6 +30,10 @@ export class Response {
 
   addTextResult(text: string): void {
     this.results.push(text);
+  }
+
+  addStructuredResult(content: Record<string, unknown>): void {
+    this.structuredContent = content;
   }
 
   addError(error: string): void {
@@ -85,6 +90,7 @@ export class Response {
             mimeType: image.mimeType
           }))
         ],
+        ...(this.structuredContent ? { structuredContent: this.structuredContent } : {}),
         ...(this.isClose ? { isClose: true } : {}),
         ...(this.errors.length ? { isError: true } : {})
       };
@@ -170,6 +176,7 @@ export class Response {
           mimeType: image.mimeType
         }))
       ],
+      ...(this.structuredContent ? { structuredContent: this.structuredContent } : {}),
       ...(this.isClose ? { isClose: true } : {}),
       ...(this.errors.length ? { isError: true } : {})
     };

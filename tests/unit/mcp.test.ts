@@ -16,6 +16,7 @@ import type {
   ClickTarget,
   ConnectedBrowserSession,
   RoxyBrowserConnectArgs,
+  RoxyBrowserLaunchClient,
   SessionClickOptions,
   SessionDragOptions,
   SessionDropOptions,
@@ -712,6 +713,307 @@ describe("MCP server", () => {
       "browser_wait_for",
       "roxy_browser_connect"
     ]);
+  });
+
+  it("registers roxy_browser_launch only when in-memory launch integration is configured", async () => {
+    const launchClient: RoxyBrowserLaunchClient = {
+      getConnectionInfo: vi.fn(),
+      openBrowser: vi.fn()
+    };
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: fakeSessionFactory,
+      roxyBrowserLaunch: {
+        workspaceId: 12,
+        client: launchClient
+      }
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+
+    const tools = await client.listTools();
+    const names = tools.tools.map((tool) => tool.name);
+
+    expect(names).toContain("roxy_browser_connect");
+    expect(names).toContain("roxy_browser_launch");
+    expect(tools.tools.find((tool) => tool.name === "roxy_browser_launch")?.inputSchema).toMatchObject({
+      properties: {
+        dirId: { type: "string" },
+        browser: { default: "chrome" },
+        forceOpen: { default: true },
+        args: { type: "array" }
+      }
+    });
+    expect(tools.tools.find((tool) => tool.name === "roxy_browser_launch")?.inputSchema.properties)
+      .not.toHaveProperty("workspaceId");
+    expect(tools.tools.find((tool) => tool.name === "roxy_browser_launch")?.inputSchema.properties)
+      .not.toHaveProperty("sessionId");
+  });
+
+  it("roxy_browser_launch reuses existing RoxyBrowser connection info before opening", async () => {
+    const launchClient: RoxyBrowserLaunchClient = {
+      getConnectionInfo: vi.fn(async () => ({
+        code: 0,
+        data: [
+          {
+            dirId: "profile-1",
+            ws: "ws://existing.invalid/devtools/browser/abc",
+            http: "127.0.0.1:41000",
+            coreType: "Chrome"
+          }
+        ]
+      })),
+      openBrowser: vi.fn()
+    };
+    let connectArgs: RoxyBrowserConnectArgs | undefined;
+    const bundle = await createRoxyBrowserMcpInMemory({
+      roxyBrowserLaunch: {
+        workspaceId: 12,
+        client: launchClient
+      },
+      sessionFactory: async (args) => {
+        connectArgs = args;
+        return new FakeConnectedBrowserSession(args);
+      }
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+
+    const result = await client.callTool({
+      name: "roxy_browser_launch",
+      arguments: {
+        dirId: "profile-1"
+      }
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(launchClient.getConnectionInfo).toHaveBeenCalledWith(["profile-1"]);
+    expect(launchClient.openBrowser).not.toHaveBeenCalled();
+    expect(connectArgs).toMatchObject({
+      protocol: "cdp",
+      endpoint: "ws://existing.invalid/devtools/browser/abc",
+      browser: "chromium"
+    });
+    expect(result.structuredContent).toEqual({
+      browsers: [
+        {
+          dirId: "profile-1",
+          endpoint: "ws://existing.invalid/devtools/browser/abc",
+          connected: true,
+          pageUrl: "ws://existing.invalid/devtools/browser/abc/home",
+          browserType: "chrome"
+        }
+      ]
+    });
+    expect(JSON.parse(textFromResult(result))).toEqual(result.structuredContent);
+  });
+
+  it("roxy_browser_launch opens the RoxyBrowser profile when no connection is available", async () => {
+    const launchClient: RoxyBrowserLaunchClient = {
+      getConnectionInfo: vi.fn(async () => ({ code: 0, data: [] })),
+      openBrowser: vi.fn(async () => ({
+        code: 0,
+        data: {
+          dirId: "profile-2",
+          ws: "ws://opened.invalid/devtools/browser/def",
+          pid: 1234,
+          coreType: "Chrome"
+        }
+      }))
+    };
+    let connectArgs: RoxyBrowserConnectArgs | undefined;
+    const bundle = await createRoxyBrowserMcpInMemory({
+      roxyBrowserLaunch: {
+        workspaceId: 12,
+        client: launchClient
+      },
+      sessionFactory: async (args) => {
+        connectArgs = args;
+        return new FakeConnectedBrowserSession(args);
+      }
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+
+    const result = await client.callTool({
+      name: "roxy_browser_launch",
+      arguments: {
+        dirId: "profile-2",
+        forceOpen: false,
+        args: ["--headless=new"]
+      }
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(launchClient.openBrowser).toHaveBeenCalledWith({
+      workspaceId: 12,
+      dirId: "profile-2",
+      forceOpen: false,
+      args: ["--headless=new"]
+    });
+    expect(connectArgs?.endpoint).toBe("ws://opened.invalid/devtools/browser/def");
+    expect(result.structuredContent).toEqual({
+      browsers: [
+        {
+          dirId: "profile-2",
+          endpoint: "ws://opened.invalid/devtools/browser/def",
+          connected: true,
+          pageUrl: "ws://opened.invalid/devtools/browser/def/home",
+          browserType: "chrome"
+        }
+      ]
+    });
+  });
+
+  it("roxy_browser_launch can use RoxyBrowser API options passed to in-memory creation", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ code: 0, data: [] })
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          code: 0,
+          data: {
+            dirId: "profile-3",
+            ws: "ws://api-opened.invalid/devtools/browser/ghi"
+          }
+        })
+      } as Response);
+    let connectArgs: RoxyBrowserConnectArgs | undefined;
+    const bundle = await createRoxyBrowserMcpInMemory({
+      roxyBrowserLaunch: {
+        workspaceId: 88,
+        apiToken: "api-token",
+        apiPort: 59999,
+        host: "127.0.0.2"
+      },
+      sessionFactory: async (args) => {
+        connectArgs = args;
+        return new FakeConnectedBrowserSession(args);
+      }
+    });
+    cleanupCallbacks.push(async () => {
+      fetchSpy.mockRestore();
+      await bundle.close();
+    });
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+
+    const result = await client.callTool({
+      name: "roxy_browser_launch",
+      arguments: {
+        dirId: "profile-3"
+      }
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      "http://127.0.0.2:59999/browser/connection_info?dirIds=profile-3"
+    );
+    expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({
+      method: "GET",
+      headers: {
+        "content-type": "application/json",
+        token: "api-token"
+      }
+    });
+    expect((fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined)?.signal).toBeUndefined();
+    expect(String(fetchSpy.mock.calls[1]?.[0])).toBe(
+      "http://127.0.0.2:59999/browser/open"
+    );
+    expect(fetchSpy.mock.calls[1]?.[1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({
+        workspaceId: 88,
+        dirId: "profile-3",
+        forceOpen: true
+      })
+    });
+    expect((fetchSpy.mock.calls[1]?.[1] as RequestInit | undefined)?.signal).toBeUndefined();
+    expect(connectArgs?.endpoint).toBe("ws://api-opened.invalid/devtools/browser/ghi");
+    expect(result.structuredContent).toEqual({
+      browsers: [
+        {
+          dirId: "profile-3",
+          endpoint: "ws://api-opened.invalid/devtools/browser/ghi",
+          connected: true,
+          pageUrl: "ws://api-opened.invalid/devtools/browser/ghi/home",
+          browserType: "chrome"
+        }
+      ]
+    });
+  });
+
+  it("roxy_browser_launch attaches to Firefox over BiDi with the resolved session id", async () => {
+    const launchClient: RoxyBrowserLaunchClient = {
+      getConnectionInfo: vi.fn(async () => ({
+        code: 0,
+        data: [
+          {
+            dirId: "firefox-profile",
+            ws: "ws://firefox.invalid/session/bidi-session",
+            coreType: "Firefox"
+          }
+        ]
+      })),
+      openBrowser: vi.fn()
+    };
+    let connectArgs: RoxyBrowserConnectArgs | undefined;
+    const bundle = await createRoxyBrowserMcpInMemory({
+      roxyBrowserLaunch: {
+        workspaceId: 12,
+        client: launchClient
+      },
+      sessionFactory: async (args) => {
+        connectArgs = args;
+        return new FakeConnectedBrowserSession(args);
+      }
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+
+    const result = await client.callTool({
+      name: "roxy_browser_launch",
+      arguments: {
+        dirId: "firefox-profile",
+        browser: "firefox"
+      }
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(connectArgs).toMatchObject({
+      protocol: "bidi",
+      endpoint: "ws://firefox.invalid/session/bidi-session",
+      browser: "firefox",
+      sessionId: "bidi-session"
+    });
+    expect(result.structuredContent).toEqual({
+      browsers: [
+        {
+          dirId: "firefox-profile",
+          endpoint: "ws://firefox.invalid/session/bidi-session",
+          connected: true,
+          pageUrl: "ws://firefox.invalid/session/bidi-session/home",
+          browserType: "firefox"
+        }
+      ]
+    });
   });
 
   it("exposes Playwright-like schemas for evaluate, hover, and file upload", async () => {

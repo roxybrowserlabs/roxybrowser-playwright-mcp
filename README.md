@@ -94,6 +94,47 @@ Before other MCP tools can act on a page, attach the session to a running browse
 
 Endpoints typically come from the RoxyBrowser desktop app's local API, which opens a profile and returns a debugging endpoint. Once connected, the standard `browser_*` tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`, and so on) operate on the active tab.
 
+### In-memory launch-and-connect
+
+`roxy_browser_launch` is a special convenience tool for `createRoxyBrowserMcpInMemory()` only. The stdio and HTTP MCP servers keep exposing `roxy_browser_connect` and do not register `roxy_browser_launch` by default.
+
+Enable it by passing RoxyBrowser launch configuration when creating the in-memory server:
+
+```ts
+import { createRoxyBrowserMcpInMemory } from "@roxybrowser/playwright/mcp";
+
+const bundle = await createRoxyBrowserMcpInMemory({
+  roxyBrowserLaunch: {
+    workspaceId: 123,
+    apiToken: process.env.ROXYBROWSER_API_TOKEN!,
+    apiPort: process.env.ROXYBROWSER_API_PORT ?? 50000
+  }
+});
+```
+
+The tool input is intentionally small:
+
+- `dirId` (required): the RoxyBrowser profile/window directory ID.
+- `browser`: `chrome` (default) or `firefox`.
+- `forceOpen`: passed to the RoxyBrowser open call when the profile is not already open.
+- `args`: optional browser startup arguments.
+
+Before opening anything, `roxy_browser_launch` calls the RoxyBrowser connection-info API for that `dirId`. If an endpoint is already available, it connects directly. Otherwise it opens the profile and then connects. On success, it returns structured JSON in `structuredContent` and the same JSON as text:
+
+```json
+{
+  "browsers": [
+    {
+      "dirId": "profile-dir-id",
+      "endpoint": "ws://127.0.0.1:9222/devtools/browser/...",
+      "connected": true,
+      "pageUrl": "https://example.com/",
+      "browserType": "chrome"
+    }
+  ]
+}
+```
+
 ## Asset directories
 
 Page API and MCP tools share one asset model. Screenshots, downloads, snapshots,

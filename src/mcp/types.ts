@@ -15,6 +15,40 @@ export interface RoxyBrowserConnectArgs {
   assetRoots?: AssetRoots;
 }
 
+export interface RoxyBrowserLaunchOpenArgs {
+  workspaceId: number;
+  dirId: string;
+  forceOpen?: boolean;
+  args?: string[];
+}
+
+export interface RoxyBrowserLaunchApiResponse<TData = unknown> {
+  code?: number;
+  msg?: string;
+  data?: TData;
+}
+
+export interface RoxyBrowserLaunchClient {
+  getConnectionInfo(dirIds?: string[]): Promise<RoxyBrowserLaunchApiResponse>;
+  openBrowser(args: RoxyBrowserLaunchOpenArgs): Promise<RoxyBrowserLaunchApiResponse>;
+}
+
+export interface RoxyBrowserLaunchClientConfig {
+  workspaceId: number;
+  client: RoxyBrowserLaunchClient;
+}
+
+export interface RoxyBrowserLaunchClientOptions {
+  workspaceId: number;
+  apiToken: string;
+  apiPort?: string | number;
+  host?: string;
+}
+
+export type RoxyBrowserLaunchConfig =
+  | RoxyBrowserLaunchClientConfig
+  | RoxyBrowserLaunchClientOptions;
+
 export interface BrowserTab {
   id: string;
   title: string;
@@ -223,6 +257,10 @@ export interface CreateRoxyBrowserMcpServerOptions extends AssetOptions {
     version?: string;
   };
   snapshotMode?: SnapshotMode;
+}
+
+export interface CreateRoxyBrowserMcpInMemoryOptions extends CreateRoxyBrowserMcpServerOptions {
+  roxyBrowserLaunch?: RoxyBrowserLaunchConfig;
 }
 
 export interface StartRoxyBrowserMcpHttpOptions extends CreateRoxyBrowserMcpServerOptions {

@@ -1,14 +1,23 @@
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createRoxyBrowserLaunchTool } from "../backend/connect.js";
 import { createRoxyBrowserMcpServer } from "../server.js";
 import type {
-  CreateRoxyBrowserMcpServerOptions,
+  CreateRoxyBrowserMcpInMemoryOptions,
   RoxyBrowserMcpInMemoryBundle
 } from "../types.js";
 
 export async function createRoxyBrowserMcpInMemory(
-  options: CreateRoxyBrowserMcpServerOptions = {}
+  options: CreateRoxyBrowserMcpInMemoryOptions = {}
 ): Promise<RoxyBrowserMcpInMemoryBundle> {
-  const bundle = createRoxyBrowserMcpServer(options);
+  const { roxyBrowserLaunch, ...serverOptions } = options;
+  const bundle = createRoxyBrowserMcpServer(
+    serverOptions,
+    {
+      extraBackendTools: roxyBrowserLaunch
+        ? [createRoxyBrowserLaunchTool(roxyBrowserLaunch)]
+        : []
+    }
+  );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await bundle.server.connect(serverTransport as Parameters<typeof bundle.server.connect>[0]);
 
