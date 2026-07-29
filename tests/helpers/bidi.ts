@@ -66,7 +66,12 @@ function assertRoxyBrowserBidiEnvironment(): void {
   }
 }
 
-async function openWorkerScopedRoxyBrowserSession(): Promise<{ dirId: string; endpoint: string; created?: boolean }> {
+async function openWorkerScopedRoxyBrowserSession(): Promise<{
+  dirId: string;
+  endpoint: string;
+  created?: boolean;
+  sessionId?: string;
+}> {
   assertRoxyBrowserBidiEnvironment();
   return openRoxyBrowserFirefoxBidiProfile({
     apiPort: ROXYBROWSER_API_PORT,
@@ -105,14 +110,12 @@ export async function openBidiBrowser(): Promise<Browser> {
   const session = await openWorkerScopedRoxyBrowserSession();
   state.roxyProfileDirId = session.dirId;
   state.roxyProfileWasCreated = Boolean(session.created);
-  const browserKey = `${session.dirId}:${session.endpoint}:${BIDI_SESSION_ID ?? ""}`;
+  const sessionId = BIDI_SESSION_ID ?? session.sessionId;
+  const browserKey = `${session.dirId}:${session.endpoint}:${sessionId ?? ""}`;
   let browser: Browser | undefined;
   try {
-    browser = await firefox.connect({
-      browserName: "firefox",
-      protocol: "bidi",
-      wsEndpoint: session.endpoint,
-      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {})
+    browser = await firefox.connect(session.endpoint, {
+      ...(sessionId ? { sessionId } : {})
     });
   } catch (error) {
     await cleanupStaleBidiTestArtifacts();
@@ -123,11 +126,9 @@ export async function openBidiBrowser(): Promise<Browser> {
     const retriedSession = await openWorkerScopedRoxyBrowserSession();
     state.roxyProfileDirId = retriedSession.dirId;
     state.roxyProfileWasCreated = Boolean(retriedSession.created);
-    browser = await firefox.connect({
-      browserName: "firefox",
-      protocol: "bidi",
-      wsEndpoint: retriedSession.endpoint,
-      ...(BIDI_SESSION_ID ? { sessionId: BIDI_SESSION_ID } : {})
+    const retriedSessionId = BIDI_SESSION_ID ?? retriedSession.sessionId;
+    browser = await firefox.connect(retriedSession.endpoint, {
+      ...(retriedSessionId ? { sessionId: retriedSessionId } : {})
     });
   }
 

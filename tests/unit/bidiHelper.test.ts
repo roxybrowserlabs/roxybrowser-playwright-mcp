@@ -17,6 +17,7 @@ const closeRoxyBrowserFirefoxBidiProfile = vi.fn(async () => {
 const openRoxyBrowserFirefoxBidiProfile = vi.fn(async () => ({
   dirId: "worker-profile",
   endpoint: "ws://127.0.0.1:9222/session",
+  sessionId: "script-session",
   created: true
 }));
 
@@ -92,6 +93,9 @@ describe("bidi helper cleanup", () => {
     expect(configureCurrentWorkerTestBrowserCleanup).toHaveBeenCalledTimes(2);
     expect(openRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledWith("ws://127.0.0.1:9222/session", {
+      sessionId: "script-session"
+    });
     expect(events.filter((event) => event === "browser.close")).toHaveLength(0);
     expect(closeRoxyBrowserFirefoxBidiProfile).toHaveBeenCalledTimes(0);
     expect(cleanupCurrentWorkerTestBrowserProcesses).toHaveBeenCalledTimes(0);

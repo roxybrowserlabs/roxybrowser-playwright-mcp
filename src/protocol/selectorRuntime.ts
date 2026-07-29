@@ -301,14 +301,31 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return elements;
   };
 
+  const internalOverlaySelector =
+    "x-pw-action-overlays,x-pw-user-overlays,[data-roxy-highlight-overlay]";
+  const hasInternalOverlayAncestor = (element: Element): boolean => {
+    let current: Element | null = element;
+    while (current) {
+      if (current.closest(internalOverlaySelector)) {
+        return true;
+      }
+      const root = current.getRootNode();
+      current = isDocumentFragmentNode(root) && isElementNode((root as ShadowRoot).host)
+        ? (root as ShadowRoot).host
+        : null;
+    }
+    return false;
+  };
+
   const isInternalOverlayElement = (element: Element): boolean => {
     const tagName = element.tagName.toLowerCase();
     return (
       element.id === "__roxy_screencast_actions_style__" ||
       element.id === "__roxy_screencast_overlay_style__" ||
+      element.classList.contains("curzr") ||
       tagName === "x-pw-action-overlays" ||
       tagName === "x-pw-user-overlays" ||
-      element.closest("x-pw-action-overlays,x-pw-user-overlays,[data-roxy-highlight-overlay]") !== null
+      hasInternalOverlayAncestor(element)
     );
   };
 
