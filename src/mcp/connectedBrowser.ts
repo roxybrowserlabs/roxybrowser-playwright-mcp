@@ -1357,7 +1357,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
     }
     const tabId = await this.getActiveTabId();
-    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
@@ -1482,8 +1481,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     if (isBackendNodeTarget(target)) {
       throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
     }
-    const tabId = await this.getActiveTabId();
-    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const source = "nodeToken" in target ? ACTION_POINT_EVALUATE_SOURCE : ACTION_POINT_BY_SELECTOR_SOURCE;
@@ -1508,8 +1505,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async focus(target: ClickTarget): Promise<void> {
-    const tabId = await this.getActiveTabId();
-    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const result = await evaluateCdpRef(pageClient, FOCUS_AND_GET_ELEMENT_SOURCE, this.targetArg(target), contextId);
@@ -1523,8 +1518,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async clear(target: ClickTarget): Promise<void> {
-    const tabId = await this.getActiveTabId();
-    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const result = await evaluateCdp<{ ok: boolean; reason?: string }>(
@@ -1639,8 +1632,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   }
 
   async type(target: ClickTarget, text: string, options?: SessionTypeOptions): Promise<void> {
-    const tabId = await this.getActiveTabId();
-    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
@@ -1697,8 +1688,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     key: string,
     modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
   ): Promise<void> {
-    const tabId = await this.getActiveTabId();
-    await this.bringTabToFront(tabId);
     const pageClient = await this.getActivePageClient();
     const shortcut = [...(modifiers ?? []).map((modifier) => resolveSmartModifierString(modifier)), key].join("+");
     const tokens = splitKeyboardShortcut(shortcut);
@@ -1773,12 +1762,6 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     for (const modifier of nextModifiers) {
       this.pressedKeyboardModifiers.add(modifier);
     }
-  }
-
-  private async bringTabToFront(tabId: string): Promise<void> {
-    await this.browserClient.Target.activateTarget({
-      targetId: tabId
-    }).catch(() => {});
   }
 
   async selectOption(target: ClickTarget, values: string[]): Promise<string[]> {

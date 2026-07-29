@@ -5594,7 +5594,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async keyboardDown(key: string): Promise<void> {
-    await this.bringToFront();
     const keyDefinition = keyDescriptionForString(key, this.pressedKeyboardModifiers);
     const autoRepeat = this.pressedKeyboardCodes.has(keyDefinition.code);
     const nextModifiers = new Set(this.pressedKeyboardModifiers);
@@ -5610,7 +5609,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async keyboardInsertText(text: string): Promise<void> {
-    await this.bringToFront();
     await this.options.client.Input.insertText({
       text
     });
@@ -5645,7 +5643,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       delay?: number;
     }
   ): Promise<void> {
-    await this.bringToFront();
     const chars = [...text];
     for (let index = 0; index < chars.length; index += 1) {
       const character = chars[index]!;
@@ -5695,7 +5692,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async keyboardUp(key: string): Promise<void> {
-    await this.bringToFront();
     const keyDefinition = keyDescriptionForString(key, this.pressedKeyboardModifiers);
     const nextModifiers = new Set(this.pressedKeyboardModifiers);
     if (isKeyboardModifier(keyDefinition.key)) {
@@ -5719,7 +5715,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   ): Promise<void> {
     await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
       const point = { x, y };
       const button = options?.button ?? "left";
       const clickCount = options?.clickCount ?? 1;
@@ -5751,7 +5746,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   ): Promise<void> {
     await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
       await this.dispatchMouseDown(
         this.currentMousePosition,
         options?.button ?? "left",
@@ -5768,7 +5762,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   ): Promise<void> {
     await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
       await this.performMouseMoveTo({ x, y }, options);
     });
   }
@@ -5780,7 +5773,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     }
   ): Promise<void> {
     await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
       await this.dispatchMouseUp(
         this.currentMousePosition,
         options?.button ?? "left",
@@ -5791,7 +5783,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async mouseWheel(deltaX: number, deltaY: number): Promise<void> {
     await this.enqueuePointerAction(async () => {
-      await this.bringToFront();
       await this.dispatchMouseEvent({
         type: "mouseWheel",
         x: this.currentMousePosition.x,
@@ -5892,6 +5883,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async bringToFront(): Promise<void> {
+    // Protocol input is target-scoped; only this explicit API may activate the browser UI.
     await this.options.browserClient.Target.activateTarget({
       targetId: this.options.targetId
     });
@@ -5972,7 +5964,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async hoverLocator(locator: CdpLocatorState, options?: HoverOptions): Promise<void> {
     if (!options?.__roxyBeforeActionRetry) {
       await this.enqueuePointerAction(async () => {
-        await this.bringToFront();
         const actionPoint = await this.resolveActionPoint(locator, options);
         await this.withPointerActionModifiers(options?.modifiers, async () => {
           await this.performMouseMoveTo(actionPoint, options);
@@ -6758,7 +6749,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
     if (!options?.__roxyBeforeActionRetry) {
       await this.enqueuePointerAction(async () => {
-        await this.bringToFront();
         const actionPoint = await this.resolveActionPointReference(reference, options, true);
         const button = options?.button ?? "left";
         const clickCount = options?.clickCount ?? 1;
@@ -6871,7 +6861,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
     if (!options?.__roxyBeforeActionRetry) {
       await this.enqueuePointerAction(async () => {
-        await this.bringToFront();
         const actionPoint = await this.resolveActionPointReference(reference, options);
         await this.withPointerActionModifiers(options?.modifiers, async () => {
           await this.performMouseMoveTo(actionPoint, options);

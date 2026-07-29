@@ -207,6 +207,32 @@ describe("CDP coverage", () => {
     expect(pageClient.send).toHaveBeenCalledWith("HeapProfiler.collectGarbage");
   });
 
+  it("keeps CDP protocol input in the target without activating the browser window", async () => {
+    const { browserClient, page, pageClient } = await createCdpPageClients();
+    const internalPage = page as typeof page & {
+      resolveActionPoint(): Promise<{ x: number; y: number }>;
+    };
+    internalPage.resolveActionPoint = vi.fn(async () => ({ x: 30, y: 40 }));
+
+    await page.keyboardType("human");
+    await page.mouseMove(10, 20, { steps: 2 });
+    await page.mouseClick(10, 20, { delay: 1 });
+    await page.mouseWheel(0, 100);
+    await page.locator({ strategy: "css", value: "#target" }).hover();
+    await page.locator({ strategy: "css", value: "#target" }).click();
+
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalled();
+    expect(pageClient.send).toHaveBeenCalledWith(
+      "Input.dispatchMouseEvent",
+      expect.objectContaining({ type: expect.any(String) })
+    );
+    expect(browserClient.Target.activateTarget).not.toHaveBeenCalled();
+
+    await page.bringToFront();
+
+    expect(browserClient.Target.activateTarget).toHaveBeenCalledOnce();
+  });
+
   it("does not install cursor visualization from bare CDP browser session connect", async () => {
     const module = await import("../../src/mcp/connectedBrowser.js");
     const browserClient = createCdpClientStub();
@@ -241,6 +267,106 @@ describe("CDP coverage", () => {
     expect(pageClient.Runtime.evaluate).not.toHaveBeenCalledWith(expect.objectContaining({
       expression: expect.stringContaining("__roxyBubbleCursor")
     }));
+  });
+
+  it("does not activate the browser window for MCP CDP interactions", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browserClient = createCdpClientStub();
+    const pageClient = createCdpClientStub();
+    Object.assign(pageClient.Page, {
+      addScriptToEvaluateOnNewDocument: vi.fn(async () => ({ identifier: "cursor-script" }))
+    });
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "tab-1",
+          type: "page",
+          title: "Ready",
+          url: "https://example.test/"
+        }
+      ]
+    });
+    chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+      if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+        return browserClient;
+      }
+      return pageClient;
+    });
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/123.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    const session = await module.CdpConnectedBrowserSession.connect({
+      browser: "chromium",
+      protocol: "cdp",
+      endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+    pageClient.Runtime.evaluate.mockImplementation(async (options: {
+      expression?: string;
+      returnByValue?: boolean;
+    }) => {
+      if (options.returnByValue === false) {
+        return { result: { objectId: "focused-element" } };
+      }
+      if (options.expression?.includes("globalThis.innerWidth")) {
+        return { result: { value: { x: 0, y: 0, width: 1280, height: 720 } } };
+      }
+      return { result: { value: { ok: true, x: 10, y: 20 } } };
+    });
+
+    await session.hover({ selector: "#field" }, { moveDelayMs: 0 });
+    await session.click({ selector: "#field" }, { clickHoldMs: 0, moveDelayMs: 0 });
+    await session.focus({ selector: "#field" });
+    await session.clear({ selector: "#field" });
+    await session.type({ selector: "#field" }, "hi", { slowly: true, delayMs: 0 });
+    await session.pressKey("Enter");
+
+    expect(pageClient.Input.dispatchMouseEvent).toHaveBeenCalled();
+    expect(pageClient.Input.insertText).toHaveBeenCalledWith({ text: "h" });
+    expect(pageClient.Input.dispatchKeyEvent).toHaveBeenCalled();
+    expect(browserClient.Target.activateTarget).not.toHaveBeenCalled();
+
+    await session.close();
+  });
+
+  it("still activates a tab when MCP explicitly selects it", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browserClient = createCdpClientStub();
+    const pageClient = createCdpClientStub();
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "tab-1",
+          type: "page",
+          title: "Ready",
+          url: "https://example.test/"
+        }
+      ]
+    });
+    chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+      if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+        return browserClient;
+      }
+      return pageClient;
+    });
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/123.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    const session = await module.CdpConnectedBrowserSession.connect({
+      browser: "chromium",
+      protocol: "cdp",
+      endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    await session.selectTab("tab-1");
+
+    expect(browserClient.Target.activateTarget).toHaveBeenCalledOnce();
+    expect(browserClient.Target.activateTarget).toHaveBeenCalledWith({ targetId: "tab-1" });
+
+    await session.close();
   });
 
   it("orders initially discovered pages by page event order like Playwright", async () => {

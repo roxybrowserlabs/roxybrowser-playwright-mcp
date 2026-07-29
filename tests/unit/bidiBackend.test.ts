@@ -399,6 +399,53 @@ describe("BidiBrowserAdapterFactory", () => {
     ]);
   });
 
+  it("keeps BiDi locator input in the target unless activation is explicit", async () => {
+    const browsingContextActivate = vi.fn(async () => ({}));
+    const client = createBidiClientStub({
+      browsingContextActivate,
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      inputPerformActions: vi.fn(async () => ({})),
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+    const internalPage = page as typeof page & {
+      performMouseClickActions(): Promise<void>;
+      performMouseMoveTo(): Promise<void>;
+      resolveActionPoint(): Promise<{ x: number; y: number }>;
+      showScreencastAction(): Promise<void>;
+    };
+    internalPage.resolveActionPoint = vi.fn(async () => ({ x: 30, y: 40 }));
+    internalPage.performMouseMoveTo = vi.fn(async () => {});
+    internalPage.performMouseClickActions = vi.fn(async () => {});
+    internalPage.showScreencastAction = vi.fn(async () => {});
+
+    await page.locator({ strategy: "css", value: "#target" }).click();
+
+    expect(browsingContextActivate).not.toHaveBeenCalled();
+
+    await page.bringToFront();
+
+    expect(browsingContextActivate).toHaveBeenCalledOnce();
+    expect(browsingContextActivate).toHaveBeenCalledWith({ context: "ctx-1" });
+  });
+
   it("ignores internal typing plan hints and follows plain keyboard typing", async () => {
     const inputPerformActions = vi.fn(async () => ({}));
     const client = createBidiClientStub({

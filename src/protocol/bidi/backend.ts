@@ -2081,6 +2081,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async bringToFront(): Promise<void> {
+    // Protocol input is context-scoped; only this explicit API may activate the browser UI.
     await this.client.browsingContextActivate({
       context: this.contextId
     });
@@ -2161,7 +2162,6 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     options?: ClickOptions,
     retargetForAction?: "follow-label"
   ): Promise<void> {
-    await this.bringToFront();
     const point = await this.resolveActionPoint(locator, options, true, retargetForAction);
     await this.performMouseMoveTo(point, options);
     await this.resolveActionPoint(locator, options, true, retargetForAction);
@@ -2621,7 +2621,6 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
-    await this.bringToFront();
     const point = await this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
       reference,
