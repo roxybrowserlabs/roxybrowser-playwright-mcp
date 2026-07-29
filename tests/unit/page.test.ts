@@ -4633,10 +4633,11 @@ describe("RoxyPage", () => {
 });
 
 async function createFakeFfmpeg(directory: string): Promise<string> {
-  const ffmpegPath = join(directory, "fake-ffmpeg.sh");
-  await writeFile(
-    ffmpegPath,
-    "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do out=\"$arg\"; done\ncat > \"$out\"\n"
+  const isWindows = process.platform === "win32";
+  const ffmpegPath = join(directory, isWindows ? "fake-ffmpeg.cmd" : "fake-ffmpeg.sh");
+  await writeFile(ffmpegPath, isWindows
+    ? "@echo off\r\nset out=\r\n:loop\r\nif \"%~1\"==\"\" goto done\r\nset out=%~1\r\nshift\r\ngoto loop\r\n:done\r\nnode -e \"const fs=require('fs'); process.stdin.pipe(fs.createWriteStream(process.argv[1]));\" \"%out%\"\r\n"
+    : "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do out=\"$arg\"; done\ncat > \"$out\"\n"
   );
   await chmod(ffmpegPath, 0o755);
   return ffmpegPath;

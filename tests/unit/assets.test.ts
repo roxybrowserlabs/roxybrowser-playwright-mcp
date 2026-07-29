@@ -169,7 +169,7 @@ describe("AssetManager", () => {
       .toThrow("Asset root cannot point to a system directory");
   });
 
-  it("rejects non-writable roots", async () => {
+  it.runIf(process.platform !== "win32")("rejects non-writable roots", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "roxy-assets-readonly-"));
     cleanupPaths.push(root);
     await chmod(root, 0o500);

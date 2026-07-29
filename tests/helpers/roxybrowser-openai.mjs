@@ -4,7 +4,13 @@ export class RoxyClient {
         this.token = token;
         this.host = '127.0.0.1';
         this.url = "http://" + this.host + ":" + this.port
-        this.timeoutMs = Number(process.env.ROXYBROWSER_API_TIMEOUT_MS ?? process.env.ROXY_API_TIMEOUT_MS ?? 5000)
+        this.timeoutMs = Number(
+            process.env.ROXYBROWSER_API_TIMEOUT_MS
+            ?? process.env.ROXY_API_TIMEOUT_MS
+            ?? process.env.ROXYBROWSER_OPERATION_TIMEOUT_MS
+            ?? process.env.ROXY_OPERATION_TIMEOUT_MS
+            ?? 15000
+        )
     }
     _build_headers() {
         return {"Content-Type": "application/json","token":this.token}

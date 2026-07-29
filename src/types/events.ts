@@ -18,6 +18,7 @@ export interface PageResponse {
   status: number;
   statusText: string;
   headers: Header[];
+  requestHeaders?: Header[];
   mimeType: string;
   fromCache: boolean;
   fromServiceWorker?: boolean;

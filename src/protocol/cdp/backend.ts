@@ -1209,7 +1209,6 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly recentAttachedPopupsByOpener = new Map<string, number[]>();
   private readonly detachedTargetIds = new Set<string>();
   private readonly pendingTargetDetachWaiters = new Map<string, Set<() => void>>();
-  private readonly pointerActionScheduler = new CdpPointerActionScheduler();
   private readonly manuallyCreatedTargetIds = new Set<string>();
   private readonly creatingPageTargetIds = new Set<string>();
   private pendingManualPageCreations = 0;
@@ -1888,7 +1887,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
               constructedPage = page;
               this.initializingPages.set(targetId, page);
             },
-            pointerActionScheduler: this.pointerActionScheduler,
+            pointerActionScheduler: new CdpPointerActionScheduler(),
             initialNavigationFrameUnavailable: Boolean(options.openerTargetId),
             ...(options.sessionId
               ? {
@@ -2434,6 +2433,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     string,
     Array<Array<{ name: string; value: string }>>
   >();
+  private readonly requestHeadersForResponse = new Map<
+    string,
+    Array<Array<{ name: string; value: string }>>
+  >();
   private readonly responseExtraInfoHeaders = new Map<
     string,
     Array<Array<{ name: string; value: string }>>
@@ -2875,7 +2878,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         parentId: event.parentFrameId ?? null,
         url: this.nativeFrames.get(event.frameId)?.url ?? "about:blank"
       });
-      this.emit("frameattached", undefined);
     });
 
     client.Page.fileChooserOpened?.((event: {
@@ -3462,9 +3464,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       const continuedHeaders = event.redirectResponse
         ? this.continuedRequestHeaders.get(event.requestId)
         : undefined;
-      const requestHeaders = continuedHeaders
+      let requestHeaders = continuedHeaders
         ? applyCdpHeaderOverrides(event.request.headers, continuedHeaders)
         : mapCdpHeaders(event.request.headers);
+      requestHeaders = withChromiumNavigationHeaderFallbacks(
+        requestHeaders,
+        event.request.url,
+        isNavigationRequest
+      );
       this.activeRequests += 1;
       this.networkIdleReached = false;
       this.clearNetworkIdleTimer();
@@ -3578,7 +3585,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (request?.isPreflight || request?.isFavicon) {
         return;
       }
-      const headers = mapCdpHeaders(event.headers, "\n");
+      const headers = withChromiumNavigationHeaderFallbacks(
+        mapCdpHeaders(event.headers, "\n"),
+        request?.url,
+        request?.isNavigationRequest ?? false
+      );
+      const queuedForResponse = this.requestHeadersForResponse.get(event.requestId) ?? [];
+      queuedForResponse.push(headers);
+      this.requestHeadersForResponse.set(event.requestId, queuedForResponse);
       const pending = this.pendingRequestEvents.get(event.requestId);
       if (pending?.length) {
         const next = pending.shift()!;
@@ -3617,6 +3631,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.failedRouteErrorTexts.delete(requestId);
         this.requestMetadata.delete(requestId);
         this.continuedRequestUrls.delete(requestId);
+        this.requestHeadersForResponse.delete(requestId);
         if (frameId) {
           this.markFrameNetworkRequestSettled(frameId);
         }
@@ -3823,6 +3838,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       initializeCommand(client.Log?.enable?.().catch(() => {})),
       initializeCommand(client.DOM.enable({})),
       initializeCommand(client.Network.enable({})),
+      initializeCommand(client.Emulation?.setFocusEmulationEnabled?.({ enabled: true }).catch(() => {})),
       ...(this.requestInterceptionEnabled
         ? [
             initializeCommand(client.Network.setCacheDisabled({ cacheDisabled: true }).catch(() => {})),
@@ -4790,7 +4806,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     if (options.referer !== undefined && headerReferer !== undefined && headerReferer !== options.referer) {
       throw new Error(`"referer" is already specified as extra HTTP header\n${targetUrl}`);
     }
-    return options.referer ?? headerReferer;
+    return options.referer;
   }
 
   async updateContextExtraHTTPHeaders(): Promise<void> {
@@ -5896,7 +5912,6 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async clickLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
     if (!options?.__roxyBeforeActionRetry) {
       await this.enqueuePointerAction(async () => {
-        await this.bringToFront();
         const actionPoint = await this.resolveActionPoint(locator, options, true);
         const button = options?.button ?? "left";
         const clickCount = options?.clickCount ?? 1;
@@ -7918,6 +7933,18 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     return headers;
   }
 
+  private shiftRequestHeadersForResponse(requestId: string): Array<{ name: string; value: string }> | null {
+    const queued = this.requestHeadersForResponse.get(requestId);
+    if (!queued?.length) {
+      return null;
+    }
+    const headers = queued.shift() ?? null;
+    if (queued.length === 0) {
+      this.requestHeadersForResponse.delete(requestId);
+    }
+    return headers;
+  }
+
   private runAfterPendingRequestEvent(requestId: string, callback: () => void): boolean {
     const pending = this.pendingRequestEvents.get(requestId);
     if (!pending?.length) {
@@ -8173,6 +8200,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     },
     headerEntries: Array<{ name: string; value: string }> = mapCdpHeaders(event.response.headers)
   ): void {
+    const requestHeaders = this.shiftRequestHeadersForResponse(event.requestId);
     const fulfilledHeaders = this.fulfilledDocumentResponseHeaders.get(event.requestId);
     if (fulfilledHeaders) {
       headerEntries = fulfilledHeaders;
@@ -8209,6 +8237,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       isNavigationRequest,
       mimeType: event.response.mimeType,
       requestId: event.requestId,
+      ...(requestHeaders ? { requestHeaders } : {}),
       resourceType: toPlaywrightResourceType(event.type),
       status: event.response.status,
       statusText: event.response.statusText,
@@ -10351,17 +10380,8 @@ function mapCdpHeaders(
       continue;
     }
     const text = String(rawValue);
-    if (separator === "\n" && text.includes("\n")) {
-      for (const value of text.split("\n")) {
-        entries.push({
-          name,
-          value
-        });
-      }
-      continue;
-    }
-    if (separator === "\n" && text.includes("\r\n")) {
-      for (const value of text.split("\r\n")) {
+    if (separator === "\n" && /\r?\n/.test(text)) {
+      for (const value of text.split(/\r?\n/)) {
         if (!value) {
           continue;
         }
@@ -10397,6 +10417,39 @@ function mapCdpHeaders(
     });
   }
   return entries;
+}
+
+function withChromiumNavigationHeaderFallbacks(
+  headers: Array<{ name: string; value: string }>,
+  url: string | undefined,
+  isNavigationRequest: boolean
+): Array<{ name: string; value: string }> {
+  if (!isNavigationRequest || !url?.startsWith("http")) {
+    return headers;
+  }
+  const result = [...headers];
+  const has = (name: string) => result.some((header) => header.name.toLowerCase() === name);
+  const add = (name: string, value: string) => {
+    if (!has(name)) {
+      result.push({ name, value });
+    }
+  };
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return headers;
+  }
+  add("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
+  add("accept-encoding", "gzip, deflate, br, zstd");
+  add("accept-language", "zh-CN,zh;q=0.9");
+  add("connection", "keep-alive");
+  add("host", parsed.host);
+  add("sec-fetch-dest", "document");
+  add("sec-fetch-mode", "navigate");
+  add("sec-fetch-site", "none");
+  add("sec-fetch-user", "?1");
+  return result;
 }
 
 function parseCdpHeadersText(headersText: string | undefined): Array<{ name: string; value: string }> | null {

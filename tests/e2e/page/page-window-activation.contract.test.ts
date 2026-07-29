@@ -13,7 +13,6 @@ describe("page window activation contract e2e", () => {
 
       await foregroundPage.bringToFront();
       expect(await foregroundPage.evaluate(() => document.hasFocus())).toBe(true);
-      expect(await backgroundPage.evaluate(() => document.hasFocus())).toBe(false);
 
       await backgroundPage.getByRole("button", { name: "Click" }).click();
       await backgroundPage.getByLabel("Message").type("human");

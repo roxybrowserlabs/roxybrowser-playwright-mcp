@@ -495,6 +495,7 @@ const DEFAULT_CONSOLE_LOCATION = {
 } as const;
 
 interface ObservedRequestState {
+  completed: boolean;
   failure: { errorText: string } | null;
   frameId: string | null;
   headerEntries: Array<{ name: string; value: string }>;
@@ -3030,6 +3031,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return didRunHandler;
   }
 
+  _roxyNeedsBeforeActionRetry(): boolean {
+    return this.locatorHandlers.length > 0 || this.pickLocatorState !== null;
+  }
+
   frameById(id: string): RoxyFrame | null {
     return this.frameMap.get(id) ?? null;
   }
@@ -4466,6 +4471,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     );
     const responsePromise = new ManualPromise<Response | null>();
     const state: ObservedRequestState = {
+      completed: false,
       failure: null,
       frameId: payload.frameId ?? null,
       headerEntries,
@@ -4508,6 +4514,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   private observeAdapterResponse(payload: PageResponse): Response {
     const state = this.findObservedRequestForResponse(payload);
+    if (state && payload.requestHeaders) {
+      this.updateObservedRequestHeaders(state, payload.requestHeaders);
+    }
     if (state && state.url !== payload.url && !this.isRedirectResponsePayload(payload)) {
       this.removeObservedRequestFromUrlIndex(state.url, state);
       state.url = payload.url;
@@ -4521,6 +4530,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (state && !state.response) {
       state.response = response;
       state.responsePromise.resolve(response);
+      if (state.completed) {
+        this.responseFinishedPromises.get(response)?.resolve(null);
+      }
       const location = response.headers()["location"];
       if (response.status() >= 300 && response.status() < 400 && location) {
         const redirectTarget = resolveRedirectUrl(state.url, location);
@@ -4532,6 +4544,17 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return response;
   }
 
+  private updateObservedRequestHeaders(
+    state: ObservedRequestState,
+    headers: Array<{ name: string; value: string }>
+  ): void {
+    state.headerEntries = headers.map((header) => ({
+      name: header.name,
+      value: header.value
+    }));
+    state.headers = aggregateHeaders(state.headerEntries);
+  }
+
   private isRedirectResponsePayload(payload: PageResponse): boolean {
     const status = payload.status;
     return status >= 300 && status < 400;
@@ -4540,6 +4563,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private observeRequestCompletion(payload: PageRequest): Request {
     const state = this.findObservedRequestState(payload.url, payload.method, payload.requestId);
     const request = state?.request ?? this.observeAdapterRequest(payload);
+    const observed = state ?? this.findObservedRequestState(payload.url, payload.method, payload.requestId);
+    if (observed) {
+      observed.completed = true;
+    }
     const response = request.existingResponse();
     if (response) {
       this.responseFinishedPromises.get(response)?.resolve(null);
@@ -5467,15 +5494,16 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async flushExposedBindingCallsForInternalUse(): Promise<void> {
-    while (true) {
+    let idleRounds = 0;
+    while (idleRounds < 3) {
       const drained = await this.drainBindingCalls().catch(() => 0);
-      if (!drained) {
-        // Exposed callbacks can enqueue their binding payloads on a later macrotask.
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const settled = await this.drainBindingCalls().catch(() => 0);
-        if (!settled) {
-          return;
-        }
+      if (drained) {
+        idleRounds = 0;
+        continue;
+      }
+      idleRounds += 1;
+      if (idleRounds < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
       }
     }
   }
@@ -7429,6 +7457,9 @@ function aggregateHeaders(
   for (const header of headers) {
     const name = header.name.toLowerCase();
     normalized[name] ??= [];
+    if (normalized[name]!.includes(header.value)) {
+      continue;
+    }
     normalized[name]!.push(header.value);
   }
   return Object.fromEntries(

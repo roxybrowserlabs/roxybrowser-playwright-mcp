@@ -107,7 +107,7 @@ describe("browser context contract e2e", () => {
   });
 
   it("applies Playwright strictSelectors context option to page selector APIs", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const looseContext = await browser.newContext();
       const strictContext = await browser.newContext({ strictSelectors: true });

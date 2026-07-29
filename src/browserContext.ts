@@ -727,6 +727,11 @@ export class RoxyBrowserContext implements BrowserContext {
       );
     }
     this.pageEventDisposers.set(page, disposers);
+    void page.requests().then((requests) => {
+      for (const request of requests) {
+        this.emit("request", request);
+      }
+    }).catch(() => {});
   }
 
   async _onWebSocketRoute(websocketroute: import("./types/api.js").WebSocketRoute): Promise<boolean> {

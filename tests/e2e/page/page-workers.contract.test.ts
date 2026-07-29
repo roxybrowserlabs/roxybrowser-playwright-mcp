@@ -260,7 +260,7 @@ describe("page workers contract e2e", () => {
       expect(request.url()).toBe(url);
       expect(response.request()).toBe(request);
       expect(response.ok()).toBe(true);
-      expect(await response.text()).toBe(readFileSync(fixture.asset("one-style.css"), "utf8"));
+      expect(await response.text()).toBe(readFileSync(fixture.asset("one-style.css"), "utf8").replace(/\r\n/g, "\n"));
     });
   });
 

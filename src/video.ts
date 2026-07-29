@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { copyFile, mkdir, rm } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, extname } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { registerTestBrowserProcessForCleanup } from "./processCleanup.js";
 import type { Video } from "./types/api.js";
@@ -159,6 +159,7 @@ export class ScreencastFrameRecorder {
 
     await new Promise<void>((resolve, reject) => {
       const process = spawn(ffmpegPath, args, {
+        ...(shouldSpawnThroughShell(ffmpegPath) ? { shell: true } : {}),
         stdio: ["pipe", "ignore", "pipe"]
       });
       this.process = process;
@@ -281,4 +282,8 @@ export class ScreencastFrameRecorder {
       process.stdin.end();
     });
   }
+}
+
+function shouldSpawnThroughShell(file: string): boolean {
+  return process.platform === "win32" && [".cmd", ".bat"].includes(extname(file).toLowerCase());
 }

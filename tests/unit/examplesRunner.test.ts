@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolve } from "node:path";
 
 const core = await import("../../scripts/examples-runner-core.mjs");
 
@@ -8,7 +9,7 @@ describe("examples runner core", () => {
       ["mcp", "launch-stdio", "--", "--verbose"],
       {
         rootDir: "/repo",
-        existsSync: (path: string) => path === "/repo/examples/mcp/launch-stdio.mjs"
+        existsSync: (path: string) => path === resolve("/repo", "examples", "mcp", "launch-stdio.mjs")
       }
     );
 
@@ -16,7 +17,7 @@ describe("examples runner core", () => {
       moduleName: "mcp",
       scriptName: "launch-stdio.mjs",
       examplePath: "examples/mcp/launch-stdio.mjs",
-      scriptPath: "/repo/examples/mcp/launch-stdio.mjs",
+      scriptPath: resolve("/repo", "examples", "mcp", "launch-stdio.mjs"),
       scriptArgs: ["--verbose"]
     });
   });
@@ -27,11 +28,11 @@ describe("examples runner core", () => {
       {
         rootDir: "/repo",
         existsSync: (path: string) =>
-          path === "/repo/examples/repro/bidi/01-click-alert-blocks.mjs"
+          path === resolve("/repo", "examples", "repro", "bidi", "01-click-alert-blocks.mjs")
       }
     );
 
-    expect(target.scriptPath).toBe("/repo/examples/repro/bidi/01-click-alert-blocks.mjs");
+    expect(target.scriptPath).toBe(resolve("/repo", "examples", "repro", "bidi", "01-click-alert-blocks.mjs"));
   });
 
   it("detects required endpoint variables from script source", () => {

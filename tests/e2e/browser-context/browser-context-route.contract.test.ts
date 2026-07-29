@@ -74,7 +74,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("supports context.unroute lifecycle like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -123,7 +123,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("context.unroute does not wait for pending handlers to complete like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -173,7 +173,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("context.unrouteAll removes all handlers like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -198,7 +198,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("context.unrouteAll ignores pending handler errors without waiting like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -253,7 +253,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("context.close does not wait for active route handlers on owned pages like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -282,7 +282,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("yields to page.route before context.route like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -309,7 +309,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("falls back from page.route to context.route like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -336,7 +336,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("supports the times parameter with context.route like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -365,7 +365,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("works if a times route handler is removed by another context handler like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -402,7 +402,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("chains context fallback like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -436,7 +436,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("chains context fallback with dynamic URL like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -470,7 +470,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("overwrites post body with empty string through context.route like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -510,7 +510,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("does not chain fulfill after context fallback like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -542,7 +542,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("does not chain abort after context fallback like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {
@@ -574,7 +574,7 @@ describe("browser context route contract e2e", () => {
   });
 
   it("chains context fallback into page routes like Playwright", async () => {
-    const browser = await launchBrowser();
+    const browser = await connectTestBrowser();
     try {
       const context = await browser.newContext();
       try {

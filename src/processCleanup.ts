@@ -159,7 +159,7 @@ function signalProcessGroupOrTree(
   signal: NodeJS.Signals,
   proc: Pick<ChildProcess, "kill">
 ): void {
-  if (rootPid && process.platform !== "win32") {
+  if (rootPid) {
     try {
       process.kill(-rootPid, signal);
       return;
@@ -191,10 +191,6 @@ function killPid(pid: number, signal: NodeJS.Signals): void {
 }
 
 async function collectDescendantPids(rootPid: number): Promise<number[]> {
-  if (process.platform === "win32") {
-    return [];
-  }
-
   const stdout = await execFileText("ps", ["-eo", "pid=,ppid="]).catch(() => "");
   const childrenByParent = new Map<number, number[]>();
   for (const line of stdout.split("\n")) {
@@ -233,10 +229,6 @@ function terminateProcessTreeSync(proc: Pick<ChildProcess, "pid" | "kill">): voi
 }
 
 function collectDescendantPidsSync(rootPid: number): number[] {
-  if (process.platform === "win32") {
-    return [];
-  }
-
   const result = spawnSync("ps", ["-eo", "pid=,ppid="], {
     encoding: "utf8"
   });
@@ -341,13 +333,11 @@ function signalPidProcessGroupOrTree(
   pids: number[],
   signal: NodeJS.Signals
 ): void {
-  if (process.platform !== "win32") {
-    try {
-      process.kill(-rootPid, signal);
-      return;
-    } catch {
-      // The browser may not have its own process group, or it may already be gone.
-    }
+  try {
+    process.kill(-rootPid, signal);
+    return;
+  } catch {
+    // The browser may not have its own process group, or it may already be gone.
   }
 
   for (const pid of [...pids].reverse()) {

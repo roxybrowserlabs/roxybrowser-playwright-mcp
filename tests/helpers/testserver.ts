@@ -190,9 +190,10 @@ export class TestServer {
     const filePath = this.asset(relativePath);
 
     try {
-      const body = await readFile(filePath);
+      const contentType = contentTypeFor(filePath);
+      const body = normalizeTextAssetBody(await readFile(filePath), contentType);
       response.statusCode = 200;
-      response.setHeader("Content-Type", contentTypeFor(filePath));
+      response.setHeader("Content-Type", contentType);
       response.setHeader("Cache-Control", "no-cache, no-store");
       const extraHeaders = this.extraHeaders.get(pathWithSearch);
       if (extraHeaders) {
@@ -216,6 +217,13 @@ export class TestServer {
       response.end(`File not found: ${filePath}`);
     }
   }
+}
+
+function normalizeTextAssetBody(body: Buffer, contentType: string): Buffer {
+  if (!/^(text\/|application\/(?:javascript|json)\b)/i.test(contentType)) {
+    return body;
+  }
+  return Buffer.from(body.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
 }
 
 function contentTypeFor(filePath: string): string {

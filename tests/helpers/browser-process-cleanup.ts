@@ -27,10 +27,6 @@ const SIGNAL_EXIT_GRACE_MS = Number(process.env.ROXY_TEST_BROWSER_SIGNAL_EXIT_GR
 let cleanupPromise: Promise<void> | undefined;
 
 export async function cleanupLocalTestBrowserProcesses(): Promise<void> {
-  if (process.platform === "win32") {
-    return;
-  }
-
   cleanupPromise ??= cleanupLocalTestBrowserProcessesOnce().finally(() => {
     cleanupPromise = undefined;
   });
@@ -80,10 +76,6 @@ async function cleanupLocalTestBrowserProcessesOnce(): Promise<void> {
 }
 
 export function cleanupLocalTestBrowserProcessesSync(): void {
-  if (process.platform === "win32") {
-    return;
-  }
-
   if (typeof cleanupRegisteredTestBrowserProcessesSync === "function") {
     cleanupRegisteredTestBrowserProcessesSync();
   }
@@ -288,10 +280,6 @@ function killPid(pid: number, signal: NodeJS.Signals): void {
 }
 
 function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
-  if (process.platform === "win32") {
-    return;
-  }
-
   try {
     process.kill(-pid, signal);
   } catch {

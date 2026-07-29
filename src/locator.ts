@@ -1107,6 +1107,10 @@ export class RoxyLocator implements Locator {
     if (!this.beforeAction) {
       return options;
     }
+    const ownerPage = this.ownerPage as (Page & { _roxyNeedsBeforeActionRetry?: () => boolean }) | undefined;
+    if (ownerPage?._roxyNeedsBeforeActionRetry?.() === false) {
+      return options;
+    }
     return {
       ...(options ?? {}),
       __roxyBeforeActionRetry: async () => {
