@@ -14,6 +14,16 @@ describe("page.request cookies e2e (bidi/firefox)", () => {
   });
 
   it("shares browser context cookies with API requests in a real Firefox BiDi browser", async () => {
+    fixture.server.setRoute("/login-cookie", (_request, response) => {
+      response.writeHead(200, {
+        "content-type": "text/html",
+        "set-cookie": [
+          "browser_cookie=from-server; Path=/; HttpOnly",
+          "js_cookie=from-page; Path=/"
+        ]
+      });
+      response.end("<!doctype html><title>login</title>");
+    });
     fixture.server.setRoute("/echo-cookie", (request, response) => {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ cookie: request.headers.cookie ?? "" }));
@@ -27,16 +37,68 @@ describe("page.request cookies e2e (bidi/firefox)", () => {
     });
 
     await withBidiPage(async (page) => {
-      await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
-      await page.evaluate("() => { document.cookie = 'browser_cookie=from-page; Path=/'; }");
+      await page.context().clearCookies();
+      await page.goto(`${fixture.server.PREFIX}/login-cookie`, { waitUntil: "load" });
+      await page.evaluate("() => { document.cookie = 'client_cookie=from-page; Path=/'; }");
 
       const response = await page.context().request.get(`${fixture.server.PREFIX}/echo-cookie`);
-      expect(await response.json()).toEqual({
-        cookie: "browser_cookie=from-page"
-      });
+      const payload = await response.json();
+      expect(payload.cookie.split("; ").sort()).toEqual([
+        "browser_cookie=from-server",
+        "client_cookie=from-page",
+        "js_cookie=from-page"
+      ]);
 
       await page.context().request.get(`${fixture.server.PREFIX}/set-cookie-from-api`);
       expect(await page.evaluate("() => document.cookie")).toContain("api_cookie=from-api");
+    });
+  });
+
+  it("sends cookies injected into the browser context from page.request", async () => {
+    fixture.server.setRoute("/bidi-injected-cookie-echo", (request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ cookie: request.headers.cookie ?? "" }));
+    });
+
+    await withBidiPage(async (page) => {
+      await page.context().clearCookies();
+      await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+      await page.context().addCookies([
+        {
+          name: "injected_cookie",
+          value: "from-context",
+          url: `${fixture.server.PREFIX}/bidi-injected-cookie-echo`,
+          httpOnly: true
+        }
+      ]);
+
+      const response = await page.context().request.get(`${fixture.server.PREFIX}/bidi-injected-cookie-echo`);
+      expect(await response.json()).toEqual({
+        cookie: "injected_cookie=from-context"
+      });
+    });
+  });
+
+  it("stores Set-Cookie before following redirects from page.request", async () => {
+    fixture.server.setRoute("/bidi-api-cookie-redirect-start", (_request, response) => {
+      response.writeHead(302, {
+        location: "/bidi-api-cookie-redirect-target",
+        "set-cookie": "redirect_cookie=from-api-redirect; Path=/; HttpOnly"
+      });
+      response.end();
+    });
+    fixture.server.setRoute("/bidi-api-cookie-redirect-target", (request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ cookie: request.headers.cookie ?? "" }));
+    });
+
+    await withBidiPage(async (page) => {
+      await page.context().clearCookies();
+      await page.goto(fixture.server.EMPTY_PAGE, { waitUntil: "load" });
+      const response = await page.context().request.get(`${fixture.server.PREFIX}/bidi-api-cookie-redirect-start`);
+      expect(await response.json()).toEqual({
+        cookie: "redirect_cookie=from-api-redirect"
+      });
     });
   });
 });

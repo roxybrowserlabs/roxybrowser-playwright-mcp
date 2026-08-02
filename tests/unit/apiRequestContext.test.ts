@@ -321,6 +321,60 @@ describe("RoxyAPIRequestContext", () => {
     }
   });
 
+  it("sends secure cookies over http for subdomains of localhost like Playwright", async () => {
+    const request = new RoxyAPIRequestContext();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(createResponseWithSetCookies("ok", ["a=v; secure; domain=.localhost"]))
+      .mockResolvedValueOnce(
+        new Response("ok", {
+          status: 200,
+          statusText: "OK"
+        })
+      );
+
+    try {
+      await request.get("http://app.localhost/setcookie.html");
+      await request.get("http://app.localhost/empty.html");
+      expect(fetchSpy.mock.calls[1]?.[1]).toEqual(
+        expect.objectContaining({
+          headers: {
+            cookie: "a=v"
+          }
+        })
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("matches cookie paths like Playwright when the request path omits a trailing slash", async () => {
+    const request = new RoxyAPIRequestContext();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(createResponseWithSetCookies("ok", ["a=v; path=/api/"]))
+      .mockResolvedValueOnce(
+        new Response("ok", {
+          status: 200,
+          statusText: "OK"
+        })
+      );
+
+    try {
+      await request.get("https://example.com/api/setcookie.html");
+      await request.get("https://example.com/api");
+      expect(fetchSpy.mock.calls[1]?.[1]).toEqual(
+        expect.objectContaining({
+          headers: {
+            cookie: "a=v"
+          }
+        })
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("removes cookies when a later Set-Cookie expires them", async () => {
     const request = new RoxyAPIRequestContext();
     const pastDateString = new Date(1970, 0, 1, 0, 0, 0, 0).toUTCString();

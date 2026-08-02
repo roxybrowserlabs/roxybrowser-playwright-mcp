@@ -1110,7 +1110,7 @@ function bidiCookieDomainMatches(hostname: string, domain: string): boolean {
 }
 
 function bidiCookiePathMatches(requestPath: string, cookiePath: string): boolean {
-  return requestPath === cookiePath || requestPath.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`) || cookiePath === "/";
+  return requestPath.startsWith(cookiePath);
 }
 
 function bidiBytesValueToString(value: BidiCookie["value"]): string {
@@ -1168,7 +1168,7 @@ function matchesBidiStringFilter(value: string, matcher: string | RegExp | undef
 }
 
 function isLocalHostname(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  return hostname === "localhost" || hostname.endsWith(".localhost");
 }
 
 class BidiPageAdapter implements ProtocolPageAdapter {

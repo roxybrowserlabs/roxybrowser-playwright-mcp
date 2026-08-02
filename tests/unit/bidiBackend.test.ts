@@ -477,6 +477,34 @@ describe("BidiBrowserAdapterFactory", () => {
           secure: true,
           sameSite: "strict",
           expiry: 1900000000
+        },
+        {
+          name: "directory",
+          value: {
+            type: "string",
+            value: "yes"
+          },
+          domain: "example.com",
+          path: "/data/",
+          size: 10,
+          httpOnly: false,
+          secure: true,
+          sameSite: "lax",
+          expiry: 1900000000
+        },
+        {
+          name: "prefix",
+          value: {
+            type: "string",
+            value: "yes"
+          },
+          domain: "example.com",
+          path: "/data",
+          size: 10,
+          httpOnly: false,
+          secure: true,
+          sameSite: "lax",
+          expiry: 1900000000
         }
       ],
       partitionKey: {}
@@ -497,7 +525,7 @@ describe("BidiBrowserAdapterFactory", () => {
     const browser = await adapter.browser();
     const context = await browser.newContext({ reuseDefaultUserContext: true });
 
-    await expect(context.cookies?.(["https://example.com/data"])).resolves.toEqual([
+    await expect(context.cookies?.(["https://example.com/database"])).resolves.toEqual([
       {
         name: "session",
         value: "abc",
@@ -505,6 +533,16 @@ describe("BidiBrowserAdapterFactory", () => {
         path: "/",
         expires: 1900000000,
         httpOnly: true,
+        secure: true,
+        sameSite: "Lax"
+      },
+      {
+        name: "prefix",
+        value: "yes",
+        domain: "example.com",
+        path: "/data",
+        expires: 1900000000,
+        httpOnly: false,
         secure: true,
         sameSite: "Lax"
       }

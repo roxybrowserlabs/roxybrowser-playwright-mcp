@@ -664,7 +664,12 @@ function domainMatches(hostname: string, cookie: { domain: string; hostOnly: boo
 }
 
 function pathMatches(requestPath: string, cookiePath: string): boolean {
-  return requestPath === cookiePath || requestPath.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`) || cookiePath === "/";
+  if (requestPath === cookiePath) {
+    return true;
+  }
+  const normalizedRequestPath = requestPath.endsWith("/") ? requestPath : `${requestPath}/`;
+  const normalizedCookiePath = cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`;
+  return normalizedRequestPath.startsWith(normalizedCookiePath);
 }
 
 function isSecureRequest(url: URL, cookie: { secure: boolean }): boolean {
@@ -674,7 +679,11 @@ function isSecureRequest(url: URL, cookie: { secure: boolean }): boolean {
   if (!cookie.secure) {
     return true;
   }
-  return url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  return isLocalHostname(url.hostname);
+}
+
+function isLocalHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname.endsWith(".localhost");
 }
 
 async function blobLikeToFilePayload(value: Blob): Promise<FilePayload> {
