@@ -129,6 +129,7 @@ describe("page.request cookies e2e (bidi/firefox)", () => {
     try {
       const seedSession = await openRoxyBrowserFirefoxBidiProfile({
         createNewProfile: true,
+        operationTimeoutMs: 60_000,
         profileName,
         windowRemark
       });
@@ -154,6 +155,7 @@ describe("page.request cookies e2e (bidi/firefox)", () => {
       await closeRoxyBrowserFirefoxBidiProfile({ dirId });
 
       const reopenedSession = await openRoxyBrowserFirefoxBidiProfile({
+        operationTimeoutMs: 60_000,
         profileId: dirId,
         profileName,
         windowRemark

@@ -16,6 +16,7 @@ const ROXYBROWSER_OPERATION_TIMEOUT_MS = Number(
 export async function openRoxyBrowserFirefoxBidiProfile(options = {}) {
   const apiPort = options.apiPort ?? process.env.ROXYBROWSER_API_PORT ?? process.env.ROXY_API_PORT ?? "50000";
   const apiToken = options.apiToken ?? process.env.ROXYBROWSER_API_TOKEN ?? process.env.ROXY_API_TOKEN;
+  const operationTimeoutMs = Number(options.operationTimeoutMs ?? ROXYBROWSER_OPERATION_TIMEOUT_MS);
   const workspaceIdEnv = options.workspaceId ?? process.env.ROXYBROWSER_WORKSPACE_ID;
   const projectIdEnv = options.projectId ?? process.env.ROXYBROWSER_PROJECT_ID;
   const profileId = options.profileId ?? process.env.ROXYBROWSER_PROFILE_ID;
@@ -112,7 +113,11 @@ export async function openRoxyBrowserFirefoxBidiProfile(options = {}) {
       console.log("[roxybrowser-bidi] createPayload:", JSON.stringify(createPayload, null, 2));
     }
 
-    const createResponse = await client.browser_create(createPayload);
+    const createResponse = await withTimeout(
+      client.browser_create(createPayload),
+      operationTimeoutMs,
+      "RoxyBrowser profile create did not respond"
+    );
     const dirId = createResponse?.data?.dirId;
     if (!dirId) {
       throw new Error("Create response did not include data.dirId.");
@@ -130,7 +135,7 @@ export async function openRoxyBrowserFirefoxBidiProfile(options = {}) {
   const dirId = selectedProfile.dirId;
   const openResponse = await withTimeout(
     client.browser_open(dirId, []),
-    ROXYBROWSER_OPERATION_TIMEOUT_MS,
+    operationTimeoutMs,
     `RoxyBrowser profile ${dirId} did not open`
   );
   const endpoint = extractBidiCandidate(openResponse.data, dirId);
@@ -152,7 +157,7 @@ export async function openRoxyBrowserFirefoxBidiProfile(options = {}) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const connectionInfo = await withTimeout(
       client.browser_connection_info(dirId),
-      ROXYBROWSER_OPERATION_TIMEOUT_MS,
+      operationTimeoutMs,
       `RoxyBrowser profile ${dirId} connection info did not respond`
     );
     const connectionEndpoint = extractBidiCandidate(connectionInfo.data, dirId);
