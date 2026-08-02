@@ -74,6 +74,9 @@ export interface BidiProtocolClient {
   sessionStatus(params: unknown): Promise<Commands["session.status"]["returnType"]>;
   sessionSubscribe(params: unknown): Promise<Commands["session.subscribe"]["returnType"]>;
   sessionUnsubscribe(params: unknown): Promise<Commands["session.unsubscribe"]["returnType"]>;
+  storageDeleteCookies(params: unknown): Promise<Commands["storage.deleteCookies"]["returnType"]>;
+  storageGetCookies(params: unknown): Promise<Commands["storage.getCookies"]["returnType"]>;
+  storageSetCookie(params: unknown): Promise<Commands["storage.setCookie"]["returnType"]>;
 }
 
 export interface BidiClientFactoryOptions {
@@ -331,6 +334,18 @@ export class WebSocketBidiClient implements BidiProtocolClient {
 
   async sessionUnsubscribe(params: unknown) {
     return (await this.sendCommand("session.unsubscribe", params as Commands["session.unsubscribe"]["params"])).result;
+  }
+
+  async storageDeleteCookies(params: unknown) {
+    return (await this.sendCommand("storage.deleteCookies", params as Commands["storage.deleteCookies"]["params"])).result;
+  }
+
+  async storageGetCookies(params: unknown) {
+    return (await this.sendCommand("storage.getCookies", params as Commands["storage.getCookies"]["params"])).result;
+  }
+
+  async storageSetCookie(params: unknown) {
+    return (await this.sendCommand("storage.setCookie", params as Commands["storage.setCookie"]["params"])).result;
   }
 
   private handleClose(): void {

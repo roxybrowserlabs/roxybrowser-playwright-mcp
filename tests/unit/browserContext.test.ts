@@ -805,6 +805,153 @@ describe("RoxyBrowserContext", () => {
     }
   });
 
+  it("shares browser context cookies with page.request like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    adapter.cookies = vi.fn(async (urls?: string[]) => {
+      expect(urls).toEqual(["https://example.com/data"]);
+      return [
+        {
+          domain: "example.com",
+          expires: -1,
+          httpOnly: false,
+          name: "session",
+          path: "/",
+          sameSite: "Lax",
+          secure: false,
+          value: "from-browser"
+        }
+      ];
+    });
+    adapter.addCookies = vi.fn(async () => {});
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      createResponseWithSetCookies("{}", ["fresh=from-api; path=/"])
+    );
+
+    try {
+      await page.request.get("https://example.com/data");
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "https://example.com/data",
+        expect.objectContaining({
+          headers: {
+            cookie: "session=from-browser"
+          }
+        })
+      );
+      expect(adapter.addCookies).toHaveBeenCalledWith([
+        expect.objectContaining({
+          domain: "example.com",
+          name: "fresh",
+          path: "/",
+          value: "from-api"
+        })
+      ]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("inherits baseURL, extraHTTPHeaders, and userAgent for context request fetches", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const context = new RoxyBrowserContext(
+      adapter,
+      {
+        enabled: true,
+        profile: "balanced",
+        moveJitterMs: 16,
+        clickHoldMs: 60,
+        scrollStepPx: 280,
+        typingDelayMs: 95,
+        typingVarianceMs: 35,
+        hoverBeforeClickMs: 110
+      },
+      {
+        baseURL: "https://example.com/base/",
+        extraHTTPHeaders: {
+          "X-Context": "yes"
+        },
+        userAgent: "RoxyTest/1.0"
+      }
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", {
+        status: 200,
+        statusText: "OK"
+      })
+    );
+
+    try {
+      await context.request.get("data.json", {
+        headers: {
+          "X-Request": "override"
+        }
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "https://example.com/base/data.json",
+        expect.objectContaining({
+          headers: {
+            "user-agent": "RoxyTest/1.0",
+            "x-context": "yes",
+            "x-request": "override"
+          }
+        })
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("uses updated context extraHTTPHeaders for later context request fetches", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", {
+        status: 200,
+        statusText: "OK"
+      })
+    );
+
+    try {
+      await context.setExtraHTTPHeaders({
+        "X-Context": "updated"
+      });
+      await context.request.get("https://example.com/data.json");
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "https://example.com/data.json",
+        expect.objectContaining({
+          headers: {
+            "x-context": "updated"
+          }
+        })
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("exposes a shared Playwright-like clock on context and pages", async () => {
     const adapter = createBrowserContextAdapterStub();
     adapter.newPage = async () => createPageAdapterStub();

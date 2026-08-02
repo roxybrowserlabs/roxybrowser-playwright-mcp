@@ -352,4 +352,179 @@ describe("RoxyAPIRequestContext", () => {
       fetchSpy.mockRestore();
     }
   });
+
+  it("removes cookies when a later Set-Cookie expires them in the past", async () => {
+    const request = new RoxyAPIRequestContext();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(createResponseWithSetCookies("ok", ["a=ok; max-age=100000"]))
+      .mockResolvedValueOnce(createResponseWithSetCookies("ok", ["a=; expires=Mon, 01 Jan 2001 00:00:00 GMT"]));
+
+    try {
+      await request.get("https://example.com/setcookie.html");
+      await request.get("https://example.com/unset.html");
+      expect(await request.storageState()).toEqual({
+        cookies: [],
+        origins: []
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("ignores Set-Cookie domain attributes that do not match the response url", async () => {
+    const request = new RoxyAPIRequestContext();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(createResponseWithSetCookies("ok", ["a=b; domain=other.example.com; path=/"]));
+
+    try {
+      await request.get("https://example.com/setcookie.html");
+      expect(await request.storageState()).toEqual({
+        cookies: [],
+        origins: []
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("stores Set-Cookie headers from redirects and recomputes cookie headers per hop", async () => {
+    const request = new RoxyAPIRequestContext();
+    const seenCookies: Record<string, string | undefined> = {};
+    const server = createServer((incomingRequest, response) => {
+      seenCookies[incomingRequest.url ?? ""] = incomingRequest.headers.cookie;
+      if (incomingRequest.url === "/redirect1") {
+        response.writeHead(301, {
+          location: "/a/b/redirect2",
+          "set-cookie": "r1=v1; SameSite=Lax"
+        });
+        response.end();
+        return;
+      }
+      if (incomingRequest.url === "/a/b/redirect2") {
+        response.writeHead(302, {
+          location: "/title.html",
+          "set-cookie": "r2=v2; SameSite=Lax"
+        });
+        response.end();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "application/json"
+      });
+      response.end('{"ok":true}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Server did not bind to a TCP port");
+    }
+    const prefix = `http://127.0.0.1:${address.port}`;
+    try {
+      const firstResponse = await request.get(`${prefix}/redirect1`);
+      expect(await firstResponse.json()).toEqual({ ok: true });
+      expect(seenCookies["/redirect1"]).toBeUndefined();
+      expect(seenCookies["/a/b/redirect2"]).toBe("r1=v1");
+      expect(seenCookies["/title.html"]).toBe("r1=v1");
+
+      const state = await request.storageState();
+      expect(state.cookies).toEqual([
+        expect.objectContaining({ name: "r1", path: "/" }),
+        expect.objectContaining({ name: "r2", path: "/a/b" })
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("rewrites POST to GET and drops body headers on 302 redirects", async () => {
+    const request = new RoxyAPIRequestContext();
+    const seen: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      contentLength: string | undefined;
+      contentType: string | undefined;
+    }> = [];
+    const server = createServer((incomingRequest, response) => {
+      seen.push({
+        method: incomingRequest.method,
+        url: incomingRequest.url,
+        contentLength: incomingRequest.headers["content-length"],
+        contentType: incomingRequest.headers["content-type"]
+      });
+      if (incomingRequest.url === "/redirect") {
+        response.writeHead(302, {
+          location: "/target"
+        });
+        response.end();
+        return;
+      }
+      response.end("ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Server did not bind to a TCP port");
+    }
+    try {
+      await request.post(`http://127.0.0.1:${address.port}/redirect`, {
+        data: "payload"
+      });
+      expect(seen).toEqual([
+        {
+          method: "POST",
+          url: "/redirect",
+          contentLength: "7",
+          contentType: "application/octet-stream"
+        },
+        {
+          method: "GET",
+          url: "/target",
+          contentLength: undefined,
+          contentType: undefined
+        }
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("does not propagate explicit cookie headers across redirects", async () => {
+    const request = new RoxyAPIRequestContext();
+    const seenCookies: Record<string, string | undefined> = {};
+    const server = createServer((incomingRequest, response) => {
+      seenCookies[incomingRequest.url ?? ""] = incomingRequest.headers.cookie;
+      if (incomingRequest.url === "/redirect") {
+        response.writeHead(302, {
+          location: "/target"
+        });
+        response.end();
+        return;
+      }
+      response.end("ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Server did not bind to a TCP port");
+    }
+    try {
+      await request.get(`http://127.0.0.1:${address.port}/redirect`, {
+        headers: {
+          Cookie: "manual=value"
+        }
+      });
+      expect(seenCookies["/redirect"]).toBe("manual=value");
+      expect(seenCookies["/target"]).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
 });

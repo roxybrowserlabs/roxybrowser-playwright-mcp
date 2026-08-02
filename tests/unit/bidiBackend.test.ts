@@ -4,6 +4,7 @@ import {
   BidiBrowserAdapterFactory,
   buildFirefoxLaunchArgs,
   resolveFirefoxExecutableCandidates,
+  RoxyBrowser,
   resetBidiClientFactoryForTests,
   setBidiClientFactoryForTests,
   WebSocketBidiClient
@@ -444,6 +445,235 @@ describe("BidiBrowserAdapterFactory", () => {
 
     expect(browsingContextActivate).toHaveBeenCalledOnce();
     expect(browsingContextActivate).toHaveBeenCalledWith({ context: "ctx-1" });
+  });
+
+  it("maps BiDi storage cookies to Playwright-like browser context cookies", async () => {
+    const storageGetCookies = vi.fn(async () => ({
+      cookies: [
+        {
+          name: "session",
+          value: {
+            type: "string",
+            value: "abc"
+          },
+          domain: "example.com",
+          path: "/",
+          size: 10,
+          httpOnly: true,
+          secure: true,
+          sameSite: "lax",
+          expiry: 1900000000
+        },
+        {
+          name: "subdomain",
+          value: {
+            type: "string",
+            value: "nope"
+          },
+          domain: "sub.example.com",
+          path: "/",
+          size: 10,
+          httpOnly: false,
+          secure: true,
+          sameSite: "strict",
+          expiry: 1900000000
+        }
+      ],
+      partitionKey: {}
+    }));
+    const client = createBidiClientStub({
+      storageGetCookies
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+
+    await expect(context.cookies?.(["https://example.com/data"])).resolves.toEqual([
+      {
+        name: "session",
+        value: "abc",
+        domain: "example.com",
+        path: "/",
+        expires: 1900000000,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax"
+      }
+    ]);
+    expect(storageGetCookies).toHaveBeenCalledWith({
+      partition: {
+        type: "storageKey",
+        userContext: "default"
+      }
+    });
+  });
+
+  it("sets and clears BiDi storage cookies through the browser context", async () => {
+    const storageSetCookie = vi.fn(async () => ({
+      partitionKey: {}
+    }));
+    const storageDeleteCookies = vi.fn(async () => ({}));
+    const client = createBidiClientStub({
+      browserCreateUserContext: vi.fn(async () => ({
+        userContext: "user-context-1"
+      })),
+      storageSetCookie,
+      storageDeleteCookies
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext();
+
+    await context.addCookies?.([
+      {
+        name: "session",
+        value: "abc",
+        url: "https://example.com/path/page.html",
+        httpOnly: true,
+        sameSite: "Strict"
+      }
+    ]);
+    await context.clearCookies?.();
+
+    expect(storageSetCookie).toHaveBeenCalledWith({
+      cookie: {
+        name: "session",
+        value: {
+          type: "string",
+          value: "abc"
+        },
+        domain: "example.com",
+        path: "/path/",
+        httpOnly: true,
+        secure: true,
+        sameSite: "strict",
+        expiry: undefined
+      },
+      partition: {
+        type: "storageKey",
+        userContext: "user-context-1"
+      }
+    });
+    expect(storageDeleteCookies).toHaveBeenCalledWith({
+      partition: {
+        type: "storageKey",
+        userContext: "user-context-1"
+      }
+    });
+  });
+
+  it("shares BiDi browser context cookies with page.request", async () => {
+    const storageGetCookies = vi.fn(async () => ({
+      cookies: [
+        {
+          name: "session",
+          value: {
+            type: "string",
+            value: "from-bidi"
+          },
+          domain: "example.com",
+          path: "/",
+          size: 10,
+          httpOnly: false,
+          secure: false,
+          sameSite: "lax"
+        }
+      ],
+      partitionKey: {}
+    }));
+    const storageSetCookie = vi.fn(async () => ({
+      partitionKey: {}
+    }));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      browserSetDownloadBehavior: vi.fn(async () => ({})),
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      sessionSubscribe: vi.fn(async () => ({})),
+      scriptAddPreloadScript: vi.fn(async () => ({
+        script: "preload-1"
+      })),
+      scriptEvaluate: vi.fn(async () => ({
+        type: "success",
+        result: {
+          type: "undefined"
+        }
+      })),
+      storageGetCookies,
+      storageSetCookie
+    });
+    createClient.mockResolvedValue(client);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "set-cookie": "fresh=from-api; path=/"
+        }
+      })
+    );
+
+    try {
+      const adapter = new BidiBrowserAdapterFactory().create({
+        browserName: "firefox",
+        protocol: "bidi",
+        wsEndpoint: "ws://127.0.0.1:53453"
+      });
+      setBidiClientFactoryForTests(createClient);
+
+      await adapter.connect();
+      const session = await adapter.browser();
+      const browser = new RoxyBrowser(session, adapter, "firefox", {} as never, "firefox");
+      const context = await browser.newContext({ reuseDefaultUserContext: true });
+      const page = await context.newPage();
+
+      await page.request.get("https://example.com/data");
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "https://example.com/data",
+        expect.objectContaining({
+          headers: {
+            cookie: "session=from-bidi"
+          }
+        })
+      );
+      expect(storageSetCookie).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cookie: expect.objectContaining({
+            domain: "example.com",
+            name: "fresh",
+            path: "/",
+            value: {
+              type: "string",
+              value: "from-api"
+            }
+          })
+        })
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("ignores internal typing plan hints and follows plain keyboard typing", async () => {

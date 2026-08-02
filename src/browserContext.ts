@@ -82,7 +82,7 @@ export class RoxyBrowserContext implements BrowserContext {
   private nextRouteMatcherId = 0;
   private videoOutputDirPromise: Promise<string> | null = null;
   readonly clock: Clock;
-  readonly request = new RoxyAPIRequestContext();
+  readonly request: RoxyAPIRequestContext;
   readonly tracing: RoxyTracing = new RoxyTracing("browserContext", this);
 
   constructor(
@@ -92,6 +92,34 @@ export class RoxyBrowserContext implements BrowserContext {
     browserName: BrowserName = "chromium"
   ) {
     void _unusedSecondArgument;
+    const adapterCookies = this.adapter.cookies?.bind(this.adapter);
+    const adapterAddCookies = this.adapter.addCookies?.bind(this.adapter);
+    this.request = new RoxyAPIRequestContext(
+      adapterCookies && adapterAddCookies
+        ? {
+            addCookies: async (cookies) => adapterAddCookies(cookies),
+            cookies: async (url) => adapterCookies(url === undefined ? undefined : [url]),
+            storageState: async () => ({
+              cookies: (await adapterCookies()).map((cookie) => ({
+                domain: cookie.domain,
+                expires: cookie.expires,
+                httpOnly: cookie.httpOnly,
+                name: cookie.name,
+                path: cookie.path,
+                sameSite: cookie.sameSite,
+                secure: cookie.secure,
+                value: cookie.value
+              })),
+              origins: []
+            })
+          }
+        : undefined,
+      {
+        ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
+        ...(options.extraHTTPHeaders !== undefined ? { extraHTTPHeaders: options.extraHTTPHeaders } : {}),
+        ...(options.userAgent !== undefined ? { userAgent: options.userAgent } : {})
+      }
+    );
     this.clockDelegate = new RoxyBrowserContextClockDelegate(this, browserName);
     this.clock = new RoxyClock(this.clockDelegate);
     this.tracing.attachContext(this);
@@ -240,7 +268,9 @@ export class RoxyBrowserContext implements BrowserContext {
   }
 
   async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
-    await this.adapter.setExtraHTTPHeaders(normalizeExtraHTTPHeaders(headers));
+    const normalizedHeaders = normalizeExtraHTTPHeaders(headers);
+    await this.adapter.setExtraHTTPHeaders(normalizedHeaders);
+    this.request._setDefaultOptions({ extraHTTPHeaders: normalizedHeaders });
   }
 
   async route(

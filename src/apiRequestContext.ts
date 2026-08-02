@@ -15,6 +15,7 @@ import type {
 import type { FilePayload } from "./types/options.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_COOKIE_EXPIRES_DATE_SECONDS = 253_402_300_799;
 
 interface StoredCookie {
   domain: string;
@@ -28,10 +29,58 @@ interface StoredCookie {
   value: string;
 }
 
+type APIRequestCookie = Omit<StoredCookie, "hostOnly"> & {
+  partitionKey?: string;
+};
+
+interface APIRequestStorageState {
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+  }>;
+  origins: Array<{
+    origin: string;
+    localStorage: Array<{
+      name: string;
+      value: string;
+    }>;
+  }>;
+}
+
+interface APIRequestCookieBackend {
+  addCookies(cookies: ReadonlyArray<APIRequestCookie>): Promise<void>;
+  cookies(url?: string): Promise<APIRequestCookie[]>;
+  storageState?(): Promise<APIRequestStorageState>;
+}
+
+interface APIRequestContextDefaultOptions {
+  baseURL?: string;
+  extraHTTPHeaders?: { [key: string]: string };
+  userAgent?: string;
+}
+
 export class RoxyAPIRequestContext implements APIRequestContext {
   readonly tracing = new RoxyTracing("apiRequestContext");
   private closedReason: string | null = null;
   private readonly cookies: StoredCookie[] = [];
+  private defaultOptions: APIRequestContextDefaultOptions;
+
+  constructor(
+    private readonly cookieBackend?: APIRequestCookieBackend,
+    defaultOptions: APIRequestContextDefaultOptions = {}
+  ) {
+    this.defaultOptions = { ...defaultOptions };
+  }
+
+  _setDefaultOptions(defaultOptions: APIRequestContextDefaultOptions): void {
+    this.defaultOptions = { ...this.defaultOptions, ...defaultOptions };
+  }
 
   async delete(url: string, options?: APIRequestOptions): Promise<APIResponse> {
     return this.fetchWithApiName("apiRequestContext.delete", url, {
@@ -65,14 +114,19 @@ export class RoxyAPIRequestContext implements APIRequestContext {
     const sourceRequest = typeof urlOrRequest === "string" ? null : urlOrRequest;
     const method = options.method ?? sourceRequest?.method() ?? "GET";
     const url = appendQueryParams(
-      typeof urlOrRequest === "string" ? urlOrRequest : urlOrRequest.url(),
+      resolveRequestUrl(
+        typeof urlOrRequest === "string" ? urlOrRequest : urlOrRequest.url(),
+        this.defaultOptions.baseURL
+      ),
       options.params
     );
     const headers = normalizeHeaders({
+      ...(this.defaultOptions.userAgent !== undefined ? { "user-agent": this.defaultOptions.userAgent } : {}),
+      ...(this.defaultOptions.extraHTTPHeaders ?? {}),
       ...(sourceRequest?.headers() ?? {}),
       ...(options.headers ?? {})
     });
-    this.applyCookieHeader(url, headers);
+    await this.applyCookieHeader(url, headers);
     const body = await buildRequestBody(sourceRequest, headers, options);
     const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
@@ -86,11 +140,16 @@ export class RoxyAPIRequestContext implements APIRequestContext {
         ...(body ? { body } : {}),
         headers,
         method,
+        afterResponse: async (responseUrl, fetchResponse) => {
+          await this.storeResponseCookies(responseUrl, fetchResponse);
+        },
+        beforeRequest: async (requestUrl, requestHeaders) => {
+          await this.applyCookieHeader(requestUrl, requestHeaders);
+        },
         signal: controller.signal,
         ...(options.maxRedirects !== undefined ? { maxRedirects: options.maxRedirects } : {}),
         ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {})
       });
-      this.storeResponseCookies(url, response);
       const apiResponse = createApiResponse(response);
       const responseBody = await apiResponse.body();
       await this.tracing.recordApiRequest({
@@ -160,38 +219,16 @@ export class RoxyAPIRequestContext implements APIRequestContext {
     });
   }
 
-  async storageState(options?: { indexedDB?: boolean; path?: string }): Promise<{
-    cookies: Array<{
-      name: string;
-      value: string;
-      domain: string;
-      path: string;
-      expires: number;
-      httpOnly: boolean;
-      secure: boolean;
-      sameSite: "Strict" | "Lax" | "None";
-    }>;
-    origins: Array<{
-      origin: string;
-      localStorage: Array<{
-        name: string;
-        value: string;
-      }>;
-    }>;
-  }> {
-    const state = {
-      cookies: this.cookies.map((cookie) => ({
-        domain: cookie.domain,
-        expires: cookie.expires,
-        httpOnly: cookie.httpOnly,
-        name: cookie.name,
-        path: cookie.path,
-        sameSite: cookie.sameSite,
-        secure: cookie.secure,
-        value: cookie.value
-      })),
-      origins: []
-    };
+  async storageState(options?: { indexedDB?: boolean; path?: string }): Promise<APIRequestStorageState> {
+    const state = this.cookieBackend
+      ? await this.cookieBackend.storageState?.() ?? {
+          cookies: (await this.cookieBackend.cookies()).map(cookieForStorageState),
+          origins: []
+        }
+      : {
+          cookies: this.cookies.map(cookieForStorageState),
+          origins: []
+        };
     if (options?.path) {
       await mkdir(dirname(options.path), { recursive: true });
       await writeFile(options.path, JSON.stringify(state, null, 2));
@@ -203,19 +240,23 @@ export class RoxyAPIRequestContext implements APIRequestContext {
     await this.dispose();
   }
 
-  private applyCookieHeader(url: string, headers: Record<string, string>): void {
+  private async applyCookieHeader(url: string, headers: Record<string, string>): Promise<void> {
     if (hasExplicitHeader(headers, "cookie")) {
       return;
     }
-    const cookies = this.cookiesForUrl(url);
+    const cookies = await this.cookiesForUrl(url);
     if (!cookies.length) {
       return;
     }
     headers.cookie = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
   }
 
-  private cookiesForUrl(url: string): StoredCookie[] {
+  private async cookiesForUrl(url: string): Promise<Array<StoredCookie | APIRequestCookie>> {
     const parsedUrl = new URL(url);
+    if (this.cookieBackend) {
+      const cookies = await this.cookieBackend.cookies(url);
+      return cookies.filter((cookie) => apiCookieMatches(parsedUrl, cookie));
+    }
     const now = Math.floor(Date.now() / 1000);
     return this.cookies.filter((cookie) => {
       if (cookie.expires !== -1 && cookie.expires <= now) {
@@ -231,10 +272,15 @@ export class RoxyAPIRequestContext implements APIRequestContext {
     });
   }
 
-  private storeResponseCookies(url: string, response: globalThis.Response): void {
+  private async storeResponseCookies(url: string, response: globalThis.Response): Promise<void> {
+    const parsedCookies: APIRequestCookie[] = [];
     for (const header of extractSetCookieHeaders(response)) {
       const parsedCookie = parseSetCookieHeader(url, header);
       if (!parsedCookie) {
+        continue;
+      }
+      if (this.cookieBackend) {
+        parsedCookies.push(toApiCookie(parsedCookie));
         continue;
       }
       const index = this.cookies.findIndex(
@@ -243,7 +289,7 @@ export class RoxyAPIRequestContext implements APIRequestContext {
           cookie.domain === parsedCookie.domain &&
           cookie.path === parsedCookie.path
       );
-      if (parsedCookie.expires !== -1 && parsedCookie.expires <= 0) {
+      if (parsedCookie.expires !== -1 && parsedCookie.expires * 1000 <= Date.now()) {
         if (index >= 0) {
           this.cookies.splice(index, 1);
         }
@@ -255,7 +301,62 @@ export class RoxyAPIRequestContext implements APIRequestContext {
         this.cookies.push(parsedCookie);
       }
     }
+    if (parsedCookies.length) {
+      await this.addCookiesToBackend(parsedCookies);
+    }
   }
+
+  private async addCookiesToBackend(cookies: APIRequestCookie[]): Promise<void> {
+    if (!this.cookieBackend) {
+      return;
+    }
+    try {
+      await this.cookieBackend.addCookies(cookies);
+    } catch {
+      const cookieBackend = this.cookieBackend;
+      await Promise.all(cookies.map((cookie) => cookieBackend.addCookies([cookie]).catch(() => {})));
+    }
+  }
+}
+
+function cookieForStorageState(cookie: StoredCookie | APIRequestCookie): APIRequestStorageState["cookies"][number] {
+  return {
+    domain: cookie.domain,
+    expires: cookie.expires,
+    httpOnly: cookie.httpOnly,
+    name: cookie.name,
+    path: cookie.path,
+    sameSite: cookie.sameSite,
+    secure: cookie.secure,
+    value: cookie.value
+  };
+}
+
+function toApiCookie(cookie: StoredCookie): APIRequestCookie {
+  return cookieForStorageState(cookie);
+}
+
+function apiCookieMatches(url: URL, cookie: APIRequestCookie): boolean {
+  if (cookie.expires !== -1 && cookie.expires <= Math.floor(Date.now() / 1000)) {
+    return false;
+  }
+  if (cookie.secure && !isSecureRequest(url, cookie)) {
+    return false;
+  }
+  if (!apiCookieDomainMatches(url.hostname, cookie.domain)) {
+    return false;
+  }
+  return pathMatches(url.pathname, cookie.path);
+}
+
+function apiCookieDomainMatches(hostname: string, domain: string): boolean {
+  if (hostname === domain) {
+    return true;
+  }
+  if (!domain.startsWith(".")) {
+    return false;
+  }
+  return `.${hostname}`.endsWith(domain);
 }
 
 function appendQueryParams(
@@ -282,6 +383,13 @@ function appendQueryParams(
   }
   parsed.search = searchParams.toString();
   return parsed.toString();
+}
+
+function resolveRequestUrl(url: string, baseURL: string | undefined): string {
+  if (baseURL === undefined) {
+    return url;
+  }
+  return new URL(url, baseURL).toString();
 }
 
 function normalizeHeaders(
@@ -442,6 +550,7 @@ function extractSetCookieHeaders(response: globalThis.Response): string[] {
 
 function parseSetCookieHeader(url: string, header: string): StoredCookie | null {
   const parsedUrl = new URL(url);
+  const defaultPath = `/${parsedUrl.pathname.slice(1).split("/").slice(0, -1).join("/")}`;
   const [nameValue, ...attributeParts] = header.split(";");
   if (!nameValue) {
     return null;
@@ -455,7 +564,7 @@ function parseSetCookieHeader(url: string, header: string): StoredCookie | null 
   const value = nameValue.slice(separatorIndex + 1).trim();
   let domain = parsedUrl.hostname;
   let hostOnly = true;
-  let path = "/";
+  let path = "";
   let expires = -1;
   let httpOnly = false;
   let secure = false;
@@ -473,7 +582,7 @@ function parseSetCookieHeader(url: string, header: string): StoredCookie | null 
 
     if (attributeName === "domain" && attributeValue) {
       hostOnly = false;
-      domain = attributeValue.startsWith(".") ? attributeValue : `.${attributeValue}`;
+      domain = normalizeCookieDomainAttribute(attributeValue);
       continue;
     }
     if (attributeName === "path" && attributeValue) {
@@ -482,12 +591,21 @@ function parseSetCookieHeader(url: string, header: string): StoredCookie | null 
     }
     if (attributeName === "expires" && attributeValue) {
       const parsedExpires = Date.parse(attributeValue);
-      expires = Number.isNaN(parsedExpires) ? -1 : Math.floor(parsedExpires / 1000);
+      expires = Number.isNaN(parsedExpires)
+        ? -1
+        : Math.min(
+            parsedExpires <= 0 ? 0 : Math.floor(parsedExpires / 1000),
+            MAX_COOKIE_EXPIRES_DATE_SECONDS
+          );
       continue;
     }
     if (attributeName === "max-age" && attributeValue) {
-      const maxAge = Number(attributeValue);
-      expires = Number.isFinite(maxAge) ? (maxAge <= 0 ? 0 : Math.floor(Date.now() / 1000) + maxAge) : expires;
+      const maxAge = parseInt(attributeValue, 10);
+      expires = Number.isFinite(maxAge)
+        ? (maxAge <= 0
+            ? 0
+            : Math.min(Math.floor(Date.now() / 1000) + maxAge, MAX_COOKIE_EXPIRES_DATE_SECONDS))
+        : expires;
       continue;
     }
     if (attributeName === "httponly") {
@@ -510,6 +628,13 @@ function parseSetCookieHeader(url: string, header: string): StoredCookie | null 
     }
   }
 
+  if (!domainMatches(parsedUrl.hostname, { domain, hostOnly })) {
+    return null;
+  }
+  if (!path.startsWith("/")) {
+    path = defaultPath;
+  }
+
   return {
     domain,
     expires,
@@ -523,7 +648,14 @@ function parseSetCookieHeader(url: string, header: string): StoredCookie | null 
   };
 }
 
-function domainMatches(hostname: string, cookie: StoredCookie): boolean {
+function normalizeCookieDomainAttribute(domain: string): string {
+  const normalized = domain.toLowerCase();
+  return normalized && !normalized.startsWith(".") && normalized.includes(".")
+    ? `.${normalized}`
+    : normalized;
+}
+
+function domainMatches(hostname: string, cookie: { domain: string; hostOnly: boolean }): boolean {
   if (cookie.hostOnly) {
     return hostname === cookie.domain;
   }
@@ -535,7 +667,7 @@ function pathMatches(requestPath: string, cookiePath: string): boolean {
   return requestPath === cookiePath || requestPath.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`) || cookiePath === "/";
 }
 
-function isSecureRequest(url: URL, cookie: StoredCookie): boolean {
+function isSecureRequest(url: URL, cookie: { secure: boolean }): boolean {
   if (url.protocol === "https:") {
     return true;
   }
@@ -649,6 +781,8 @@ export async function fetchWithRetries(
   url: string,
   options: {
     allowGetOrHeadBody?: boolean;
+    afterResponse?: (url: string, response: globalThis.Response) => Promise<void>;
+    beforeRequest?: (url: string, headers: Record<string, string>) => Promise<void>;
     body?: Buffer;
     headers: Record<string, string>;
     maxRedirects?: number;
@@ -675,6 +809,8 @@ async function fetchWithRedirects(
   url: string,
   options: {
     allowGetOrHeadBody?: boolean;
+    afterResponse?: (url: string, response: globalThis.Response) => Promise<void>;
+    beforeRequest?: (url: string, headers: Record<string, string>) => Promise<void>;
     body?: Buffer;
     headers: Record<string, string>;
     maxRedirects?: number;
@@ -685,21 +821,31 @@ async function fetchWithRedirects(
 ): Promise<globalThis.Response> {
   const maxRedirects = options.maxRedirects ?? 20;
   let currentUrl = url;
+  let currentBody = options.body;
+  let currentHeaders = options.headers;
+  let currentMethod = options.method;
   let redirects = 0;
 
   for (;;) {
+    await options.beforeRequest?.(currentUrl, currentHeaders);
     const response =
-      options.body &&
+      currentBody &&
       options.allowGetOrHeadBody &&
-      (options.method.toUpperCase() === "GET" || options.method.toUpperCase() === "HEAD")
-        ? await fetchWithNodeHttp(currentUrl, options)
+      (currentMethod.toUpperCase() === "GET" || currentMethod.toUpperCase() === "HEAD")
+        ? await fetchWithNodeHttp(currentUrl, {
+            body: currentBody,
+            headers: currentHeaders,
+            method: currentMethod,
+            ...(options.signal ? { signal: options.signal } : {})
+          })
         : await fetch(currentUrl, {
-            ...(options.body ? { body: Buffer.from(options.body) } : {}),
-            headers: options.headers,
-            method: options.method,
+            ...(currentBody ? { body: Buffer.from(currentBody) } : {}),
+            headers: currentHeaders,
+            method: currentMethod,
             redirect: "manual",
             ...(options.signal ? { signal: options.signal } : {})
           });
+    await options.afterResponse?.(response.url || currentUrl, response);
     if (!isRedirectStatus(response.status) || maxRedirects === 0) {
       return response;
     }
@@ -710,8 +856,41 @@ async function fetchWithRedirects(
     if (!location) {
       return response;
     }
-    currentUrl = new URL(location, currentUrl).toString();
+    const locationHeaderValue = Buffer.from(location, "latin1").toString("utf8");
+    const locationUrl = new URL(locationHeaderValue, currentUrl);
+    currentHeaders = { ...currentHeaders };
+    removeHeader(currentHeaders, "cookie");
+    if (locationUrl.origin !== new URL(currentUrl).origin) {
+      removeHeader(currentHeaders, "authorization");
+    }
+    if (hasExplicitHeader(currentHeaders, "host")) {
+      setHeader(currentHeaders, "host", locationUrl.host);
+    }
+    const status = response.status;
+    if (((status === 301 || status === 302) && currentMethod.toUpperCase() === "POST")
+      || (status === 303 && !["GET", "HEAD"].includes(currentMethod.toUpperCase()))) {
+      currentMethod = "GET";
+      currentBody = undefined;
+      removeHeader(currentHeaders, "content-encoding");
+      removeHeader(currentHeaders, "content-language");
+      removeHeader(currentHeaders, "content-length");
+      removeHeader(currentHeaders, "content-location");
+      removeHeader(currentHeaders, "content-type");
+    }
+    currentUrl = locationUrl.toString();
     redirects += 1;
+  }
+}
+
+function setHeader(headers: Record<string, string>, name: string, value: string): void {
+  const existingName = Object.keys(headers).find((headerName) => headerName.toLowerCase() === name.toLowerCase());
+  headers[existingName ?? name] = value;
+}
+
+function removeHeader(headers: Record<string, string>, name: string): void {
+  const existingName = Object.keys(headers).find((headerName) => headerName.toLowerCase() === name.toLowerCase());
+  if (existingName) {
+    delete headers[existingName];
   }
 }
 

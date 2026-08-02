@@ -890,6 +890,91 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     );
   }
 
+  async addCookies(cookies: ReadonlyArray<{
+    name: string;
+    value: string;
+    url?: string;
+    domain?: string;
+    path?: string;
+    expires?: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>): Promise<void> {
+    await Promise.all(rewriteBidiCookies(cookies).map(async (cookie) => {
+      await this.client.storageSetCookie({
+        cookie: {
+          name: cookie.name,
+          value: {
+            type: "string",
+            value: cookie.value
+          },
+          domain: cookie.domain,
+          path: cookie.path,
+          httpOnly: cookie.httpOnly,
+          secure: cookie.secure,
+          sameSite: cookie.sameSite ? toBidiSameSite(cookie.sameSite) : undefined,
+          expiry: cookie.expires === -1 || cookie.expires === undefined ? undefined : Math.round(cookie.expires)
+        },
+        partition: bidiStoragePartition(this.userContext, cookie.partitionKey)
+      });
+    }));
+  }
+
+  async cookies(urls?: string[]): Promise<Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>> {
+    const response = await this.client.storageGetCookies({
+      partition: bidiStoragePartition(this.userContext)
+    }) as {
+      cookies: BidiCookie[];
+    };
+    return filterBidiCookies(
+      response.cookies.map((cookie) => ({
+        domain: cookie.domain,
+        expires: cookie.expiry ?? -1,
+        httpOnly: cookie.httpOnly,
+        name: cookie.name,
+        path: cookie.path,
+        sameSite: cookie.sameSite ? fromBidiSameSite(cookie.sameSite) : "None",
+        secure: cookie.secure,
+        value: bidiBytesValueToString(cookie.value)
+      })),
+      urls ?? []
+    );
+  }
+
+  async clearCookies(options?: {
+    domain?: string | RegExp;
+    name?: string | RegExp;
+    path?: string | RegExp;
+  }): Promise<void> {
+    if (!options?.domain && !options?.name && !options?.path) {
+      await this.client.storageDeleteCookies({
+        partition: bidiStoragePartition(this.userContext)
+      });
+      return;
+    }
+
+    const cookies = await this.cookies();
+    const retained = cookies.filter((cookie) => !matchesBidiCookieFilter(cookie, options));
+    await this.client.storageDeleteCookies({
+      partition: bidiStoragePartition(this.userContext)
+    });
+    if (retained.length) {
+      await this.addCookies(retained);
+    }
+  }
+
   async close(): Promise<void> {
     this.pages.clear();
     if (!this.userContext) {
@@ -900,6 +985,190 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       userContext: this.userContext
     });
   }
+}
+
+interface BidiCookie {
+  name: string;
+  value: {
+    type: "string" | "base64";
+    value: string;
+  };
+  domain: string;
+  path: string;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite?: string;
+  expiry?: number;
+}
+
+function bidiStoragePartition(userContext: string | undefined, sourceOrigin?: string): {
+  type: "storageKey";
+  userContext: string;
+  sourceOrigin?: string;
+} {
+  return {
+    type: "storageKey",
+    userContext: userContext ?? "default",
+    ...(sourceOrigin !== undefined ? { sourceOrigin } : {})
+  };
+}
+
+function rewriteBidiCookies(cookies: ReadonlyArray<{
+  name: string;
+  value: string;
+  url?: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+  partitionKey?: string;
+}>): Array<{
+  name: string;
+  value: string;
+  domain: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+  partitionKey?: string;
+}> {
+  return cookies.map((cookie) => {
+    if ((!cookie.url && (!cookie.domain || !cookie.path)) || (cookie.url && (cookie.domain || cookie.path))) {
+      throw new Error("Cookie should have either url or domain/path pair");
+    }
+    if (!cookie.url) {
+      if (!cookie.domain || !cookie.path) {
+        throw new Error("Cookie should have either url or domain/path pair");
+      }
+      return {
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        ...(cookie.expires !== undefined ? { expires: cookie.expires } : {}),
+        ...(cookie.httpOnly !== undefined ? { httpOnly: cookie.httpOnly } : {}),
+        ...(cookie.secure !== undefined ? { secure: cookie.secure } : {}),
+        ...(cookie.sameSite !== undefined ? { sameSite: cookie.sameSite } : {}),
+        ...(cookie.partitionKey !== undefined ? { partitionKey: cookie.partitionKey } : {})
+      };
+    }
+    if (cookie.url === "about:blank") {
+      throw new Error(`Blank page can not have cookie "${cookie.name}"`);
+    }
+    if (cookie.url.startsWith("data:")) {
+      throw new Error(`Data URL page can not have cookie "${cookie.name}"`);
+    }
+    const parsedUrl = new URL(cookie.url);
+    return {
+      name: cookie.name,
+      value: cookie.value,
+      domain: parsedUrl.hostname,
+      path: parsedUrl.pathname.substring(0, parsedUrl.pathname.lastIndexOf("/") + 1),
+      secure: parsedUrl.protocol === "https:",
+      ...(cookie.expires !== undefined ? { expires: cookie.expires } : {}),
+      ...(cookie.httpOnly !== undefined ? { httpOnly: cookie.httpOnly } : {}),
+      ...(cookie.sameSite !== undefined ? { sameSite: cookie.sameSite } : {}),
+      ...(cookie.partitionKey !== undefined ? { partitionKey: cookie.partitionKey } : {})
+    };
+  });
+}
+
+function filterBidiCookies<T extends {
+  domain: string;
+  path: string;
+  secure: boolean;
+}>(cookies: T[], urls: string[]): T[] {
+  if (!urls.length) {
+    return cookies;
+  }
+  const parsedUrls = urls.map((url) => new URL(url));
+  return cookies.filter((cookie) => parsedUrls.some((parsedUrl) => {
+    if (!bidiCookieDomainMatches(parsedUrl.hostname, cookie.domain)) {
+      return false;
+    }
+    if (!bidiCookiePathMatches(parsedUrl.pathname, cookie.path)) {
+      return false;
+    }
+    if (cookie.secure && parsedUrl.protocol !== "https:" && !isLocalHostname(parsedUrl.hostname)) {
+      return false;
+    }
+    return true;
+  }));
+}
+
+function bidiCookieDomainMatches(hostname: string, domain: string): boolean {
+  if (hostname === domain) {
+    return true;
+  }
+  if (!domain.startsWith(".")) {
+    return false;
+  }
+  return `.${hostname}`.endsWith(domain);
+}
+
+function bidiCookiePathMatches(requestPath: string, cookiePath: string): boolean {
+  return requestPath === cookiePath || requestPath.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`) || cookiePath === "/";
+}
+
+function bidiBytesValueToString(value: BidiCookie["value"]): string {
+  if (value.type === "string") {
+    return value.value;
+  }
+  return Buffer.from(value.value, "base64").toString("utf8");
+}
+
+function fromBidiSameSite(sameSite: string): "Strict" | "Lax" | "None" {
+  if (sameSite === "strict") {
+    return "Strict";
+  }
+  if (sameSite === "lax" || sameSite === "default") {
+    return "Lax";
+  }
+  return "None";
+}
+
+function toBidiSameSite(sameSite: "Strict" | "Lax" | "None"): "strict" | "lax" | "none" {
+  if (sameSite === "Strict") {
+    return "strict";
+  }
+  if (sameSite === "Lax") {
+    return "lax";
+  }
+  return "none";
+}
+
+function matchesBidiCookieFilter(
+  cookie: {
+    domain: string;
+    name: string;
+    path: string;
+  },
+  options: {
+    domain?: string | RegExp;
+    name?: string | RegExp;
+    path?: string | RegExp;
+  }
+): boolean {
+  return matchesBidiStringFilter(cookie.name, options.name)
+    && matchesBidiStringFilter(cookie.domain, options.domain)
+    && matchesBidiStringFilter(cookie.path, options.path);
+}
+
+function matchesBidiStringFilter(value: string, matcher: string | RegExp | undefined): boolean {
+  if (matcher === undefined) {
+    return true;
+  }
+  if (typeof matcher === "string") {
+    return value === matcher;
+  }
+  return matcher.test(value);
+}
+
+function isLocalHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
 class BidiPageAdapter implements ProtocolPageAdapter {
