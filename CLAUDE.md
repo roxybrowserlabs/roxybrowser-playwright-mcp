@@ -51,7 +51,7 @@ pnpm build:bundle           # vite -> dist/roxybrowser.bundle.js (used by MCP pa
 
 The unit config enforces **90% line/function/branch/statement coverage** thresholds on `src/**` (with `src/types/**`, the protocol backends, and adapter/capabilities files excluded from coverage). Don't lower the threshold to make CI pass — add tests.
 
-E2e tests run serially (`fileParallelism: false`, `maxWorkers: 1`) and have a global setup that force-cleans stray browser processes. Set `ROXY_E2E_EXECUTABLE_PATH` (Chromium e2e) or `ROXY_BIDI_EXECUTABLE_PATH` / `ROXY_BIDI_WS_ENDPOINT` (BiDi) when auto-detection fails. See `.env.example` for the full set.
+Both e2e suites run with `pool: "forks"` and a global setup that force-cleans stray browser processes; cleanup logic cross-checks other live workers' process registries before force-killing anything, so parallel runs don't kill each other's browsers. The CDP suite (`test:e2e`) runs with `maxWorkers: 4`. The BiDi suite (`test:e2e:bidi`) currently runs at `maxWorkers: 1` (kept serial pending further validation of per-worker RoxyBrowser profile isolation), with a guard that refuses to start (throws at config-load time) if `ROXYBROWSER_PROFILE_ID` is set alongside `maxWorkers > 1` — that env var pins every worker to the same RoxyBrowser profile and would make workers race to open/close it; unset it (each worker creates its own profile automatically) or use `ROXYBROWSER_PROFILE_MATCH` instead. Set `ROXY_E2E_EXECUTABLE_PATH` (Chromium e2e) or `ROXY_BIDI_EXECUTABLE_PATH` / `ROXY_BIDI_WS_ENDPOINT` (BiDi) when auto-detection fails. See `.env.example` for the full set.
 
 ## Architecture
 

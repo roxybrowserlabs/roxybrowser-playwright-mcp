@@ -256,6 +256,52 @@ describe("browser process cleanup", () => {
     expect(killSpy).toHaveBeenCalledWith(991, "SIGKILL");
   });
 
+  it("excludes PIDs owned by another live worker's registry from the global scan", async () => {
+    const siblingRegistryPath = join(
+      tmpdir(),
+      `roxybrowser-test-browser-processes-sibling-${process.pid}.jsonl`
+    );
+    writeFileSync(
+      siblingRegistryPath,
+      `${JSON.stringify({ pid: 601, userDataDir: "/tmp/roxybrowser-cdp-sibling" })}\n`
+    );
+
+    try {
+      vi.mocked(execFile).mockImplementation((_file, _args, callback) => {
+        callback(
+          null,
+          [
+            "601 1 /Applications/Chromium.app/Contents/MacOS/Chromium --user-data-dir=/tmp/roxybrowser-cdp-sibling --remote-debugging-port=1111",
+            "602 601 /Applications/Chromium.app/Contents/MacOS/Chromium --type=renderer",
+            "701 1 /Applications/Chromium.app/Contents/MacOS/Chromium --user-data-dir=/tmp/roxybrowser-cdp-orphan --remote-debugging-port=2222",
+            "702 701 /Applications/Chromium.app/Contents/MacOS/Chromium --type=renderer"
+          ].join("\n")
+        );
+        return undefined as never;
+      });
+
+      const { cleanupLocalTestBrowserProcesses } = await import(
+        "../helpers/browser-process-cleanup.js"
+      );
+      const cleanup = cleanupLocalTestBrowserProcesses();
+
+      await vi.runAllTimersAsync();
+      await cleanup;
+
+      expect(killSpy).not.toHaveBeenCalledWith(601, expect.anything());
+      expect(killSpy).not.toHaveBeenCalledWith(-601, expect.anything());
+      expect(killSpy).not.toHaveBeenCalledWith(602, expect.anything());
+      expect(killSpy).toHaveBeenCalledWith(701, "SIGTERM");
+      expect(killSpy).toHaveBeenCalledWith(-701, "SIGTERM");
+      expect(killSpy).toHaveBeenCalledWith(702, "SIGTERM");
+      expect(killSpy).toHaveBeenCalledWith(701, "SIGKILL");
+      expect(killSpy).toHaveBeenCalledWith(-701, "SIGKILL");
+      expect(killSpy).toHaveBeenCalledWith(702, "SIGKILL");
+    } finally {
+      rmSync(siblingRegistryPath, { force: true });
+    }
+  });
+
   it("falls back to synchronous cleanup when async cleanup times out", async () => {
     vi.mocked(execFile).mockImplementation(() => undefined as never);
     vi.mocked(spawnSync).mockReturnValue({

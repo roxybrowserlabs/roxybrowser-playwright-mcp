@@ -1,4 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -9,6 +10,7 @@ import {
 process.env.ROXY_TEST_BROWSER_CLEANUP = "1";
 
 const TEST_BROWSER_PROCESS_REGISTRY_ENV = "ROXY_TEST_BROWSER_PROCESS_REGISTRY";
+const SIBLING_REGISTRY_FILENAME_PATTERN = /^roxybrowser-test-browser-processes-.+\.jsonl$/;
 
 const TEST_BROWSER_PROFILE_MARKERS = [
   "roxybrowser-bidi-",
@@ -181,7 +183,11 @@ export function collectLocalTestBrowserProcessTree(
     children.push(process);
     childrenByParentPid.set(process.ppid, children);
   }
-  const rootPids = processes.filter(isLocalTestBrowserProcess).map((process) => process.pid);
+  const siblingOwnedPids = listSiblingRegistryPidsExcludingSelf();
+  const rootPids = processes
+    .filter(isLocalTestBrowserProcess)
+    .map((process) => process.pid)
+    .filter((pid) => !siblingOwnedPids.has(pid));
   const pids = [...collectProcessTreePids(rootPids, childrenByParentPid)]
     .filter((pid) => pid !== currentPid);
 
@@ -234,6 +240,60 @@ interface ProcessInfo {
   pid: number;
   ppid: number;
   command: string;
+}
+
+function listSiblingRegistryPidsExcludingSelf(): Set<number> {
+  const pids = new Set<number>();
+  const ownRegistryPath = process.env[TEST_BROWSER_PROCESS_REGISTRY_ENV];
+
+  let entries: string[];
+  try {
+    entries = readdirSync(tmpdir());
+  } catch {
+    return pids;
+  }
+
+  for (const entry of entries) {
+    if (!SIBLING_REGISTRY_FILENAME_PATTERN.test(entry)) {
+      continue;
+    }
+
+    const registryPath = join(tmpdir(), entry);
+    if (ownRegistryPath && registryPath === ownRegistryPath) {
+      continue;
+    }
+
+    let text: string;
+    try {
+      text = readFileSync(registryPath, "utf8");
+    } catch {
+      continue;
+    }
+
+    for (const line of text.split("\n")) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      if (!parsed || typeof parsed !== "object") {
+        continue;
+      }
+
+      const pid = (parsed as { pid?: unknown }).pid;
+      if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) {
+        pids.add(pid);
+      }
+    }
+  }
+
+  return pids;
 }
 
 function isLocalTestBrowserProcess(process: ProcessInfo): boolean {
