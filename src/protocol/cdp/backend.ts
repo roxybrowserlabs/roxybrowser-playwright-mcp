@@ -10188,13 +10188,14 @@ export async function readDevToolsActivePort(filePath: string): Promise<string |
     return null;
   }
 
-  const [portLine] = content.split(/\r?\n/);
+  const [portLine, browserPathLine] = content.split(/\r?\n/);
   const port = Number(portLine?.trim());
   if (!Number.isFinite(port) || port <= 0) {
     return null;
   }
 
-  return `ws://127.0.0.1:${port}/devtools/browser`;
+  const browserPath = browserPathLine?.trim();
+  return `ws://127.0.0.1:${port}${browserPath || "/devtools/browser"}`;
 }
 
 function buildConnectionFromWsEndpoint(browserWsEndpoint: string): CdpConnectionDetails {

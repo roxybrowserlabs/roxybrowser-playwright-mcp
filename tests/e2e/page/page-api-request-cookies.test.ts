@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { chromium as playwrightChromium } from "playwright";
 import { chromium } from "../../../src/index.js";
 import {
   buildChromiumLaunchArgs,
@@ -115,6 +116,84 @@ describe("page.request cookies e2e", () => {
         });
       } finally {
         await browser.close();
+      }
+    } finally {
+      chromeProcess?.kill();
+      await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("shares cookies already persisted in the browser profile after chromium.connect", async () => {
+    fixture.server.setRoute("/persisted-profile-cookie-seed", (_request, response) => {
+      response.writeHead(200, {
+        "content-type": "text/html",
+        "set-cookie": "persisted_cookie=from-profile; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax"
+      });
+      response.end("<!doctype html><title>persisted profile seed</title>");
+    });
+    fixture.server.setRoute("/persisted-profile-cookie-echo", (request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ cookie: request.headers.cookie ?? "" }));
+    });
+
+    const [chromePath] = resolveExecutableCandidates({
+      executablePath: process.env.ROXY_E2E_EXECUTABLE_PATH
+    });
+    if (!chromePath) {
+      throw new Error("No Chrome executable found. Set ROXY_E2E_EXECUTABLE_PATH to a Chrome binary path.");
+    }
+
+    const userDataDir = await mkdtemp(join(tmpdir(), "roxy-api-request-persisted-cookie-"));
+    let chromeProcess: ChildProcess | undefined;
+    try {
+      const persistentContext = await playwrightChromium.launchPersistentContext(userDataDir, {
+        executablePath: chromePath,
+        headless: true
+      });
+      try {
+        const seedPage = await persistentContext.newPage();
+        await seedPage.goto(`${fixture.server.PREFIX}/persisted-profile-cookie-seed`, { waitUntil: "load" });
+        expect(await persistentContext.cookies(`${fixture.server.PREFIX}/persisted-profile-cookie-echo`)).toEqual([
+          expect.objectContaining({
+            name: "persisted_cookie",
+            value: "from-profile"
+          })
+        ]);
+      } finally {
+        await persistentContext.close();
+      }
+
+      chromeProcess = spawn(
+        chromePath,
+        [
+          ...buildChromiumLaunchArgs({ headless: true }, userDataDir).filter(
+            arg => arg !== "--no-startup-window"
+          ),
+          "about:blank"
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] }
+      );
+      const wsEndpoint = await waitForDebuggerEndpoint(chromeProcess, userDataDir, 15_000);
+      const browser = await chromium.connect(wsEndpoint);
+      try {
+        const context = browser.contexts()[0];
+        expect(context).toBeTruthy();
+        expect(await context.cookies(`${fixture.server.PREFIX}/persisted-profile-cookie-echo`)).toEqual([
+          expect.objectContaining({
+            name: "persisted_cookie",
+            value: "from-profile"
+          })
+        ]);
+
+        const response = await context.request.get(`${fixture.server.PREFIX}/persisted-profile-cookie-echo`);
+        expect(await response.json()).toEqual({
+          cookie: "persisted_cookie=from-profile"
+        });
+      } finally {
+        await Promise.race([
+          browser.close(),
+          new Promise<void>((resolve) => setTimeout(resolve, 1_000))
+        ]);
       }
     } finally {
       chromeProcess?.kill();

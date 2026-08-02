@@ -39,7 +39,7 @@ describe("CDP launch helpers", () => {
 
     await expect(
       readDevToolsActivePort(join(userDataDir, "DevToolsActivePort"))
-    ).resolves.toBe("ws://127.0.0.1:9222/devtools/browser");
+    ).resolves.toBe("ws://127.0.0.1:9222/devtools/browser/test-id");
   });
 
   it("falls back to DevToolsActivePort when Chromium does not print the endpoint", async () => {
@@ -53,6 +53,6 @@ describe("CDP launch helpers", () => {
       writeFileSync(join(userDataDir, "DevToolsActivePort"), "9333\n/devtools/browser/abc\n");
     }, 50);
 
-    await expect(endpointPromise).resolves.toBe("ws://127.0.0.1:9333/devtools/browser");
+    await expect(endpointPromise).resolves.toBe("ws://127.0.0.1:9333/devtools/browser/abc");
   });
 });
