@@ -6,12 +6,14 @@ describe("bidi global setup", () => {
     vi.resetModules();
   });
 
-  it("installs BiDi cleanup hooks in the vitest main process", async () => {
+  it("installs BiDi cleanup hooks and sweeps orphaned profiles in the vitest main process", async () => {
     const installBidiTestCleanupHooks = vi.fn();
     const cleanupExternalBidiTestState = vi.fn(async () => {});
+    const cleanupOrphanedRoxyBrowserProfiles = vi.fn(async () => {});
 
     vi.doMock("../helpers/bidi.js", () => ({
       cleanupExternalBidiTestState,
+      cleanupOrphanedRoxyBrowserProfiles,
       installBidiTestCleanupHooks
     }));
 
@@ -20,9 +22,11 @@ describe("bidi global setup", () => {
 
     expect(installBidiTestCleanupHooks).toHaveBeenCalledTimes(1);
     expect(cleanupExternalBidiTestState).toHaveBeenCalledTimes(1);
+    expect(cleanupOrphanedRoxyBrowserProfiles).toHaveBeenCalledTimes(1);
 
     await teardown();
 
     expect(cleanupExternalBidiTestState).toHaveBeenCalledTimes(2);
+    expect(cleanupOrphanedRoxyBrowserProfiles).toHaveBeenCalledTimes(2);
   });
 });

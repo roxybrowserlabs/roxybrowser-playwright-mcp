@@ -1,3 +1,6 @@
+import { appendFileSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { firefox } from "../../src/index.js";
 import type { Browser, BrowserContext, Page } from "../../src/types/api.js";
 import {
@@ -66,6 +69,128 @@ function assertRoxyBrowserBidiEnvironment(): void {
   }
 }
 
+// Each `pool: "forks"` worker runs in its own OS process and normally holds a
+// single reused RoxyBrowser profile for its whole lifetime (see
+// REUSE_BIDI_BROWSER). That profile is only released via crash/signal
+// handlers inside the *same* process (installBidiTestCleanupHooks) or when a
+// worker itself opts out of reuse. A worker that simply finishes its last
+// test never releases its profile, and the main vitest process (where
+// bidi.global-setup.ts's teardown runs) never created one itself, so its own
+// cleanupExternalBidiTestState() call is a no-op for worker-created
+// profiles. Left unaddressed, every successful `pnpm test:e2e:bidi` run
+// leaks one RoxyBrowser profile per worker until the account's window quota
+// is exhausted. This on-disk registry lets each worker record profiles it
+// creates so the main process can sweep and delete them once the whole run
+// finishes, regardless of whether any individual worker released its own.
+const BIDI_PROFILE_REGISTRY_FILENAME_PATTERN = /^roxybrowser-bidi-profile-registry-.+\.jsonl$/;
+
+function currentWorkerBidiProfileRegistryPath(): string {
+  return join(tmpdir(), `roxybrowser-bidi-profile-registry-${workerLabel()}-${process.pid}.jsonl`);
+}
+
+function recordCreatedRoxyBrowserProfile(dirId: string): void {
+  try {
+    appendFileSync(currentWorkerBidiProfileRegistryPath(), `${JSON.stringify({ dirId })}\n`);
+  } catch {
+    // Best-effort bookkeeping only: a missed entry just means the
+    // end-of-run orphan sweep won't catch this specific profile.
+  }
+}
+
+function forgetCreatedRoxyBrowserProfile(dirId: string): void {
+  const registryPath = currentWorkerBidiProfileRegistryPath();
+  let text: string;
+  try {
+    text = readFileSync(registryPath, "utf8");
+  } catch {
+    return;
+  }
+
+  const remainingLines = text.split("\n").filter((line) => {
+    if (!line.trim()) {
+      return false;
+    }
+    try {
+      return (JSON.parse(line) as { dirId?: unknown }).dirId !== dirId;
+    } catch {
+      return true;
+    }
+  });
+
+  try {
+    if (remainingLines.length) {
+      writeFileSync(registryPath, `${remainingLines.join("\n")}\n`);
+    } else {
+      rmSync(registryPath, { force: true });
+    }
+  } catch {
+    // Best-effort: a stale entry left behind is harmless — the end-of-run
+    // sweep will attempt to delete it again, and RoxyBrowser profile
+    // deletion is idempotent against an already-deleted dirId.
+  }
+}
+
+/**
+ * Deletes every RoxyBrowser profile recorded by any worker's on-disk
+ * registry, then removes the registry files. Intended to run once, from the
+ * main vitest process, after all workers have finished (see
+ * bidi.global-setup.ts) — it is not part of any individual worker's own
+ * open/close lifecycle.
+ */
+export async function cleanupOrphanedRoxyBrowserProfiles(): Promise<void> {
+  if (!ROXYBROWSER_API_TOKEN) {
+    return;
+  }
+
+  let entries: string[];
+  try {
+    entries = readdirSync(tmpdir());
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!BIDI_PROFILE_REGISTRY_FILENAME_PATTERN.test(entry)) {
+      continue;
+    }
+
+    const registryPath = join(tmpdir(), entry);
+    let text: string;
+    try {
+      text = readFileSync(registryPath, "utf8");
+    } catch {
+      continue;
+    }
+
+    for (const line of text.split("\n")) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      let dirId: unknown;
+      try {
+        dirId = (JSON.parse(line) as { dirId?: unknown }).dirId;
+      } catch {
+        continue;
+      }
+
+      if (typeof dirId !== "string" || !dirId) {
+        continue;
+      }
+
+      await closeRoxyBrowserFirefoxBidiProfile({
+        apiPort: ROXYBROWSER_API_PORT,
+        apiToken: ROXYBROWSER_API_TOKEN,
+        workspaceId: ROXYBROWSER_WORKSPACE_ID,
+        dirId,
+        deleteProfile: true
+      });
+    }
+
+    rmSync(registryPath, { force: true });
+  }
+}
+
 async function openWorkerScopedRoxyBrowserSession(): Promise<{
   dirId: string;
   endpoint: string;
@@ -110,6 +235,9 @@ export async function openBidiBrowser(): Promise<Browser> {
   const session = await openWorkerScopedRoxyBrowserSession();
   state.roxyProfileDirId = session.dirId;
   state.roxyProfileWasCreated = Boolean(session.created);
+  if (session.created) {
+    recordCreatedRoxyBrowserProfile(session.dirId);
+  }
   const sessionId = BIDI_SESSION_ID ?? session.sessionId;
   const browserKey = `${session.dirId}:${session.endpoint}:${sessionId ?? ""}`;
   let browser: Browser | undefined;
@@ -126,6 +254,9 @@ export async function openBidiBrowser(): Promise<Browser> {
     const retriedSession = await openWorkerScopedRoxyBrowserSession();
     state.roxyProfileDirId = retriedSession.dirId;
     state.roxyProfileWasCreated = Boolean(retriedSession.created);
+    if (retriedSession.created) {
+      recordCreatedRoxyBrowserProfile(retriedSession.dirId);
+    }
     const retriedSessionId = BIDI_SESSION_ID ?? retriedSession.sessionId;
     browser = await firefox.connect(retriedSession.endpoint, {
       ...(retriedSessionId ? { sessionId: retriedSessionId } : {})
@@ -207,6 +338,9 @@ async function cleanupStaleBidiTestArtifacts(): Promise<void> {
         dirId,
         deleteProfile
       });
+      if (deleteProfile) {
+        forgetCreatedRoxyBrowserProfile(dirId);
+      }
     }
     if (hadTrackedArtifacts || !shouldReuseBidiBrowser()) {
       await cleanupCurrentWorkerTestBrowserProcesses();
