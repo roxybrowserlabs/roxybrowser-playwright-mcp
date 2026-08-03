@@ -1,8 +1,15 @@
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
-import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "../../../src/human/bubbleCursor.js";
+import { CURSOR_VISUALIZATION_INSTALL_SOURCE, getBubbleCursorInstallSource } from "../../../src/human/bubbleCursor.js";
 
 describe("cursor visualization install source", () => {
+  it("uses the configured body and outline colors", () => {
+    expect(getBubbleCursorInstallSource("arrow")).toContain('fill=\\"#EE46BC\\"');
+    expect(getBubbleCursorInstallSource("arrow")).toContain('fill=\\"#FFFFFF\\"');
+    expect(getBubbleCursorInstallSource("bubble")).toContain("context.fillStyle = '#EE46BC';");
+    expect(getBubbleCursorInstallSource("bubble")).toContain("context.strokeStyle = '#FFFFFF';");
+  });
+
   it("waits for DOM readiness when it runs as a document preload script", () => {
     const dom = new JSDOM("<!doctype html><html><body></body></html>", {
       pretendToBeVisual: true,

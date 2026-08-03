@@ -41,6 +41,7 @@
     "README.md"
   ],
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.json",
     "build:vendor:snapshot": "node ./scripts/generate-playwright-snapshot-source.mjs",
     "build:bundle": "pnpm build:vendor:snapshot && vite build --config vite.bundle.config.ts",
