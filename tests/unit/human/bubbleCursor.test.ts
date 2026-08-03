@@ -10,6 +10,35 @@ describe("cursor visualization install source", () => {
     expect(getBubbleCursorInstallSource("bubble")).toContain("context.strokeStyle = '#FFFFFF';");
   });
 
+  it("keeps the arrow cursor tilt fixed while following the pointer", () => {
+    const dom = new JSDOM("<!doctype html><html><body></body></html>", {
+      pretendToBeVisual: true,
+      runScripts: "outside-only",
+      url: "https://example.test/"
+    });
+    Object.defineProperty(dom.window.document, "readyState", {
+      configurable: true,
+      value: "interactive"
+    });
+    Object.defineProperty(dom.window, "matchMedia", {
+      configurable: true,
+      value: () => ({ matches: false })
+    });
+
+    dom.window.eval(getBubbleCursorInstallSource("arrow"));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent("mousemove", { clientX: 20, clientY: 30 }));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent("mousemove", { clientX: 60, clientY: 45 }));
+
+    const cursor = dom.window.document.querySelector(".curzr");
+    expect(cursor).toBeInstanceOf(dom.window.HTMLElement);
+    expect((cursor as HTMLElement).style.transform).toBe("translate3d(60px, 45px, 0) rotate(-25deg)");
+    expect((cursor as HTMLElement).style.transformOrigin).toBe("50% 0%");
+    expect((cursor as HTMLElement).style.left).toBe("-10px");
+    expect((cursor as HTMLElement).style.top).toBe("0px");
+
+    dom.window.close();
+  });
+
   it("waits for DOM readiness when it runs as a document preload script", () => {
     const dom = new JSDOM("<!doctype html><html><body></body></html>", {
       pretendToBeVisual: true,
