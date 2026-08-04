@@ -617,6 +617,14 @@ const FOCUS_AND_GET_ELEMENT_SOURCE = String.raw`(payload) => {
     : document.querySelector(payload.selector);
   if (!el || !el.isConnected) return null;
   el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  const wasFocused = el.ownerDocument?.activeElement === el && el.ownerDocument?.hasFocus?.();
+  if (el.isContentEditable && !wasFocused) {
+    const activeElement = el.getRootNode?.().activeElement ?? el.ownerDocument?.activeElement;
+    if (activeElement && activeElement !== el && typeof activeElement.blur === 'function') {
+      activeElement.blur();
+    }
+  }
+  el.focus();
   el.focus();
   return el;
 }`;
@@ -664,7 +672,15 @@ const TYPE_INTO_ELEMENT_SOURCE = String.raw`(payload) => {
     if (setter) setter.call(el, payload.text);
     else el.value = payload.text;
   } else if (el.isContentEditable) {
-    el.textContent = payload.text;
+    const selection = el.ownerDocument.defaultView?.getSelection();
+    const range = el.ownerDocument.createRange();
+    range.selectNodeContents(el);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const edited = payload.text
+      ? el.ownerDocument.execCommand('insertText', false, payload.text)
+      : el.ownerDocument.execCommand('delete');
+    if (!edited) el.textContent = payload.text;
   } else {
     return { ok: false, reason: 'not_input' };
   }
@@ -679,6 +695,79 @@ const TYPE_INTO_ELEMENT_SOURCE = String.raw`(payload) => {
     }
   }
   return { ok: true };
+}`;
+
+const PREPARE_FILL_ELEMENT_SOURCE = String.raw`(payload) => {
+  const state = globalThis.__roxyMcpState;
+  const el = payload.nodeToken
+    ? (state?.elements?.get(payload.nodeToken) ?? null)
+    : document.querySelector(payload.selector);
+  if (!el || !el.isConnected) return { ok: false, reason: 'not_found' };
+  el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+  const focusTwice = () => {
+    const wasFocused = el.ownerDocument?.activeElement === el && el.ownerDocument?.hasFocus?.();
+    if (el.isContentEditable && !wasFocused) {
+      const activeElement = el.getRootNode?.().activeElement ?? el.ownerDocument?.activeElement;
+      if (activeElement && activeElement !== el && typeof activeElement.blur === 'function') {
+        activeElement.blur();
+      }
+    }
+    el.focus();
+    el.focus();
+  };
+
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'input') {
+    if (el.disabled || el.readOnly) return { ok: false, reason: 'not_input' };
+    const type = el.type.toLowerCase();
+    const directValueTypes = new Set(['color', 'date', 'time', 'datetime-local', 'month', 'range', 'week']);
+    const typedValueTypes = new Set(['', 'email', 'number', 'password', 'search', 'tel', 'text', 'url']);
+    if (!typedValueTypes.has(type) && !directValueTypes.has(type)) {
+      return { ok: false, reason: 'not_input' };
+    }
+    let value = payload.text;
+    if (type === 'number') {
+      value = value.trim();
+      if (Number.isNaN(Number(value))) return { ok: false, reason: 'not_input' };
+    }
+    if (type === 'color') value = value.toLowerCase();
+    focusTwice();
+    if (directValueTypes.has(type)) {
+      value = value.trim();
+      const proto = Object.getPrototypeOf(el);
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+        ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (setter) setter.call(el, value);
+      else el.value = value;
+      if (el.value !== value) return { ok: false, reason: 'not_input' };
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, action: 'direct' };
+    }
+    el.select();
+    return { ok: true, action: 'insert' };
+  }
+
+  if (tag === 'textarea') {
+    if (el.disabled || el.readOnly) return { ok: false, reason: 'not_input' };
+    focusTwice();
+    el.selectionStart = 0;
+    el.selectionEnd = el.value.length;
+    return { ok: true, action: 'insert' };
+  }
+
+  if (el.isContentEditable) {
+    focusTwice();
+    const selection = el.ownerDocument.defaultView?.getSelection();
+    const range = el.ownerDocument.createRange();
+    range.selectNodeContents(el);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return { ok: true, action: 'insert' };
+  }
+
+  return { ok: false, reason: 'not_input' };
 }`;
 
 const SELECT_OPTION_SOURCE = String.raw`(payload) => {
@@ -1635,7 +1724,35 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     const arg = this.targetArg(target);
-    if (options?.strategy !== "fill" && (options?.slowly || options?.delayMs)) {
+    if (options?.strategy === "fill") {
+      const result = await evaluateCdp<{ ok: boolean; reason?: string; action?: "direct" | "insert" }>(
+        pageClient,
+        PREPARE_FILL_ELEMENT_SOURCE,
+        { ...arg, text },
+        contextId
+      );
+      if (!result.ok) {
+        const isSelector = "selector" in target;
+        throw new McpToolError(
+          isSelector ? "invalid_target" : "stale_ref",
+          result.reason === "not_found"
+            ? (isSelector ? `Element "${target.selector}" could not be found.` : 'The referenced element is no longer valid. Call "browser_snapshot" again.')
+            : `Element is not a typeable input.`
+        );
+      }
+      if (result.action === "insert") {
+        if (text) {
+          await pageClient.Input.insertText({ text });
+        } else {
+          await this.pressKey("Delete");
+        }
+      }
+      if (options.submit) {
+        await this.pressKey("Enter");
+      }
+      return;
+    }
+    if (options?.slowly || options?.delayMs) {
       const refResult = await evaluateCdpRef(pageClient, FOCUS_AND_GET_ELEMENT_SOURCE, arg, contextId);
       if (!refResult.objectId) {
         const isSelector = "selector" in target;

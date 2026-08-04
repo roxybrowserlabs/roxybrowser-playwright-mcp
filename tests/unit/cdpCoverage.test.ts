@@ -330,6 +330,63 @@ describe("CDP coverage", () => {
     await session.close();
   });
 
+  it("fills MCP CDP text through selection plus protocol text insertion", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browserClient = createCdpClientStub();
+    const pageClient = createCdpClientStub();
+    Object.assign(pageClient.Page, {
+      addScriptToEvaluateOnNewDocument: vi.fn(async () => ({ identifier: "cursor-script" }))
+    });
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "tab-1",
+          type: "page",
+          title: "Ready",
+          url: "https://example.test/"
+        }
+      ]
+    });
+    chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+      if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+        return browserClient;
+      }
+      return pageClient;
+    });
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/123.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    const session = await module.CdpConnectedBrowserSession.connect({
+      browser: "chromium",
+      protocol: "cdp",
+      endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+    pageClient.Runtime.evaluate.mockImplementation(async (options: {
+      expression?: string;
+      returnByValue?: boolean;
+    }) => {
+      if (options.expression?.includes("globalThis.innerWidth")) {
+        return { result: { value: { x: 0, y: 0, width: 1280, height: 720 } } };
+      }
+      if (options.expression?.includes("selectNodeContents")) {
+        return { result: { value: { ok: true, action: "insert" } } };
+      }
+      return { result: { value: { ok: true, x: 10, y: 20 } } };
+    });
+
+    await session.type({ selector: "[contenteditable]" }, "long pasted caption", { strategy: "fill" });
+
+    expect(pageClient.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining("selectNodeContents")
+    }));
+    expect(pageClient.Input.insertText).toHaveBeenCalledWith({ text: "long pasted caption" });
+    expect(browserClient.Target.activateTarget).not.toHaveBeenCalled();
+
+    await session.close();
+  });
+
   it("still activates a tab when MCP explicitly selects it", async () => {
     const module = await import("../../src/mcp/connectedBrowser.js");
     const browserClient = createCdpClientStub();
