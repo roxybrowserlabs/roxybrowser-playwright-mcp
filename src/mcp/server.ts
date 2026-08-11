@@ -6,9 +6,15 @@ import {
   type Tool as McpToolDefinition
 } from "@modelcontextprotocol/sdk/types.js";
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
-import { Context } from "./backend/context.js";
+import { Context, redactSecrets } from "./backend/context.js";
 import { Response } from "./backend/response.js";
 import { browserTools as allBackendTools } from "./backend/tools.js";
+import cookies from "./backend/cookies.js";
+import mouse from "./backend/mouse.js";
+import pdf from "./backend/pdf.js";
+import storage from "./backend/storage.js";
+import webstorage from "./backend/webstorage.js";
+import verify from "./backend/verify.js";
 import type { Tool as BackendTool } from "./backend/tool.js";
 import { isMcpToolError } from "./errors.js";
 import { textResult, type Tool as LegacyTool } from "./tool.js";
@@ -42,6 +48,15 @@ export function createRoxyBrowserMcpServer(
   const assetOptions = pickAssetOptions(options);
   const runtimeManager = new McpRuntimeManager(options.sessionFactory, {
     ...(options.snapshotMode !== undefined ? { snapshotMode: options.snapshotMode } : {}),
+    ...(options.secrets !== undefined
+      ? { redactText: (text: string) => redactSecrets(text, options.secrets) }
+      : {}),
+    ...(options.contextOptions !== undefined ? { contextOptions: options.contextOptions } : {}),
+    ...(options.viewport !== undefined ? { viewport: options.viewport } : {}),
+    ...(options.initScript !== undefined ? { initScript: options.initScript } : {}),
+    ...(options.consoleLevel !== undefined ? { consoleLevel: options.consoleLevel } : {}),
+    ...(options.network !== undefined ? { network: options.network } : {}),
+    ...(options.testIdAttribute !== undefined ? { testIdAttribute: options.testIdAttribute } : {}),
     ...assetOptions
   });
   const server = new McpServer({
@@ -51,10 +66,16 @@ export function createRoxyBrowserMcpServer(
   const backendTools = [
     ...allBackendTools,
     ...(internalOptions.extraBackendTools ?? [])
+  ].filter((tool) => isBackendToolEnabled(tool, options.capabilities));
+  const capabilityTools: BackendTool[] = [
+    ...(options.capabilities?.includes("storage") ? [...cookies, ...storage, ...webstorage] : []),
+    ...(options.capabilities?.includes("pdf") ? [...pdf] : []),
+    ...(options.capabilities?.includes("vision") ? [...mouse] : []),
+    ...(options.capabilities?.includes("testing") ? [...verify] : [])
   ];
   const backendToolNames = new Set(backendTools.map((tool) => tool.schema.name));
   const legacyTools = allTools.filter((tool) => !backendToolNames.has(tool.schema.name));
-  const registeredTools: RegisteredTool[] = [...legacyTools, ...backendTools];
+  const registeredTools: RegisteredTool[] = [...legacyTools, ...backendTools, ...capabilityTools];
   let lastSessionId: string | undefined;
 
   for (const tool of legacyTools) {
@@ -65,11 +86,11 @@ export function createRoxyBrowserMcpServer(
         description: tool.schema.description,
         inputSchema: tool.schema.inputSchema.shape
       },
-      async (args, extra) => {
+      async (args: Record<string, unknown>, extra: { sessionId?: string; signal: AbortSignal }) => {
         try {
           lastSessionId = extra.sessionId;
           const runtime = runtimeManager.getRuntime(extra.sessionId);
-          return await tool.handle(args, runtime);
+          return await tool.handle(args, runtime, extra.signal);
         } catch (error) {
           return toolErrorResult(error);
         }
@@ -77,7 +98,7 @@ export function createRoxyBrowserMcpServer(
     );
   }
 
-  for (const tool of backendTools) {
+  for (const tool of [...backendTools, ...capabilityTools]) {
     server.registerTool(
       tool.schema.name,
       {
@@ -85,12 +106,22 @@ export function createRoxyBrowserMcpServer(
         description: tool.schema.description,
         inputSchema: tool.schema.inputSchema.shape
       },
-      async (args, extra) => {
+      async (args: Record<string, unknown>, extra: { sessionId?: string; signal: AbortSignal }) => {
         try {
           lastSessionId = extra.sessionId;
           const runtime = runtimeManager.getRuntime(extra.sessionId);
           const context = new Context(runtime, {
             ...assetOptions,
+            ...(options.imageResponses !== undefined ? { imageResponses: options.imageResponses } : {}),
+            ...(options.codegen !== undefined ? { codegen: options.codegen } : {}),
+            ...(options.outputMaxSize !== undefined ? { outputMaxSize: options.outputMaxSize } : {}),
+            ...(options.testIdAttribute !== undefined ? { testIdAttribute: options.testIdAttribute } : {}),
+            ...(options.skillMode !== undefined ? { skillMode: options.skillMode } : {}),
+            ...(options.secrets !== undefined ? { secrets: options.secrets } : {}),
+            ...(options.initPage !== undefined ? { initPage: options.initPage } : {}),
+            ...(options.initScript !== undefined ? { initScript: options.initScript } : {}),
+            ...(options.timeouts !== undefined ? { timeouts: options.timeouts } : {}),
+            ...(options.contextOptions !== undefined ? { contextOptions: options.contextOptions } : {}),
             ...(options.snapshotMode !== undefined
               ? {
                   snapshot: {
@@ -100,7 +131,7 @@ export function createRoxyBrowserMcpServer(
               : {})
           });
           const response = new Response(context, tool.schema.name, args);
-          await tool.handle(context, args, response);
+          await tool.handle(context, args, response, extra.signal);
           return await response.serialize();
         } catch (error) {
           return toolErrorResult(error);
@@ -134,6 +165,8 @@ function pickAssetOptions(options: AssetOptions): AssetOptions {
     ...(options.videosDir !== undefined ? { videosDir: options.videosDir } : {}),
     ...(options.networkDir !== undefined ? { networkDir: options.networkDir } : {}),
     ...(options.consoleDir !== undefined ? { consoleDir: options.consoleDir } : {}),
+    ...(options.pdfDir !== undefined ? { pdfDir: options.pdfDir } : {}),
+    ...(options.storageDir !== undefined ? { storageDir: options.storageDir } : {}),
     ...(options.scriptsDir !== undefined ? { scriptsDir: options.scriptsDir } : {}),
     ...(options.tempDir !== undefined ? { tempDir: options.tempDir } : {}),
     ...(options.allowAbsoluteAssetPaths !== undefined
@@ -145,6 +178,7 @@ function pickAssetOptions(options: AssetOptions): AssetOptions {
 function registerListedToolSchemaOverrides(server: McpServer, tools: RegisteredTool[]): void {
   const listedInputSchemas = new Map(
     tools
+      .filter((tool) => !("skillOnly" in tool && tool.skillOnly))
       .filter((tool) => hasListedInputSchema(tool))
       .map((tool) => [tool.schema.name, tool.schema.listedInputSchema!])
   );
@@ -153,7 +187,9 @@ function registerListedToolSchemaOverrides(server: McpServer, tools: RegisteredT
     return;
   }
 
-  const toolDefinitions = tools.map<McpToolDefinition>((tool) => ({
+  const toolDefinitions = tools
+    .filter((tool) => !("skillOnly" in tool && tool.skillOnly))
+    .map<McpToolDefinition>((tool) => ({
     name: tool.schema.name,
     title: tool.schema.title,
     description: tool.schema.description,
@@ -183,4 +219,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasListedInputSchema(tool: RegisteredTool): tool is LegacyTool {
   return "listedInputSchema" in tool.schema;
+}
+
+function isBackendToolEnabled(
+  tool: BackendTool,
+  capabilities: CreateRoxyBrowserMcpServerOptions["capabilities"] = []
+): boolean {
+  if (tool.capability === "devtools" || tool.capability === "network" || tool.capability === "testing") {
+    return capabilities.includes(tool.capability);
+  }
+  return true;
 }

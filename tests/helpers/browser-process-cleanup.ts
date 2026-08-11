@@ -183,13 +183,14 @@ export function collectLocalTestBrowserProcessTree(
     children.push(process);
     childrenByParentPid.set(process.ppid, children);
   }
-  const siblingOwnedPids = listSiblingRegistryPidsExcludingSelf();
+  const siblingOwnedRootPids = listSiblingRegistryPidsExcludingSelf();
+  const siblingOwnedPids = collectProcessTreePids([...siblingOwnedRootPids], childrenByParentPid);
   const rootPids = processes
     .filter(isLocalTestBrowserProcess)
     .map((process) => process.pid)
     .filter((pid) => !siblingOwnedPids.has(pid));
   const pids = [...collectProcessTreePids(rootPids, childrenByParentPid)]
-    .filter((pid) => pid !== currentPid);
+    .filter((pid) => pid !== currentPid && !siblingOwnedPids.has(pid));
 
   return {
     rootPids,

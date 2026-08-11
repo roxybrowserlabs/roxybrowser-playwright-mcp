@@ -81,6 +81,7 @@ export type Unboxed<Arg> =
   Arg;
 export type PageFunction<Arg, R> = string | ((arg: Unboxed<Arg>) => R | Promise<R>);
 export type PageFunctionOn<On, Arg2, R> = string | ((on: On, arg2: Unboxed<Arg2>) => R | Promise<R>);
+export type EvaluateOptions = { exposeFunctions?: boolean };
 export type SmartHandle<T> = [T] extends [Node] ? ElementHandle<T> : JSHandle<T>;
 export type ElementHandleForTag<K extends keyof HTMLElementTagNameMap> = ElementHandle<HTMLElementTagNameMap[K]>;
 
@@ -91,6 +92,7 @@ type PageWaitForSelectorOptions = WaitForSelectorOptions;
 type PageWaitForFunctionOptions = {
   polling?: number | "raf";
   timeout?: number;
+  signal?: AbortSignal;
 };
 type ElementHandleWaitForSelectorOptionsNotHidden = WaitForSelectorOptions & {
   state?: "visible" | "attached";
@@ -171,35 +173,14 @@ export interface Browser {
 
 export interface APIRequestContext {
   tracing: Tracing;
-  delete(
-    url: string,
-    options?: APIRequestOptions
-  ): Promise<APIResponse>;
+  delete(url: string, options?: { data?: string|Buffer|Serializable; failOnStatusCode?: boolean; form?: { [key: string]: string|number|boolean; }|FormData; headers?: { [key: string]: string; }; ignoreHTTPSErrors?: boolean; maxRedirects?: number; maxRetries?: number; multipart?: FormData|{ [key: string]: string|number|boolean|ReadStream|{ name: string; mimeType: string; buffer: Buffer; }; }; params?: { [key: string]: string|number|boolean; }|URLSearchParams|string; signal?: AbortSignal; timeout?: number; }): Promise<APIResponse>;
   dispose(options?: { reason?: string }): Promise<void>;
-  fetch(
-    urlOrRequest: string | Request,
-    options?: APIRequestFetchOptions
-  ): Promise<APIResponse>;
-  get(
-    url: string,
-    options?: APIRequestOptions
-  ): Promise<APIResponse>;
-  head(
-    url: string,
-    options?: APIRequestOptions
-  ): Promise<APIResponse>;
-  patch(
-    url: string,
-    options?: APIRequestOptions
-  ): Promise<APIResponse>;
-  post(
-    url: string,
-    options?: APIRequestOptions
-  ): Promise<APIResponse>;
-  put(
-    url: string,
-    options?: APIRequestOptions
-  ): Promise<APIResponse>;
+  fetch(urlOrRequest: string|Request, options?: { data?: string|Buffer|Serializable; failOnStatusCode?: boolean; form?: { [key: string]: string|number|boolean; }|FormData; headers?: { [key: string]: string; }; ignoreHTTPSErrors?: boolean; maxRedirects?: number; maxRetries?: number; method?: string; multipart?: FormData|{ [key: string]: string|number|boolean|ReadStream|{ name: string; mimeType: string; buffer: Buffer; }; }; params?: { [key: string]: string|number|boolean; }|URLSearchParams|string; signal?: AbortSignal; timeout?: number; }): Promise<APIResponse>;
+  get(url: string, options?: { data?: string|Buffer|Serializable; failOnStatusCode?: boolean; form?: { [key: string]: string|number|boolean; }|FormData; headers?: { [key: string]: string; }; ignoreHTTPSErrors?: boolean; maxRedirects?: number; maxRetries?: number; multipart?: FormData|{ [key: string]: string|number|boolean|ReadStream|{ name: string; mimeType: string; buffer: Buffer; }; }; params?: { [key: string]: string|number|boolean; }|URLSearchParams|string; signal?: AbortSignal; timeout?: number; }): Promise<APIResponse>;
+  head(url: string, options?: { data?: string|Buffer|Serializable; failOnStatusCode?: boolean; form?: { [key: string]: string|number|boolean; }|FormData; headers?: { [key: string]: string; }; ignoreHTTPSErrors?: boolean; maxRedirects?: number; maxRetries?: number; multipart?: FormData|{ [key: string]: string|number|boolean|ReadStream|{ name: string; mimeType: string; buffer: Buffer; }; }; params?: { [key: string]: string|number|boolean; }|URLSearchParams|string; signal?: AbortSignal; timeout?: number; }): Promise<APIResponse>;
+  patch(url: string, options?: { data?: string|Buffer|Serializable; failOnStatusCode?: boolean; form?: { [key: string]: string|number|boolean; }|FormData; headers?: { [key: string]: string; }; ignoreHTTPSErrors?: boolean; maxRedirects?: number; maxRetries?: number; multipart?: FormData|{ [key: string]: string|number|boolean|ReadStream|{ name: string; mimeType: string; buffer: Buffer; }; }; params?: { [key: string]: string|number|boolean; }|URLSearchParams|string; signal?: AbortSignal; timeout?: number; }): Promise<APIResponse>;
+  post(url: string, options?: { data?: string|Buffer|Serializable; failOnStatusCode?: boolean; form?: { [key: string]: string|number|boolean; }|FormData; headers?: { [key: string]: string; }; ignoreHTTPSErrors?: boolean; maxRedirects?: number; maxRetries?: number; multipart?: FormData|{ [key: string]: string|number|boolean|ReadStream|{ name: string; mimeType: string; buffer: Buffer; }; }; params?: { [key: string]: string|number|boolean; }|URLSearchParams|string; signal?: AbortSignal; timeout?: number; }): Promise<APIResponse>;
+  put(url: string, options?: { data?: string|Buffer|Serializable; failOnStatusCode?: boolean; form?: { [key: string]: string|number|boolean; }|FormData; headers?: { [key: string]: string; }; ignoreHTTPSErrors?: boolean; maxRedirects?: number; maxRetries?: number; multipart?: FormData|{ [key: string]: string|number|boolean|ReadStream|{ name: string; mimeType: string; buffer: Buffer; }; }; params?: { [key: string]: string|number|boolean; }|URLSearchParams|string; signal?: AbortSignal; timeout?: number; }): Promise<APIResponse>;
   storageState(options?: { indexedDB?: boolean; path?: string }): Promise<{
     cookies: Array<{
       name: string;
@@ -223,7 +204,7 @@ export interface APIRequestContext {
 }
 
 export interface APIRequestOptions {
-  data?: string | Buffer | unknown;
+  data?: string | Buffer | Serializable;
   failOnStatusCode?: boolean;
   form?: { [key: string]: string | number | boolean } | FormData;
   headers?: { [key: string]: string };
@@ -241,6 +222,7 @@ export interface APIRequestOptions {
           | FilePayload;
       };
   params?: { [key: string]: string | number | boolean } | URLSearchParams | string;
+  signal?: AbortSignal;
   timeout?: number;
 }
 
@@ -284,6 +266,7 @@ export interface BrowserContext {
     name?: string | RegExp;
     path?: string | RegExp;
   }): Promise<void>;
+  serviceWorkers(): Worker[];
   newPage(): Promise<Page>;
   pages(): Page[];
   route(
@@ -336,6 +319,7 @@ export interface BrowserContext {
       | BrowserContextEventPredicate<K>
       | {
           predicate?: BrowserContextEventPredicate<K>;
+          signal?: AbortSignal;
           timeout?: number;
         }
   ): Promise<import("./events.js").BrowserContextEventMap[K]>;
@@ -352,7 +336,7 @@ export interface FileChooser {
   element(): ElementHandle;
   isMultiple(): boolean;
   page(): Page;
-  setFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+  setFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
 }
 
 export interface Tracing {
@@ -589,24 +573,8 @@ export interface Worker {
   prependListener(event: "close", listener: (worker: Worker) => any): this;
   prependListener(event: "console", listener: (consoleMessage: PageConsoleMessage) => any): this;
   url(): string;
-  waitForEvent(
-    event: "close",
-    optionsOrPredicate?:
-      | ((worker: Worker) => boolean | Promise<boolean>)
-      | {
-          predicate?: (worker: Worker) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<Worker>;
-  waitForEvent(
-    event: "console",
-    optionsOrPredicate?:
-      | ((consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>)
-      | {
-          predicate?: (consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<PageConsoleMessage>;
+  waitForEvent(event: 'close', optionsOrPredicate?: { predicate?: (worker: Worker) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((worker: Worker) => boolean | Promise<boolean>)): Promise<Worker>;
+  waitForEvent(event: 'console', optionsOrPredicate?: { predicate?: (consoleMessage: ConsoleMessage) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((consoleMessage: ConsoleMessage) => boolean | Promise<boolean>)): Promise<ConsoleMessage>;
 }
 
 export interface BindingSource {
@@ -679,6 +647,17 @@ export interface APIResponse {
     validTo?: number;
   }>;
   serverAddr(): Promise<null | { ipAddress: string; port: number }>;
+  timing(): {
+    startTime: number;
+    domainLookupStart: number;
+    domainLookupEnd: number;
+    connectStart: number;
+    secureConnectionStart: number;
+    connectEnd: number;
+    requestStart: number;
+    responseStart: number;
+    responseEnd: number;
+  };
   status(): number;
   statusText(): string;
   text(): Promise<string>;
@@ -739,11 +718,12 @@ export interface Route {
     url?: string;
   }): Promise<void>;
   fetch(options?: {
-    headers?: { [key: string]: string };
+    headers?: { [key: string]: string; };
     maxRedirects?: number;
     maxRetries?: number;
     method?: string;
-    postData?: string | Buffer | unknown;
+    postData?: string | Buffer | Serializable;
+    signal?: AbortSignal;
     timeout?: number;
     url?: string;
   }): Promise<APIResponse>;
@@ -797,33 +777,10 @@ export interface WebSocket {
   removeListener(event: "framesent", listener: (data: { payload: string | Buffer }) => any): this;
   removeListener(event: "socketerror", listener: (error: string) => any): this;
   url(): string;
-  waitForEvent(
-    event: "close",
-    optionsOrPredicate?:
-      | ((webSocket: WebSocket) => boolean | Promise<boolean>)
-      | {
-          predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<WebSocket>;
-  waitForEvent(
-    event: "framereceived" | "framesent",
-    optionsOrPredicate?:
-      | ((data: { payload: string | Buffer }) => boolean | Promise<boolean>)
-      | {
-          predicate?: (data: { payload: string | Buffer }) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<{ payload: string | Buffer }>;
-  waitForEvent(
-    event: "socketerror",
-    optionsOrPredicate?:
-      | ((error: string) => boolean | Promise<boolean>)
-      | {
-          predicate?: (error: string) => boolean | Promise<boolean>;
-          timeout?: number;
-        }
-  ): Promise<string>;
+  waitForEvent(event: 'close', optionsOrPredicate?: { predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((webSocket: WebSocket) => boolean | Promise<boolean>)): Promise<WebSocket>;
+  waitForEvent(event: 'framereceived', optionsOrPredicate?: { predicate?: (data: { payload: string|Buffer; }) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((data: { payload: string|Buffer; }) => boolean | Promise<boolean>)): Promise<{ payload: string|Buffer; }>;
+  waitForEvent(event: 'framesent', optionsOrPredicate?: { predicate?: (data: { payload: string|Buffer; }) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((data: { payload: string|Buffer; }) => boolean | Promise<boolean>)): Promise<{ payload: string|Buffer; }>;
+  waitForEvent(event: 'socketerror', optionsOrPredicate?: { predicate?: (string: string) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((string: string) => boolean | Promise<boolean>)): Promise<string>;
 }
 
 export interface PageNavigationResult {
@@ -859,37 +816,37 @@ export interface Page {
   screencast: Screencast;
   sessionStorage: WebStorage;
   touchscreen: Touchscreen;
-  addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
+  addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg, options?: { exposeFunctions?: boolean }): Promise<Disposable>;
   addLocatorHandler(locator: Locator, handler: ((locator: Locator) => Promise<any>), options?: { noWaitAfter?: boolean; times?: number; }): Promise<void>;
   exposeBinding(name: string, playwrightBinding: (source: BindingSource, ...args: any[]) => any): Promise<Disposable>;
   exposeFunction(name: string, callback: Function): Promise<Disposable>;
   addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
   addStyleTag(options?: { content?: string; path?: string; url?: string; }): Promise<ElementHandle>;
-  goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  goto(url: string, options?: { referer?: string; signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   url(): string;
-  goBack(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
-  goForward(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
-  reload(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  goBack(options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  goForward(options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  reload(options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   title(): Promise<string>;
   content(): Promise<string>;
-  setContent(html: string, options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
-  evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
-  evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
-  evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
-  evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<SmartHandle<R>>;
+  setContent(html: string, options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
+  evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: { exposeFunctions?: boolean }): Promise<R>;
+  evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: { exposeFunctions?: boolean }): Promise<R>;
+  evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: { exposeFunctions?: boolean }): Promise<SmartHandle<R>>;
+  evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: { exposeFunctions?: boolean }): Promise<SmartHandle<R>>;
   waitForTimeout(timeout: number): Promise<void>;
-  waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
-  waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
-  waitForRequest(urlOrPredicate: string|RegExp|((request: Request) => boolean|Promise<boolean>), options?: { timeout?: number; }): Promise<Request>;
-  waitForResponse(urlOrPredicate: string|RegExp|((response: Response) => boolean|Promise<boolean>), options?: { timeout?: number; }): Promise<Response>;
+  waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
+  waitForNavigation(options?: { signal?: AbortSignal; timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  waitForRequest(urlOrPredicate: string|RegExp|((request: Request) => boolean|Promise<boolean>), options?: { signal?: AbortSignal; timeout?: number; }): Promise<Request>;
+  waitForResponse(urlOrPredicate: string|RegExp|((response: Response) => boolean|Promise<boolean>), options?: { signal?: AbortSignal; timeout?: number; }): Promise<Response>;
   waitForFunction<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
   waitForFunction<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
-  waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { timeout?: number; }): Promise<void>;
+  waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
   waitForSelector(selector: string, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options: PageWaitForSelectorOptions): Promise<ElementHandleForTag<K> | null>;
   waitForSelector(selector: string, options: PageWaitForSelectorOptions): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
-  ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; timeout?: number; }): Promise<string>;
+  ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; signal?: AbortSignal; timeout?: number; }): Promise<string>;
   screenshot(options?: PageScreenshotOptions): Promise<Buffer>;
   context(): BrowserContext;
   consoleMessages(options?: { filter?: "all"|"since-navigation"; }): Promise<Array<ConsoleMessage>>;
@@ -1013,25 +970,25 @@ export interface Page {
   prependListener(event: 'worker', listener: (worker: Worker) => any): this;
   removeAllListeners(type?: string): this;
   removeAllListeners(type: string|undefined, options: { behavior?: 'wait'|'ignoreErrors'|'default' }): Promise<void>;
-  waitForEvent(event: 'close', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
-  waitForEvent(event: 'console', optionsOrPredicate?: { predicate?: (consoleMessage: ConsoleMessage) => boolean | Promise<boolean>, timeout?: number } | ((consoleMessage: ConsoleMessage) => boolean | Promise<boolean>)): Promise<ConsoleMessage>;
-  waitForEvent(event: 'crash', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
-  waitForEvent(event: 'dialog', optionsOrPredicate?: { predicate?: (dialog: Dialog) => boolean | Promise<boolean>, timeout?: number } | ((dialog: Dialog) => boolean | Promise<boolean>)): Promise<Dialog>;
-  waitForEvent(event: 'domcontentloaded', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
-  waitForEvent(event: 'download', optionsOrPredicate?: { predicate?: (download: Download) => boolean | Promise<boolean>, timeout?: number } | ((download: Download) => boolean | Promise<boolean>)): Promise<Download>;
-  waitForEvent(event: 'filechooser', optionsOrPredicate?: { predicate?: (fileChooser: FileChooser) => boolean | Promise<boolean>, timeout?: number } | ((fileChooser: FileChooser) => boolean | Promise<boolean>)): Promise<FileChooser>;
-  waitForEvent(event: 'frameattached', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
-  waitForEvent(event: 'framedetached', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
-  waitForEvent(event: 'framenavigated', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
-  waitForEvent(event: 'load', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
-  waitForEvent(event: 'pageerror', optionsOrPredicate?: { predicate?: (error: Error) => boolean | Promise<boolean>, timeout?: number } | ((error: Error) => boolean | Promise<boolean>)): Promise<Error>;
-  waitForEvent(event: 'popup', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
-  waitForEvent(event: 'request', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
-  waitForEvent(event: 'requestfailed', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
-  waitForEvent(event: 'requestfinished', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
-  waitForEvent(event: 'response', optionsOrPredicate?: { predicate?: (response: Response) => boolean | Promise<boolean>, timeout?: number } | ((response: Response) => boolean | Promise<boolean>)): Promise<Response>;
-  waitForEvent(event: 'websocket', optionsOrPredicate?: { predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>, timeout?: number } | ((webSocket: WebSocket) => boolean | Promise<boolean>)): Promise<WebSocket>;
-  waitForEvent(event: 'worker', optionsOrPredicate?: { predicate?: (worker: Worker) => boolean | Promise<boolean>, timeout?: number } | ((worker: Worker) => boolean | Promise<boolean>)): Promise<Worker>;
+  waitForEvent(event: 'close', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'console', optionsOrPredicate?: { predicate?: (consoleMessage: ConsoleMessage) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((consoleMessage: ConsoleMessage) => boolean | Promise<boolean>)): Promise<ConsoleMessage>;
+  waitForEvent(event: 'crash', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'dialog', optionsOrPredicate?: { predicate?: (dialog: Dialog) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((dialog: Dialog) => boolean | Promise<boolean>)): Promise<Dialog>;
+  waitForEvent(event: 'domcontentloaded', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'download', optionsOrPredicate?: { predicate?: (download: Download) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((download: Download) => boolean | Promise<boolean>)): Promise<Download>;
+  waitForEvent(event: 'filechooser', optionsOrPredicate?: { predicate?: (fileChooser: FileChooser) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((fileChooser: FileChooser) => boolean | Promise<boolean>)): Promise<FileChooser>;
+  waitForEvent(event: 'frameattached', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
+  waitForEvent(event: 'framedetached', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
+  waitForEvent(event: 'framenavigated', optionsOrPredicate?: { predicate?: (frame: Frame) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((frame: Frame) => boolean | Promise<boolean>)): Promise<Frame>;
+  waitForEvent(event: 'load', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'pageerror', optionsOrPredicate?: { predicate?: (error: Error) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((error: Error) => boolean | Promise<boolean>)): Promise<Error>;
+  waitForEvent(event: 'popup', optionsOrPredicate?: { predicate?: (page: Page) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((page: Page) => boolean | Promise<boolean>)): Promise<Page>;
+  waitForEvent(event: 'request', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
+  waitForEvent(event: 'requestfailed', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
+  waitForEvent(event: 'requestfinished', optionsOrPredicate?: { predicate?: (request: Request) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((request: Request) => boolean | Promise<boolean>)): Promise<Request>;
+  waitForEvent(event: 'response', optionsOrPredicate?: { predicate?: (response: Response) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((response: Response) => boolean | Promise<boolean>)): Promise<Response>;
+  waitForEvent(event: 'websocket', optionsOrPredicate?: { predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((webSocket: WebSocket) => boolean | Promise<boolean>)): Promise<WebSocket>;
+  waitForEvent(event: 'worker', optionsOrPredicate?: { predicate?: (worker: Worker) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((worker: Worker) => boolean | Promise<boolean>)): Promise<Worker>;
   $<K extends keyof HTMLElementTagNameMap>(selector: K, options?: { strict: boolean }): Promise<ElementHandleForTag<K> | null>;
   $(selector: string, options?: { strict: boolean }): Promise<ElementHandle<SVGElement | HTMLElement> | null>;
   $$<K extends keyof HTMLElementTagNameMap>(selector: K): Promise<ElementHandleForTag<K>[]>;
@@ -1077,41 +1034,41 @@ export interface Page {
   }): Promise<void>;
   video(): null|Video;
   workers(): Array<Worker>;
-  textContent(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
-  innerText(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  innerHTML(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  getAttribute(selector: string, name: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
-  inputValue(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  isChecked(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  isDisabled(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  isEditable(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  isEnabled(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
+  textContent(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<null|string>;
+  innerText(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  innerHTML(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  getAttribute(selector: string, name: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<null|string>;
+  inputValue(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  isChecked(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  isDisabled(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  isEditable(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  isEnabled(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
   isHidden(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
   isVisible(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  focus(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
-  check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  focus(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; scroll?: "auto"|"none"; signal?: AbortSignal; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   emulateMedia(options?: { colorScheme?: null|"light"|"dark"|"no-preference"; contrast?: null|"no-preference"|"more"; forcedColors?: null|"active"|"none"; media?: null|"screen"|"print"; reducedMotion?: null|"reduce"|"no-preference"; }): Promise<void>;
-  setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   setExtraHTTPHeaders(headers: { [key: string]: string; }): Promise<void>;
-  setInputFiles(selector: string, files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
-  selectOption(selector: string, values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<Array<string>>;
+  setInputFiles(selector: string, files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  selectOption(selector: string, values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<Array<string>>;
   bringToFront(): Promise<void>;
   isClosed(): boolean;
-  dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
+  dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
   requestGC(): Promise<void>;
   setDefaultNavigationTimeout(timeout: number): void;
   setDefaultTimeout(timeout: number): void;
   setViewportSize(viewportSize: { width: number; height: number; }): Promise<void>;
   viewportSize(): null|{ width: number; height: number; };
-  tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
-  type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
-  press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
+  tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
   close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;
 }
 
@@ -1136,16 +1093,16 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   ownerFrame(): Promise<null|Frame>;
   boundingBox(): Promise<null|{ x: number; y: number; width: number; height: number; }>;
   dispatchEvent(type: string, eventInit?: EvaluationArgument): Promise<void>;
-  screenshot(options?: { animations?: "disabled"|"allow"; caret?: "hide"|"initial"; mask?: Array<Locator>; maskColor?: string; omitBackground?: boolean; path?: string; quality?: number; scale?: "css"|"device"; style?: string; timeout?: number; type?: "png"|"jpeg"; }): Promise<Buffer>;
-  scrollIntoViewIfNeeded(options?: { timeout?: number; }): Promise<void>;
-  selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
-  tap(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  waitForElementState(state: "visible"|"hidden"|"stable"|"enabled"|"disabled"|"editable", options?: { timeout?: number; }): Promise<void>;
-  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
-  hover(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  fill(value: string, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  type(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  press(key: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
+  screenshot(options?: { animations?: "disabled"|"allow"; caret?: "hide"|"initial"; mask?: Array<Locator>; maskColor?: string; omitBackground?: boolean; path?: string; quality?: number; scale?: "css"|"device"; signal?: AbortSignal; style?: string; timeout?: number; type?: "png"|"jpeg"|"webp"; }): Promise<Buffer>;
+  scrollIntoViewIfNeeded(options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  selectText(options?: { force?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  tap(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  waitForElementState(state: "visible"|"hidden"|"stable"|"enabled"|"disabled"|"editable", options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
+  hover(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  fill(value: string, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  type(text: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  press(key: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
   textContent(): Promise<null|string>;
   innerText(): Promise<string>;
   innerHTML(): Promise<string>;
@@ -1158,19 +1115,19 @@ export interface ElementHandle<T = Node> extends JSHandle<T> {
   isHidden(): Promise<boolean>;
   isVisible(): Promise<boolean>;
   focus(): Promise<void>;
-  check(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  setChecked(checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  uncheck(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  selectOption(values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<Array<string>>;
-  setInputFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
+  check(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  setChecked(checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  uncheck(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  selectOption(values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<Array<string>>;
+  setInputFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
 }
 
 export interface JSHandle<T = unknown> extends Disposable {
-  evaluate<R, Arg, O extends T = T>(pageFunction: PageFunctionOn<O, Arg, R>, arg: Arg): Promise<R>;
-  evaluate<R, O extends T = T>(pageFunction: PageFunctionOn<O, void, R>, arg?: any): Promise<R>;
-  evaluateHandle<R, Arg, O extends T = T>(pageFunction: PageFunctionOn<O, Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
-  evaluateHandle<R, O extends T = T>(pageFunction: PageFunctionOn<O, void, R>, arg?: any): Promise<SmartHandle<R>>;
+  evaluate<R, Arg, O extends T = T>(pageFunction: PageFunctionOn<O, Arg, R>, arg: Arg, options?: { exposeFunctions?: boolean }): Promise<R>;
+  evaluate<R, O extends T = T>(pageFunction: PageFunctionOn<O, void, R>, arg?: any, options?: { exposeFunctions?: boolean }): Promise<R>;
+  evaluateHandle<R, Arg, O extends T = T>(pageFunction: PageFunctionOn<O, Arg, R>, arg: Arg, options?: { exposeFunctions?: boolean }): Promise<SmartHandle<R>>;
+  evaluateHandle<R, O extends T = T>(pageFunction: PageFunctionOn<O, void, R>, arg?: any, options?: { exposeFunctions?: boolean }): Promise<SmartHandle<R>>;
   jsonValue(): Promise<T>;
   asElement(): T extends Node ? ElementHandle<T> : null;
   dispose(): Promise<void>;
@@ -1216,52 +1173,50 @@ export interface Locator {
   allInnerTexts(): Promise<Array<string>>;
   allTextContents(): Promise<Array<string>>;
   count(): Promise<number>;
-  evaluate<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg, options?: { timeout?: number; }): Promise<R>;
-  evaluate<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, void, R>, options?: { timeout?: number; }): Promise<R>;
-  evaluateAll<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E[], Arg, R>, arg: Arg): Promise<R>;
-  evaluateAll<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E[], void, R>): Promise<R>;
-  evaluateHandle<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
-  evaluateHandle<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, void, R>): Promise<SmartHandle<R>>;
-  boundingBox(options?: { timeout?: number; }): Promise<null|{ x: number; y: number; width: number; height: number; }>;
-  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
-  check(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  clear(options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
-  dispatchEvent(type: string, eventInit?: EvaluationArgument, options?: { timeout?: number; }): Promise<void>;
-  dragTo(target: Locator, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  drop(payload: { files?: string|Array<string>|{ name: string; mimeType: string; buffer: Buffer; }|Array<{ name: string; mimeType: string; buffer: Buffer; }>; data?: { [key: string]: string; }; }, options?: { position?: { x: number; y: number; }; timeout?: number; }): Promise<void>;
-  hover(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  fill(value: string, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  type(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  pressSequentially(text: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  press(key: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  focus(options?: { timeout?: number; }): Promise<void>;
-  blur(options?: { timeout?: number; }): Promise<void>;
-  getAttribute(name: string, options?: { timeout?: number; }): Promise<null|string>;
-  highlight(options?: { style?: string | { [key: string]: string|number }; }): Promise<Disposable>;
+  evaluate<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, Arg, R>, arg?: Arg, options?: { timeout?: number, signal?: AbortSignal, exposeFunctions?: boolean }): Promise<R>;
+  evaluateAll<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E[], Arg, R>, arg?: Arg): Promise<R>;
+  waitForFunction<Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, Arg, any>, arg?: Arg, options?: { timeout?: number, signal?: AbortSignal }): Promise<void>;
+  evaluateHandle<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(pageFunction: PageFunctionOn<E, Arg, R>, arg?: Arg, options?: { timeout?: number, signal?: AbortSignal, exposeFunctions?: boolean }): Promise<SmartHandle<R>>;
+  boundingBox(options?: { signal?: AbortSignal; timeout?: number; }): Promise<null|{ x: number; y: number; width: number; height: number; }>;
+  dblclick(options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
+  check(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  clear(options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  click(options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; steps?: number; timeout?: number; trial?: boolean; }): Promise<void>;
+  dispatchEvent(type: string, eventInit?: EvaluationArgument, options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  dragTo(target: Locator, options?: { force?: boolean; noWaitAfter?: boolean; scroll?: "auto"|"none"; signal?: AbortSignal; sourcePosition?: { x: number; y: number; }; steps?: number; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  drop(payload: { files?: string|Array<string>|{ name: string; mimeType: string; buffer: Buffer; }|Array<{ name: string; mimeType: string; buffer: Buffer; }>; data?: { [key: string]: string; }; }, options?: { position?: { x: number; y: number; }; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  hover(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  fill(value: string, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  type(text: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  pressSequentially(text: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  press(key: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  focus(options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  blur(options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  getAttribute(name: string, options?: { signal?: AbortSignal; timeout?: number; }): Promise<null|string>;
+  highlight(options?: { style?: string | { [key: string]: string|number } }): Promise<Disposable>;
   hideHighlight(): Promise<void>;
-  innerHTML(options?: { timeout?: number; }): Promise<string>;
-  innerText(options?: { timeout?: number; }): Promise<string>;
-  inputValue(options?: { timeout?: number; }): Promise<string>;
-  isChecked(options?: { timeout?: number; }): Promise<boolean>;
-  isDisabled(options?: { timeout?: number; }): Promise<boolean>;
-  isEditable(options?: { timeout?: number; }): Promise<boolean>;
-  isEnabled(options?: { timeout?: number; }): Promise<boolean>;
+  innerHTML(options?: { signal?: AbortSignal; timeout?: number; }): Promise<string>;
+  innerText(options?: { signal?: AbortSignal; timeout?: number; }): Promise<string>;
+  inputValue(options?: { signal?: AbortSignal; timeout?: number; }): Promise<string>;
+  isChecked(options?: { signal?: AbortSignal; timeout?: number; }): Promise<boolean>;
+  isDisabled(options?: { signal?: AbortSignal; timeout?: number; }): Promise<boolean>;
+  isEditable(options?: { signal?: AbortSignal; timeout?: number; }): Promise<boolean>;
+  isEnabled(options?: { signal?: AbortSignal; timeout?: number; }): Promise<boolean>;
   isHidden(options?: { timeout?: number; }): Promise<boolean>;
-  ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; timeout?: number; }): Promise<string>;
+  ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; signal?: AbortSignal; timeout?: number; }): Promise<string>;
   normalize(): Promise<Locator>;
   screenshot(options?: LocatorScreenshotOptions): Promise<Buffer>;
-  scrollIntoViewIfNeeded(options?: { timeout?: number; }): Promise<void>;
-  selectOption(values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number; }): Promise<Array<string>>;
-  selectText(options?: { force?: boolean; timeout?: number; }): Promise<void>;
-  setChecked(checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  setInputFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; timeout?: number; }): Promise<void>;
-  tap(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  textContent(options?: { timeout?: number; }): Promise<null|string>;
-  uncheck(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  scrollIntoViewIfNeeded(options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  selectOption(values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<Array<string>>;
+  selectText(options?: { force?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  setChecked(checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  setInputFiles(files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number; }): Promise<void>;
+  tap(options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
+  textContent(options?: { signal?: AbortSignal; timeout?: number; }): Promise<null|string>;
+  uncheck(options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; timeout?: number; trial?: boolean; }): Promise<void>;
   isVisible(options?: { timeout?: number; }): Promise<boolean>;
-  waitFor(options?: { state?: "attached"|"detached"|"visible"|"hidden"; timeout?: number; }): Promise<void>;
-  elementHandle(options?: { timeout?: number; }): Promise<null|ElementHandle<SVGElement | HTMLElement>>;
+  waitFor(options?: { signal?: AbortSignal; state?: "attached"|"detached"|"visible"|"hidden"; timeout?: number; }): Promise<void>;
+  elementHandle(options?: { timeout?: number }): Promise<ElementHandle<SVGElement|HTMLElement>>;
   elementHandles(): Promise<Array<ElementHandle>>;
   toString(): string;
 }
@@ -1288,6 +1243,7 @@ export interface FrameLocator {
 }
 
 export interface Frame {
+  _roxyFrameIdentity?(): string | undefined;
   page(): Page;
   parentFrame(): null|Frame;
   childFrames(): Array<Frame>;
@@ -1295,18 +1251,18 @@ export interface Frame {
   url(): string;
   name(): string;
   frameElement(): Promise<ElementHandle>;
-  goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
-  setContent(html: string, options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
+  goto(url: string, options?: { referer?: string; signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  setContent(html: string, options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   title(): Promise<string>;
-  evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
-  evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
-  evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
-  evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<SmartHandle<R>>;
+  evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: { exposeFunctions?: boolean }): Promise<R>;
+  evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: { exposeFunctions?: boolean }): Promise<R>;
+  evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: { exposeFunctions?: boolean }): Promise<SmartHandle<R>>;
+  evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: { exposeFunctions?: boolean }): Promise<SmartHandle<R>>;
   waitForFunction<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
   waitForFunction<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: PageWaitForFunctionOptions): Promise<SmartHandle<R>>;
-  waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
-  waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
-  waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { timeout?: number; }): Promise<void>;
+  waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
+  waitForNavigation(options?: { signal?: AbortSignal; timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
   waitForTimeout(timeout: number): Promise<void>;
   waitForSelector<K extends keyof HTMLElementTagNameMap>(selector: K, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandleForTag<K>>;
   waitForSelector(selector: string, options?: PageWaitForSelectorOptionsNotHidden): Promise<ElementHandle<SVGElement | HTMLElement>>;
@@ -1341,30 +1297,30 @@ export interface Frame {
   content(): Promise<string>;
   addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
   addStyleTag(options?: { content?: string; path?: string; url?: string; }): Promise<ElementHandle>;
-  dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
-  dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
-  textContent(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
-  innerText(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  innerHTML(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  getAttribute(selector: string, name: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
-  inputValue(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  isChecked(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  isDisabled(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  isEditable(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  isEnabled(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
+  dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; scroll?: "auto"|"none"; signal?: AbortSignal; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  textContent(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<null|string>;
+  innerText(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  innerHTML(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  getAttribute(selector: string, name: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<null|string>;
+  inputValue(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  isChecked(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  isDisabled(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  isEditable(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  isEnabled(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
   isHidden(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
   isVisible(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  focus(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
-  check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
-  hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
-  selectOption(selector: string, values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<Array<string>>;
-  setInputFiles(selector: string, files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
-  setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
-  type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
-  uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  focus(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  selectOption(selector: string, values: null|string|ElementHandle|ReadonlyArray<string>|{ value?: string; label?: string; index?: number; }|ReadonlyArray<ElementHandle>|ReadonlyArray<{ value?: string; label?: string; index?: number; }>, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<Array<string>>;
+  setInputFiles(selector: string, files: string|ReadonlyArray<string>|{ name: string; mimeType: string; buffer: Buffer; }|ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer; }>, options?: { noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
 }

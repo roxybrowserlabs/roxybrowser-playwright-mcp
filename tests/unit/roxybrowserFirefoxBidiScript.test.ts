@@ -36,7 +36,7 @@ describe("roxybrowser firefox bidi cleanup script", () => {
       browser_connection_info = vi.fn(async () => ({ data: [] }));
     }
 
-    vi.doMock("../../tests/helpers/roxybrowser-openai.mjs", () => ({
+    vi.doMock("../../scripts/roxybrowser-client.mjs", () => ({
       RoxyClient: RoxyClientMock
     }));
 
@@ -80,7 +80,7 @@ describe("roxybrowser firefox bidi cleanup script", () => {
       browser_connection_info = vi.fn(async () => ({ data: [] }));
     }
 
-    vi.doMock("../../tests/helpers/roxybrowser-openai.mjs", () => ({
+    vi.doMock("../../scripts/roxybrowser-client.mjs", () => ({
       RoxyClient: RoxyClientMock
     }));
 

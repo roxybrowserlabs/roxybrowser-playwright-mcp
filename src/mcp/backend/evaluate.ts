@@ -1,4 +1,3 @@
-import { writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { optionalElementSchema } from "./snapshot.js";
 import { defineTabTool } from "./tool.js";
@@ -40,7 +39,7 @@ const evaluate = defineTabTool({
       const text = JSON.stringify(evalResult.result, null, 2) ?? "undefined";
       if (params.filename) {
         const resolvedFilename = await tab.context.resolveOutputFile(params.filename, "script");
-        await writeFile(resolvedFilename, text);
+        await tab.context.writeTextFile(resolvedFilename, text);
         response.addTextResult(`- [Evaluation result](${resolvedFilename})`);
         return;
       }

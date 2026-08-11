@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
-import { RoxyClient } from "../tests/helpers/roxybrowser-openai.mjs";
+import { RoxyClient } from "./roxybrowser-client.mjs";
 
 const envPath = resolve(process.cwd(), ".env");
 
@@ -113,15 +113,12 @@ export async function openRoxyBrowserFirefoxBidiProfile(options = {}) {
       console.log("[roxybrowser-bidi] createPayload:", JSON.stringify(createPayload, null, 2));
     }
 
-    const createResponse = await withTimeout(
-      client.browser_create(createPayload),
+    const { dirId } = await createRoxyBrowserProfileWithRetry(
+      client,
+      createPayload,
       operationTimeoutMs,
-      "RoxyBrowser profile create did not respond"
+      debug
     );
-    const dirId = createResponse?.data?.dirId;
-    if (!dirId) {
-      throw new Error("Create response did not include data.dirId.");
-    }
     createdProfile = true;
 
     const detailResponse = await client.browser_detail(workspaceId, dirId);
@@ -318,6 +315,34 @@ function parseNumber(value) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+async function createRoxyBrowserProfileWithRetry(client, createPayload, operationTimeoutMs, debug) {
+  let lastData;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const createResponse = await withTimeout(
+      client.browser_create(createPayload),
+      operationTimeoutMs,
+      "RoxyBrowser profile create did not respond"
+    );
+    const createData = createResponse?.data ?? createResponse;
+    lastData = createData;
+    const createdRecord = firstRecord(createData);
+    const dirId = createdRecord?.dirId;
+    if (dirId) {
+      return { dirId };
+    }
+    if (debug) {
+      console.log(
+        `[roxybrowser-bidi] create attempt ${attempt} returned no dirId:`,
+        JSON.stringify(summarizeResponseData(createData))
+      );
+    }
+    await delay(250 * attempt);
+  }
+  throw new Error(
+    `Create response did not include a profile dirId: ${JSON.stringify(summarizeResponseData(lastData))}`
+  );
+}
+
 function extractRows(data) {
   if (Array.isArray(data)) {
     return data;
@@ -325,6 +350,18 @@ function extractRows(data) {
 
   if (data && typeof data === "object" && Array.isArray(data.rows)) {
     return data.rows;
+  }
+
+  if (data && typeof data === "object" && Array.isArray(data.records)) {
+    return data.records;
+  }
+
+  if (data && typeof data === "object" && Array.isArray(data.list)) {
+    return data.list;
+  }
+
+  if (data && typeof data === "object" && Array.isArray(data.data)) {
+    return data.data;
   }
 
   return [];
@@ -339,11 +376,48 @@ function firstRecord(data) {
     return data.rows[0];
   }
 
+  if (data && typeof data === "object" && Array.isArray(data.records)) {
+    return data.records[0];
+  }
+
+  if (data && typeof data === "object" && Array.isArray(data.list)) {
+    return data.list[0];
+  }
+
+  if (data && typeof data === "object" && Array.isArray(data.data)) {
+    return data.data[0];
+  }
+
+  if (data && typeof data === "object" && data.data && typeof data.data === "object") {
+    return firstRecord(data.data);
+  }
+
+  if (data && typeof data === "object" && data.record && typeof data.record === "object") {
+    return data.record;
+  }
+
   if (data && typeof data === "object") {
     return data;
   }
 
   return undefined;
+}
+
+function summarizeResponseData(data) {
+  if (!data || typeof data !== "object") {
+    return data;
+  }
+  const record = firstRecord(data);
+  if (record && typeof record === "object") {
+    return {
+      keys: Object.keys(data),
+      recordKeys: Object.keys(record),
+      code: record.code,
+      msg: record.msg,
+      dirId: record.dirId
+    };
+  }
+  return { keys: Object.keys(data) };
 }
 
 function summarizeProfile(profile) {

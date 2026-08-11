@@ -50,6 +50,8 @@ describe("asset roots", () => {
       videosDir: path.join(artifactsDir, "videos"),
       networkDir: path.join(artifactsDir, "network"),
       consoleDir: path.join(artifactsDir, "console"),
+      pdfDir: artifactsDir,
+      storageDir: path.join(artifactsDir, "storage"),
       scriptsDir: path.join(artifactsDir, "scripts"),
       tempDir: path.join(artifactsDir, "tmp")
     });
@@ -97,6 +99,7 @@ describe("asset roots", () => {
     expect(roots.artifactsDir).toBe(sandboxDir);
     expect(roots.downloadsDir).toBe(sandboxDir);
     expect(roots.scriptsDir).toBe(sandboxDir);
+    expect(roots.storageDir).toBe(path.join(sandboxDir, "storage"));
     expect(roots.snapshotsDir).toBe(path.join(sandboxDir, "snapshots"));
   });
 

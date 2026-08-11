@@ -1,23 +1,35 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { connectBrowserSession } from "./connectedBrowser.js";
 import { McpToolError } from "./errors.js";
 import { AssetManager } from "../assets/manager.js";
 import type {
   BrowserConsoleEntry,
+  BrowserConsoleSummary,
+  BrowserCookie,
+  BrowserCookieFilter,
+  BrowserCookieInput,
   BrowserEvaluateResult,
   BrowserNetworkRequest,
+  BrowserNetworkResponseBody,
   BrowserSessionFactory,
   BrowserSnapshot,
   BrowserSnapshotRequest,
   BrowserSnapshotToolArgs,
   BrowserSnapshotTarget,
+  BrowserStorageItem,
+  BrowserStorageState,
   BrowserTab,
   ClickTarget,
+  ConsoleMessageLevel,
   ConnectedBrowserSession,
   CreateRoxyBrowserMcpServerOptions,
   SessionClickOptions,
+  SessionMouseClickOptions,
   SnapshotCacheEntry,
   SnapshotMode
 } from "./types.js";
+import type { BrowserContextOptions } from "../types/options.js";
 import { resolveHumanizationOptions, jitter } from "../human/profile.js";
 import type { AssetOptions } from "../assets/types.js";
 import type { HumanizationOptions } from "../human/types.js";
@@ -40,6 +52,8 @@ function normalizeNavigationUrl(url: string): string {
 }
 
 const DEFAULT_SEQUENTIAL_TYPING_BUDGET_MS = 30_000;
+const BLOCK_SERVICE_WORKERS_INIT_SCRIPT =
+  "\nif (navigator.serviceWorker) navigator.serviceWorker.register = async () => { console.warn('Service Worker registration blocked by Playwright'); };\n";
 
 type SegmenterConstructor = new (
   locale?: string,
@@ -77,17 +91,87 @@ export class McpRuntime {
   private fileUploadPending = false;
   private readonly snapshotMode: SnapshotMode;
   private readonly assetManager: AssetManager;
+  private readonly redactText: ((text: string) => string) | undefined;
+  private readonly contextOptions: BrowserContextOptions | undefined;
+  private readonly viewport: { width: number; height: number } | undefined;
+  private readonly initScript: string[] | undefined;
+  private readonly consoleLevel: ConsoleMessageLevel | undefined;
+  private readonly network: CreateRoxyBrowserMcpServerOptions["network"] | undefined;
+  private readonly testIdAttribute: string | undefined;
+  private readonly storageOrigins = new Set<string>();
+  private traceRecording:
+    | {
+        tracesDir: string;
+        name: string;
+        traceFile: string;
+        networkFile: string;
+        stacksFile: string;
+        resourcesDir: string;
+      }
+    | undefined;
 
   constructor(
     private readonly sessionFactory: BrowserSessionFactory = connectBrowserSession,
-    options: { snapshotMode?: SnapshotMode } & AssetOptions = {}
+    options: {
+      snapshotMode?: SnapshotMode;
+      redactText?: (text: string) => string;
+      contextOptions?: BrowserContextOptions;
+      viewport?: { width: number; height: number };
+      initScript?: string[];
+      consoleLevel?: ConsoleMessageLevel;
+      network?: CreateRoxyBrowserMcpServerOptions["network"];
+      testIdAttribute?: string;
+    } & AssetOptions = {}
   ) {
     this.snapshotMode = options.snapshotMode ?? "full";
     this.assetManager = new AssetManager(options);
+    this.redactText = options.redactText;
+    this.contextOptions = options.contextOptions;
+    this.viewport = options.viewport;
+    this.initScript = options.initScript;
+    this.consoleLevel = options.consoleLevel;
+    this.network = options.network;
+    this.testIdAttribute = options.testIdAttribute;
   }
 
   getAssetManager(): AssetManager {
     return this.assetManager;
+  }
+
+  async startTracing(): Promise<{ tracesDir: string; name: string; traceFile: string; networkFile: string; stacksFile: string; resourcesDir: string }> {
+    if (this.traceRecording) {
+      throw new Error("Tracing has been already started");
+    }
+    const name = `trace-${Date.now()}`;
+    const tracesDir = path.join(this.assetManager.roots.tracesDir, "traces");
+    const resourcesDir = path.join(tracesDir, "resources");
+    const traceFile = path.join(tracesDir, `${name}.trace`);
+    const networkFile = path.join(tracesDir, `${name}.network`);
+    const stacksFile = path.join(tracesDir, `${name}.stacks`);
+    await mkdir(resourcesDir, { recursive: true });
+    await Promise.all([
+      writeFile(traceFile, ""),
+      writeFile(networkFile, ""),
+      writeFile(stacksFile, "")
+    ]);
+    this.traceRecording = {
+      tracesDir,
+      name,
+      traceFile,
+      networkFile,
+      stacksFile,
+      resourcesDir
+    };
+    return this.traceRecording;
+  }
+
+  async stopTracing(): Promise<{ tracesDir: string; name: string; traceFile: string; networkFile: string; stacksFile: string; resourcesDir: string }> {
+    const traceRecording = this.traceRecording;
+    if (!traceRecording) {
+      throw new Error("Tracing is not started");
+    }
+    this.traceRecording = undefined;
+    return traceRecording;
   }
 
   async connect(args: Parameters<BrowserSessionFactory>[0]): Promise<{
@@ -100,14 +184,37 @@ export class McpRuntime {
     await this.close();
     const session = await this.sessionFactory({
       ...args,
-      assetRoots: this.assetManager.roots
+      assetRoots: this.assetManager.roots,
+      downloadsDir: this.assetManager.roots.downloadsDir,
+      ...(this.redactText !== undefined ? { redactText: this.redactText } : {}),
+      ...(this.consoleLevel !== undefined ? { consoleLevel: this.consoleLevel } : {}),
+      ...(this.testIdAttribute !== undefined ? { testIdAttribute: this.testIdAttribute } : {})
     });
     this.connection = {
       session
     };
     this.tabs = await session.listTabs();
+    this.recordStorageOrigins(this.tabs);
+    await this.installNetworkOriginFilters(session);
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;
+    if (this.contextOptions) {
+      await session.emulateContext?.(this.contextOptions);
+      if (this.contextOptions.serviceWorkers === "block") {
+        await session.addInitScript(BLOCK_SERVICE_WORKERS_INIT_SCRIPT);
+      }
+      if (this.contextOptions.storageState !== undefined) {
+        await this.setStorageStateFromFile(session, this.contextOptions.storageState);
+      }
+      this.tabs = await session.listTabs();
+    } else if (this.viewport) {
+      await session.resize(this.viewport.width, this.viewport.height);
+      this.tabs = await session.listTabs();
+    }
+    for (const initScript of this.initScript ?? []) {
+      const source = await readFile(initScript, "utf8");
+      await session.addInitScript(source);
+    }
     const version = await session.version();
     const snapshot = this.snapshotMode !== "none" && this.tabs.some((tab) => tab.active)
       ? await this.snapshot()
@@ -120,6 +227,17 @@ export class McpRuntime {
       tabs: this.tabs,
       ...(snapshot ? { snapshot } : {})
     };
+  }
+
+  private async setStorageStateFromFile(session: ConnectedBrowserSession, filename: string): Promise<void> {
+    const state = JSON.parse(await readFile(filename, "utf8")) as BrowserStorageState;
+    if (session.setStorageState) {
+      await session.setStorageState(state);
+      this.recordStorageOrigins(state.origins.map((originState) => ({ url: originState.origin })));
+      return;
+    }
+    this.connection = { session };
+    await this.setStorageState(state);
   }
 
   async listTabs(): Promise<BrowserTab[]> {
@@ -227,6 +345,7 @@ export class McpRuntime {
       requestKey,
       text: snapshot.text,
       refs: { ...snapshot.refs },
+      ...(snapshot.locators ? { locators: { ...snapshot.locators } } : {}),
       title: currentActiveTab.title || snapshot.title,
       url: currentActiveTab.url || snapshot.url,
       ...(snapshot.console ? { console: { ...snapshot.console } } : {}),
@@ -237,6 +356,40 @@ export class McpRuntime {
       title: currentActiveTab.title || snapshot.title,
       url: currentActiveTab.url || snapshot.url
     };
+  }
+
+  async ariaSnapshot(args: BrowserSnapshotToolArgs = {}): Promise<string> {
+    const session = this.requireConnected();
+    const request: BrowserSnapshotRequest = {
+      ...(args.boxes !== undefined ? { boxes: args.boxes } : {}),
+      ...(args.depth !== undefined ? { depth: args.depth } : {}),
+      ...(args.target ? { target: this.resolveSnapshotTarget(args.target) } : {})
+    };
+    return session.ariaSnapshot(request);
+  }
+
+  async countByRole(role: string, accessibleName: string): Promise<number> {
+    return this.requireConnected().countByRole(role, accessibleName);
+  }
+
+  async textContentsByText(text: string, options: { target?: string | undefined; visible?: boolean | undefined } = {}): Promise<string[]> {
+    const session = this.requireConnected();
+    return session.textContentsByText(text, {
+      ...(options.visible !== undefined ? { visible: options.visible } : {}),
+      ...(options.target !== undefined ? { target: this.resolveTarget(options.target) } : {})
+    });
+  }
+
+  async textContent(target: string): Promise<string | null> {
+    return this.requireConnected().textContent(this.resolveTarget(target));
+  }
+
+  async inputValue(target: string): Promise<string> {
+    return this.requireConnected().inputValue(this.resolveTarget(target));
+  }
+
+  async isChecked(target: string): Promise<boolean> {
+    return this.requireConnected().isChecked(this.resolveTarget(target));
   }
 
   private async captureStableSnapshot(
@@ -354,7 +507,9 @@ export class McpRuntime {
 
   async navigate(url: string): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
-    await session.navigate(normalizeNavigationUrl(url));
+    const normalizedUrl = normalizeNavigationUrl(url);
+    await session.navigate(normalizedUrl);
+    this.recordStorageOrigin(normalizedUrl);
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;
@@ -437,6 +592,57 @@ export class McpRuntime {
     return this.snapshot();
   }
 
+  async press(
+    ref: string,
+    key: string,
+    human?: { profile?: string }
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const resolved = this.resolveTarget(ref);
+    const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
+    const delayMs = jitter(humanOpts.typingDelayMs);
+    if (delayMs > 0) await delay(delayMs);
+    await session.press(resolved, key);
+    this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
+    this.fileUploadPending = false;
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async pressSequentially(
+    text: string,
+    opts?: { submit?: boolean; human?: HumanizationOptions }
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const humanOpts = resolveHumanizationOptions(opts?.human);
+    const delayMs = jitter(humanOpts.typingDelayMs);
+    if (delayMs > 0) await delay(delayMs);
+    await session.typeKeyboard(text);
+    if (opts?.submit) {
+      await session.pressKey("Enter");
+    }
+    this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
+    this.fileUploadPending = false;
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async keyDown(key: string): Promise<void> {
+    const session = this.requireConnected();
+    await session.keyDown(key);
+  }
+
+  async keyUp(key: string): Promise<void> {
+    const session = this.requireConnected();
+    await session.keyUp(key);
+  }
+
   async selectOption(
     ref: string,
     values: string[]
@@ -493,6 +699,18 @@ export class McpRuntime {
     return this.snapshot();
   }
 
+  async reload(): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    await session.reload();
+    this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
+    this.fileUploadPending = false;
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
   async resize(width: number, height: number): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     await session.resize(width, height);
@@ -510,16 +728,96 @@ export class McpRuntime {
     return session.consoleMessages(level, all);
   }
 
+  async consoleMessageSummary(): Promise<BrowserConsoleSummary> {
+    const session = this.requireConnected();
+    return session.consoleMessageSummary();
+  }
+
+  async clearConsoleMessages(): Promise<void> {
+    const session = this.requireConnected();
+    await session.clearConsoleMessages();
+  }
+
   async evaluate(expression: string, target?: string): Promise<BrowserEvaluateResult> {
     const session = this.requireConnected();
     const resolved = target ? this.resolveTarget(target) : undefined;
     return session.evaluate(expression, resolved);
   }
 
+  async setContent(html: string): Promise<void> {
+    const session = this.requireConnected();
+    await session.setContent(html);
+    this.invalidateSnapshot();
+  }
+
   async drag(startTarget: string, endTarget: string, human?: { profile?: string }): Promise<BrowserSnapshot | undefined> {
     const session = this.requireConnected();
     const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
     await session.drag(this.resolveTarget(startTarget), this.resolveTarget(endTarget), {
+      moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs)),
+      holdDelayMs: jitter(humanOpts.clickHoldMs)
+    });
+    this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
+    this.fileUploadPending = false;
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async mouseMove(x: number, y: number, human?: { profile?: string }): Promise<void> {
+    const session = this.requireConnected();
+    const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
+    await session.mouseMove(x, y, {
+      moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
+    });
+    this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
+    this.fileUploadPending = false;
+  }
+
+  async mouseClick(
+    x: number,
+    y: number,
+    options?: {
+      button?: "left" | "right" | "middle";
+      clickCount?: number;
+      delay?: number;
+      human?: { profile?: string };
+    }
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const humanOpts = resolveHumanizationOptions(options?.human as HumanizationOptions | undefined);
+    const clickOptions: SessionMouseClickOptions = {
+      ...(options?.button !== undefined ? { button: options.button } : {}),
+      ...(options?.clickCount !== undefined ? { clickCount: options.clickCount } : {}),
+      ...(options?.delay !== undefined ? { delay: options.delay } : {}),
+      moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs))
+    };
+    await session.mouseClick(x, y, clickOptions);
+    this.invalidateSnapshot();
+    this.pendingFileUploadTarget = undefined;
+    this.fileUploadPending = false;
+    if (this.snapshotMode === "none") {
+      return undefined;
+    }
+    if (await session.hasDialog()) {
+      return undefined;
+    }
+    return this.snapshot();
+  }
+
+  async mouseDrag(
+    startX: number,
+    startY: number,
+    endX: number,
+    endY: number,
+    human?: { profile?: string }
+  ): Promise<BrowserSnapshot | undefined> {
+    const session = this.requireConnected();
+    const humanOpts = resolveHumanizationOptions(human as HumanizationOptions | undefined);
+    await session.mouseDrag(startX, startY, endX, endY, {
       moveDelayMs: Math.max(40, jitter(humanOpts.moveJitterMs)),
       holdDelayMs: jitter(humanOpts.clickHoldMs)
     });
@@ -566,13 +864,20 @@ export class McpRuntime {
     return this.snapshot();
   }
 
-  async takeScreenshot(options?: { type?: "png" | "jpeg"; fullPage?: boolean; target?: string }): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
+  async takeScreenshot(options?: { type?: "png" | "jpeg" | "webp"; quality?: number; fullPage?: boolean; scale?: "css" | "device"; target?: string }): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }> {
     const session = this.requireConnected();
     return session.screenshot({
       ...(options?.type !== undefined ? { type: options.type } : {}),
+      ...(options?.quality !== undefined ? { quality: options.quality } : {}),
       ...(options?.fullPage !== undefined ? { fullPage: options.fullPage } : {}),
+      ...(options?.scale !== undefined ? { scale: options.scale } : {}),
       ...(options?.target !== undefined ? { target: this.resolveTarget(options.target) } : {})
     });
+  }
+
+  async pdf(): Promise<Buffer> {
+    const session = this.requireConnected();
+    return session.pdf();
   }
 
   async performFileUpload(paths: string[] | undefined): Promise<void> {
@@ -692,6 +997,181 @@ export class McpRuntime {
     return session.networkRequests();
   }
 
+  async clearRequests(): Promise<void> {
+    const session = this.requireConnected();
+    await session.clearRequests();
+  }
+
+  async setOffline(offline: boolean): Promise<void> {
+    const session = this.requireConnected();
+    if (!session.setOffline) {
+      throw new McpToolError("not_supported", "Network state emulation is not supported by this browser session.");
+    }
+    await session.setOffline(offline);
+  }
+
+  async addRoute(route: import("./types.js").BrowserNetworkRoute): Promise<void> {
+    const session = this.requireConnected();
+    if (!session.addRoute) {
+      throw new McpToolError("not_supported", "Network request routing is not supported by this browser session.");
+    }
+    await session.addRoute(route);
+  }
+
+  private async installNetworkOriginFilters(session: ConnectedBrowserSession): Promise<void> {
+    const allowedOrigins = this.network?.allowedOrigins ?? [];
+    const blockedOrigins = this.network?.blockedOrigins ?? [];
+    if (!allowedOrigins.length && !blockedOrigins.length) {
+      return;
+    }
+    if (!session.addRoute) {
+      throw new McpToolError("not_supported", "Network request routing is not supported by this browser session.");
+    }
+    if (allowedOrigins.length) {
+      await session.addRoute({
+        pattern: "**",
+        abort: "blockedbyclient"
+      });
+      for (const origin of allowedOrigins) {
+        await session.addRoute({
+          pattern: originOrHostGlob(origin)
+        });
+      }
+    }
+    for (const origin of blockedOrigins) {
+      await session.addRoute({
+        pattern: originOrHostGlob(origin),
+        abort: "blockedbyclient"
+      });
+    }
+  }
+
+  async routes(): Promise<import("./types.js").BrowserNetworkRoute[]> {
+    const session = this.requireConnected();
+    if (!session.routes) {
+      throw new McpToolError("not_supported", "Network request routing is not supported by this browser session.");
+    }
+    return session.routes();
+  }
+
+  async removeRoute(pattern?: string): Promise<number> {
+    const session = this.requireConnected();
+    if (!session.removeRoute) {
+      throw new McpToolError("not_supported", "Network request routing is not supported by this browser session.");
+    }
+    return session.removeRoute(pattern);
+  }
+
+  async cookies(): Promise<BrowserCookie[]> {
+    const session = this.requireConnected();
+    if (!session.cookies) {
+      throw new McpToolError("not_supported", "Browser context cookies are not supported by this browser session.");
+    }
+    return session.cookies();
+  }
+
+  async storageState(): Promise<BrowserStorageState> {
+    const session = this.requireConnected();
+    if (session.storageState) {
+      return session.storageState();
+    }
+    if (!session.cookies) {
+      throw new McpToolError("not_supported", "Browser context storage state is not supported by this browser session.");
+    }
+
+    const cookies = await session.cookies();
+    const origins = session.webStorageItems
+      ? await this.collectLocalStorageOrigins(session)
+      : [];
+    return { cookies, origins };
+  }
+
+  async setStorageState(state: BrowserStorageState): Promise<void> {
+    const session = this.requireConnected();
+    if (session.setStorageState) {
+      await session.setStorageState(state);
+      this.recordStorageOrigins(state.origins.map((originState) => ({ url: originState.origin })));
+      return;
+    }
+    if (!session.clearCookies || !session.addCookies) {
+      throw new McpToolError("not_supported", "Browser context storage state is not supported by this browser session.");
+    }
+
+    await session.clearCookies();
+    if (state.cookies.length) {
+      await session.addCookies(state.cookies);
+    }
+
+    if (!session.clearWebStorage || !session.setWebStorageItem) {
+      return;
+    }
+
+    const originsToReset = new Set([
+      ...this.storageOrigins,
+      ...state.origins.map((originState) => originState.origin)
+    ]);
+    await this.withStorageOrigins(session, originsToReset, async (origin) => {
+      await session.clearWebStorage!("localStorage");
+      const originState = state.origins.find((candidate) => candidate.origin === origin);
+      for (const item of originState?.localStorage ?? []) {
+        await session.setWebStorageItem!("localStorage", item.name, item.value);
+      }
+    });
+    this.storageOrigins.clear();
+    this.recordStorageOrigins(state.origins.map((originState) => ({ url: originState.origin })));
+  }
+
+  async addCookies(cookies: ReadonlyArray<BrowserCookieInput>): Promise<void> {
+    const session = this.requireConnected();
+    if (!session.addCookies) {
+      throw new McpToolError("not_supported", "Browser context cookies are not supported by this browser session.");
+    }
+    await session.addCookies(cookies);
+  }
+
+  async clearCookies(options?: BrowserCookieFilter): Promise<void> {
+    const session = this.requireConnected();
+    if (!session.clearCookies) {
+      throw new McpToolError("not_supported", "Browser context cookies are not supported by this browser session.");
+    }
+    await session.clearCookies(options);
+  }
+
+  async webStorageItems(storageName: "localStorage" | "sessionStorage"): Promise<BrowserStorageItem[]> {
+    const session = this.requireConnected();
+    if (!session.webStorageItems) {
+      throw new McpToolError("not_supported", "Web storage is not supported by this browser session.");
+    }
+    return session.webStorageItems(storageName);
+  }
+
+  async setWebStorageItem(storageName: "localStorage" | "sessionStorage", key: string, value: string): Promise<void> {
+    const session = this.requireConnected();
+    if (!session.setWebStorageItem) {
+      throw new McpToolError("not_supported", "Web storage is not supported by this browser session.");
+    }
+    await session.setWebStorageItem(storageName, key, value);
+    if (storageName === "localStorage") {
+      this.recordStorageOrigins(await session.listTabs());
+    }
+  }
+
+  async removeWebStorageItem(storageName: "localStorage" | "sessionStorage", key: string): Promise<void> {
+    const session = this.requireConnected();
+    if (!session.removeWebStorageItem) {
+      throw new McpToolError("not_supported", "Web storage is not supported by this browser session.");
+    }
+    await session.removeWebStorageItem(storageName, key);
+  }
+
+  async clearWebStorage(storageName: "localStorage" | "sessionStorage"): Promise<void> {
+    const session = this.requireConnected();
+    if (!session.clearWebStorage) {
+      throw new McpToolError("not_supported", "Web storage is not supported by this browser session.");
+    }
+    await session.clearWebStorage(storageName);
+  }
+
   async beginRequestCollection(): Promise<unknown> {
     const session = this.requireConnected();
     return session.beginRequestCollection?.();
@@ -717,7 +1197,7 @@ export class McpRuntime {
     return session.networkRequest(index);
   }
 
-  async fetchResponseBody(index: number): Promise<string | undefined> {
+  async fetchResponseBody(index: number): Promise<BrowserNetworkResponseBody | undefined> {
     const session = this.requireConnected();
     return session.fetchResponseBody(index);
   }
@@ -803,6 +1283,8 @@ export class McpRuntime {
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;
     this.tabs = [];
+    this.storageOrigins.clear();
+    this.traceRecording = undefined;
     if (!this.connection) {
       return;
     }
@@ -845,6 +1327,86 @@ export class McpRuntime {
     }
 
     return { selector: target };
+  }
+
+  resolveLocatorForCode(target: string): string | undefined {
+    const activeTab = this.requireActiveTab();
+    if (!/^(f\d+)?e\d+$/.test(target)) {
+      return undefined;
+    }
+    if (!this.snapshotCache || this.snapshotCache.tabId !== activeTab.id) {
+      return undefined;
+    }
+    return this.snapshotCache.locators?.[target];
+  }
+
+  private async collectLocalStorageOrigins(session: ConnectedBrowserSession): Promise<BrowserStorageState["origins"]> {
+    this.recordStorageOrigins(await session.listTabs());
+    const origins = new Set(this.storageOrigins);
+    if (!origins.size) {
+      return [];
+    }
+
+    const result: BrowserStorageState["origins"] = [];
+    await this.withStorageOrigins(session, origins, async (origin) => {
+      const localStorage = await session.webStorageItems!("localStorage");
+      if (localStorage.length) {
+        result.push({ origin, localStorage });
+      }
+    });
+    return result;
+  }
+
+  private async withStorageOrigins(
+    session: ConnectedBrowserSession,
+    origins: Iterable<string>,
+    callback: (origin: string) => Promise<void>
+  ): Promise<void> {
+    // ⚠️ DIVERGENCE FROM PLAYWRIGHT: Playwright collects/restores storage in a
+    // hidden storage-state page. The MCP session adapter currently exposes
+    // only real tab operations, so the fallback uses short-lived visible tabs
+    // for non-active origins while preserving the caller's active tab.
+    const originalTabs = await session.listTabs();
+    this.tabs = originalTabs;
+    const originalTab = originalTabs.find((tab) => tab.active);
+    const originalOrigin = originalTab ? storageOriginFromUrl(originalTab.url) : undefined;
+
+    for (const origin of origins) {
+      if (origin === originalOrigin) {
+        await callback(origin);
+        continue;
+      }
+
+      const beforeTabs = await session.listTabs();
+      await session.newTab(origin);
+      const afterTabs = await session.listTabs();
+      const temporaryTab = afterTabs.find((tab) => tab.active && !beforeTabs.some((before) => before.id === tab.id))
+        ?? afterTabs.find((tab) => tab.active);
+      try {
+        await callback(origin);
+      } finally {
+        if (temporaryTab) {
+          await session.closeTab(temporaryTab.id).catch(() => {});
+        }
+        if (originalTab) {
+          await session.selectTab(originalTab.id).catch(() => {});
+        }
+        this.tabs = await session.listTabs().catch(() => this.tabs);
+      }
+    }
+  }
+
+  private recordStorageOrigins(tabs: ReadonlyArray<Pick<BrowserTab, "url">>): void {
+    for (const tab of tabs) {
+      this.recordStorageOrigin(tab.url);
+    }
+  }
+
+  private recordStorageOrigin(url: string): void {
+    const origin = storageOriginFromUrl(url);
+    if (origin) {
+      this.storageOrigins.add(origin);
+    }
   }
 
   private resolveRef(ref: string): string {
@@ -901,6 +1463,35 @@ function isDirectValueFillMetadata(metadata: { tagName: string; inputType?: stri
   );
 }
 
+function storageOriginFromUrl(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return undefined;
+    }
+    return parsed.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function originOrHostGlob(originOrHost: string): string {
+  const wildcardPortMatch = /^(https?:\/\/[^/:]+):\*$/.exec(originOrHost);
+  if (wildcardPortMatch) {
+    return `${wildcardPortMatch[1]}:*/**`;
+  }
+
+  try {
+    const url = new URL(originOrHost);
+    if (url.origin !== "null") {
+      return `${url.origin}/**`;
+    }
+  } catch {
+    // Fall through to Playwright's legacy host-only mode.
+  }
+  return `*://${originOrHost}/**`;
+}
+
 async function humanizedFieldActivation(
   session: ConnectedBrowserSession,
   target: ClickTarget,
@@ -924,7 +1515,16 @@ export class McpRuntimeManager {
 
   constructor(
     private readonly sessionFactory?: CreateRoxyBrowserMcpServerOptions["sessionFactory"],
-    private readonly options: { snapshotMode?: SnapshotMode } & AssetOptions = {}
+    private readonly options: {
+      snapshotMode?: SnapshotMode;
+      redactText?: (text: string) => string;
+      contextOptions?: BrowserContextOptions;
+      viewport?: { width: number; height: number };
+      initScript?: string[];
+      consoleLevel?: ConsoleMessageLevel;
+      network?: CreateRoxyBrowserMcpServerOptions["network"];
+      testIdAttribute?: string;
+    } & AssetOptions = {}
   ) {}
 
   getRuntime(sessionId = "default"): McpRuntime {
@@ -935,6 +1535,13 @@ export class McpRuntimeManager {
 
     const runtime = new McpRuntime(this.sessionFactory, {
       ...(this.options.snapshotMode !== undefined ? { snapshotMode: this.options.snapshotMode } : {}),
+      ...(this.options.redactText !== undefined ? { redactText: this.options.redactText } : {}),
+      ...(this.options.contextOptions !== undefined ? { contextOptions: this.options.contextOptions } : {}),
+      ...(this.options.viewport !== undefined ? { viewport: this.options.viewport } : {}),
+      ...(this.options.initScript !== undefined ? { initScript: this.options.initScript } : {}),
+      ...(this.options.consoleLevel !== undefined ? { consoleLevel: this.options.consoleLevel } : {}),
+      ...(this.options.network !== undefined ? { network: this.options.network } : {}),
+      ...(this.options.testIdAttribute !== undefined ? { testIdAttribute: this.options.testIdAttribute } : {}),
       ...(this.options.artifactsDir !== undefined ? { artifactsDir: this.options.artifactsDir } : {}),
       ...(this.options.downloadsDir !== undefined ? { downloadsDir: this.options.downloadsDir } : {}),
       ...(this.options.screenshotsDir !== undefined ? { screenshotsDir: this.options.screenshotsDir } : {}),
@@ -943,6 +1550,7 @@ export class McpRuntimeManager {
       ...(this.options.videosDir !== undefined ? { videosDir: this.options.videosDir } : {}),
       ...(this.options.networkDir !== undefined ? { networkDir: this.options.networkDir } : {}),
       ...(this.options.consoleDir !== undefined ? { consoleDir: this.options.consoleDir } : {}),
+      ...(this.options.storageDir !== undefined ? { storageDir: this.options.storageDir } : {}),
       ...(this.options.scriptsDir !== undefined ? { scriptsDir: this.options.scriptsDir } : {}),
       ...(this.options.tempDir !== undefined ? { tempDir: this.options.tempDir } : {}),
       ...(this.options.allowAbsoluteAssetPaths !== undefined

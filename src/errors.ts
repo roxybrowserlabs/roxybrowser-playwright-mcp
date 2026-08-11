@@ -12,6 +12,13 @@ export class TimeoutError extends Error {
   }
 }
 
+export class AbortError extends Error {
+  constructor(message = "The operation was aborted", options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AbortError";
+  }
+}
+
 export class TargetClosedError extends Error {
   constructor(cause?: string) {
     super(cause || "Target page, context or browser has been closed");

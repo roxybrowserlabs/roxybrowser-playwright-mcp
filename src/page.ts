@@ -9,7 +9,14 @@ import {
   serializeEvaluationArgument
 } from "./elementHandle.js";
 import { TargetClosedError, TimeoutError } from "./errors.js";
-import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
+import { abortableDelay, createAbortError, linkAbortSignal, raceWithAbortSignal, throwIfAborted } from "./abortSignal.js";
+import {
+  assertMaxArguments,
+  isSerializedEvaluateCallbacksArg,
+  prepareEvaluateWithCallbacksArg,
+  serializePageFunction,
+  type EvaluateOptions
+} from "./evaluation.js";
 import { RoxyFrame, type RoxyFrameSnapshot } from "./frame.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
@@ -30,6 +37,7 @@ import {
   parseEvaluationResultValue,
   type SerializedValue
 } from "./utilityScriptSerializers.js";
+import { PARSE_EVALUATION_RESULT_SOURCE } from "./protocol/evaluationSerializer.js";
 import type { RoxyBrowserContext } from "./browserContext.js";
 import type {
   LocatorSelector,
@@ -49,6 +57,7 @@ import type {
   ConsoleMessage,
   PageDialog,
   PageRequest,
+  PageRequestHeaders,
   PageConsoleMessage,
   PageErrorEntry,
   PageResponse,
@@ -129,7 +138,8 @@ import type {
   WaitForNavigationOptions,
   WaitForURLOptions,
   WaitForSelectorOptions,
-  SelectorStrictOptions
+  SelectorStrictOptions,
+  SelectorStrictSignalOptions
 } from "./types/options.js";
 
 type LocatorOptions = {
@@ -141,6 +151,7 @@ type LocatorOptions = {
 type PageWaitForFunctionOptions = {
   polling?: number | "raf";
   timeout?: number;
+  signal?: AbortSignal;
 };
 type PlaywrightFilePayload = { name: string; mimeType: string; buffer: Buffer };
 type PlaywrightInputFiles = string | ReadonlyArray<string> | PlaywrightFilePayload | ReadonlyArray<PlaywrightFilePayload>;
@@ -169,6 +180,7 @@ type RemoveAllListenersBehavior = "default" | "wait" | "ignoreErrors";
 type InternalWaitForEventOptions<K extends PageEventName> = {
   logLine?: string;
   predicate?: PageEventPredicate<K>;
+  signal?: AbortSignal;
   timeout?: number;
 };
 
@@ -224,7 +236,8 @@ class RoxyFileChooser implements FileChooser {
     files: InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
-    await this.roxyPage.setInputFiles(this.input, files, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.roxyPage.setInputFiles(this.input, files, options), options);
   }
 }
 
@@ -245,6 +258,11 @@ interface ExposedBindingCall {
   name: string;
   serializedArgs: SerializedValue[];
   targetFrame: RoxyFrame | null;
+}
+
+interface EvaluateCallbackEntry {
+  disposable: Disposable;
+  name: string;
 }
 
 interface WebSocketRouteHandlerEntry {
@@ -382,6 +400,7 @@ class RoxyWebSocket implements WebSocket {
       | ((payload: WebSocketEventMap[K]) => boolean | Promise<boolean>)
       | {
           predicate?: (payload: WebSocketEventMap[K]) => boolean | Promise<boolean>;
+          signal?: AbortSignal;
           timeout?: number;
         }
   ): Promise<WebSocketEventMap[K]> {
@@ -389,6 +408,13 @@ class RoxyWebSocket implements WebSocket {
       typeof optionsOrPredicate === "function"
         ? optionsOrPredicate
         : optionsOrPredicate?.predicate;
+    const signal =
+      typeof optionsOrPredicate === "function"
+        ? undefined
+        : optionsOrPredicate?.signal;
+    if (signal?.aborted) {
+      return Promise.reject(createAbortError(signal));
+    }
     const timeout =
       typeof optionsOrPredicate === "function"
         ? this.roxyPage.defaultTimeout()
@@ -420,6 +446,7 @@ class RoxyWebSocket implements WebSocket {
           this.removeListener("close", closeListener);
         }
         this.roxyPage.removeListener("close", pageCloseListener);
+        signal?.removeEventListener("abort", abortListener);
       };
 
       const listener = (async (payload: WebSocketEventMap[K]) => {
@@ -447,6 +474,10 @@ class RoxyWebSocket implements WebSocket {
         cleanup();
         reject(new Error("Target page, context or browser has been closed"));
       }) as PageEventListener<"close">;
+      const abortListener = () => {
+        cleanup();
+        reject(createAbortError(signal!));
+      };
 
       this.on(event, listener);
       if (event !== "socketerror") {
@@ -456,6 +487,7 @@ class RoxyWebSocket implements WebSocket {
         this.on("close", closeListener);
       }
       this.roxyPage.on("close", pageCloseListener);
+      signal?.addEventListener("abort", abortListener, { once: true });
     });
   }
 
@@ -513,6 +545,293 @@ interface ObservedRequestState {
   isNavigationRequest: boolean;
   postDataBuffer: Buffer | null;
   postDataText: string | null;
+}
+
+export function installExposedBindingFunction(bindingName: string): void {
+  const typedArrayConstructors = {
+    i8: Int8Array,
+    ui8: Uint8Array,
+    ui8c: Uint8ClampedArray,
+    i16: Int16Array,
+    ui16: Uint16Array,
+    i32: Int32Array,
+    ui32: Uint32Array,
+    f32: Float32Array,
+    f64: Float64Array,
+    bi64: BigInt64Array,
+    bui64: BigUint64Array
+  };
+  const typedArrayToBase64 = (array: any) => {
+    if ("toBase64" in array) {
+      return array.toBase64();
+    }
+    const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 1) {
+      binary += String.fromCharCode(bytes[index]!);
+    }
+    return btoa(binary);
+  };
+  const base64ToTypedArray = (base64: string, TypedArrayConstructor: any) => {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TypedArrayConstructor(bytes.buffer);
+  };
+  const serializeBindingArgument = (value: any, visitorInfo = { visited: new Map<object, number>(), lastId: 0 }): any => {
+    if (value && typeof value === "object") {
+      if (typeof globalThis.Window === "function" && value instanceof globalThis.Window) {
+        return "ref: <Window>";
+      }
+      if (typeof globalThis.Document === "function" && value instanceof globalThis.Document) {
+        return "ref: <Document>";
+      }
+      if (typeof globalThis.Node === "function" && value instanceof globalThis.Node) {
+        return "ref: <Node>";
+      }
+    }
+    if (typeof value === "symbol" || Object.is(value, undefined)) {
+      return { v: "undefined" };
+    }
+    if (Object.is(value, null)) {
+      return { v: "null" };
+    }
+    if (Object.is(value, NaN)) {
+      return { v: "NaN" };
+    }
+    if (Object.is(value, Infinity)) {
+      return { v: "Infinity" };
+    }
+    if (Object.is(value, -Infinity)) {
+      return { v: "-Infinity" };
+    }
+    if (Object.is(value, -0)) {
+      return { v: "-0" };
+    }
+    if (typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
+      return value;
+    }
+    if (typeof value === "bigint") {
+      return { bi: value.toString() };
+    }
+    if (value instanceof Error || (value && Object.getPrototypeOf(value)?.name === "Error")) {
+      const stack = value.stack?.startsWith(value.name + ": " + value.message)
+        ? value.stack
+        : `${value.name}: ${value.message}\n${value.stack}`;
+      return { e: { n: value.name, m: value.message, s: stack } };
+    }
+    if (value instanceof Date || Object.prototype.toString.call(value) === "[object Date]") {
+      return { d: value.toJSON() };
+    }
+    if (value instanceof URL || Object.prototype.toString.call(value) === "[object URL]") {
+      return { u: value.toJSON() };
+    }
+    if (value instanceof RegExp || Object.prototype.toString.call(value) === "[object RegExp]") {
+      return { r: { p: value.source, f: value.flags } };
+    }
+    for (const [k, ctor] of Object.entries(typedArrayConstructors)) {
+      if (value instanceof ctor || Object.prototype.toString.call(value) === `[object ${ctor.name}]`) {
+        return { ta: { b: typedArrayToBase64(value), k } };
+      }
+    }
+    if (value instanceof ArrayBuffer || Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
+      return { ab: { b: typedArrayToBase64(new Uint8Array(value)) } };
+    }
+    const existingId = visitorInfo.visited.get(value);
+    if (existingId) {
+      return { ref: existingId };
+    }
+    if (Array.isArray(value)) {
+      const id = ++visitorInfo.lastId;
+      visitorInfo.visited.set(value, id);
+      const serializedEntries = [];
+      for (let index = 0; index < value.length; index += 1) {
+        serializedEntries[index] = serializeBindingArgument(value[index], visitorInfo);
+      }
+      return { a: serializedEntries, id };
+    }
+    if (typeof value === "object") {
+      const id = ++visitorInfo.lastId;
+      visitorInfo.visited.set(value, id);
+      const o: Array<{ k: string; v: unknown }> = [];
+      let objectIndex = 0;
+      for (const key of Object.keys(value)) {
+        let item;
+        try {
+          item = value[key];
+        } catch {
+          continue;
+        }
+        if (key === "toJSON" && typeof item === "function") {
+          o[objectIndex++] = { k: key, v: { o: [], id: 0 } };
+        } else {
+          o[objectIndex++] = { k: key, v: serializeBindingArgument(item, visitorInfo) };
+        }
+      }
+      let jsonWrapper;
+      try {
+        if (o.length === 0 && value.toJSON && typeof value.toJSON === "function") {
+          jsonWrapper = { value: value.toJSON() };
+        }
+      } catch {}
+      if (jsonWrapper) {
+        return serializeBindingArgument(jsonWrapper.value, visitorInfo);
+      }
+      return { o, id };
+    }
+    return { v: "undefined" };
+  };
+  const parseBindingResult = (value: any, refs = new Map<number, object>()): any => {
+    if (Object.is(value, undefined)) {
+      return undefined;
+    }
+    if (typeof value === "object" && value) {
+      if ("ref" in value) {
+        return refs.get(value.ref);
+      }
+      if ("v" in value) {
+        if (value.v === "undefined") {
+          return undefined;
+        }
+        if (value.v === "null") {
+          return null;
+        }
+        if (value.v === "NaN") {
+          return NaN;
+        }
+        if (value.v === "Infinity") {
+          return Infinity;
+        }
+        if (value.v === "-Infinity") {
+          return -Infinity;
+        }
+        if (value.v === "-0") {
+          return -0;
+        }
+      }
+      if ("d" in value) {
+        return new Date(value.d);
+      }
+      if ("u" in value) {
+        return new URL(value.u);
+      }
+      if ("bi" in value) {
+        return BigInt(value.bi);
+      }
+      if ("e" in value) {
+        const error = new Error(value.e.m);
+        error.name = value.e.n;
+        error.stack = value.e.s;
+        return error;
+      }
+      if ("r" in value) {
+        return new RegExp(value.r.p, value.r.f);
+      }
+      if ("a" in value) {
+        const result: any[] = [];
+        refs.set(value.id, result);
+        for (let index = 0; index < value.a.length; index += 1) {
+          result[index] = parseBindingResult(value.a[index], refs);
+        }
+        return result;
+      }
+      if ("o" in value) {
+        const result: Record<string, unknown> = {};
+        refs.set(value.id, result);
+        for (const { k, v } of value.o) {
+          if (k !== "__proto__") {
+            result[k] = parseBindingResult(v, refs);
+          }
+        }
+        return result;
+      }
+      if ("ta" in value) {
+        return base64ToTypedArray(value.ta.b, typedArrayConstructors[value.ta.k as keyof typeof typedArrayConstructors]);
+      }
+      if ("ab" in value) {
+        return base64ToTypedArray(value.ab.b, Uint8Array).buffer;
+      }
+    }
+    return value;
+  };
+  const store = (globalThis as typeof globalThis & {
+    __roxyBindingCalls?: Array<{
+      id: string;
+      name: string;
+      serializedArgs: unknown[];
+      frameId: string | null;
+    }>;
+    __roxyBindingResults?: Record<string, unknown>;
+    __roxyBindingNextId?: number;
+  });
+  store.__roxyBindingCalls ??= [];
+  store.__roxyBindingResults ??= {};
+  store.__roxyBindingNextId ??= 0;
+
+  (globalThis as typeof globalThis & Record<string, unknown>)[bindingName] = async (...args: unknown[]) => {
+    const callId = `${bindingName}:${++store.__roxyBindingNextId!}`;
+    const serializedArgs = [];
+    for (let index = 0; index < args.length; index += 1) {
+      serializedArgs[index] = serializeBindingArgument(args[index]);
+    }
+    const serializedArgsProbe = JSON.parse(JSON.stringify({ serializedArgs })).serializedArgs;
+    if (!Array.isArray(serializedArgsProbe)) {
+      throw new Error(
+        "serializedArgs is not an array. This can happen when Array.prototype.toJSON is defined incorrectly"
+      );
+    }
+    store.__roxyBindingCalls![store.__roxyBindingCalls!.length] = {
+      id: callId,
+      name: bindingName,
+      serializedArgs,
+      frameId:
+        (globalThis.frameElement as Element | null)?.getAttribute("data-roxy-frame-id") ?? null
+    };
+
+    for (;;) {
+      if (callId in store.__roxyBindingResults!) {
+        const payload = store.__roxyBindingResults![callId] as
+          | { ok: true; value: unknown }
+          | {
+              ok: false;
+              error: { value: unknown; message?: string; stack?: string; isNull?: boolean };
+        };
+        delete store.__roxyBindingResults![callId];
+        if (payload.ok) {
+          return parseBindingResult(payload.value);
+        }
+        if (payload.error.isNull) {
+          throw null;
+        }
+        const error = new Error(
+          payload.error.message ??
+            (typeof payload.error.value === "string"
+              ? payload.error.value
+              : String(payload.error.value))
+        );
+        if (payload.error.stack) {
+          error.stack = payload.error.stack;
+        }
+        throw error;
+      }
+      await new Promise<void>((resolve) => {
+        const originalSetTimeout = (globalThis as typeof globalThis & {
+          __pwClock?: {
+            builtins?: {
+              setTimeout?: (callback: () => void, timeout?: number) => unknown;
+            };
+          };
+        }).__pwClock?.builtins?.setTimeout;
+        if (typeof originalSetTimeout === "function") {
+          originalSetTimeout(() => resolve(), 0);
+          return;
+        }
+        setTimeout(resolve, 0);
+      });
+    }
+  };
 }
 
 interface HarRouteEntry {
@@ -881,7 +1200,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private readonly responseFinishedPromises = new WeakMap<Response, ManualPromise<null>>();
   private readonly openScope = new LongStandingScope();
   private rejectionHandler: ((error: Error) => void) | undefined;
-  private readonly internalDisposers = new Map<PageEventName, () => void>();
+  private readonly internalDisposers = new Map<RawPageEventName, () => void>();
   private readonly activeDialogs = new Set<Dialog>();
   private closed = false;
   private closePromise: Promise<void> | null = null;
@@ -915,6 +1234,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   private pageVideoFinalizePromise: Promise<void> | null = null;
   private emulatedMedia: EmulateMediaOptions = {};
   private readonly exposedBindings = new Map<string, ExposedBindingEntry>();
+  private readonly evaluateCallbacks: EvaluateCallbackEntry[] = [];
   private readonly locatorHandlers: LocatorHandlerEntry[] = [];
   private locatorHandlerRunningCounter = 0;
   private pickLocatorState: PickLocatorState | null = null;
@@ -945,6 +1265,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       throw new Error("Page is not attached to a browser context.");
     },
     pages: () => [],
+    serviceWorkers: () => [],
     addInitScript: async () => {
       throw new Error("Page is not attached to a browser context.");
     },
@@ -1016,16 +1337,42 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       })
     );
     this.initializeInternalEventRecording();
+    const disposeRequestHeaders = this.adapter.on("requestheaders", (payload) => {
+      this.updateObservedRequestHeadersFromPayload(payload);
+    });
+    this.internalDisposers.set("requestheaders", disposeRequestHeaders);
     const disposeClose = this.adapter.on("close", () => {
       void this.handleAdapterClosed();
     });
     this.internalDisposers.set("close", disposeClose);
   }
 
-  async addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg): Promise<Disposable>;
-  async addInitScript<Arg>(script: PageFunction<Arg, any> | { path?: string; content?: string }, arg?: Arg): Promise<Disposable> {
-    const source = await evaluationScript(script, arg as any);
-    return this.adapter.addInitScript(source);
+  async addInitScript<Arg>(script: PageFunction<Arg, any>|{ path?: string, content?: string }, arg?: Arg, options?: EvaluateOptions): Promise<Disposable>;
+  async addInitScript<Arg>(
+    script: PageFunction<Arg, any> | { path?: string; content?: string },
+    arg?: Arg,
+    options?: EvaluateOptions
+  ): Promise<Disposable> {
+    assertMaxArguments(arguments.length, 3);
+    const callbacks: Disposable[] = [];
+    let source: string;
+    try {
+      source = options?.exposeFunctions
+        ? await this.initScriptSourceWithExposedFunctions(script, arg as any, callbacks)
+        : await evaluationScript(script, arg as any);
+      const initScriptDisposable = await this.adapter.addInitScript(source);
+      const dispose = async () => {
+        await Promise.all(callbacks.map((callback) => callback.dispose().catch(() => {})));
+        await initScriptDisposable.dispose();
+      };
+      return {
+        dispose,
+        [Symbol.asyncDispose]: dispose
+      };
+    } catch (error) {
+      await Promise.all(callbacks.map((callback) => callback.dispose().catch(() => {})));
+      throw error;
+    }
   }
 
   async _ensurePlaywrightBuiltinsInstalled(): Promise<void> {
@@ -1095,6 +1442,25 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }, "page.exposeFunction");
   }
 
+  async _exposeEvaluateCallback(name: string, callback: Function): Promise<void> {
+    const disposable = await this._exposeCallbackBinding(name, callback);
+    this.evaluateCallbacks.push({ name, disposable });
+  }
+
+  async _exposeCallbackBinding(name: string, callback: Function): Promise<Disposable> {
+    return this.registerExposedBinding(name, {
+      kind: "function",
+      callback
+    }, "page.exposeFunction");
+  }
+
+  private _eraseEvaluateCallbacks(): void {
+    for (const { name, disposable } of this.evaluateCallbacks.splice(0)) {
+      this.exposedBindings.delete(name);
+      void disposable.dispose().catch(() => {});
+    }
+  }
+
   async addScriptTag(options?: { content?: string; path?: string; type?: string; url?: string; }): Promise<ElementHandle>;
   async addScriptTag(options: AddScriptTagOptions = {}): Promise<ElementHandle<Node>> {
     return this.mainFrame().addScriptTag(options);
@@ -1105,8 +1471,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.mainFrame().addStyleTag(options);
   }
 
-  async goto(url: string, options?: { referer?: string; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  async goto(url: string, options?: { referer?: string; signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async goto(url: string, options?: PageGotoOptions): Promise<Response | null> {
+    throwIfAborted(options);
     return withAsyncApiStack(() => this.mainFrame().goto(url, options));
   }
 
@@ -1114,28 +1481,35 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.adapter.url();
   }
 
-  async goBack(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  async goBack(options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async goBack(options?: PageGotoOptions): Promise<Response | null> {
-    return this.toPublicResponse(await this.adapter.goBack({
+    throwIfAborted(options);
+    const navigationOptions = {
       ...options,
       timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
-    }));
+    };
+    return this.toPublicResponse(await raceWithAbortSignal(this.adapter.goBack(navigationOptions), options));
   }
 
-  async goForward(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  async goForward(options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async goForward(options?: PageGotoOptions): Promise<Response | null> {
-    return this.toPublicResponse(await this.adapter.goForward({
+    throwIfAborted(options);
+    const navigationOptions = {
       ...options,
       timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
-    }));
+    };
+    return this.toPublicResponse(await raceWithAbortSignal(this.adapter.goForward(navigationOptions), options));
   }
 
-  async reload(options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  async reload(options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async reload(options?: PageGotoOptions): Promise<Response | null> {
-    const response = await this.adapter.reload({
+    throwIfAborted(options);
+    const navigationOptions = {
       ...options,
       timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
-    });
+    };
+    const response = await raceWithAbortSignal(this.adapter.reload(navigationOptions), options);
+    throwIfAborted(options);
     await this.reinstallExposedBindings();
     await this.waitForFileChooserInterceptionIfPending();
     await this.refreshFrameSnapshots();
@@ -1150,20 +1524,33 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.mainFrame().content();
   }
 
-  async setContent(html: string, options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
+  async setContent(html: string, options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
+    throwIfAborted(options);
     return this.mainFrame().setContent(html, options);
   }
 
   async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
   async evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
-  async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<R> {
-    assertMaxArguments(arguments.length, 2);
-    const functionSource = serializePageFunction(pageFunction as string | ElementCallback<R, Arg>);
+  async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: EvaluateOptions): Promise<R>;
+  async evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: EvaluateOptions): Promise<R>;
+  async evaluate<R, Arg>(
+    pageFunction: PageFunction<Arg, R>,
+    arg?: Arg,
+    options?: EvaluateOptions
+  ): Promise<R> {
+    assertMaxArguments(arguments.length, 3);
+    const preparedArg = await prepareEvaluateWithCallbacksArg(this, arg, options);
+    const functionSource = this.wrapEvaluateFunctionWithCallbacksIfNeeded(
+      serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+      preparedArg
+    );
     const result = await this.adapter.evaluate<R>(
       functionSource,
-      arg,
-      typeof pageFunction === "function" || looksLikeFunctionExpression(functionSource)
+      preparedArg,
+      typeof pageFunction === "function"
+        || looksLikeFunctionExpression(functionSource)
+        || isSerializedEvaluateCallbacksArg(preparedArg)
     );
     if (!this.frameSnapshotRefreshInProgress && this.hasFrameEventObservers()) {
       await this.refreshFrameSnapshots();
@@ -1173,17 +1560,26 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
   async evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
   async evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<SmartHandle<R>>;
+  async evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: EvaluateOptions): Promise<SmartHandle<R>>;
+  async evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: EvaluateOptions): Promise<SmartHandle<R>>;
   async evaluateHandle<R, Arg>(
     pageFunction: PageFunction<Arg, R>,
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>> {
-    assertMaxArguments(arguments.length, 2);
-    const functionSource = serializePageFunction(pageFunction as string | ElementCallback<R, Arg>);
-    const isFunction = typeof pageFunction === "function" || looksLikeFunctionExpression(functionSource);
+    assertMaxArguments(arguments.length, 3);
+    const preparedArg = await prepareEvaluateWithCallbacksArg(this, arg, options);
+    const functionSource = this.wrapEvaluateFunctionWithCallbacksIfNeeded(
+      serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+      preparedArg
+    );
+    const isFunction = typeof pageFunction === "function"
+      || looksLikeFunctionExpression(functionSource)
+      || isSerializedEvaluateCallbacksArg(preparedArg);
     if (!this.adapter.evaluateHandle) {
       const value = await this.adapter.evaluate<R>(
         functionSource,
-        arg,
+        preparedArg,
         isFunction
       );
       return createSmartHandle(value);
@@ -1192,10 +1588,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return await createRemoteJSHandle(
       await this.adapter.evaluateHandle<R>(
         functionSource,
-        arg,
+        preparedArg,
         isFunction
       ),
-      (reference) => this.createElementHandle(this.adapter.createHandle(reference))
+      (reference) => this.createElementHandle(this.adapter.createHandle(reference)),
+      this
     ) as unknown as SmartHandle<R>;
   }
 
@@ -1214,8 +1611,47 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     arg?: Arg,
     options: PageWaitForFunctionOptions = {}
   ): Promise<SmartHandle<R>> {
+    throwIfAborted(options);
     const frame = this.mainFrame() as RoxyFrame;
     return frame.waitForFunction<R, Arg>(pageFunction, arg as Arg, options);
+  }
+
+  private wrapEvaluateFunctionWithCallbacksIfNeeded(expression: string, arg: unknown): string {
+    if (!isSerializedEvaluateCallbacksArg(arg)) {
+      return expression;
+    }
+    return `async (payload) => {
+      ${PARSE_EVALUATION_RESULT_SOURCE}
+      const arg = __roxyParseEvaluationResultValue(payload.__roxyEvaluateCallbacksArg);
+      let result = (0, eval)(${JSON.stringify(looksLikeFunctionExpression(expression) ? `(${expression})` : expression)});
+      if (${looksLikeFunctionExpression(expression) ? "true" : "false"})
+        result = result(arg);
+      return result;
+    }`;
+  }
+
+  private async initScriptSourceWithExposedFunctions<Arg>(
+    script: PageFunction<Arg, any> | { path?: string; content?: string },
+    arg: Arg,
+    callbacks: Disposable[]
+  ): Promise<string> {
+    if (typeof script !== "function") {
+      throw new Error("Passing functions requires the init script to be a function");
+    }
+    const preparedArg = await prepareEvaluateWithCallbacksArg({
+      _exposeEvaluateCallback: async (name, callback) => {
+        callbacks.push(await this._exposeCallbackBinding(name, callback));
+      }
+    }, arg, { exposeFunctions: true });
+    if (!isSerializedEvaluateCallbacksArg(preparedArg)) {
+      throw new Error("Internal error while serializing init script callbacks");
+    }
+    const source = serializePageFunction(script as string | ElementCallback<any, Arg>);
+    return `(() => {
+      ${PARSE_EVALUATION_RESULT_SOURCE}
+      const arg = __roxyParseEvaluationResultValue(${JSON.stringify(preparedArg.__roxyEvaluateCallbacksArg)});
+      return (${source})(arg);
+    })()`;
   }
 
   async waitForTimeout(timeout: number): Promise<void> {
@@ -1226,30 +1662,37 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.waitForFileChooserInterceptionIfPending();
   }
 
-  async waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
+  async waitForURL(url: string|RegExp|URLPattern|((url: URL) => boolean), options?: { signal?: AbortSignal; timeout?: number; waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<void>;
   async waitForURL(
     url: string | RegExp | URLPattern | ((url: URL) => boolean),
     options: WaitForURLOptions = {}
   ): Promise<void> {
+    throwIfAborted(options);
     const timeout = options.timeout ?? this.defaultNavigationTimeoutMs;
     const waitUntil = options.waitUntil ?? "load";
     const start = Date.now();
 
     while (timeout === 0 || Date.now() - start <= timeout) {
+      throwIfAborted(options);
       const current = this.tryParseUrl(this.url());
       if (current && this.matchesURL(current, url)) {
         if (waitUntil !== "commit") {
-          await this.adapter.waitForLoadState(waitUntil, this.remainingTimeout(start, timeout));
+          await this.waitForLoadState(waitUntil, {
+            ...(options.signal ? { signal: options.signal } : {}),
+            timeout: this.remainingTimeout(start, timeout)
+          });
         }
+        throwIfAborted(options);
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await abortableDelay(50, options);
     }
     throw new TimeoutError(`page.waitForURL: Timeout ${timeout}ms exceeded.`);
   }
 
-  async waitForNavigation(options?: { timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
+  async waitForNavigation(options?: { signal?: AbortSignal; timeout?: number; url?: string|RegExp|URLPattern|((url: URL) => boolean); waitUntil?: "load"|"domcontentloaded"|"networkidle"|"commit"; }): Promise<null|Response>;
   async waitForNavigation(options: WaitForNavigationOptions = {}): Promise<Response | null> {
+    throwIfAborted(options);
     return this.waitForNavigationInFrame(null, options);
   }
 
@@ -1257,6 +1700,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     frame: RoxyFrameSnapshot | null,
     options: WaitForNavigationOptions = {}
   ): Promise<Response | null> {
+    throwIfAborted(options);
     const apiStack = new Error().stack;
     const frameObject = frame ? this.frameById(frame.id) : null;
     const isMainFrameTarget =
@@ -1273,10 +1717,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           `waiting for navigation${navigationTargetDescription} until "${waitUntil}"\n` +
           `============================================================`
       );
-    const navigationResponseAbortController = new AbortController();
-    const adapterNavigationResponsePromise = this.adapter.waitForNavigationResponse?.({
-      initialUrl,
-      signal: navigationResponseAbortController.signal,
+	    const navigationResponseAbortController = new AbortController();
+	    const navigationFrameId = frameObject && frameObject instanceof RoxyFrame && frameObject.snapshotState().parentId !== null
+	      ? frameObject.snapshotState().nativeFrameId ?? frameObject.snapshotState().id
+	      : undefined;
+	    const adapterNavigationResponsePromise = this.adapter.waitForNavigationResponse?.({
+	      ...(navigationFrameId ? { frameId: navigationFrameId } : {}),
+	      initialUrl,
+	      signal: navigationResponseAbortController.signal,
       ...(options.url
         ? {
             url: (url: URL) => this.matchesURL(url, options.url!)
@@ -1294,10 +1742,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       let navigationObserved = false;
       let sawCrossDocumentNavigation = false;
       let activeLoadStateWait: Promise<void> | null = null;
+      let settled = false;
       const timer =
         timeout === 0
           ? null
           : setTimeout(() => {
+              if (settled) {
+                return;
+              }
+              cleanup();
               rejectWithApiStack(
                 new TimeoutError(
                     `page.waitForNavigation: Timeout ${timeout}ms exceeded.\n` +
@@ -1320,7 +1773,6 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       const interval = setInterval(() => {
         scheduleFinishNavigation();
       }, 50);
-      let settled = false;
       let resolveNavigationResponse: (() => void) | null = null;
       const navigationResponsePromise = new Promise<void>((resolve) => {
         resolveNavigationResponse = resolve;
@@ -1361,10 +1813,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
         clearInterval(interval);
         navigationResponseAbortController.abort();
+        options.signal?.removeEventListener("abort", abortListener);
         this.removeInternalListener("response", responseListener);
         this.removeInternalListener("close", closeListener);
         this.removeInternalListener("framedetached", frameDetachedListener);
         this.removeInternalListener("framenavigated", frameNavigatedListener);
+      };
+
+      const abortListener = () => {
+        if (!settled) {
+          cleanup();
+          rejectWithApiStack(createAbortError(options.signal!));
+        }
       };
 
       const closeListener = (() => {
@@ -1412,6 +1872,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       };
 
       const finishNavigation = async () => {
+        throwIfAborted(options);
         if (!matchesUrl()) {
           return;
         }
@@ -1425,13 +1886,24 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
             this.remainingTimeout(start, timeout),
             targetFrameId
           );
-          await activeLoadStateWait;
+          try {
+            await raceWithAbortSignal(activeLoadStateWait, options);
+          } catch (error) {
+            if (
+              frameObject instanceof RoxyFrame &&
+              (frameObject.isDetached() || this.frameById(frameObject.snapshotState().id) === null)
+            ) {
+              throw formatFrameDetachError();
+            }
+            throw error;
+          }
           if (!latestNavigationResponse) {
             const responseGraceDeadline = Date.now() + Math.min(500, this.remainingTimeout(start, timeout));
             while (!latestNavigationResponse && Date.now() < responseGraceDeadline) {
+              throwIfAborted(options);
               await Promise.race([
                 navigationResponsePromise,
-                new Promise((resolve) => setTimeout(resolve, 25))
+                abortableDelay(25, options)
               ]);
               matchesUrl();
             }
@@ -1486,6 +1958,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
       }) as PageEventListener<"response">;
 
+      if (options.signal) {
+        options.signal.addEventListener("abort", abortListener, { once: true });
+        if (options.signal.aborted) {
+          abortListener();
+          return;
+        }
+      }
       this.addInternalListener("response", responseListener);
       this.addInternalListener("close", closeListener);
       this.addInternalListener("framedetached", frameDetachedListener);
@@ -1498,14 +1977,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return navigationPromise;
   }
 
-  async waitForRequest(urlOrPredicate: string|RegExp|((request: Request) => boolean|Promise<boolean>), options?: { timeout?: number; }): Promise<Request>;
+  async waitForRequest(urlOrPredicate: string|RegExp|((request: Request) => boolean|Promise<boolean>), options?: { signal?: AbortSignal; timeout?: number; }): Promise<Request>;
   async waitForRequest(
     urlOrPredicate:
       | string
       | RegExp
       | ((request: Request) => boolean | Promise<boolean>),
-    options: { timeout?: number } = {}
+    options: { signal?: AbortSignal; timeout?: number } = {}
   ): Promise<Request> {
+    throwIfAborted(options);
     const predicate = async (request: Request) => {
       if (typeof urlOrPredicate === "string" || isRegExp(urlOrPredicate)) {
         return urlMatches(this.baseURL(), request.url(), urlOrPredicate);
@@ -1517,19 +1997,21 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const waitOptions: InternalWaitForEventOptions<"request"> = {
       timeout: options.timeout ?? this.defaultTimeoutMs,
       predicate,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(logLine ? { logLine } : {})
     };
     return this.waitForEvent("request", waitOptions);
   }
 
-  async waitForResponse(urlOrPredicate: string|RegExp|((response: Response) => boolean|Promise<boolean>), options?: { timeout?: number; }): Promise<Response>;
+  async waitForResponse(urlOrPredicate: string|RegExp|((response: Response) => boolean|Promise<boolean>), options?: { signal?: AbortSignal; timeout?: number; }): Promise<Response>;
   async waitForResponse(
     urlOrPredicate:
       | string
       | RegExp
       | ((response: Response) => boolean | Promise<boolean>),
-    options: { timeout?: number } = {}
+    options: { signal?: AbortSignal; timeout?: number } = {}
   ): Promise<Response> {
+    throwIfAborted(options);
     const predicate = async (response: Response) => {
       if (typeof urlOrPredicate === "string" || isRegExp(urlOrPredicate)) {
         return urlMatches(this.baseURL(), response.url(), urlOrPredicate);
@@ -1541,20 +2023,26 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     const waitOptions: InternalWaitForEventOptions<"response"> = {
       timeout: options.timeout ?? this.defaultTimeoutMs,
       predicate,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(logLine ? { logLine } : {})
     };
     return this.waitForEvent("response", waitOptions);
   }
 
-  async waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { timeout?: number; }): Promise<void>;
+  async waitForLoadState(state?: "load"|"domcontentloaded"|"networkidle", options?: { signal?: AbortSignal; timeout?: number; }): Promise<void>;
   async waitForLoadState(
     state: LoadState = "load",
-    options: { timeout?: number } = {}
+    options: { signal?: AbortSignal; timeout?: number } = {}
   ): Promise<void> {
+    throwIfAborted(options);
     if (state !== "load" && state !== "domcontentloaded" && state !== "networkidle") {
       throw new Error("state: expected one of (load|domcontentloaded|networkidle|commit)");
     }
-    await this.adapter.waitForLoadState(state, options.timeout ?? this.defaultNavigationTimeoutMs);
+    await raceWithAbortSignal(
+      this.adapter.waitForLoadState(state, options.timeout ?? this.defaultNavigationTimeoutMs),
+      options
+    );
+    throwIfAborted(options);
     if (this.isClosed()) {
       return;
     }
@@ -1566,13 +2054,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async waitForFrameLoadState(
     frame: RoxyFrameSnapshot,
     state: LoadState,
-    options: { timeout?: number } = {}
+    options: { signal?: AbortSignal; timeout?: number } = {}
   ): Promise<void> {
-    await this.adapter.waitForLoadState(
-      state,
-      options.timeout ?? this.defaultNavigationTimeoutMs,
-      frame.parentId === null ? undefined : (frame.nativeFrameId ?? frame.id)
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      this.adapter.waitForLoadState(
+        state,
+        options.timeout ?? this.defaultNavigationTimeoutMs,
+        frame.parentId === null ? undefined : (frame.nativeFrameId ?? frame.id)
+      ),
+      options
     );
+    throwIfAborted(options);
     await this.refreshFrameSnapshots();
   }
 
@@ -1596,8 +2089,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     selector: string,
     options: WaitForSelectorOptions = {}
   ): Promise<ElementHandle | null> {
+    throwIfAborted(options);
     try {
-      return await this.mainFrame().waitForSelector(selector, options);
+      return await raceWithAbortSignal(this.mainFrame().waitForSelector(selector, options), options);
     } catch (error) {
       if (error instanceof TimeoutError) {
         error.message = error.message.replace(/^Timeout (\d+)ms exceeded\.$/, "page.waitForSelector: Timeout $1ms exceeded.");
@@ -1606,9 +2100,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     }
   }
 
-  async ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; timeout?: number; }): Promise<string>;
-  async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
-    return this.adapter.ariaSnapshot(options);
+  async ariaSnapshot(options?: { boxes?: boolean; depth?: number; mode?: "ai"|"default"; signal?: AbortSignal; timeout?: number; }): Promise<string>;
+  async ariaSnapshot(options?: AriaSnapshotOptions & { signal?: AbortSignal }): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.ariaSnapshot(options), options);
   }
 
   async resolveAriaRef(ref: string): Promise<ResolvedAriaRef> {
@@ -1927,6 +2422,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<PageConsoleMessage>;
   async waitForEvent<K extends PageEventName>(
@@ -1936,6 +2432,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (dialog: Dialog) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Dialog>;
   async waitForEvent<K extends PageEventName>(
@@ -1945,6 +2442,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (page: Page) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Page>;
   async waitForEvent<K extends PageEventName>(
@@ -1954,6 +2452,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (page: Page) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Page>;
   async waitForEvent<K extends PageEventName>(
@@ -1963,6 +2462,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (page: Page) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Page>;
   async waitForEvent(
@@ -1972,6 +2472,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (download: Download) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Download>;
   async waitForEvent(
@@ -1981,6 +2482,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (fileChooser: FileChooser) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<FileChooser>;
   async waitForEvent(
@@ -1990,6 +2492,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (frame: Frame) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Frame>;
   async waitForEvent(
@@ -1999,6 +2502,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (frame: Frame) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Frame>;
   async waitForEvent(
@@ -2008,6 +2512,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (frame: Frame) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Frame>;
   async waitForEvent<K extends PageEventName>(
@@ -2017,6 +2522,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (page: Page) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Page>;
   async waitForEvent(
@@ -2026,6 +2532,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (error: PageErrorEntry) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<PageErrorEntry>;
   async waitForEvent(
@@ -2035,6 +2542,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (page: Page) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Page>;
   async waitForEvent<K extends PageEventName>(
@@ -2044,6 +2552,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (request: Request) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Request>;
   async waitForEvent(
@@ -2053,6 +2562,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (request: Request) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Request>;
   async waitForEvent(
@@ -2062,6 +2572,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (request: Request) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Request>;
   async waitForEvent(
@@ -2071,6 +2582,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (response: Response) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Response>;
   async waitForEvent(
@@ -2080,6 +2592,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (webSocket: WebSocket) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<WebSocket>;
   async waitForEvent(
@@ -2089,6 +2602,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       | {
           predicate?: (worker: Worker) => boolean | Promise<boolean>;
           timeout?: number;
+          signal?: AbortSignal;
         }
   ): Promise<Worker>;
   async waitForEvent<K extends PageEventName>(
@@ -2119,6 +2633,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       typeof optionsOrPredicate === "function"
         ? this.defaultTimeoutMs
         : optionsOrPredicate?.timeout ?? this.defaultTimeoutMs;
+    const signal =
+      typeof optionsOrPredicate === "function"
+        ? undefined
+        : optionsOrPredicate?.signal;
+    if (signal) {
+      throwIfAborted({ signal });
+    }
 
     const waitForRegisteredEvent = () => new Promise<PageEventMap[PageEventName]>((resolve, reject) => {
       const rejectWithApiStack = (error: unknown) => {
@@ -2142,12 +2663,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         if (event !== "close") {
           this.removeInternalListener("close", closeListener as PageEventListener<"close">);
         }
+        signal?.removeEventListener("abort", abortListener);
       };
 
       const closeListener = (() => {
         cleanup();
         rejectWithApiStack(this.createClosedError());
       }) as PageEventListener<"close">;
+
+      const abortListener = () => {
+        cleanup();
+        rejectWithApiStack(createAbortError(signal!));
+      };
 
       const listener = (async (payload?: PageEventMap[PageEventName]) => {
         try {
@@ -2168,6 +2695,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       if (event !== "close") {
         this.addInternalListener("close", closeListener as PageEventListener<"close">);
       }
+      signal?.addEventListener("abort", abortListener, { once: true });
       this.addInternalListener(event, listener);
     });
 
@@ -2577,49 +3105,58 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return [...this.pageWorkers];
   }
 
-  async textContent(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
-  async textContent(selector: string, options?: SelectorStrictOptions): Promise<string | null> {
-    return this.mainFrame().textContent(selector, options);
+  async textContent(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<null|string>;
+  async textContent(selector: string, options?: SelectorStrictSignalOptions): Promise<string | null> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().textContent(selector, options), options);
   }
 
-  async innerText(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  async innerText(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return this.mainFrame().innerText(selector, options);
+  async innerText(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  async innerText(selector: string, options?: SelectorStrictSignalOptions): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().innerText(selector, options), options);
   }
 
-  async innerHTML(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  async innerHTML(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return this.mainFrame().innerHTML(selector, options);
+  async innerHTML(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  async innerHTML(selector: string, options?: SelectorStrictSignalOptions): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().innerHTML(selector, options), options);
   }
 
-  async getAttribute(selector: string, name: string, options?: { strict?: boolean; timeout?: number; }): Promise<null|string>;
-  async getAttribute(selector: string, name: string, options?: SelectorStrictOptions): Promise<string | null> {
-    return this.mainFrame().getAttribute(selector, name, options);
+  async getAttribute(selector: string, name: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<null|string>;
+  async getAttribute(selector: string, name: string, options?: SelectorStrictSignalOptions): Promise<string | null> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().getAttribute(selector, name, options), options);
   }
 
-  async inputValue(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<string>;
-  async inputValue(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return this.mainFrame().inputValue(selector, options);
+  async inputValue(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<string>;
+  async inputValue(selector: string, options?: SelectorStrictSignalOptions): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().inputValue(selector, options), options);
   }
 
-  async isChecked(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  async isChecked(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return this.mainFrame().isChecked(selector, options);
+  async isChecked(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  async isChecked(selector: string, options?: SelectorStrictSignalOptions): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().isChecked(selector, options), options);
   }
 
-  async isDisabled(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  async isDisabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return this.mainFrame().isDisabled(selector, options);
+  async isDisabled(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  async isDisabled(selector: string, options?: SelectorStrictSignalOptions): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().isDisabled(selector, options), options);
   }
 
-  async isEditable(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  async isEditable(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return this.mainFrame().isEditable(selector, options);
+  async isEditable(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  async isEditable(selector: string, options?: SelectorStrictSignalOptions): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().isEditable(selector, options), options);
   }
 
-  async isEnabled(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
-  async isEnabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return this.mainFrame().isEnabled(selector, options);
+  async isEnabled(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<boolean>;
+  async isEnabled(selector: string, options?: SelectorStrictSignalOptions): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().isEnabled(selector, options), options);
   }
 
   async isHidden(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<boolean>;
@@ -2632,24 +3169,28 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.mainFrame().isVisible(selector, options);
   }
 
-  async focus(selector: string, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
-  async focus(selector: string, options?: SelectorStrictOptions): Promise<void> {
-    await this.mainFrame().focus(selector, options);
+  async focus(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
+  async focus(selector: string, options?: SelectorStrictSignalOptions): Promise<void> {
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().focus(selector, options), options);
   }
 
-  async check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  async check(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async check(selector: string, options?: ClickOptions): Promise<void> {
-    await this.mainFrame().check(selector, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().check(selector, options), options);
   }
 
-  async uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  async uncheck(selector: string, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async uncheck(selector: string, options?: ClickOptions): Promise<void> {
-    await this.mainFrame().uncheck(selector, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().uncheck(selector, options), options);
   }
 
-  async dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
+  async dragAndDrop(source: string, target: string, options?: { force?: boolean; noWaitAfter?: boolean; scroll?: "auto"|"none"; signal?: AbortSignal; sourcePosition?: { x: number; y: number; }; steps?: number; strict?: boolean; targetPosition?: { x: number; y: number; }; timeout?: number; trial?: boolean; }): Promise<void>;
   async dragAndDrop(source: string, target: string, options: DragAndDropOptions = {}): Promise<void> {
-    await this.mainFrame().dragAndDrop(source, target, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().dragAndDrop(source, target, options), options);
   }
 
   async emulateMedia(options?: { colorScheme?: null|"light"|"dark"|"no-preference"; contrast?: null|"no-preference"|"more"; forcedColors?: null|"active"|"none"; media?: null|"screen"|"print"; reducedMotion?: null|"reduce"|"no-preference"; }): Promise<void>;
@@ -2668,9 +3209,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     await this.applyEmulatedMedia();
   }
 
-  async setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  async setChecked(selector: string, checked: boolean, options?: { force?: boolean; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
-    await this.mainFrame().setChecked(selector, checked, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().setChecked(selector, checked, options), options);
   }
 
   async setExtraHTTPHeaders(headers: { [key: string]: string; }): Promise<void> {
@@ -2680,7 +3222,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async setInputFiles(
     selector: string,
     files: PlaywrightInputFiles,
-    options?: { noWaitAfter?: boolean; strict?: boolean; timeout?: number; }
+    options?: { noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }
   ): Promise<void>;
   async setInputFiles(
     selector: ElementHandle,
@@ -2692,16 +3234,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     files: PlaywrightInputFiles | InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
+    throwIfAborted(options);
     if (typeof selector === "string") {
-      await this.mainFrame().setInputFiles(selector, files as InputFiles, options);
+      await raceWithAbortSignal(this.mainFrame().setInputFiles(selector, files as InputFiles, options), options);
       return;
     }
-    await setInputFilesOnElement(selector, files as InputFiles);
+    await setInputFilesOnElement(selector, files as InputFiles, options);
   }
 
-  async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { strict?: boolean; timeout?: number; }): Promise<void>;
+  async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
   async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: DispatchEventOptions): Promise<void> {
-    await (this.mainFrame() as RoxyFrame).dispatchEvent(selector, type, eventInit, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal((this.mainFrame() as RoxyFrame).dispatchEvent(selector, type, eventInit, options), options);
   }
 
   async requestGC(): Promise<void> {
@@ -2711,14 +3255,15 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async selectOption(
     selector: string,
     values: PlaywrightSelectOptionValues,
-    options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }
+    options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }
   ): Promise<Array<string>>;
   async selectOption(
     selector: string,
     values: PlaywrightSelectOptionValues,
-    options?: SelectorStrictOptions & { force?: boolean; noWaitAfter?: boolean; }
+    options?: SelectorStrictOptions & { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; }
   ): Promise<string[]> {
-    return this.mainFrame().selectOption(selector, values, options);
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.mainFrame().selectOption(selector, values, options), options);
   }
 
   async bringToFront(): Promise<void> {
@@ -2747,39 +3292,46 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     return this.currentViewportSize;
   }
 
-  async dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  async dblclick(selector: string, options?: { button?: "left"|"right"|"middle"; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
-    await this.mainFrame().dblclick(selector, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().dblclick(selector, options), options);
   }
 
-  async click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  async click(selector: string, options?: { button?: "left"|"right"|"middle"; clickCount?: number; delay?: number; force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async click(selector: string, options?: ClickOptions): Promise<void> {
-    await this.mainFrame().click(selector, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().click(selector, options), options);
   }
 
-  async hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  async hover(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async hover(selector: string, options?: HoverOptions): Promise<void> {
-    await this.mainFrame().hover(selector, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().hover(selector, options), options);
   }
 
-  async fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
+  async fill(selector: string, value: string, options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
   async fill(selector: string, value: string, options?: FillOptions): Promise<void> {
-    await this.mainFrame().fill(selector, value, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().fill(selector, value, options), options);
   }
 
-  async type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
+  async type(selector: string, text: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
   async type(selector: string, value: string, options?: TypeOptions): Promise<void> {
-    await this.mainFrame().type(selector, value, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().type(selector, value, options), options);
   }
 
-  async press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; strict?: boolean; timeout?: number; }): Promise<void>;
+  async press(selector: string, key: string, options?: { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<void>;
   async press(selector: string, key: string, options?: PressOptions): Promise<void> {
-    await this.mainFrame().press(selector, key, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().press(selector, key, options), options);
   }
 
-  async tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
+  async tap(selector: string, options?: { force?: boolean; modifiers?: Array<"Alt"|"Control"|"ControlOrMeta"|"Meta"|"Shift">; noWaitAfter?: boolean; position?: { x: number; y: number; }; scroll?: "auto"|"none"; signal?: AbortSignal; strict?: boolean; timeout?: number; trial?: boolean; }): Promise<void>;
   async tap(selector: string, options?: TapOptions): Promise<void> {
-    await this.mainFrame().tap(selector, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.mainFrame().tap(selector, options), options);
   }
 
   async close(options?: { reason?: string; runBeforeUnload?: boolean; }): Promise<void>;
@@ -3130,6 +3682,29 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private async matchContentFrameByOwnerElement(handle: RoxyElementHandle): Promise<Frame | null> {
+    const ownerNativeFrameId = await handle.protocolOwnerFrameId().catch(() => null);
+    await this.refreshFrameSnapshots().catch(() => {});
+    const ownerFrame = ownerNativeFrameId
+      ? await this.resolveFrameAcrossKnownPages(ownerNativeFrameId).catch(() => null)
+      : null;
+    const ownerSnapshot = ownerFrame instanceof RoxyFrame ? ownerFrame.snapshotState() : null;
+    const matchesOwnerFrame = (frame: Frame): boolean => {
+      if (!ownerSnapshot) {
+        return frame.parentFrame() !== null;
+      }
+      const parent = frame.parentFrame();
+      if (!parent) {
+        return false;
+      }
+      if (!(parent instanceof RoxyFrame)) {
+        return parent === ownerFrame;
+      }
+      const parentSnapshot = parent.snapshotState();
+      return parentSnapshot.id === ownerSnapshot.id ||
+        parentSnapshot.nativeFrameId === ownerSnapshot.nativeFrameId ||
+        parentSnapshot.id === ownerSnapshot.nativeFrameId ||
+        parentSnapshot.nativeFrameId === ownerSnapshot.id;
+    };
     const ownerInfo = await handle.evaluate((element) => {
       if (!(element instanceof HTMLIFrameElement) && !(element instanceof HTMLFrameElement)) {
         return null;
@@ -3144,23 +3719,19 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (!ownerInfo) {
       return null;
     }
-    await this.refreshFrameSnapshots().catch(() => {});
-    const byName = this.frames().find((frame) => {
-      if (frame.parentFrame() === null) {
-        return false;
-      }
+    const candidates = this.frames().filter(matchesOwnerFrame);
+    const byName = candidates.find((frame) => {
       return Boolean(ownerInfo.id && (frame as RoxyFrame).snapshotState().name === ownerInfo.id) ||
         Boolean(ownerInfo.name && frame.name() === ownerInfo.name);
     });
     if (byName) {
       return byName;
     }
-    const siblings = this.frames().filter((frame) => frame.parentFrame() !== null);
+    const siblings = candidates;
     if (ownerInfo.index >= 0 && siblings[ownerInfo.index]) {
       return siblings[ownerInfo.index]!;
     }
-    return this.frames().find((frame) =>
-      frame.parentFrame() !== null &&
+    return candidates.find((frame) =>
       Boolean(ownerInfo.src !== "about:blank" && frame.url() === ownerInfo.src)
     ) ?? null;
   }
@@ -3270,7 +3841,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (boundFrameId) {
       const boundFrame = this.frameById(boundFrameId);
       if (boundFrame) {
-        return boundFrame;
+        const snapshot = boundFrame.snapshotState();
+        if (snapshot.nativeFrameId === nativeFrameId || snapshot.id === nativeFrameId) {
+          return boundFrame;
+        }
       }
       this.nativeFrameBindings.delete(nativeFrameId);
     }
@@ -3389,28 +3963,36 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async evaluateInFrame<R, Arg>(
     frame: RoxyFrameSnapshot,
     pageFunction: PageFunction<Arg, R>,
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<R> {
-    return this.evaluateInFrameWithFunctionFlag(frame, pageFunction, arg, typeof pageFunction === "function");
+    return this.evaluateInFrameWithFunctionFlag(frame, pageFunction, arg, typeof pageFunction === "function", options);
   }
 
   async evaluateInFrameWithFunctionFlag<R, Arg>(
     frame: RoxyFrameSnapshot,
     pageFunction: PageFunction<Arg, R>,
     arg: Arg | undefined,
-    isFunction: boolean
+    isFunction: boolean,
+    options?: EvaluateOptions
   ): Promise<R> {
+    const preparedArg = await prepareEvaluateWithCallbacksArg(this, arg, options);
+    const expression = this.wrapEvaluateFunctionWithCallbacksIfNeeded(
+      serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+      preparedArg
+    );
+    const preparedIsFunction = isFunction || isSerializedEvaluateCallbacksArg(preparedArg);
     if (frame.nativeFrameId && this.adapter.evaluateInFrame) {
       try {
         return await this.adapter.evaluateInFrame<R>(
           frame.nativeFrameId,
-          serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
-          arg,
-          isFunction
+          expression,
+          preparedArg,
+          preparedIsFunction
         );
       } catch (error) {
         if (frame.parentId === null && this.isMainFrameExecutionContextUnavailable(error)) {
-          return this.evaluate(pageFunction, arg as Arg);
+          return this.evaluate(pageFunction, arg as Arg, options);
         }
         if (!this.shouldFallbackToOwnerElementFrameEvaluation(error, frame)) {
           throw error;
@@ -3420,11 +4002,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
     const owner = frame.ownerElementChain.length ? await this.ownerElementAdapterForFrame(frame) : null;
     if (!owner) {
-      return this.evaluate(pageFunction, arg as Arg);
+      return this.evaluate(pageFunction, arg as Arg, options);
     }
 
     return this.createElementHandle(owner).evaluate(
       `(iframe, payload) => {
+        ${PARSE_EVALUATION_RESULT_SOURCE}
         const targetWindow = iframe.contentWindow;
         const targetDocument = iframe.contentDocument;
         if (!targetWindow || !targetDocument) {
@@ -3436,12 +4019,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
 
         const callback = targetWindow.eval("(" + payload.expression + ")");
-        return callback(payload.arg);
+        return callback(__roxyParseEvaluationResultValue(payload.arg));
       }`,
       {
-        arg: serializeEvaluationArgument(arg),
-        expression: serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
-        isFunction
+        arg: isSerializedEvaluateCallbacksArg(preparedArg)
+          ? preparedArg.__roxyEvaluateCallbacksArg
+          : serializeEvaluationArgument(preparedArg),
+        expression,
+        isFunction: preparedIsFunction
       }
     );
   }
@@ -3449,18 +4034,26 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   async evaluateHandleInFrame<R, Arg>(
     frame: RoxyFrameSnapshot,
     pageFunction: PageFunction<Arg, R>,
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>> {
+    const preparedArg = await prepareEvaluateWithCallbacksArg(this, arg, options);
+    const expression = this.wrapEvaluateFunctionWithCallbacksIfNeeded(
+      serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
+      preparedArg
+    );
+    const preparedIsFunction = typeof pageFunction === "function" || isSerializedEvaluateCallbacksArg(preparedArg);
     if (frame.nativeFrameId && this.adapter.evaluateHandleInFrame) {
       try {
         return await createRemoteJSHandle(
           await this.adapter.evaluateHandleInFrame<R>(
             frame.nativeFrameId,
-            serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
-            arg,
-            typeof pageFunction === "function"
+            expression,
+            preparedArg,
+            preparedIsFunction
           ),
-          (reference) => this.createElementHandle(this.adapter.createHandle(reference))
+          (reference) => this.createElementHandle(this.adapter.createHandle(reference)),
+          this
         ) as unknown as SmartHandle<R>;
       } catch (error) {
         if (!this.shouldFallbackToOwnerElementFrameEvaluation(error, frame)) {
@@ -3475,10 +4068,11 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
 
     const owner = frame.ownerElementChain.length ? await this.ownerElementAdapterForFrame(frame) : null;
     if (!owner) {
-      return this.evaluateHandle(pageFunction, arg as Arg);
+      return this.evaluateHandle(pageFunction, arg as Arg, options);
     }
 
-    const expression = `(iframe, payload) => {
+    const ownerFrameExpression = `(iframe, payload) => {
+      ${PARSE_EVALUATION_RESULT_SOURCE}
       const targetWindow = iframe.contentWindow;
       const targetDocument = iframe.contentDocument;
       if (!targetWindow || !targetDocument) {
@@ -3490,22 +4084,22 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
 
       const callback = targetWindow.eval("(" + payload.expression + ")");
-      return callback(payload.arg);
+      return callback(__roxyParseEvaluationResultValue(payload.arg));
     }`;
     const payload = {
-      arg: serializeEvaluationArgument(arg),
-      expression: serializePageFunction(pageFunction as string | ElementCallback<R, Arg>),
-      isFunction:
-        typeof pageFunction !== "string" ||
-        /^\s*(async\s+function|function|\(?\s*[A-Za-z_$\)]).*/s.test(String(pageFunction).trim())
+      arg: isSerializedEvaluateCallbacksArg(preparedArg)
+        ? preparedArg.__roxyEvaluateCallbacksArg
+        : serializeEvaluationArgument(preparedArg),
+      expression,
+      isFunction: preparedIsFunction
     };
 
     if (!this.adapter.evaluateHandle) {
-      const value = await this.createElementHandle(owner).evaluate<R>(expression, payload);
+      const value = await this.createElementHandle(owner).evaluate<R>(ownerFrameExpression, payload);
       return createSmartHandle(value);
     }
 
-    const handle = await this.createElementHandle(owner).evaluateHandle<R>(expression, payload);
+    const handle = await this.createElementHandle(owner).evaluateHandle<R>(ownerFrameExpression, payload);
     const element = handle.asElement();
     if (element && frame.nativeFrameId) {
       const reference = (element as unknown as RoxyElementHandle).reference();
@@ -3574,6 +4168,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   async gotoInFrame(frame: RoxyFrameSnapshot, url: string, options: PageGotoOptions = {}): Promise<Response | null> {
+    throwIfAborted(options);
     const currentFrame = this.frameById(frame.id);
     const currentSnapshot = currentFrame?.snapshotState() ?? frame;
     if (currentSnapshot.parentId === null) {
@@ -3588,10 +4183,12 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       );
       let usedNavigationResponsePromise = false;
       try {
-        const response = await this.adapter.goto(url, {
+        const navigationOptions = {
           ...options,
           timeout: options.timeout ?? this.defaultNavigationTimeoutMs
-        });
+        };
+        const response = await raceWithAbortSignal(this.adapter.goto(url, navigationOptions), options);
+        throwIfAborted(options);
         await this.reinstallExposedBindings();
         await this.waitForFileChooserInterceptionIfPending();
         await this.refreshFrameSnapshots();
@@ -3606,7 +4203,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
         const publicResponse = this.toPublicResponse(response);
         if (publicResponse) {
-          return publicResponse;
+          return responseWithFrame(publicResponse, mainFrame);
         }
         usedNavigationResponsePromise = true;
         const navigationResult = await safeNavigationResponsePromise;
@@ -3632,14 +4229,18 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     if (!refreshedFrame) {
       throw new Error("Navigating frame was detached!");
     }
+    throwIfAborted(options);
     const navigationPromise = refreshedFrame.waitForNavigation({
       url,
       ...options
     });
-    await this.evaluateInFrame(refreshedSnapshot, (targetUrl) => {
-      window.location.href = targetUrl;
-    }, url);
-    return navigationPromise;
+    await raceWithAbortSignal(
+      this.evaluateInFrame(refreshedSnapshot, (targetUrl) => {
+        window.location.href = targetUrl;
+      }, url),
+      options
+    );
+    return raceWithAbortSignal(navigationPromise, options);
   }
 
   async titleInFrame(frame: RoxyFrameSnapshot): Promise<string> {
@@ -3682,28 +4283,38 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     html: string,
     options?: PageSetContentOptions
   ): Promise<void> {
+    throwIfAborted(options);
     if (frame.parentId === null) {
-      await this.adapter.setContent(html, {
+      const setContentOptions = {
         ...options,
         timeout: options?.timeout ?? this.defaultNavigationTimeoutMs
-      });
+      };
+      await raceWithAbortSignal(this.adapter.setContent(html, setContentOptions), options);
+      throwIfAborted(options);
       await this.reinstallExposedBindings();
       await this.waitForFileChooserInterceptionIfPending();
       await this.refreshFrameSnapshots();
       return;
     }
 
-    await this.evaluateInFrame(frame, (content) => {
-      document.open();
-      document.write(content);
-      document.close();
-    }, html);
+    await raceWithAbortSignal(
+      this.evaluateInFrame(frame, (content) => {
+        document.open();
+        document.write(content);
+        document.close();
+      }, html),
+      options
+    );
     if (options?.waitUntil !== "commit") {
       await this.waitForLoadState(
         options?.waitUntil,
-        options?.timeout === undefined ? {} : { timeout: options.timeout }
+        {
+          ...(options?.signal ? { signal: options.signal } : {}),
+          ...(options?.timeout === undefined ? {} : { timeout: options.timeout })
+        }
       );
     }
+    throwIfAborted(options);
     await this.refreshFramesForExternalMutation();
   }
 
@@ -4555,6 +5166,14 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
     state.headers = aggregateHeaders(state.headerEntries);
   }
 
+  private updateObservedRequestHeadersFromPayload(payload: PageRequestHeaders): void {
+    const state = this.findObservedRequestState(payload.url, payload.method, payload.requestId ?? null);
+    if (!state) {
+      return;
+    }
+    this.updateObservedRequestHeaders(state, payload.headers);
+  }
+
   private isRedirectResponsePayload(payload: PageResponse): boolean {
     const status = payload.status;
     return status >= 300 && status < 400;
@@ -5039,6 +5658,20 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private rootLocatorForFrame(frame: RoxyFrameSnapshot): RoxyLocator {
+    if (frame.nativeFrameId && this.adapter.locatorInFrame) {
+      return new RoxyLocator(
+        this.adapter.locatorInFrame(frame.nativeFrameId, { strategy: "css", value: ":root" }),
+        undefined,
+        null,
+        async (locator, options) => {
+          return await this.maybeRunLocatorHandlers(locator, options);
+        },
+        undefined,
+        this,
+        this,
+        frame.id
+      );
+    }
     if (!frame.referenceChain.length) {
       return new RoxyLocator(this.adapter.locator({ strategy: "css", value: ":root" }), undefined, null, undefined, undefined, this, this, frame.id);
     }
@@ -5250,6 +5883,9 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         }
         existing.setSnapshot(snapshot);
         if (previous && previous.url !== snapshot.url) {
+          if (snapshot.parentId === null) {
+            this._eraseEvaluateCallbacks();
+          }
           navigatedFrames.push(existing);
         }
       } else {
@@ -5712,300 +6348,13 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private async installExposedBinding(name: string): Promise<void> {
-    const install = (bindingName: string) => {
-      const typedArrayConstructors = {
-        i8: Int8Array,
-        ui8: Uint8Array,
-        ui8c: Uint8ClampedArray,
-        i16: Int16Array,
-        ui16: Uint16Array,
-        i32: Int32Array,
-        ui32: Uint32Array,
-        f32: Float32Array,
-        f64: Float64Array,
-        bi64: BigInt64Array,
-        bui64: BigUint64Array
-      };
-      const typedArrayToBase64 = (array: any) => {
-        if ("toBase64" in array) {
-          return array.toBase64();
-        }
-        const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
-        let binary = "";
-        for (let index = 0; index < bytes.length; index += 1) {
-          binary += String.fromCharCode(bytes[index]!);
-        }
-        return btoa(binary);
-      };
-      const base64ToTypedArray = (base64: string, TypedArrayConstructor: any) => {
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i += 1) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        return new TypedArrayConstructor(bytes.buffer);
-      };
-      const serializeBindingArgument = (value: any, visitorInfo = { visited: new Map<object, number>(), lastId: 0 }): any => {
-        if (value && typeof value === "object") {
-          if (typeof globalThis.Window === "function" && value instanceof globalThis.Window) {
-            return "ref: <Window>";
-          }
-          if (typeof globalThis.Document === "function" && value instanceof globalThis.Document) {
-            return "ref: <Document>";
-          }
-          if (typeof globalThis.Node === "function" && value instanceof globalThis.Node) {
-            return "ref: <Node>";
-          }
-        }
-        if (typeof value === "symbol" || Object.is(value, undefined)) {
-          return { v: "undefined" };
-        }
-        if (Object.is(value, null)) {
-          return { v: "null" };
-        }
-        if (Object.is(value, NaN)) {
-          return { v: "NaN" };
-        }
-        if (Object.is(value, Infinity)) {
-          return { v: "Infinity" };
-        }
-        if (Object.is(value, -Infinity)) {
-          return { v: "-Infinity" };
-        }
-        if (Object.is(value, -0)) {
-          return { v: "-0" };
-        }
-        if (typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
-          return value;
-        }
-        if (typeof value === "bigint") {
-          return { bi: value.toString() };
-        }
-        if (value instanceof Error || (value && Object.getPrototypeOf(value)?.name === "Error")) {
-          const stack = value.stack?.startsWith(value.name + ": " + value.message)
-            ? value.stack
-            : `${value.name}: ${value.message}\n${value.stack}`;
-          return { e: { n: value.name, m: value.message, s: stack } };
-        }
-        if (value instanceof Date || Object.prototype.toString.call(value) === "[object Date]") {
-          return { d: value.toJSON() };
-        }
-        if (value instanceof URL || Object.prototype.toString.call(value) === "[object URL]") {
-          return { u: value.toJSON() };
-        }
-        if (value instanceof RegExp || Object.prototype.toString.call(value) === "[object RegExp]") {
-          return { r: { p: value.source, f: value.flags } };
-        }
-        for (const [k, ctor] of Object.entries(typedArrayConstructors)) {
-          if (value instanceof ctor || Object.prototype.toString.call(value) === `[object ${ctor.name}]`) {
-            return { ta: { b: typedArrayToBase64(value), k } };
-          }
-        }
-        if (value instanceof ArrayBuffer || Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
-          return { ab: { b: typedArrayToBase64(new Uint8Array(value)) } };
-        }
-        const existingId = visitorInfo.visited.get(value);
-        if (existingId) {
-          return { ref: existingId };
-        }
-        if (Array.isArray(value)) {
-          const id = ++visitorInfo.lastId;
-          visitorInfo.visited.set(value, id);
-          const serializedEntries = [];
-          for (let index = 0; index < value.length; index += 1) {
-            serializedEntries[index] = serializeBindingArgument(value[index], visitorInfo);
-          }
-          return { a: serializedEntries, id };
-        }
-        if (typeof value === "object") {
-          const id = ++visitorInfo.lastId;
-          visitorInfo.visited.set(value, id);
-          const o: Array<{ k: string; v: unknown }> = [];
-          let objectIndex = 0;
-          for (const key of Object.keys(value)) {
-            let item;
-            try {
-              item = value[key];
-            } catch {
-              continue;
-            }
-            if (key === "toJSON" && typeof item === "function") {
-              o[objectIndex++] = { k: key, v: { o: [], id: 0 } };
-            } else {
-              o[objectIndex++] = { k: key, v: serializeBindingArgument(item, visitorInfo) };
-            }
-          }
-          let jsonWrapper;
-          try {
-            if (o.length === 0 && value.toJSON && typeof value.toJSON === "function") {
-              jsonWrapper = { value: value.toJSON() };
-            }
-          } catch {}
-          if (jsonWrapper) {
-            return serializeBindingArgument(jsonWrapper.value, visitorInfo);
-          }
-          return { o, id };
-        }
-        return { v: "undefined" };
-      };
-      const parseBindingResult = (value: any, refs = new Map<number, object>()): any => {
-        if (Object.is(value, undefined)) {
-          return undefined;
-        }
-        if (typeof value === "object" && value) {
-          if ("ref" in value) {
-            return refs.get(value.ref);
-          }
-          if ("v" in value) {
-            if (value.v === "undefined") {
-              return undefined;
-            }
-            if (value.v === "null") {
-              return null;
-            }
-            if (value.v === "NaN") {
-              return NaN;
-            }
-            if (value.v === "Infinity") {
-              return Infinity;
-            }
-            if (value.v === "-Infinity") {
-              return -Infinity;
-            }
-            if (value.v === "-0") {
-              return -0;
-            }
-          }
-          if ("d" in value) {
-            return new Date(value.d);
-          }
-          if ("u" in value) {
-            return new URL(value.u);
-          }
-          if ("bi" in value) {
-            return BigInt(value.bi);
-          }
-          if ("e" in value) {
-            const error = new Error(value.e.m);
-            error.name = value.e.n;
-            error.stack = value.e.s;
-            return error;
-          }
-          if ("r" in value) {
-            return new RegExp(value.r.p, value.r.f);
-          }
-          if ("a" in value) {
-            const result: any[] = [];
-            refs.set(value.id, result);
-            for (let index = 0; index < value.a.length; index += 1) {
-              result[index] = parseBindingResult(value.a[index], refs);
-            }
-            return result;
-          }
-          if ("o" in value) {
-            const result: Record<string, unknown> = {};
-            refs.set(value.id, result);
-            for (const { k, v } of value.o) {
-              if (k !== "__proto__") {
-                result[k] = parseBindingResult(v, refs);
-              }
-            }
-            return result;
-          }
-          if ("ta" in value) {
-            return base64ToTypedArray(value.ta.b, typedArrayConstructors[value.ta.k as keyof typeof typedArrayConstructors]);
-          }
-          if ("ab" in value) {
-            return base64ToTypedArray(value.ab.b, Uint8Array).buffer;
-          }
-        }
-        return value;
-      };
-      const store = (globalThis as typeof globalThis & {
-        __roxyBindingCalls?: Array<{
-          id: string;
-          name: string;
-          serializedArgs: unknown[];
-          frameId: string | null;
-        }>;
-        __roxyBindingResults?: Record<string, unknown>;
-        __roxyBindingNextId?: number;
-      });
-      store.__roxyBindingCalls ??= [];
-      store.__roxyBindingResults ??= {};
-      store.__roxyBindingNextId ??= 0;
-
-      (globalThis as typeof globalThis & Record<string, unknown>)[bindingName] = async (...args: unknown[]) => {
-        const callId = `${bindingName}:${++store.__roxyBindingNextId!}`;
-        const serializedArgs = [];
-        for (let index = 0; index < args.length; index += 1) {
-          serializedArgs[index] = serializeBindingArgument(args[index]);
-        }
-        const serializedArgsProbe = JSON.parse(JSON.stringify({ serializedArgs })).serializedArgs;
-        if (!Array.isArray(serializedArgsProbe)) {
-          throw new Error(
-            "serializedArgs is not an array. This can happen when Array.prototype.toJSON is defined incorrectly"
-          );
-        }
-        store.__roxyBindingCalls![store.__roxyBindingCalls!.length] = {
-          id: callId,
-          name: bindingName,
-          serializedArgs,
-          frameId:
-            (globalThis.frameElement as Element | null)?.getAttribute("data-roxy-frame-id") ?? null
-        };
-
-        for (;;) {
-          if (callId in store.__roxyBindingResults!) {
-            const payload = store.__roxyBindingResults![callId] as
-              | { ok: true; value: unknown }
-              | {
-                  ok: false;
-                  error: { value: unknown; message?: string; stack?: string; isNull?: boolean };
-            };
-            delete store.__roxyBindingResults![callId];
-            if (payload.ok) {
-              return parseBindingResult(payload.value);
-            }
-            if (payload.error.isNull) {
-              throw null;
-            }
-            const error = new Error(
-              payload.error.message ??
-                (typeof payload.error.value === "string"
-                  ? payload.error.value
-                  : String(payload.error.value))
-            );
-            if (payload.error.stack) {
-              error.stack = payload.error.stack;
-            }
-            throw error;
-          }
-          await new Promise<void>((resolve) => {
-            const originalSetTimeout = (globalThis as typeof globalThis & {
-              __pwClock?: {
-                builtins?: {
-                  setTimeout?: (callback: () => void, timeout?: number) => unknown;
-                };
-              };
-            }).__pwClock?.builtins?.setTimeout;
-            if (typeof originalSetTimeout === "function") {
-              originalSetTimeout(() => resolve(), 0);
-              return;
-            }
-            setTimeout(resolve, 0);
-          });
-        }
-      };
-    };
-
-    await this.addInitScript(install, name);
-    await this.evaluate(install, name);
+    await this.addInitScript(installExposedBindingFunction, name);
+    await this.evaluate(installExposedBindingFunction, name);
     await this.refreshFrameSnapshots().catch(() => {});
     await Promise.all(
       this.frames()
         .filter((frame): frame is RoxyFrame => frame instanceof RoxyFrame && frame !== this.mainFrame())
-        .map((frame) => this.evaluateInFrame(frame.snapshotState(), install, name).catch(() => {}))
+        .map((frame) => this.evaluateInFrame(frame.snapshotState(), installExposedBindingFunction, name).catch(() => {}))
     );
   }
 
@@ -6680,6 +7029,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       maxRetries?: number;
       method?: string;
       postData?: string | Buffer | unknown;
+      signal?: AbortSignal;
       timeout?: number;
       url?: string;
     }
@@ -6702,6 +7052,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       }
     }
     const controller = new AbortController();
+    const unlinkAbortSignal = linkAbortSignal(controller, options?.signal);
     const timeout = options?.timeout ?? DEFAULT_EVENT_TIMEOUT_MS;
     const timeoutHandle =
       timeout > 0
@@ -6727,6 +7078,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
+      unlinkAbortSignal();
     }
   }
 
@@ -7275,7 +7627,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   private async prepareScreenshotBackground(options: ScreenshotOptions): Promise<() => Promise<void>> {
-    if (!options.omitBackground || (options.type ?? "png") !== "png" || !this.adapter.setScreenshotBackgroundColor) {
+    if (!options.omitBackground || (options.type ?? "png") === "jpeg" || !this.adapter.setScreenshotBackgroundColor) {
       return async () => {};
     }
     await this.adapter.setScreenshotBackgroundColor({ r: 0, g: 0, b: 0, a: 0 });
@@ -7550,15 +7902,9 @@ function createRoutedResponse(data: RoutedResponseData, request: Request): Respo
 
 function responseWithFrame(response: Response, frame: Frame): Response {
   const request = response.request();
-  const framedRequest: Request = {
-    ...request,
-    frame: () => frame
-  };
-  return {
-    ...response,
-    frame: () => frame,
-    request: () => framedRequest
-  };
+  request.frame = () => frame;
+  response.frame = () => frame;
+  return response;
 }
 
 async function responseDataFromResponse(response: Response | APIResponse): Promise<RoutedResponseData> {

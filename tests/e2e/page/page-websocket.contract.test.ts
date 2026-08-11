@@ -461,7 +461,7 @@ class MinimalWebSocketServer {
     const server = new MinimalWebSocketServer(httpServer, await listen(httpServer));
     httpServer.on("upgrade", (request, socket) => {
       if (request.url !== "/ws") {
-        socket.write(
+        safeWrite(socket,
           "HTTP/1.1 400 Bad Request\r\n" +
             "Connection: close\r\n" +
             "Content-Length: 0\r\n" +
@@ -471,13 +471,14 @@ class MinimalWebSocketServer {
         return;
       }
       server.sockets.add(socket);
+      socket.on("error", () => {});
       socket.on("close", () => server.sockets.delete(socket));
       const key = request.headers["sec-websocket-key"];
       if (typeof key !== "string") {
         socket.destroy();
         return;
       }
-      socket.write(
+      safeWrite(socket,
         "HTTP/1.1 101 Switching Protocols\r\n" +
           "Upgrade: websocket\r\n" +
           "Connection: Upgrade\r\n" +
@@ -487,25 +488,20 @@ class MinimalWebSocketServer {
       const initialMessage = server.nextConnectionInitialMessage;
       server.nextConnectionInitialMessage = null;
       if (initialMessage !== null) {
-        socket.write(encodeTextFrame(initialMessage));
+        safeWrite(socket, encodeTextFrame(initialMessage));
       }
       socket.once("data", () => {
         if (initialMessage === null) {
-          if (!socket.destroyed && socket.writable) {
-            socket.write(encodeTextFrame("incoming"));
-          }
+          safeWrite(socket, encodeTextFrame("incoming"));
         }
         if (server.nextConnectionCloseFrame) {
-          if (!socket.destroyed && socket.writable) {
-            socket.write(server.nextConnectionCloseFrame);
+          if (safeWrite(socket, server.nextConnectionCloseFrame)) {
             socket.end();
           }
           server.nextConnectionCloseFrame = null;
         } else if (server.autoCloseAfterFirstMessage) {
           setTimeout(() => {
-            if (!socket.destroyed && socket.writable) {
-              socket.write(Buffer.from([0x88, 0x00]));
-            }
+            safeWrite(socket, Buffer.from([0x88, 0x00]));
           }, 50);
         }
         server.autoCloseAfterFirstMessage = true;
@@ -514,8 +510,7 @@ class MinimalWebSocketServer {
         if (!containsCloseFrame(data)) {
           return;
         }
-        if (!socket.destroyed && socket.writable) {
-          socket.write(Buffer.from([0x88, 0x00]));
+        if (safeWrite(socket, Buffer.from([0x88, 0x00]))) {
           socket.end();
         }
       });
@@ -561,6 +556,18 @@ class MinimalWebSocketServer {
         resolve();
       });
     });
+  }
+}
+
+function safeWrite(socket: Socket, chunk: string | Buffer): boolean {
+  if (socket.destroyed || !socket.writable) {
+    return false;
+  }
+  try {
+    socket.write(chunk);
+    return true;
+  } catch {
+    return false;
   }
 }
 

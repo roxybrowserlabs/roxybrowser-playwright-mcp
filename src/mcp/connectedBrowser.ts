@@ -16,6 +16,7 @@ import {
 import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../vendor/playwright/ariaSnapshotEvaluate.js";
 import type { BidiProtocolClient } from "../protocol/bidi/client.js";
 import { getBidiClientFactory } from "../protocol/bidi/client.js";
+import { BIDI_INSERT_TEXT_SOURCE } from "../protocol/bidi/insertText.js";
 import {
   parseSerializedEvaluationResult,
   wrapWithSerializedEvaluationResult
@@ -33,17 +34,27 @@ import { CURSOR_VISUALIZATION_INSTALL_SOURCE } from "../human/bubbleCursor.js";
 import { buildHumanMousePath } from "../human/mousePath.js";
 import { buildTypingDelays } from "../human/typing.js";
 import { defaultRng } from "../human/random.js";
-import { resolveAssetRoots } from "../assets/manager.js";
+import { resolveAssetRoots, sanitizeAssetFilename } from "../assets/manager.js";
 import { McpToolError } from "./errors.js";
+import { emulateBidiContext, emulateCdpContext } from "./contextEmulation.js";
 import { ACTION_POINT_EVALUATE_SOURCE, ACTION_POINT_BY_SELECTOR_SOURCE } from "./snapshot.js";
 import type {
   BrowserConsoleEntry,
+  BrowserConsoleSummary,
+  BrowserCookie,
+  BrowserCookieFilter,
+  BrowserCookieInput,
   BrowserEvaluateResult,
   BrowserNetworkRequest,
+  BrowserNetworkRoute,
+  BrowserNetworkResponseBody,
+  BrowserSnapshotEvent,
   BrowserSnapshot,
   BrowserSnapshotRequest,
+  BrowserStorageItem,
   BrowserTab,
   ClickTarget,
+  ConsoleMessageLevel,
   ConnectedBrowserSession,
   RoxyBrowserConnectArgs,
   SessionClickOptions,
@@ -51,10 +62,17 @@ import type {
   SessionDropOptions,
   SessionFormField,
   SessionHoverOptions,
+  SessionMouseClickOptions,
+  SessionMouseMoveOptions,
+  SessionScreenshotMimeType,
   SessionScrollOptions,
   SessionScreenshotOptions,
+  SessionScreenshotType,
+  SessionTextQueryOptions,
   SessionTypeOptions
 } from "./types.js";
+import type { BrowserContextOptions } from "../types/options.js";
+import { urlMatches } from "../urlMatch.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -106,6 +124,23 @@ type PendingFileChooserTarget = {
   backendNodeId: number;
 };
 
+type CdpFetchHeader = { name: string; value: string };
+type CdpFetchErrorReason =
+  | "Failed"
+  | "Aborted"
+  | "TimedOut"
+  | "AccessDenied"
+  | "ConnectionClosed"
+  | "ConnectionReset"
+  | "ConnectionRefused"
+  | "ConnectionAborted"
+  | "ConnectionFailed"
+  | "NameNotResolved"
+  | "InternetDisconnected"
+  | "AddressUnreachable"
+  | "BlockedByClient"
+  | "BlockedByResponse";
+
 export interface CursorVisualizationCdpPage {
   Page: {
     addScriptToEvaluateOnNewDocument(options: { source: string }): Promise<unknown>;
@@ -138,6 +173,7 @@ type CdpClient = {
   Page: {
     enable(): Promise<void>;
     addScriptToEvaluateOnNewDocument(options: { source: string }): Promise<unknown>;
+    removeScriptToEvaluateOnNewDocument?(options: { identifier: string }): Promise<void>;
     setInterceptFileChooserDialog?(options: { enabled: boolean }): Promise<void>;
     fileChooserOpened?(
       listener: (event: {
@@ -159,9 +195,27 @@ type CdpClient = {
       entries: Array<{ id: number; url: string }>;
     }>;
     navigateToHistoryEntry(options: { entryId: number }): Promise<void>;
+    reload(options?: { ignoreCache?: boolean }): Promise<void>;
     captureScreenshot(options?: {
-      format?: "jpeg" | "png";
+      format?: "jpeg" | "png" | "webp";
       clip?: { x: number; y: number; width: number; height: number; scale: number };
+      captureBeyondViewport?: boolean;
+    }): Promise<{ data: string }>;
+    printToPDF(options?: {
+      scale?: number;
+      displayHeaderFooter?: boolean;
+      headerTemplate?: string;
+      footerTemplate?: string;
+      printBackground?: boolean;
+      landscape?: boolean;
+      pageRanges?: string;
+      preferCSSPageSize?: boolean;
+      marginTop?: number;
+      marginBottom?: number;
+      marginLeft?: number;
+      marginRight?: number;
+      tagged?: boolean;
+      generateDocumentOutline?: boolean;
     }): Promise<{ data: string }>;
     handleJavaScriptDialog(options: { accept: boolean; promptText?: string }): Promise<void>;
     javascriptDialogOpening(
@@ -174,6 +228,27 @@ type CdpClient = {
     ): void;
     frameStoppedLoading?(listener: (event: { frameId: string }) => void): void;
     loadEventFired?(listener: (event: { timestamp?: number }) => void): void;
+  };
+  Browser?: {
+    grantPermissions?(options: {
+      permissions: string[];
+      origin?: string;
+      browserContextId?: string;
+    }): Promise<void>;
+    downloadWillBegin?(
+      listener: (event: {
+        frameId?: string;
+        guid: string;
+        suggestedFilename: string;
+        url: string;
+      }) => void
+    ): void;
+    downloadProgress?(
+      listener: (event: {
+        guid: string;
+        state: "inProgress" | "completed" | "canceled";
+      }) => void
+    ): void;
   };
   Runtime: {
     enable(): Promise<void>;
@@ -292,6 +367,37 @@ type CdpClient = {
     loadingFailed(listener: (event: { requestId: string; timestamp?: number; errorText?: string }) => void): void;
     getResponseBody(options: { requestId: string }): Promise<{ body: string; base64Encoded: boolean }>;
   };
+  Fetch?: {
+    enable(options?: { patterns?: Array<{ urlPattern?: string; requestStage?: "Request" | "Response" }> }): Promise<void>;
+    disable(): Promise<void>;
+    requestPaused(listener: (event: {
+      requestId: string;
+      request: {
+        url: string;
+        method: string;
+        headers?: Record<string, string>;
+        postData?: string;
+      };
+      resourceType?: string;
+      networkId?: string;
+      responseErrorReason?: string;
+      responseStatusCode?: number;
+    }) => void): void;
+    continueRequest(options: {
+      requestId: string;
+      headers?: CdpFetchHeader[];
+    }): Promise<void>;
+    fulfillRequest(options: {
+      requestId: string;
+      responseCode: number;
+      responseHeaders?: CdpFetchHeader[];
+      body?: string;
+    }): Promise<void>;
+    failRequest(options: {
+      requestId: string;
+      errorReason: CdpFetchErrorReason;
+    }): Promise<void>;
+  };
   Emulation?: {
     setDeviceMetricsOverride(options: {
       mobile: boolean;
@@ -300,7 +406,10 @@ type CdpClient = {
       deviceScaleFactor: number;
       screenWidth: number;
       screenHeight: number;
+      screenOrientation?: { angle: number; type: "landscapePrimary" | "portraitPrimary" };
     }): Promise<void>;
+    setTouchEmulationEnabled?(options: { enabled: boolean }): Promise<void>;
+    setUserAgentOverride?(options: { userAgent: string }): Promise<void>;
   };
   Log?: {
     enable(): Promise<void>;
@@ -439,6 +548,7 @@ interface TrackedResponseObject {
   markAvailable(): void;
   markFinished(): void;
   setBody(body: string): void;
+  setBodyBase64(body: string): void;
   setMetadata(response: {
     status: number;
     statusText: string;
@@ -468,6 +578,7 @@ interface BrowserNetworkState {
   startedAt: Map<string, number>;
   hydratedPerformanceResources: boolean;
   bodyRead: Set<string>;
+  mainDocumentStatus?: { status: number; statusText?: string | undefined } | undefined;
 }
 
 interface CompletionRequestCollector {
@@ -503,6 +614,26 @@ function createBrowserNetworkState(): BrowserNetworkState {
     hydratedPerformanceResources: false,
     bodyRead: new Set()
   };
+}
+
+function clearBrowserConsoleState(state: BrowserConsoleState): void {
+  state.messages.length = 0;
+  state.nextMessageIndex = 0;
+}
+
+function clearBrowserNetworkState(state: BrowserNetworkState): void {
+  state.requests.length = 0;
+  state.byRequestId.clear();
+  state.byRequestKey.clear();
+  state.requestsByRequestId.clear();
+  state.requestSequenceByRequestId.clear();
+  state.requestExtraInfoHeaders.clear();
+  state.responseExtraInfoHeaders.clear();
+  state.servedFromCacheRequestIds.clear();
+  state.startedAt.clear();
+  state.bodyRead.clear();
+  state.hydratedPerformanceResources = false;
+  state.mainDocumentStatus = undefined;
 }
 
 function buildConnectionFromWsEndpoint(browserWsEndpoint: string): CdpConnectionDetails {
@@ -610,6 +741,19 @@ function isBackendNodeTarget(target: ClickTarget): target is { backendNodeId: nu
   return "backendNodeId" in target;
 }
 
+function throwVerifyTargetError(target: ClickTarget | undefined, reason: string | undefined): never {
+  if (!target) {
+    throw new McpToolError("invalid_target", `Unable to query page content: ${reason ?? "unknown error"}.`);
+  }
+  const isSelector = "selector" in target;
+  throw new McpToolError(
+    isSelector ? "invalid_target" : "stale_ref",
+    reason === "not_found"
+      ? (isSelector ? `Element "${target.selector}" could not be found.` : "The referenced element is no longer valid.")
+      : `Unable to query element: ${reason ?? "unknown error"}.`
+  );
+}
+
 const FOCUS_AND_GET_ELEMENT_SOURCE = String.raw`(payload) => {
   const state = globalThis.__roxyMcpState;
   const el = payload.nodeToken
@@ -653,6 +797,104 @@ const CLEAR_ELEMENT_SOURCE = String.raw`(payload) => {
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
   return { ok: true };
+}`;
+
+// ⚠️ DIVERGENCE FROM PLAYWRIGHT: upstream MCP verify tools call Playwright
+// locators across page.frames(), which gives the full Playwright accessible
+// name and frame semantics. The direct MCP session layer does not yet expose a
+// Playwright Page/Frame abstraction, so these read-only verify helpers query
+// the active document DOM while preserving CDP/BiDi parity and avoiding any
+// humanized interaction side effects. Replace this with protocol locator/frame
+// traversal once ConnectedBrowserSession grows that abstraction.
+const VERIFY_QUERY_SOURCE = String.raw`(payload) => {
+  const state = globalThis.__roxyMcpState;
+  const root = payload.nodeToken
+    ? (state?.elements?.get(payload.nodeToken) ?? null)
+    : payload.selector
+      ? document.querySelector(payload.selector)
+      : document;
+  if (!root || !root.isConnected && root.nodeType !== Node.DOCUMENT_NODE) {
+    return { ok: false, reason: 'not_found' };
+  }
+
+  const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+  const isVisible = (element) => {
+    if (!(element instanceof Element)) return false;
+    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+    if (!style || style.visibility === 'hidden' || style.display === 'none') return false;
+    return !!(element.getClientRects?.().length);
+  };
+  const textOf = (element) => normalize(element.innerText || element.textContent || '');
+  const textMatches = (value, query) => normalize(value).toLowerCase().includes(normalize(query).toLowerCase());
+  const roleOf = (element) => {
+    const explicit = element.getAttribute?.('role');
+    if (explicit) return explicit.trim().split(/\s+/)[0];
+    const tag = element.tagName?.toLowerCase();
+    if (tag === 'button') return 'button';
+    if (tag === 'a' && element.hasAttribute('href')) return 'link';
+    if (tag === 'img') return 'img';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'input') {
+      const type = (element.getAttribute('type') || 'text').toLowerCase();
+      if (type === 'checkbox') return 'checkbox';
+      if (type === 'radio') return 'radio';
+      if (type === 'range') return 'slider';
+      if (['button', 'submit', 'reset'].includes(type)) return 'button';
+      return 'textbox';
+    }
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'li') return 'listitem';
+    if (tag === 'ul' || tag === 'ol') return 'list';
+    return explicit || '';
+  };
+  const accessibleNameOf = (element) => normalize(
+    element.getAttribute?.('aria-label')
+      || (element.getAttribute?.('aria-labelledby')
+        ? element.getAttribute('aria-labelledby').split(/\s+/).map((id) => element.ownerDocument.getElementById(id)?.textContent || '').join(' ')
+        : '')
+      || element.getAttribute?.('alt')
+      || element.getAttribute?.('title')
+      || element.getAttribute?.('placeholder')
+      || element.value
+      || element.textContent
+      || ''
+  );
+  const elements = root.nodeType === Node.DOCUMENT_NODE
+    ? Array.from(root.querySelectorAll('*'))
+    : [root, ...Array.from(root.querySelectorAll?.('*') || [])];
+
+  if (payload.operation === 'countByRole') {
+    return {
+      ok: true,
+      count: elements.filter((element) =>
+        roleOf(element) === payload.role
+        && accessibleNameOf(element) === normalize(payload.accessibleName)
+        && isVisible(element)
+      ).length
+    };
+  }
+  if (payload.operation === 'textContentsByText') {
+    return {
+      ok: true,
+      texts: elements
+        .filter((element) => textMatches(textOf(element), payload.text))
+        .filter((element) => !payload.visible || isVisible(element))
+        .map((element) => textOf(element))
+    };
+  }
+  if (payload.operation === 'textContent') {
+    return { ok: true, value: root.textContent ?? null };
+  }
+  if (payload.operation === 'inputValue') {
+    if (!('value' in root)) return { ok: false, reason: 'not_input' };
+    return { ok: true, value: String(root.value ?? '') };
+  }
+  if (payload.operation === 'isChecked') {
+    if (!('checked' in root)) return { ok: false, reason: 'not_checkable' };
+    return { ok: true, value: !!root.checked };
+  }
+  return { ok: false, reason: 'unknown_operation' };
 }`;
 
 const TYPE_INTO_ELEMENT_SOURCE = String.raw`(payload) => {
@@ -1070,6 +1312,32 @@ const VIEWPORT_BOX_SOURCE = String.raw`() => ({
   height: Math.max(1, globalThis.innerHeight || document.documentElement?.clientHeight || 1)
 })`;
 
+const WEB_STORAGE_ITEMS_SOURCE = String.raw`(payload) => {
+  const storage = globalThis[payload.storageName];
+  const items = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const name = storage.key(index);
+    if (name !== null)
+      items.push({ name, value: storage.getItem(name) ?? "" });
+  }
+  return items;
+}`;
+
+const WEB_STORAGE_SET_ITEM_SOURCE = String.raw`(payload) => {
+  const storage = globalThis[payload.storageName];
+  storage.setItem(payload.key, payload.value);
+}`;
+
+const WEB_STORAGE_REMOVE_ITEM_SOURCE = String.raw`(payload) => {
+  const storage = globalThis[payload.storageName];
+  storage.removeItem(payload.key);
+}`;
+
+const WEB_STORAGE_CLEAR_SOURCE = String.raw`(payload) => {
+  const storage = globalThis[payload.storageName];
+  storage.clear();
+}`;
+
 const CDP_KEY_MAP: Record<string, { key: string; code: string; keyCode: number; text?: string }> = {
   Enter:      { key: "Enter",     code: "Enter",       keyCode: 13, text: "\r" },
   Return:     { key: "Enter",     code: "Enter",       keyCode: 13, text: "\r" },
@@ -1248,6 +1516,7 @@ function extractBiDiValue<TResult>(value: BidiRemoteValue | undefined): TResult 
 function toAriaSnapshotPayload(request: BrowserSnapshotRequest = {}): {
   options: ReturnType<typeof normalizeAriaSnapshotOptions>;
   target?: BrowserSnapshotRequest["target"];
+  testIdAttribute?: string;
 } {
   return {
     options: normalizeAriaSnapshotOptions({
@@ -1255,6 +1524,7 @@ function toAriaSnapshotPayload(request: BrowserSnapshotRequest = {}): {
       ...(request.depth !== undefined ? { depth: request.depth } : {}),
       ...(request.boxes !== undefined ? { boxes: request.boxes } : {})
     }),
+    ...(request.testIdAttribute !== undefined ? { testIdAttribute: request.testIdAttribute } : {}),
     ...(request.target ? { target: request.target } : {})
   };
 }
@@ -1262,7 +1532,7 @@ function toAriaSnapshotPayload(request: BrowserSnapshotRequest = {}): {
 function toBrowserSnapshot(
   result: AriaSnapshotResult,
   request: BrowserSnapshotRequest,
-  extras: Pick<BrowserSnapshot, "console" | "consoleLink"> = {}
+  extras: Pick<BrowserSnapshot, "console" | "consoleLink" | "mainDocumentStatus" | "events"> = {}
 ): BrowserSnapshot {
   if (result.error) {
     const targetLabel = request.target?.raw ?? "target";
@@ -1289,11 +1559,14 @@ function toBrowserSnapshot(
 
   return {
     refs: result.refs,
+    ...(result.locators ? { locators: result.locators } : {}),
     text: result.text,
     title: result.title,
     url: result.url,
+    ...(extras.mainDocumentStatus ? { mainDocumentStatus: extras.mainDocumentStatus } : {}),
     ...(extras.console ? { console: extras.console } : {}),
-    ...(extras.consoleLink ? { consoleLink: extras.consoleLink } : {})
+    ...(extras.consoleLink ? { consoleLink: extras.consoleLink } : {}),
+    ...(extras.events ? { events: extras.events } : {})
   };
 }
 
@@ -1318,6 +1591,12 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   private hasMouseEnteredViewport = false;
   private readonly fileChooserInterceptEnabledByTabId = new Set<string>();
   private readonly pendingFileChooserTargetByTabId = new Map<string, PendingFileChooserTarget>();
+  private readonly downloadEventsByTabId = new Map<string, BrowserSnapshotEvent[]>();
+  private readonly pendingDownloadsByGuid = new Map<string, { tabId: string; filename: string; path: string; finished: boolean }>();
+  private readonly initScripts: string[] = [];
+  private readonly initScriptIdentifiersByTabId = new Map<string, string[]>();
+  private routesList: BrowserNetworkRoute[] = [];
+  private routeInterceptionListenerInstalledByTabId = new Set<string>();
   private fileChooserDebug = {
     prepareCalls: 0,
     chooserEvents: 0,
@@ -1328,13 +1607,20 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   };
   private readonly pressedKeyboardModifiers = new Set<string>();
   private readonly pressedKeyboardCodes = new Set<string>();
+  private readonly downloadsDir: string;
+  private offline = false;
 
   private constructor(
     private readonly browserClient: CdpClient,
     private readonly connection: CdpConnectionDetails,
-    tempDir?: string
+    tempDir?: string,
+    downloadsDir?: string,
+    private readonly consoleLevel: ConsoleMessageLevel = "info",
+    private readonly redactText: (text: string) => string = (text) => text,
+    private readonly testIdAttribute: string | undefined = undefined
   ) {
     this.tempDir = tempDir ?? resolveAssetRoots().tempDir;
+    this.downloadsDir = downloadsDir ?? resolveAssetRoots().downloadsDir;
   }
 
   static async connect(args: RoxyBrowserConnectArgs): Promise<CdpConnectedBrowserSession> {
@@ -1354,9 +1640,18 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       target: connection.browserWsEndpoint
     });
 
-    const session = new CdpConnectedBrowserSession(browserClient, connection, args.assetRoots?.tempDir);
+    const session = new CdpConnectedBrowserSession(
+      browserClient,
+      connection,
+      args.assetRoots?.tempDir,
+      args.downloadsDir ?? args.assetRoots?.downloadsDir,
+      args.consoleLevel,
+      args.redactText,
+      args.testIdAttribute
+    );
     session.versionString = version.Browser;
     await session.refreshTabs();
+    session.installDownloadListeners();
     await session.getActivePageClient().catch(() => undefined);
     return session;
   }
@@ -1404,6 +1699,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       }
       this.pageDialogStates.delete(tabId);
       this.completionCollectorsByTabId.delete(tabId);
+      this.routeInterceptionListenerInstalledByTabId.delete(tabId);
       await pageClient.close().catch(() => {});
     }
 
@@ -1431,14 +1727,215 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       evaluateCdp<AriaSnapshotResult>(
         pageClient,
         ARIA_SNAPSHOT_EVALUATE_SOURCE,
-        toAriaSnapshotPayload(request),
+        toAriaSnapshotPayload({
+          ...request,
+          ...(this.testIdAttribute !== undefined ? { testIdAttribute: this.testIdAttribute } : {})
+        }),
         contextId
       )
     );
+    const networkState = this.ensureNetworkState(activeTabId);
+    const events = this.consumeDownloadEvents(activeTabId);
     return toBrowserSnapshot(result, request, {
+      ...(networkState.mainDocumentStatus !== undefined ? { mainDocumentStatus: networkState.mainDocumentStatus } : {}),
       console: this.consoleSummary(activeTabId),
-      consoleLink: await this.takeConsoleLink(activeTabId)
+      consoleLink: await this.takeConsoleLink(activeTabId),
+      ...(events.length ? { events } : {})
     });
+  }
+
+  async ariaSnapshot(request: BrowserSnapshotRequest = {}): Promise<string> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await retryUntilReady(() =>
+      evaluateCdp<AriaSnapshotResult>(
+        pageClient,
+        ARIA_SNAPSHOT_EVALUATE_SOURCE,
+        toAriaSnapshotPayload({
+          ...request,
+          ...(this.testIdAttribute !== undefined ? { testIdAttribute: this.testIdAttribute } : {})
+        }),
+        contextId
+      )
+    );
+    return toBrowserSnapshot(result, request).text;
+  }
+
+  private installDownloadListeners(): void {
+    const browser = this.browserClient.Browser;
+    if (!browser?.downloadWillBegin || !browser.downloadProgress) {
+      return;
+    }
+
+    browser.downloadWillBegin((event) => {
+      const tabId = this.activeTabId;
+      if (!tabId) {
+        return;
+      }
+      const filename = sanitizeAssetFilename(event.suggestedFilename);
+      const resolvedPath = path.join(this.downloadsDir, filename);
+      this.pendingDownloadsByGuid.set(event.guid, {
+        tabId,
+        filename,
+        path: resolvedPath,
+        finished: false
+      });
+      this.queueDownloadEvent(tabId, { type: "download-start", filename });
+    });
+
+    browser.downloadProgress((event) => {
+      const record = this.pendingDownloadsByGuid.get(event.guid);
+      if (!record) {
+        return;
+      }
+      if (event.state === "completed" && !record.finished) {
+        record.finished = true;
+        this.queueDownloadEvent(record.tabId, { type: "download-finish", filename: record.filename, path: record.path });
+        this.pendingDownloadsByGuid.delete(event.guid);
+      }
+      if (event.state === "canceled") {
+        this.pendingDownloadsByGuid.delete(event.guid);
+      }
+    });
+  }
+
+  private queueDownloadEvent(tabId: string, event: BrowserSnapshotEvent): void {
+    const events = this.downloadEventsByTabId.get(tabId) ?? [];
+    events.push(event);
+    this.downloadEventsByTabId.set(tabId, events);
+  }
+
+  private consumeDownloadEvents(tabId: string): BrowserSnapshotEvent[] {
+    const events = this.downloadEventsByTabId.get(tabId) ?? [];
+    this.downloadEventsByTabId.delete(tabId);
+    return events;
+  }
+
+  async cookies(): Promise<BrowserCookie[]> {
+    const storageClient = this.browserClient as CdpClient & {
+      send(
+        method: "Storage.getCookies",
+        params?: Record<string, never>
+      ): Promise<{
+        cookies: Array<{
+          name: string;
+          value: string;
+          domain: string;
+          path: string;
+          expires: number;
+          httpOnly: boolean;
+          secure: boolean;
+          sameSite?: "Strict" | "Lax" | "None";
+          partitionKey?: { topLevelSite?: string };
+        }>;
+      }>;
+    };
+    const { cookies } = await storageClient.send("Storage.getCookies");
+    return cookies.map((cookie) => ({
+      domain: cookie.domain,
+      expires: cookie.expires,
+      httpOnly: cookie.httpOnly,
+      name: cookie.name,
+      path: cookie.path,
+      ...(cookie.partitionKey?.topLevelSite ? { partitionKey: cookie.partitionKey.topLevelSite } : {}),
+      sameSite: cookie.sameSite ?? "Lax",
+      secure: cookie.secure,
+      value: cookie.value
+    }));
+  }
+
+  async addCookies(cookies: ReadonlyArray<BrowserCookieInput>): Promise<void> {
+    const storageClient = this.browserClient as CdpClient & {
+      send(
+        method: "Storage.setCookies",
+        params: { cookies: Array<Record<string, unknown>> }
+      ): Promise<unknown>;
+    };
+    await storageClient.send("Storage.setCookies", {
+      cookies: rewriteMcpCdpCookies(cookies).map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        ...(cookie.url !== undefined ? { url: cookie.url } : {}),
+        ...(cookie.domain !== undefined ? { domain: cookie.domain } : {}),
+        ...(cookie.path !== undefined ? { path: cookie.path } : {}),
+        ...(cookie.expires !== undefined ? { expires: cookie.expires } : {}),
+        ...(cookie.httpOnly !== undefined ? { httpOnly: cookie.httpOnly } : {}),
+        ...(cookie.secure !== undefined ? { secure: cookie.secure } : {}),
+        ...(cookie.sameSite !== undefined ? { sameSite: cookie.sameSite } : {}),
+        ...(cookie.partitionKey !== undefined
+          ? {
+              partitionKey: {
+                hasCrossSiteAncestor: true,
+                topLevelSite: cookie.partitionKey
+              }
+            }
+          : {})
+      }))
+    });
+  }
+
+  async clearCookies(options?: BrowserCookieFilter): Promise<void> {
+    const storageClient = this.browserClient as CdpClient & {
+      send(
+        method: "Storage.clearCookies",
+        params?: Record<string, never>
+      ): Promise<unknown>;
+    };
+    if (!options?.domain && !options?.name && !options?.path) {
+      await storageClient.send("Storage.clearCookies");
+      return;
+    }
+
+    const cookies = await this.cookies();
+    const retained = cookies.filter((cookie) => !matchesMcpCookieFilter(cookie, options));
+    await storageClient.send("Storage.clearCookies");
+    if (retained.length) {
+      await this.addCookies(retained);
+    }
+  }
+
+  async webStorageItems(storageName: "localStorage" | "sessionStorage"): Promise<BrowserStorageItem[]> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    return evaluateCdp<BrowserStorageItem[]>(
+      pageClient,
+      WEB_STORAGE_ITEMS_SOURCE,
+      { storageName },
+      contextId
+    );
+  }
+
+  async setWebStorageItem(storageName: "localStorage" | "sessionStorage", key: string, value: string): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    await evaluateCdp<void>(
+      pageClient,
+      WEB_STORAGE_SET_ITEM_SOURCE,
+      { storageName, key, value },
+      contextId
+    );
+  }
+
+  async removeWebStorageItem(storageName: "localStorage" | "sessionStorage", key: string): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    await evaluateCdp<void>(
+      pageClient,
+      WEB_STORAGE_REMOVE_ITEM_SOURCE,
+      { storageName, key },
+      contextId
+    );
+  }
+
+  async clearWebStorage(storageName: "localStorage" | "sessionStorage"): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    await evaluateCdp<void>(
+      pageClient,
+      WEB_STORAGE_CLEAR_SOURCE,
+      { storageName },
+      contextId
+    );
   }
 
   async click(target: ClickTarget, options: SessionClickOptions): Promise<void> {
@@ -1541,6 +2038,82 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       type: "mouseReleased",
       x: endPoint.x,
       y: endPoint.y,
+      button: "left",
+      clickCount: 1
+    });
+  }
+
+  async mouseMove(x: number, y: number, options?: SessionMouseMoveOptions): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    await this.moveMouseAlongHumanPath(pageClient, { x, y }, 0, "none", options?.moveDelayMs);
+  }
+
+  async mouseClick(x: number, y: number, options: SessionMouseClickOptions): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const pageClient = await this.getActivePageClient();
+    const button = options.button ?? "left";
+    const clickCount = options.clickCount ?? 1;
+
+    await this.moveMouseAlongHumanPath(pageClient, { x, y }, 0, "none", options.moveDelayMs);
+    for (let index = 0; index < clickCount; index += 1) {
+      const eventClickCount = index + 1;
+      await pageClient.Input.dispatchMouseEvent({
+        type: "mousePressed",
+        x,
+        y,
+        button,
+        clickCount: eventClickCount
+      });
+      await delay(options.delay ?? 0);
+      let releaseSettled = false;
+      const releasePromise = pageClient.Input.dispatchMouseEvent({
+        type: "mouseReleased",
+        x,
+        y,
+        button,
+        clickCount: eventClickCount
+      }).finally(() => {
+        releaseSettled = true;
+      });
+      const dialogWaiter = this.waitForDialog(tabId);
+      try {
+        await Promise.race([
+          releasePromise,
+          dialogWaiter.promise
+        ]);
+      } finally {
+        dialogWaiter.cancel();
+        if (!releaseSettled) {
+          releasePromise.catch(() => {});
+        }
+      }
+    }
+  }
+
+  async mouseDrag(
+    startX: number,
+    startY: number,
+    endX: number,
+    endY: number,
+    options: SessionDragOptions
+  ): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    await this.moveMouseAlongHumanPath(pageClient, { x: startX, y: startY }, 0, "none", options.moveDelayMs);
+    await delay(options.moveDelayMs);
+    await pageClient.Input.dispatchMouseEvent({
+      type: "mousePressed",
+      x: startX,
+      y: startY,
+      button: "left",
+      clickCount: 1
+    });
+    await delay(options.holdDelayMs);
+    await this.moveMouseAlongHumanPath(pageClient, { x: endX, y: endY }, 0, "left", options.moveDelayMs);
+    await delay(options.moveDelayMs);
+    await pageClient.Input.dispatchMouseEvent({
+      type: "mouseReleased",
+      x: endX,
+      y: endY,
       button: "left",
       clickCount: 1
     });
@@ -1704,11 +2277,15 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     this.pageConsoleStates.clear();
     this.pageDialogStates.clear();
     await Promise.all(
-      Array.from(this.pageClients.values()).map(async (client) => {
+      Array.from(this.pageClients.entries()).map(async ([tabId, client]) => {
+        for (const identifier of this.initScriptIdentifiersByTabId.get(tabId) ?? []) {
+          await client.Page.removeScriptToEvaluateOnNewDocument?.({ identifier }).catch(() => {});
+        }
         await client.close().catch(() => {});
       })
     );
     this.pageClients.clear();
+    this.initScriptIdentifiersByTabId.clear();
     await this.browserClient.close().catch(() => {});
   }
 
@@ -1799,6 +2376,36 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     if (options?.submit) {
       await this.pressKey("Enter");
     }
+  }
+
+  async press(
+    target: ClickTarget,
+    key: string,
+    modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
+  ): Promise<void> {
+    if (isBackendNodeTarget(target)) {
+      throw new Error("Internal backendNodeId targets are only valid for file upload resolution.");
+    }
+    await this.focus(target);
+    await this.pressKey(key, modifiers);
+  }
+
+  async typeKeyboard(text: string): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    const chars = [...text];
+    for (const char of chars) {
+      await pageClient.Input.insertText({ text: char });
+    }
+  }
+
+  async keyDown(key: string): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    await this.keyboardDown(pageClient, key);
+  }
+
+  async keyUp(key: string): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    await this.keyboardUp(pageClient, key);
   }
 
   async pressKey(
@@ -1934,6 +2541,36 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     await this.navigateHistory(pageClient, 1).catch(() => {});
   }
 
+  async reload(): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    await pageClient.Page.reload({});
+  }
+
+  async setOffline(offline: boolean): Promise<void> {
+    this.offline = offline;
+    const clients = new Set<CdpClient>(this.pageClients.values());
+    clients.add(await this.getActivePageClient());
+    await Promise.all(Array.from(clients, (client) => this.applyNetworkState(client)));
+  }
+
+  async addRoute(route: BrowserNetworkRoute): Promise<void> {
+    this.routesList.push({ ...route });
+    await this.refreshRouteInterception();
+  }
+
+  async routes(): Promise<BrowserNetworkRoute[]> {
+    return this.routesList.map((route) => ({ ...route }));
+  }
+
+  async removeRoute(pattern?: string): Promise<number> {
+    const previousLength = this.routesList.length;
+    this.routesList = pattern === undefined
+      ? []
+      : this.routesList.filter((route) => route.pattern !== pattern);
+    await this.refreshRouteInterception();
+    return previousLength - this.routesList.length;
+  }
+
   private async navigateHistory(pageClient: CdpClient, delta: -1 | 1): Promise<void> {
     const history = await pageClient.Page.getNavigationHistory();
     const nextEntry = history.entries[history.currentIndex + delta];
@@ -1953,6 +2590,11 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       screenHeight: height,
       deviceScaleFactor: 1
     });
+  }
+
+  async emulateContext(options: BrowserContextOptions): Promise<void> {
+    const pageClient = await this.getActivePageClient();
+    await emulateCdpContext(pageClient, options, { browserClient: this.browserClient });
   }
 
   async scroll(
@@ -1991,13 +2633,40 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     }
   }
 
-  async screenshot(options: SessionScreenshotOptions = {}): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
+  async screenshot(options: SessionScreenshotOptions = {}): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }> {
     const pageClient = await this.getActivePageClient();
     const format = options.type ?? "png";
+    const scale = options.scale ?? "css";
+    const metrics = await pageClient.send("Page.getLayoutMetrics") as {
+      contentSize?: { x: number; y: number; width: number; height: number };
+      cssContentSize?: { x: number; y: number; width: number; height: number };
+      cssVisualViewport?: {
+        pageX: number;
+        pageY: number;
+        clientWidth: number;
+        clientHeight: number;
+        scale: number;
+      };
+      visualViewport?: {
+        pageX: number;
+        pageY: number;
+        clientWidth: number;
+        clientHeight: number;
+        scale: number;
+      };
+    };
+    const deviceScaleFactor = metrics.cssContentSize && metrics.contentSize
+      ? metrics.contentSize.width / metrics.cssContentSize.width || 1
+      : 1;
+    const clipScale = (baseScale: number): number => scale === "css" ? baseScale / deviceScaleFactor : baseScale;
     const screenshotOptions: {
-      format: "jpeg" | "png";
+      format: "jpeg" | "png" | "webp";
+      quality?: number;
       clip?: { x: number; y: number; width: number; height: number; scale: number };
-    } = { format };
+    } = {
+      format,
+      ...(options.quality !== undefined ? { quality: options.quality } : {})
+    };
     if (options.target) {
       const refResult = await evaluateCdpRef(pageClient, GET_ELEMENT_OBJECT_SOURCE, this.targetArg(options.target), await this.getActiveUtilityContextId(pageClient));
       if (!refResult.objectId) {
@@ -2014,13 +2683,9 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         y,
         width: Math.max(1, Math.max(...xs) - x),
         height: Math.max(1, Math.max(...ys) - y),
-        scale: 1
+        scale: clipScale(1)
       };
     } else if (options.fullPage) {
-      const metrics = await pageClient.send("Page.getLayoutMetrics") as {
-        cssContentSize?: { x: number; y: number; width: number; height: number };
-        contentSize?: { x: number; y: number; width: number; height: number };
-      };
       const contentSize = metrics.cssContentSize ?? metrics.contentSize;
       if (contentSize) {
         screenshotOptions.clip = {
@@ -2028,12 +2693,47 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
           y: contentSize.y,
           width: contentSize.width,
           height: contentSize.height,
-          scale: 1
+          scale: clipScale(1)
+        };
+      }
+    } else {
+      const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
+      if (viewport) {
+        screenshotOptions.clip = {
+          x: viewport.pageX,
+          y: viewport.pageY,
+          width: viewport.clientWidth,
+          height: viewport.clientHeight,
+          scale: clipScale(viewport.scale || 1)
         };
       }
     }
-    const result = await pageClient.Page.captureScreenshot(screenshotOptions);
-    return { data: result.data, mimeType: format === "png" ? "image/png" : "image/jpeg" };
+    const result = await pageClient.Page.captureScreenshot({
+      ...screenshotOptions,
+      captureBeyondViewport: options.fullPage === true
+    });
+    return { data: result.data, mimeType: mimeTypeForScreenshotFormat(format) };
+  }
+
+  async pdf(): Promise<Buffer> {
+    const pageClient = await this.getActivePageClient();
+    const result = await pageClient.Page.printToPDF({
+      scale: 1,
+      displayHeaderFooter: false,
+      headerTemplate: "",
+      footerTemplate: "",
+      printBackground: false,
+      landscape: false,
+      pageRanges: "",
+      preferCSSPageSize: false,
+      marginTop: 0,
+      marginBottom: 0,
+      marginLeft: 0,
+      marginRight: 0,
+      tagged: false,
+      generateDocumentOutline: false
+    });
+    return Buffer.from(result.data, "base64");
   }
 
   async uploadFile(target: ClickTarget, filePaths: string[]): Promise<void> {
@@ -2196,6 +2896,11 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return this.ensureNetworkState(tabId).requests.map(cloneNetworkRequest);
   }
 
+  async clearRequests(): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    clearBrowserNetworkState(this.ensureNetworkState(tabId));
+  }
+
   async beginRequestCollection(): Promise<unknown> {
     const tabId = await this.getActiveTabId();
     const collector: CompletionRequestCollector = { requests: [], requestKeys: [], liveRequests: [] };
@@ -2236,23 +2941,23 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return request ? cloneNetworkRequest(request) : undefined;
   }
 
-  async fetchResponseBody(index: number): Promise<string | undefined> {
+  async fetchResponseBody(index: number): Promise<BrowserNetworkResponseBody | undefined> {
     const tabId = await this.getActiveTabId();
     const state = this.ensureNetworkState(tabId);
     const request = state.requests[index - 1];
     if (!request || !request.requestId) {
-      return request?.responseBody;
+      return networkResponseBodyResult(request);
     }
     if (!canReadResponseBody(request)) {
       return undefined;
     }
     if (hasTrackedResponseBody(request)) {
-      return request.responseBody;
+      return networkResponseBodyResult(request);
     }
     const waitKey = requestWaitKey(request);
     await waitForLoadingDone(state, waitKey, 5_000).catch(() => undefined);
     if (hasTrackedResponseBody(request)) {
-      return request.responseBody;
+      return networkResponseBodyResult(request);
     }
     if (state.bodyRead.has(waitKey)) {
       return undefined;
@@ -2265,6 +2970,9 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     }
     const body = await clientNetwork.getResponseBody({ requestId: request.requestId }).catch(() => undefined);
     if (body) {
+      if (body.base64Encoded) {
+        setTrackedResponseBodyBase64(request, body.body);
+      }
       setTrackedResponseBody(
         request,
         body.base64Encoded
@@ -2272,7 +2980,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
           : body.body
       );
     }
-    return request.responseBody;
+    return networkResponseBodyResult(request);
   }
 
   async waitForPageTimeout(timeoutMs: number): Promise<void> {
@@ -2472,9 +3180,107 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       client.Network?.enable({}).catch(() => undefined),
       client.Log?.enable().catch(() => undefined)
     ]);
+    await this.applyNetworkState(client);
+    await this.applyRouteInterception(activeTab.id, client);
     await installCursorVisualizationInCdpPage(client);
     this.pageClients.set(activeTab.id, client);
+    for (const source of this.initScripts) {
+      await this.installInitScript(activeTab.id, client, source);
+    }
     return client;
+  }
+
+  private async applyNetworkState(client: CdpClient): Promise<void> {
+    if (!client.Network) {
+      return;
+    }
+    await client.send("Network.emulateNetworkConditions", {
+      offline: this.offline,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1
+    }).catch(() => undefined);
+  }
+
+  private async refreshRouteInterception(): Promise<void> {
+    await Promise.all(Array.from(this.pageClients.entries(), ([tabId, client]) => this.applyRouteInterception(tabId, client)));
+  }
+
+  private async applyRouteInterception(tabId: string, client: CdpClient): Promise<void> {
+    if (!client.Fetch) {
+      return;
+    }
+    this.routeInterceptionListenerInstalledByTabId ??= new Set<string>();
+    if (this.routesList.length === 0) {
+      if (this.routeInterceptionListenerInstalledByTabId.has(tabId)) {
+        await client.Fetch.disable().catch(() => undefined);
+      }
+      return;
+    }
+    if (!this.routeInterceptionListenerInstalledByTabId.has(tabId)) {
+      client.Fetch.requestPaused((event) => {
+        void this.handleRouteRequestPaused(client, event);
+      });
+      this.routeInterceptionListenerInstalledByTabId.add(tabId);
+    }
+    await client.Fetch.enable({
+      patterns: [{ urlPattern: "*", requestStage: "Request" }]
+    }).catch(() => undefined);
+  }
+
+  private async handleRouteRequestPaused(client: CdpClient, event: {
+    requestId: string;
+    request: {
+      url: string;
+      method: string;
+      headers?: Record<string, string>;
+      postData?: string;
+    };
+    responseErrorReason?: string;
+    responseStatusCode?: number;
+  }): Promise<void> {
+    if (!client.Fetch) {
+      return;
+    }
+    if (event.responseErrorReason || event.responseStatusCode !== undefined) {
+      await client.Fetch.continueRequest({ requestId: event.requestId }).catch(() => undefined);
+      return;
+    }
+    const route = matchingBrowserNetworkRoute(this.routesList, event.request.url);
+    if (!route) {
+      await client.Fetch.continueRequest({ requestId: event.requestId }).catch(() => undefined);
+      return;
+    }
+    if (route.abort) {
+      await client.Fetch.failRequest({
+        requestId: event.requestId,
+        errorReason: cdpErrorReasonForRoute(route.abort)
+      }).catch(() => undefined);
+      return;
+    }
+    if (route.body !== undefined || route.status !== undefined) {
+      await client.Fetch.fulfillRequest({
+        requestId: event.requestId,
+        responseCode: route.status ?? 200,
+        responseHeaders: routeFulfillHeaders(route),
+        body: Buffer.from(route.body ?? "", "utf8").toString("base64")
+      }).catch(() => undefined);
+      return;
+    }
+    const headers = applyRouteHeaderOverrides(event.request.headers ?? {}, route);
+    await client.Fetch.continueRequest({
+      requestId: event.requestId,
+      headers: Object.entries(headers).map(([name, value]) => ({ name, value }))
+    }).catch(() => undefined);
+  }
+
+  private async installInitScript(tabId: string, client: CdpClient, source: string): Promise<void> {
+    const result = await client.Page.addScriptToEvaluateOnNewDocument({ source }) as { identifier?: string };
+    if (result.identifier) {
+      const identifiers = this.initScriptIdentifiersByTabId.get(tabId) ?? [];
+      identifiers.push(result.identifier);
+      this.initScriptIdentifiersByTabId.set(tabId, identifiers);
+    }
   }
 
   async ensureActiveCursorVisualization(): Promise<void> {
@@ -2704,6 +3510,12 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       }
       request.resourceType = normalizeResourceType(event.type) || request.resourceType;
       applyResponseMetadataToRequest(state, request, event.response, event.hasExtraInfo);
+      if (request.isNavigationRequest) {
+        state.mainDocumentStatus = {
+          status: event.response.status,
+          statusText: event.response.statusText
+        };
+      }
     });
     client.Network.loadingFinished(async (event) => {
       const request = state.byRequestId.get(event.requestId);
@@ -2729,6 +3541,9 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
           ? await getResponseBody({ requestId: event.requestId }).catch(() => undefined)
           : undefined;
         if (body) {
+          if (body.base64Encoded) {
+            setTrackedResponseBodyBase64(request, body.body);
+          }
           setTrackedResponseBody(
             request,
             body.base64Encoded
@@ -2911,13 +3726,13 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
   private addConsoleMessage(tabId: string, message: BrowserConsoleMessage): void {
     const state = this.ensureConsoleState(tabId);
-    if (!shouldIncludeConsoleMessage(message.type)) {
+    if (!shouldIncludeConsoleMessage(this.consoleLevel, message.type)) {
       return;
     }
     state.messages.push(message);
   }
 
-  async consoleMessages(level: "error" | "warning" | "info" | "debug" = "info", all = false): Promise<BrowserConsoleEntry[]> {
+  async consoleMessages(level: ConsoleMessageLevel = "info", all = false): Promise<BrowserConsoleEntry[]> {
     const activeTabId = await this.getActiveTabId();
     const state = this.ensureConsoleState(activeTabId);
     const startIndex = all ? 0 : state.nextMessageIndex;
@@ -2932,6 +3747,16 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         lineNumber: message.lineNumber,
         formattedText: message.formattedText
       }));
+  }
+
+  async consoleMessageSummary(): Promise<BrowserConsoleSummary> {
+    const activeTabId = await this.getActiveTabId();
+    return this.consoleSummary(activeTabId);
+  }
+
+  async clearConsoleMessages(): Promise<void> {
+    const activeTabId = await this.getActiveTabId();
+    clearBrowserConsoleState(this.ensureConsoleState(activeTabId));
   }
 
   async evaluate(expression: string, target?: ClickTarget): Promise<BrowserEvaluateResult> {
@@ -2962,6 +3787,98 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
         }`;
     const payload = target ? { ...this.targetArg(target), expression } : { expression };
     return evaluateCdp<BrowserEvaluateResult>(pageClient, source, payload, contextId);
+  }
+
+  async addInitScript(source: string): Promise<void> {
+    this.initScripts.push(source);
+    await Promise.all(Array.from(this.pageClients.entries()).map(async ([tabId, client]) => {
+      await this.installInitScript(tabId, client, source);
+    }));
+  }
+
+  async setContent(html: string): Promise<void> {
+    await this.evaluate(`(html) => {
+      document.open();
+      document.write(html);
+      document.close();
+    }(${JSON.stringify(html)})`);
+  }
+
+  async countByRole(role: string, accessibleName: string): Promise<number> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdp<{ ok: boolean; count?: number; reason?: string }>(
+      pageClient,
+      VERIFY_QUERY_SOURCE,
+      { operation: "countByRole", role, accessibleName },
+      contextId
+    );
+    return result.count ?? 0;
+  }
+
+  async textContentsByText(text: string, options: SessionTextQueryOptions = {}): Promise<string[]> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdp<{ ok: boolean; texts?: string[]; reason?: string }>(
+      pageClient,
+      VERIFY_QUERY_SOURCE,
+      {
+        operation: "textContentsByText",
+        text,
+        visible: options.visible ?? false,
+        ...(options.target ? this.targetArg(options.target) : {})
+      },
+      contextId
+    );
+    if (!result.ok) {
+      throwVerifyTargetError(options.target, result.reason);
+    }
+    return result.texts ?? [];
+  }
+
+  async textContent(target: ClickTarget): Promise<string | null> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdp<{ ok: boolean; value?: string | null; reason?: string }>(
+      pageClient,
+      VERIFY_QUERY_SOURCE,
+      { operation: "textContent", ...this.targetArg(target) },
+      contextId
+    );
+    if (!result.ok) {
+      throwVerifyTargetError(target, result.reason);
+    }
+    return result.value ?? null;
+  }
+
+  async inputValue(target: ClickTarget): Promise<string> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdp<{ ok: boolean; value?: string; reason?: string }>(
+      pageClient,
+      VERIFY_QUERY_SOURCE,
+      { operation: "inputValue", ...this.targetArg(target) },
+      contextId
+    );
+    if (!result.ok) {
+      throwVerifyTargetError(target, result.reason);
+    }
+    return result.value ?? "";
+  }
+
+  async isChecked(target: ClickTarget): Promise<boolean> {
+    const pageClient = await this.getActivePageClient();
+    const contextId = await this.getActiveUtilityContextId(pageClient);
+    const result = await evaluateCdp<{ ok: boolean; value?: boolean; reason?: string }>(
+      pageClient,
+      VERIFY_QUERY_SOURCE,
+      { operation: "isChecked", ...this.targetArg(target) },
+      contextId
+    );
+    if (!result.ok) {
+      throwVerifyTargetError(target, result.reason);
+    }
+    return result.value ?? false;
   }
 
   async isFileInput(target: ClickTarget): Promise<boolean> {
@@ -3052,7 +3969,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     const fromLine = state.logLine + 1;
     for (const message of messages) {
       const relativeTime = Math.round(message.timestamp - state.logStartTime);
-      const logLine = `[${String(relativeTime).padStart(8, " ")}ms] ${message.formattedText}\n`;
+      const logLine = this.redactText(`[${String(relativeTime).padStart(8, " ")}ms] ${message.formattedText}\n`);
       await appendFile(state.logFile, logLine);
       state.logLine += logLine.split("\n").length - 1;
     }
@@ -3115,8 +4032,8 @@ function formatConsoleMessage(type: string, text: string, locationUrl: string, l
   return `[${type.toUpperCase()}] ${text} @ ${locationUrl}:${lineNumber}`;
 }
 
-function shouldIncludeConsoleMessage(type: string): boolean {
-  return consoleLevelForMessageType(type) <= consoleLevelForMessageType("info");
+function shouldIncludeConsoleMessage(thresholdLevel: ConsoleMessageLevel, type: string): boolean {
+  return consoleLevelForMessageType(type) <= consoleLevelForMessageType(thresholdLevel);
 }
 
 function consoleLevelForMessageType(type: string): number {
@@ -3155,6 +4072,74 @@ function normalizeHeaders(headers: Record<string, string>): Record<string, strin
     result[key.toLowerCase()] = String(value);
   }
   return result;
+}
+
+function matchingBrowserNetworkRoute(routes: BrowserNetworkRoute[], url: string): BrowserNetworkRoute | undefined {
+  for (let index = routes.length - 1; index >= 0; index -= 1) {
+    const route = routes[index];
+    if (route && urlMatches(undefined, url, route.pattern)) {
+      return route;
+    }
+  }
+  return undefined;
+}
+
+function routeFulfillHeaders(route: BrowserNetworkRoute): CdpFetchHeader[] {
+  const headers: CdpFetchHeader[] = [];
+  if (route.contentType) {
+    headers.push({ name: "content-type", value: route.contentType });
+  }
+  return headers;
+}
+
+function applyRouteHeaderOverrides(
+  requestHeaders: Record<string, string>,
+  route: BrowserNetworkRoute
+): Record<string, string> {
+  const headers = { ...requestHeaders };
+  const removeHeaders = new Set((route.removeHeaders ?? []).map((header) => header.toLowerCase()));
+  for (const name of Object.keys(headers)) {
+    if (removeHeaders.has(name.toLowerCase())) {
+      delete headers[name];
+    }
+  }
+  for (const [name, value] of Object.entries(route.addHeaders ?? {})) {
+    headers[name] = value;
+  }
+  return headers;
+}
+
+function cdpErrorReasonForRoute(errorCode?: string): CdpFetchErrorReason {
+  switch ((errorCode ?? "failed").toLowerCase()) {
+    case "aborted":
+      return "Aborted";
+    case "timedout":
+      return "TimedOut";
+    case "accessdenied":
+      return "AccessDenied";
+    case "connectionclosed":
+      return "ConnectionClosed";
+    case "connectionreset":
+      return "ConnectionReset";
+    case "connectionrefused":
+      return "ConnectionRefused";
+    case "connectionaborted":
+      return "ConnectionAborted";
+    case "connectionfailed":
+      return "ConnectionFailed";
+    case "namenotresolved":
+      return "NameNotResolved";
+    case "internetdisconnected":
+      return "InternetDisconnected";
+    case "addressunreachable":
+      return "AddressUnreachable";
+    case "blockedbyclient":
+      return "BlockedByClient";
+    case "blockedbyresponse":
+      return "BlockedByResponse";
+    default:
+      return "Failed";
+  }
 }
 
 function parseCdpHeadersText(headersText: string | undefined): Record<string, string> | undefined {
@@ -3349,67 +4334,89 @@ function ensureTrackedResponse(request: TrackedBrowserNetworkRequest): TrackedBr
 function ensureTrackedResponseObject(request: TrackedBrowserNetworkRequest): TrackedResponseObject {
   const requestObject = ensureTrackedRequestObject(request);
   const response = ensureTrackedResponse(request);
-  request.__responseObject ??= {
-    request: requestObject,
-    response,
-    isAvailableSettled: () => !!response.availableSettled,
-    isFinishedSettled: () => !!response.finishedSettled,
-    responseAvailableEntry: () => {
-      if (!response.available) {
-        response.available = createLifecycleWaiter();
+  if (!request.__responseObject) {
+    request.__responseObject = {
+      request: requestObject,
+      response,
+      isAvailableSettled: () => !!response.availableSettled,
+      isFinishedSettled: () => !!response.finishedSettled,
+      responseAvailableEntry: () => {
+        if (!response.available) {
+          response.available = createLifecycleWaiter();
+        }
+        return response.available;
+      },
+      requestFinishedEntry: () => {
+        if (!response.finished) {
+          response.finished = createLifecycleWaiter();
+        }
+        return response.finished;
+      },
+      markAvailable: () => {
+        if (response.availableSettled) {
+          return;
+        }
+        response.availableSettled = true;
+        response.available?.resolve();
+      },
+      markFinished: () => {
+        if (response.finishedSettled) {
+          return;
+        }
+        response.finishedSettled = true;
+        response.finished?.resolve();
+      },
+      setBody: (body: string) => {
+        request.responseBody = body;
+        response.body = body;
+      },
+      setBodyBase64: (body: string) => {
+        request.responseBodyBase64 = body;
+      },
+      setMetadata: (nextResponse) => {
+        request.status = nextResponse.status;
+        request.statusText = nextResponse.statusText;
+        request.responseHeaders = normalizeHeaders(nextResponse.headers ?? {});
+        request.mimeType = nextResponse.mimeType;
+        response.status = request.status;
+        response.statusText = request.statusText;
+        response.headers = request.responseHeaders;
+        response.mimeType = request.mimeType;
+      },
+      setRawMetadata: (rawHeaders, headersSize) => {
+        request.rawResponseHeaders = rawHeaders;
+        request.responseHeadersSize = headersSize;
+        response.rawHeaders = rawHeaders;
+        response.headersSize = headersSize;
+      },
+      setStatus: (status: number) => {
+        request.status = status;
+        response.status = status;
       }
-      return response.available;
-    },
-    requestFinishedEntry: () => {
-      if (!response.finished) {
-        response.finished = createLifecycleWaiter();
-      }
-      return response.finished;
-    },
-    markAvailable: () => {
-      if (response.availableSettled) {
-        return;
-      }
-      response.availableSettled = true;
-      response.available?.resolve();
-    },
-    markFinished: () => {
-      if (response.finishedSettled) {
-        return;
-      }
-      response.finishedSettled = true;
-      response.finished?.resolve();
-    },
-    setBody: (body: string) => {
-      request.responseBody = body;
-      response.body = body;
-    },
-    setMetadata: (nextResponse) => {
-      request.status = nextResponse.status;
-      request.statusText = nextResponse.statusText;
-      request.responseHeaders = normalizeHeaders(nextResponse.headers ?? {});
-      request.mimeType = nextResponse.mimeType;
-      response.status = request.status;
-      response.statusText = request.statusText;
-      response.headers = request.responseHeaders;
-      response.mimeType = request.mimeType;
-    },
-    setRawMetadata: (rawHeaders, headersSize) => {
-      request.rawResponseHeaders = rawHeaders;
-      request.responseHeadersSize = headersSize;
-      response.rawHeaders = rawHeaders;
-      response.headersSize = headersSize;
-    },
-    setStatus: (status: number) => {
-      request.status = status;
-      response.status = status;
-    }
-  };
+    };
+  }
   return request.__responseObject;
 }
 
 function setTrackedResponseBody(request: TrackedBrowserNetworkRequest, body: string): void {
   ensureTrackedResponseObject(request).setBody(body);
+}
+
+function setTrackedResponseBodyBase64(request: TrackedBrowserNetworkRequest, body: string): void {
+  ensureTrackedResponseObject(request).setBodyBase64(body);
+}
+
+function networkResponseBodyResult(request: BrowserNetworkRequest | undefined): BrowserNetworkResponseBody | undefined {
+  if (!request) {
+    return undefined;
+  }
+  if (request.responseBody === undefined && request.responseBodyBase64 === undefined) {
+    return undefined;
+  }
+  return {
+    ...(request.responseBody !== undefined ? { text: request.responseBody } : {}),
+    ...(request.responseBodyBase64 !== undefined ? { base64: request.responseBodyBase64 } : {})
+  };
 }
 
 function setTrackedFailureText(request: TrackedBrowserNetworkRequest, failureText: string): void {
@@ -3703,6 +4710,26 @@ function bidiBytesValueToString(value: BidiBytesValue | string | { value?: strin
   return value.value ?? "";
 }
 
+function fromBidiCookieSameSite(sameSite: string | undefined): "Strict" | "Lax" | "None" {
+  if (sameSite === "strict") {
+    return "Strict";
+  }
+  if (sameSite === "lax") {
+    return "Lax";
+  }
+  return "None";
+}
+
+function toBidiCookieSameSite(sameSite: "Strict" | "Lax" | "None"): "strict" | "lax" | "none" {
+  if (sameSite === "Strict") {
+    return "strict";
+  }
+  if (sameSite === "Lax") {
+    return "lax";
+  }
+  return "none";
+}
+
 function bidiHeadersToRecord(headers: BidiHeader[] | undefined): Record<string, string> {
   const result: Record<string, string> = {};
   for (const header of headers ?? []) {
@@ -3750,15 +4777,20 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private readonly bidiListeners = new Map<string, (payload: unknown) => void>();
   private responseDataCollector: string | undefined;
   private cursorVisualizationPreloadScript: string | undefined;
+  private readonly initScriptPreloadScripts = new Set<string>();
   private activeTabId: string | undefined;
   private ownsSession = false;
   private readonly tempDir: string;
   private currentMousePosition = { x: 0, y: 0 };
   private hasMouseEnteredViewport = false;
+  private offline = false;
 
   private constructor(
     private readonly client: BidiProtocolClient,
-    tempDir?: string
+    tempDir?: string,
+    private readonly consoleLevel: ConsoleMessageLevel = "info",
+    private readonly redactText: (text: string) => string = (text) => text,
+    private readonly testIdAttribute: string | undefined = undefined
   ) {
     this.tempDir = tempDir ?? resolveAssetRoots().tempDir;
   }
@@ -3784,7 +4816,13 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       webSocketUrl: normalizeFirefoxBidiEndpoint(args.endpoint, args.sessionId)
     });
 
-    const session = new BidiConnectedBrowserSession(client, args.assetRoots?.tempDir);
+    const session = new BidiConnectedBrowserSession(
+      client,
+      args.assetRoots?.tempDir,
+      args.consoleLevel,
+      args.redactText,
+      args.testIdAttribute
+    );
     session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint, args.sessionId);
     await session.initialize();
     const tabs = await session.refreshTabs();
@@ -3811,6 +4849,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     await this.client.browsingContextActivate({
       context: response.context
     });
+    await this.applyNetworkState([response.context]);
     if (url && url !== "about:blank") {
       await this.client.browsingContextNavigate({
         context: response.context,
@@ -3866,10 +4905,15 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         this.client,
         tabId,
         ARIA_SNAPSHOT_EVALUATE_SOURCE,
-        toAriaSnapshotPayload(request)
+        toAriaSnapshotPayload({
+          ...request,
+          ...(this.testIdAttribute !== undefined ? { testIdAttribute: this.testIdAttribute } : {})
+        })
       )
     );
+    const networkState = this.ensureNetworkState(tabId);
     const snapshot = toBrowserSnapshot(result, request, {
+      ...(networkState.mainDocumentStatus !== undefined ? { mainDocumentStatus: networkState.mainDocumentStatus } : {}),
       console: this.consoleSummary(tabId),
       consoleLink: await this.takeConsoleLink(tabId)
     });
@@ -3879,7 +4923,142 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     };
   }
 
-  async consoleMessages(level: "error" | "warning" | "info" | "debug" = "info", all = false): Promise<BrowserConsoleEntry[]> {
+  async ariaSnapshot(request: BrowserSnapshotRequest = {}): Promise<string> {
+    const tabId = await this.getActiveTabId();
+    const result = await retryUntilReady(() =>
+      evaluateBiDi<AriaSnapshotResult>(
+        this.client,
+        tabId,
+        ARIA_SNAPSHOT_EVALUATE_SOURCE,
+        toAriaSnapshotPayload({
+          ...request,
+          ...(this.testIdAttribute !== undefined ? { testIdAttribute: this.testIdAttribute } : {})
+        })
+      )
+    );
+    return toBrowserSnapshot(result, request).text;
+  }
+
+  async cookies(): Promise<BrowserCookie[]> {
+    const response = await this.client.storageGetCookies({
+      partition: {
+        type: "storageKey",
+        userContext: "default"
+      }
+    }) as {
+      cookies: Array<{
+        name: string;
+        value: BidiBytesValue | string | { value?: string; type?: string };
+        domain: string;
+        path: string;
+        httpOnly: boolean;
+        secure: boolean;
+        sameSite?: string;
+        expiry?: number;
+      }>;
+    };
+    return response.cookies.map((cookie) => ({
+      domain: cookie.domain,
+      expires: cookie.expiry ?? -1,
+      httpOnly: cookie.httpOnly,
+      name: cookie.name,
+      path: cookie.path,
+      sameSite: fromBidiCookieSameSite(cookie.sameSite),
+      secure: cookie.secure,
+      value: bidiBytesValueToString(cookie.value)
+    }));
+  }
+
+  async addCookies(cookies: ReadonlyArray<BrowserCookieInput>): Promise<void> {
+    await Promise.all(rewriteMcpBidiCookies(cookies).map(async (cookie) => {
+      await this.client.storageSetCookie({
+        cookie: {
+          name: cookie.name,
+          value: {
+            type: "string",
+            value: cookie.value
+          },
+          domain: cookie.domain,
+          path: cookie.path,
+          httpOnly: cookie.httpOnly,
+          secure: cookie.secure,
+          sameSite: cookie.sameSite ? toBidiCookieSameSite(cookie.sameSite) : undefined,
+          expiry: cookie.expires === -1 || cookie.expires === undefined ? undefined : Math.round(cookie.expires)
+        },
+        partition: {
+          type: "storageKey",
+          userContext: "default",
+          ...(cookie.partitionKey !== undefined ? { sourceOrigin: cookie.partitionKey } : {})
+        }
+      });
+    }));
+  }
+
+  async clearCookies(options?: BrowserCookieFilter): Promise<void> {
+    if (!options?.domain && !options?.name && !options?.path) {
+      await this.client.storageDeleteCookies({
+        partition: {
+          type: "storageKey",
+          userContext: "default"
+        }
+      });
+      return;
+    }
+
+    const cookies = await this.cookies();
+    const retained = cookies.filter((cookie) => !matchesMcpCookieFilter(cookie, options));
+    await this.client.storageDeleteCookies({
+      partition: {
+        type: "storageKey",
+        userContext: "default"
+      }
+    });
+    if (retained.length) {
+      await this.addCookies(retained);
+    }
+  }
+
+  async webStorageItems(storageName: "localStorage" | "sessionStorage"): Promise<BrowserStorageItem[]> {
+    const tabId = await this.getActiveTabId();
+    return evaluateBiDi<BrowserStorageItem[]>(
+      this.client,
+      tabId,
+      WEB_STORAGE_ITEMS_SOURCE,
+      { storageName }
+    );
+  }
+
+  async setWebStorageItem(storageName: "localStorage" | "sessionStorage", key: string, value: string): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await evaluateBiDi<void>(
+      this.client,
+      tabId,
+      WEB_STORAGE_SET_ITEM_SOURCE,
+      { storageName, key, value }
+    );
+  }
+
+  async removeWebStorageItem(storageName: "localStorage" | "sessionStorage", key: string): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await evaluateBiDi<void>(
+      this.client,
+      tabId,
+      WEB_STORAGE_REMOVE_ITEM_SOURCE,
+      { storageName, key }
+    );
+  }
+
+  async clearWebStorage(storageName: "localStorage" | "sessionStorage"): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await evaluateBiDi<void>(
+      this.client,
+      tabId,
+      WEB_STORAGE_CLEAR_SOURCE,
+      { storageName }
+    );
+  }
+
+  async consoleMessages(level: ConsoleMessageLevel = "info", all = false): Promise<BrowserConsoleEntry[]> {
     const activeTabId = await this.getActiveTabId();
     const state = this.ensureConsoleState(activeTabId);
     const startIndex = all ? 0 : state.nextMessageIndex;
@@ -3894,6 +5073,16 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         lineNumber: message.lineNumber,
         formattedText: message.formattedText
       }));
+  }
+
+  async consoleMessageSummary(): Promise<BrowserConsoleSummary> {
+    const activeTabId = await this.getActiveTabId();
+    return this.consoleSummary(activeTabId);
+  }
+
+  async clearConsoleMessages(): Promise<void> {
+    const activeTabId = await this.getActiveTabId();
+    clearBrowserConsoleState(this.ensureConsoleState(activeTabId));
   }
 
   async evaluate(expression: string, target?: ClickTarget): Promise<BrowserEvaluateResult> {
@@ -3921,6 +5110,96 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         }`;
     const payload = target ? { ...this.targetArg(target), expression } : { expression };
     return evaluateBiDi<BrowserEvaluateResult>(this.client, tabId, source, payload);
+  }
+
+  async addInitScript(source: string): Promise<void> {
+    const result = await this.client.scriptAddPreloadScript({
+      functionDeclaration: `() => { ${source} }`
+    });
+    const script = (result as { script?: string }).script;
+    if (script) {
+      this.initScriptPreloadScripts.add(script);
+    }
+  }
+
+  async setContent(html: string): Promise<void> {
+    await this.evaluate(`(html) => {
+      document.open();
+      document.write(html);
+      document.close();
+    }(${JSON.stringify(html)})`);
+  }
+
+  async countByRole(role: string, accessibleName: string): Promise<number> {
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDi<{ ok: boolean; count?: number; reason?: string }>(
+      this.client,
+      tabId,
+      VERIFY_QUERY_SOURCE,
+      { operation: "countByRole", role, accessibleName }
+    );
+    return result.count ?? 0;
+  }
+
+  async textContentsByText(text: string, options: SessionTextQueryOptions = {}): Promise<string[]> {
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDi<{ ok: boolean; texts?: string[]; reason?: string }>(
+      this.client,
+      tabId,
+      VERIFY_QUERY_SOURCE,
+      {
+        operation: "textContentsByText",
+        text,
+        visible: options.visible ?? false,
+        ...(options.target ? this.targetArg(options.target) : {})
+      }
+    );
+    if (!result.ok) {
+      throwVerifyTargetError(options.target, result.reason);
+    }
+    return result.texts ?? [];
+  }
+
+  async textContent(target: ClickTarget): Promise<string | null> {
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDi<{ ok: boolean; value?: string | null; reason?: string }>(
+      this.client,
+      tabId,
+      VERIFY_QUERY_SOURCE,
+      { operation: "textContent", ...this.targetArg(target) }
+    );
+    if (!result.ok) {
+      throwVerifyTargetError(target, result.reason);
+    }
+    return result.value ?? null;
+  }
+
+  async inputValue(target: ClickTarget): Promise<string> {
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDi<{ ok: boolean; value?: string; reason?: string }>(
+      this.client,
+      tabId,
+      VERIFY_QUERY_SOURCE,
+      { operation: "inputValue", ...this.targetArg(target) }
+    );
+    if (!result.ok) {
+      throwVerifyTargetError(target, result.reason);
+    }
+    return result.value ?? "";
+  }
+
+  async isChecked(target: ClickTarget): Promise<boolean> {
+    const tabId = await this.getActiveTabId();
+    const result = await evaluateBiDi<{ ok: boolean; value?: boolean; reason?: string }>(
+      this.client,
+      tabId,
+      VERIFY_QUERY_SOURCE,
+      { operation: "isChecked", ...this.targetArg(target) }
+    );
+    if (!result.ok) {
+      throwVerifyTargetError(target, result.reason);
+    }
+    return result.value ?? false;
   }
 
   async isFileInput(target: ClickTarget): Promise<boolean> {
@@ -4107,6 +5386,86 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
   }
 
+  async mouseMove(x: number, y: number, options?: SessionMouseMoveOptions): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const pointerActions = await this.mousePointerPathActions(tabId, { x, y }, options?.moveDelayMs ?? 140);
+    await this.client.inputPerformActions({
+      context: tabId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: pointerActions
+        }
+      ]
+    });
+    await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
+  }
+
+  async mouseClick(x: number, y: number, options: SessionMouseClickOptions): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const bidiButton: Record<string, number> = { left: 0, middle: 1, right: 2 };
+    const buttonCode = bidiButton[options.button ?? "left"] ?? 0;
+    const pointerActions = await this.mousePointerPathActions(tabId, { x, y }, options.moveDelayMs ?? 140);
+    const clickCount = options.clickCount ?? 1;
+    for (let index = 0; index < clickCount; index += 1) {
+      pointerActions.push({ type: "pointerDown", button: buttonCode });
+      pointerActions.push({ type: "pause", duration: options.delay ?? 0 });
+      pointerActions.push({ type: "pointerUp", button: buttonCode });
+    }
+
+    // TODO(bidi): See element click above. A synchronous dialog opened by the
+    // coordinate click can wedge inputPerformActions until the dialog closes.
+    const performPromise = this.client.inputPerformActions({
+      context: tabId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: pointerActions
+        }
+      ]
+    });
+    await Promise.race([
+      performPromise,
+      this.waitForDialog(tabId, (options.delay ?? 0) + 5000)
+    ]);
+    performPromise.catch(() => {});
+    await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
+  }
+
+  async mouseDrag(
+    startX: number,
+    startY: number,
+    endX: number,
+    endY: number,
+    options: SessionDragOptions
+  ): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const startActions = await this.mousePointerPathActions(tabId, { x: startX, y: startY }, options.moveDelayMs);
+    const endActions = await this.mousePointerPathActions(tabId, { x: endX, y: endY }, options.moveDelayMs);
+    await this.client.inputPerformActions({
+      context: tabId,
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [
+            ...startActions,
+            { type: "pointerDown", button: 0 },
+            { type: "pause", duration: options.holdDelayMs },
+            ...endActions,
+            { type: "pointerUp", button: 0 }
+          ]
+        }
+      ]
+    });
+    await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
+  }
+
   async drop(target: ClickTarget, payload: SessionDropOptions): Promise<void> {
     const files = await prepareDropFiles(payload.paths);
     const tabId = await this.getActiveTabId();
@@ -4222,6 +5581,10 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       }).catch(() => {});
       this.cursorVisualizationPreloadScript = undefined;
     }
+    for (const script of this.initScriptPreloadScripts) {
+      await this.client.scriptRemovePreloadScript({ script }).catch(() => {});
+    }
+    this.initScriptPreloadScripts.clear();
     if (this.ownsSession) {
       await this.client.sessionEnd({}).catch(() => {});
     }
@@ -4241,11 +5604,28 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const tabId = await this.getActiveTabId();
     const arg = "nodeToken" in target ? { nodeToken: target.nodeToken } : { selector: target.selector };
     if (options?.strategy !== "fill" && (options?.slowly || options?.delayMs)) {
-      // ⚠️ CDP↔BiDi PARITY GAP: the CDP session.type has a real per-keystroke insertText loop that
-      // honors slowly/delayMs/varianceMs (humanized cadence). The BiDi MCP path sets the value via
-      // a single DOM operation (TYPE_INTO_ELEMENT_SOURCE) and does not emit per-character keystrokes,
-      // so humanized typing timing does not apply here. Root cause: this path never had a keystroke
-      // loop; matching CDP requires reworking it onto BiDi input actions (tracked as follow-up).
+      await this.focus(target);
+      const chars = [...text];
+      const delays =
+        options.varianceMs !== undefined && options.varianceMs > 0
+          ? buildTypingDelays(text, { delayMs: options.delayMs ?? 0, varianceMs: options.varianceMs }, defaultRng)
+          : undefined;
+      for (let index = 0; index < chars.length; index += 1) {
+        await evaluateBiDi<void>(
+          this.client,
+          tabId,
+          BIDI_INSERT_TEXT_SOURCE,
+          { text: chars[index]! }
+        );
+        const charDelay = delays ? delays[index] : options.delayMs;
+        if (charDelay) {
+          await delay(charDelay);
+        }
+      }
+      if (options.submit) {
+        await this.pressKey("Enter");
+      }
+      return;
     }
     const result = await evaluateBiDi<{ ok: boolean; reason?: string }>(
       this.client,
@@ -4267,32 +5647,36 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
   }
 
+  async typeKeyboard(text: string): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    const chars = [...text];
+    for (const char of chars) {
+      await evaluateBiDi<void>(
+        this.client,
+        tabId,
+        BIDI_INSERT_TEXT_SOURCE,
+        { text: char }
+      );
+    }
+  }
+
+  async keyDown(key: string): Promise<void> {
+    await this.performBidiKeyAction(key, "keyDown");
+  }
+
+  async keyUp(key: string): Promise<void> {
+    await this.performBidiKeyAction(key, "keyUp");
+  }
+
   async pressKey(
     key: string,
     modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
   ): Promise<void> {
     const tabId = await this.getActiveTabId();
-
-    // WebDriver BiDi uses Unicode Private Use Area for special keys
-    const BIDI_SPECIAL_KEY: Record<string, string> = {
-      Enter: "", Return: "", Escape: "",
-      Tab: "", Backspace: "", Delete: "",
-      ArrowLeft: "", ArrowRight: "", ArrowUp: "", ArrowDown: "",
-      Home: "", End: "", PageUp: "", PageDown: "",
-      Insert: "", Space: " ",
-      F1: "", F2: "", F3: "", F4: "",
-      F5: "", F6: "", F7: "", F8: "",
-      F9: "", F10: "", F11: "", F12: "",
-    };
-    const BIDI_MODIFIER_KEY: Record<string, string> = {
-      Alt: "", Control: "",
-      Meta: "", Shift: ""
-    };
-
-    const keyValue = BIDI_SPECIAL_KEY[key] ?? key;
+    const keyValue = bidiKeyValue(key);
     const modifierKeys = (modifiers ?? [])
       .map((modifier) => resolveSmartModifierString(modifier))
-      .map((m) => BIDI_MODIFIER_KEY[m] ?? m);
+      .map((modifier) => bidiKeyValue(modifier));
 
     const keyDownActions = modifierKeys.map((value) => ({ type: "keyDown" as const, value }));
     const keyUpActions = [...modifierKeys].reverse().map((value) => ({ type: "keyUp" as const, value }));
@@ -4313,6 +5697,29 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       ]
     } as Parameters<typeof this.client.inputPerformActions>[0]);
     await this.client.inputReleaseActions({ context: tabId }).catch(() => {});
+  }
+
+  async press(
+    target: ClickTarget,
+    key: string,
+    modifiers?: Array<"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift">
+  ): Promise<void> {
+    await this.focus(target);
+    await this.pressKey(key, modifiers);
+  }
+
+  private async performBidiKeyAction(key: string, type: "keyDown" | "keyUp"): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.client.inputPerformActions({
+      context: tabId,
+      actions: [
+        {
+          type: "key",
+          id: "kbd",
+          actions: [{ type, value: bidiKeyValue(key) }]
+        }
+      ]
+    } as Parameters<typeof this.client.inputPerformActions>[0]);
   }
 
   async selectOption(target: ClickTarget, values: string[]): Promise<string[]> {
@@ -4366,12 +5773,44 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     await this.client.browsingContextTraverseHistory({ context: tabId, delta: 1 }).catch(() => {});
   }
 
+  async reload(): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await this.client.browsingContextReload({ context: tabId });
+  }
+
+  async setOffline(offline: boolean): Promise<void> {
+    this.offline = offline;
+    const tabs = await this.refreshTabs();
+    await this.applyNetworkState(tabs.map((tab) => tab.id));
+  }
+
+  async addRoute(_route: BrowserNetworkRoute): Promise<void> {
+    // ⚠️ DIVERGENCE FROM PLAYWRIGHT: MCP route interception is currently wired
+    // through the Chromium CDP Fetch domain. This BiDi session collects network
+    // events but does not yet pause/continue/fulfill requests, so pretending that
+    // browser_route works here would silently break Playwright MCP semantics.
+    throw new McpToolError("not_supported", "Network request routing is not yet supported for Firefox BiDi MCP sessions.");
+  }
+
+  async routes(): Promise<BrowserNetworkRoute[]> {
+    return [];
+  }
+
+  async removeRoute(_pattern?: string): Promise<number> {
+    return 0;
+  }
+
   async resize(width: number, height: number): Promise<void> {
     const tabId = await this.getActiveTabId();
     await this.client.browsingContextSetViewport({
       context: tabId,
       viewport: { width, height }
     });
+  }
+
+  async emulateContext(options: BrowserContextOptions): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    await emulateBidiContext(this.client, tabId, options);
   }
 
   async scroll(
@@ -4410,17 +5849,17 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
   }
 
-  async screenshot(options: SessionScreenshotOptions = {}): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
+  async screenshot(options: SessionScreenshotOptions = {}): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }> {
     const tabId = await this.getActiveTabId();
     const format = options.type ?? "png";
     const screenshotOptions: {
       context: string;
-      format: { type: "image/jpeg" | "image/png" };
+      format: { type: "image/jpeg" | "image/png" | "image/webp" };
       origin?: "document" | "viewport";
       clip?: { type: "box"; x: number; y: number; width: number; height: number };
     } = {
       context: tabId,
-      format: { type: format === "png" ? "image/png" : "image/jpeg" }
+      format: { type: mimeTypeForScreenshotFormat(format) }
     };
     if (options.target) {
       const box = await evaluateBiDi<{ ok: boolean; x?: number; y?: number; width?: number; height?: number }>(
@@ -4458,8 +5897,12 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const result = await this.client.browsingContextCaptureScreenshot(screenshotOptions);
     return {
       data: (result as unknown as { data: string }).data,
-      mimeType: format === "jpeg" ? "image/jpeg" : "image/png"
+      mimeType: mimeTypeForScreenshotFormat(format)
     };
+  }
+
+  async pdf(): Promise<Buffer> {
+    throw new Error("PDF generation is only supported for Headless Chromium");
   }
 
   async uploadFile(target: ClickTarget, filePaths: string[]): Promise<void> {
@@ -4554,6 +5997,11 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   async networkRequests(): Promise<BrowserNetworkRequest[]> {
     const tabId = await this.getActiveTabId();
     return this.ensureNetworkState(tabId).requests.map(cloneNetworkRequest);
+  }
+
+  async clearRequests(): Promise<void> {
+    const tabId = await this.getActiveTabId();
+    clearBrowserNetworkState(this.ensureNetworkState(tabId));
   }
 
   async beginRequestCollection(): Promise<unknown> {
@@ -4657,20 +6105,20 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     return request ? cloneNetworkRequest(request) : undefined;
   }
 
-  async fetchResponseBody(index: number): Promise<string | undefined> {
+  async fetchResponseBody(index: number): Promise<BrowserNetworkResponseBody | undefined> {
     const tabId = await this.getActiveTabId();
     const request = this.ensureNetworkState(tabId).requests[index - 1];
     if (!request || !request.requestId) {
-      return request?.responseBody;
+      return networkResponseBodyResult(request);
     }
     if (request.responseBody !== undefined) {
-      return request.responseBody;
+      return networkResponseBodyResult(request);
     }
     const body = await this.getResponseBody(request.requestId).catch(() => undefined);
     if (body !== undefined) {
       request.responseBody = body;
     }
-    return request.responseBody;
+    return networkResponseBodyResult(request);
   }
 
   async runCodeUnsafe(code: string): Promise<unknown> {
@@ -4757,6 +6205,16 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       ...tab,
       active: tab.id === this.activeTabId
     }));
+  }
+
+  private async applyNetworkState(contexts: string[]): Promise<void> {
+    if (contexts.length === 0) {
+      return;
+    }
+    await this.client.emulationSetNetworkConditions({
+      contexts,
+      networkConditions: this.offline ? { type: "offline" } : null
+    });
   }
 
   async ensureActiveCursorVisualization(): Promise<void> {
@@ -5040,8 +6498,15 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       headers: bidiHeadersToRecord(event.response.headers),
       mimeType: event.response.mimeType
     });
+    const state = this.ensureNetworkState(event.context);
+    if (request.isNavigationRequest) {
+      state.mainDocumentStatus = {
+        status: event.response.status,
+        statusText: event.response.statusText ?? ""
+      };
+    }
     setTrackedRawResponseMetadata(request, request.responseHeaders, event.response.headersSize);
-    resolveResponseAvailable(this.ensureNetworkState(event.context), requestWaitKey(request));
+    resolveResponseAvailable(state, requestWaitKey(request));
   }
 
   private async handleResponseCompleted(payload: unknown): Promise<void> {
@@ -5056,7 +6521,14 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       headers: bidiHeadersToRecord(event.response.headers),
       mimeType: event.response.mimeType
     });
-    const startedAt = this.ensureNetworkState(event.context).startedAt.get(event.request.request);
+    const state = this.ensureNetworkState(event.context);
+    if (request.isNavigationRequest) {
+      state.mainDocumentStatus = {
+        status: event.response.status,
+        statusText: event.response.statusText ?? ""
+      };
+    }
+    const startedAt = state.startedAt.get(event.request.request);
     if (startedAt !== undefined && event.timestamp !== undefined) {
       request.durationMs = Math.round(event.timestamp - startedAt);
     }
@@ -5077,7 +6549,6 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
         setTrackedResponseBody(request, body);
       }
     }
-    const state = this.ensureNetworkState(event.context);
     resolveRequestFinished(state, requestWaitKey(request));
     resolveLoadingDone(state, requestWaitKey(request), true);
   }
@@ -5189,7 +6660,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
 
   private addConsoleMessage(tabId: string, message: BrowserConsoleMessage): void {
     const state = this.ensureConsoleState(tabId);
-    if (!shouldIncludeConsoleMessage(message.type)) {
+    if (!shouldIncludeConsoleMessage(this.consoleLevel, message.type)) {
       return;
     }
     state.messages.push(message);
@@ -5225,7 +6696,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     const fromLine = state.logLine + 1;
     for (const message of messages) {
       const relativeTime = Math.round(message.timestamp - state.logStartTime);
-      const logLine = `[${String(relativeTime).padStart(8, " ")}ms] ${message.formattedText}\n`;
+      const logLine = this.redactText(`[${String(relativeTime).padStart(8, " ")}ms] ${message.formattedText}\n`);
       await appendFile(state.logFile, logLine);
       state.logLine += logLine.split("\n").length - 1;
     }
@@ -5295,6 +6766,119 @@ async function ensureMcpBiDiSession(
 
 function isSessionSpecificFirefoxBidiEndpoint(endpoint: string): boolean {
   return /^\/session\/[^/]+$/.test(new URL(endpoint).pathname);
+}
+
+function mimeTypeForScreenshotFormat(format: SessionScreenshotType): SessionScreenshotMimeType {
+  if (format === "jpeg") {
+    return "image/jpeg";
+  }
+  if (format === "webp") {
+    return "image/webp";
+  }
+  return "image/png";
+}
+
+function bidiKeyValue(key: string): string {
+  // WebDriver BiDi uses Unicode Private Use Area for special keys.
+  const specialKey: Record<string, string> = {
+    Enter: "", Return: "", Escape: "",
+    Tab: "", Backspace: "", Delete: "",
+    ArrowLeft: "", ArrowRight: "", ArrowUp: "", ArrowDown: "",
+    Home: "", End: "", PageUp: "", PageDown: "",
+    Insert: "", Space: " ",
+    F1: "", F2: "", F3: "", F4: "",
+    F5: "", F6: "", F7: "", F8: "",
+    F9: "", F10: "", F11: "", F12: "",
+    Alt: "", Control: "",
+    Meta: "", Shift: ""
+  };
+  return specialKey[key] ?? key;
+}
+
+function rewriteMcpCdpCookies(cookies: ReadonlyArray<BrowserCookieInput>): BrowserCookieInput[] {
+  return cookies.map((cookie) => {
+    if ((!cookie.url && (!cookie.domain || !cookie.path)) || (cookie.url && (cookie.domain || cookie.path))) {
+      throw new Error("Cookie should have either url or domain/path pair");
+    }
+    const rewritten: BrowserCookieInput = { ...cookie };
+    if (rewritten.url) {
+      if (rewritten.url === "about:blank") {
+        throw new Error(`Blank page can not have cookie "${cookie.name}"`);
+      }
+      if (rewritten.url.startsWith("data:")) {
+        throw new Error(`Data URL page can not have cookie "${cookie.name}"`);
+      }
+      const parsed = new URL(rewritten.url);
+      rewritten.domain = parsed.hostname;
+      rewritten.path = parsed.pathname.substring(0, parsed.pathname.lastIndexOf("/") + 1);
+      rewritten.secure = parsed.protocol === "https:";
+    }
+    return rewritten;
+  });
+}
+
+function rewriteMcpBidiCookies(cookies: ReadonlyArray<BrowserCookieInput>): Array<{
+  name: string;
+  value: string;
+  domain: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+  partitionKey?: string;
+}> {
+  return cookies.map((cookie) => {
+    if ((!cookie.url && (!cookie.domain || !cookie.path)) || (cookie.url && (cookie.domain || cookie.path))) {
+      throw new Error("Cookie should have either url or domain/path pair");
+    }
+    if (!cookie.url) {
+      if (!cookie.domain || !cookie.path) {
+        throw new Error("Cookie should have either url or domain/path pair");
+      }
+      return {
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        ...(cookie.expires !== undefined ? { expires: cookie.expires } : {}),
+        ...(cookie.httpOnly !== undefined ? { httpOnly: cookie.httpOnly } : {}),
+        ...(cookie.secure !== undefined ? { secure: cookie.secure } : {}),
+        ...(cookie.sameSite !== undefined ? { sameSite: cookie.sameSite } : {}),
+        ...(cookie.partitionKey !== undefined ? { partitionKey: cookie.partitionKey } : {})
+      };
+    }
+    if (cookie.url === "about:blank") {
+      throw new Error(`Blank page can not have cookie "${cookie.name}"`);
+    }
+    if (cookie.url.startsWith("data:")) {
+      throw new Error(`Data URL page can not have cookie "${cookie.name}"`);
+    }
+    const parsedUrl = new URL(cookie.url);
+    return {
+      name: cookie.name,
+      value: cookie.value,
+      domain: parsedUrl.hostname,
+      path: parsedUrl.pathname.substring(0, parsedUrl.pathname.lastIndexOf("/") + 1),
+      secure: parsedUrl.protocol === "https:",
+      ...(cookie.expires !== undefined ? { expires: cookie.expires } : {}),
+      ...(cookie.httpOnly !== undefined ? { httpOnly: cookie.httpOnly } : {}),
+      ...(cookie.sameSite !== undefined ? { sameSite: cookie.sameSite } : {}),
+      ...(cookie.partitionKey !== undefined ? { partitionKey: cookie.partitionKey } : {})
+    };
+  });
+}
+
+function matchesMcpCookieFilter(cookie: BrowserCookie, filter: BrowserCookieFilter): boolean {
+  return (
+    (filter.domain === undefined || matchesMcpCookieField(cookie.domain, filter.domain)) &&
+    (filter.name === undefined || matchesMcpCookieField(cookie.name, filter.name)) &&
+    (filter.path === undefined || matchesMcpCookieField(cookie.path, filter.path))
+  );
+}
+
+function matchesMcpCookieField(value: string, matcher: string | RegExp): boolean {
+  return typeof matcher === "string" ? value === matcher : matcher.test(value);
 }
 
 export async function connectBrowserSession(

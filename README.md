@@ -251,6 +251,16 @@ pnpm inspector:http
 
 By default the HTTP server listens on `http://127.0.0.1:3333/mcp`.
 
+### Inspector CLI smoke
+
+For a non-interactive check through the Inspector v2 CLI:
+
+```bash
+pnpm test:mcp-inspector
+```
+
+This builds the server, runs `mcp-inspector --cli` against the stdio launcher, calls `tools/list`, and verifies the expected RoxyBrowser tools are exposed.
+
 ### MCP server CLI options
 
 The bundled `roxybrowser-mcp` launcher supports both transports:
@@ -274,5 +284,3 @@ Optional flags:
 - `--temp-dir /absolute/path`
 - `--snapshot-mode full`
 - `--snapshot-mode none`
-
-Note: in the currently installed inspector version, the `mcp-inspector` CLI wrapper itself has a local dependency compatibility issue in this workspace, so the reliable path here is the inspector UI flow above via `client/bin/start.js`.

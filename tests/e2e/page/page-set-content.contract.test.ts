@@ -147,8 +147,8 @@ describe("page setContent contract e2e", () => {
       );
       expect(await page.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html");
 
-      await page.click("a");
-      expect(await page.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html?foo");
+	      await page.click("a");
+	      expect(await page.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html?foo");
 
       const response = await page.goBack();
       expect(response?.url()).toBe(fixture.server.PREFIX + "/cached/bfcached.html");

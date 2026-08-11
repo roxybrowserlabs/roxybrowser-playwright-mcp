@@ -9,6 +9,7 @@ import { RoxyFrameLocator } from "../../src/locator.js";
 import { RoxyJSHandle } from "../../src/jsHandle.js";
 import { RoxyLocator } from "../../src/locator.js";
 import { RoxyPage } from "../../src/page.js";
+import { createPageResponse } from "../../src/pageResponse.js";
 import { RoxyVideo } from "../../src/video.js";
 import { RoxyWorker } from "../../src/worker.js";
 import type { Download, Request } from "../../src/types/api.js";
@@ -70,6 +71,49 @@ describe("RoxyPage", () => {
       type: "png"
     });
     expect(adapter.close).toHaveBeenCalledWith({});
+  });
+
+  it("binds page.goto response to the main frame when CDP frame identity is still refreshing", async () => {
+    const adapter = createPageAdapterStub();
+    const responsePayload = createPageResponse({
+      fromCache: false,
+      frameId: "cdp-main-frame",
+      headers: [],
+      isNavigationRequest: true,
+      mimeType: "text/html",
+      requestId: "main-navigation-1",
+      resourceType: "document",
+      status: 200,
+      statusText: "OK",
+      text: async () => "<html></html>",
+      url: "https://example.com/native-main"
+    });
+    adapter.goto.mockResolvedValueOnce(responsePayload);
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    adapter.emit("request", {
+      frameId: "cdp-main-frame",
+      headers: [],
+      isNavigationRequest: true,
+      method: "GET",
+      requestId: "main-navigation-1",
+      resourceType: "document",
+      url: "https://example.com/native-main"
+    });
+    adapter.emit("response", responsePayload);
+
+    const response = await page.goto("https://example.com/native-main");
+
+    expect(response!.frame()).toBe(page.mainFrame());
+    expect(response!.request().existingResponse()).toBe(response);
   });
 
   it("writes screenshot data to disk when a path is provided", async () => {
@@ -136,6 +180,94 @@ describe("RoxyPage", () => {
     expect(await readFile(outputPath)).toEqual(Buffer.from("fake-screenshot"));
   });
 
+  it("aborts page.ariaSnapshot before dispatching to the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.ariaSnapshot({ signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.ariaSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.ariaSnapshot while waiting for the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.ariaSnapshot = vi.fn(async () => {
+      await new Promise(() => {});
+      return "- document";
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .ariaSnapshot({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("ariaSnapshot did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.ariaSnapshot).toHaveBeenCalledWith({
+      signal: controller.signal,
+      timeout: 0
+    });
+  });
+
+  it("infers webp screenshot type from path", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const directory = await mkdtemp(join(tmpdir(), "roxy-page-test-"));
+    const outputPath = join(directory, "page.webp");
+
+    const screenshot = await page.screenshot({ path: outputPath });
+
+    expect(adapter.screenshot).toHaveBeenCalledWith({
+      __fitsViewport: true,
+      clip: {
+        height: 720,
+        width: 1280,
+        x: 0,
+        y: 0
+      },
+      path: outputPath,
+      type: "webp"
+    });
+    expect(screenshot).toEqual(Buffer.from("fake-screenshot"));
+    expect(await readFile(outputPath)).toEqual(Buffer.from("fake-screenshot"));
+  });
+
   it("throws for unsupported screenshot path mime type", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
@@ -172,6 +304,34 @@ describe("RoxyPage", () => {
 
     expect(error.message).toContain("options.quality is unsupported for the png");
     expect(adapter.screenshot).not.toHaveBeenCalled();
+  });
+
+  it("allows quality for webp screenshots", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await page.screenshot({ type: "webp", quality: 80 });
+
+    expect(adapter.screenshot).toHaveBeenCalledWith({
+      __fitsViewport: true,
+      clip: {
+        height: 720,
+        width: 1280,
+        x: 0,
+        y: 0
+      },
+      quality: 80,
+      type: "webp"
+    });
   });
 
   it("sets and restores transparent screenshot background for png omitBackground", async () => {
@@ -215,6 +375,31 @@ describe("RoxyPage", () => {
     await page.screenshot({ omitBackground: true, type: "jpeg" });
 
     expect(adapter.setScreenshotBackgroundColor).not.toHaveBeenCalled();
+  });
+
+  it("sets and restores transparent screenshot background for webp omitBackground", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await page.screenshot({ omitBackground: true, type: "webp" });
+
+    expect(adapter.setScreenshotBackgroundColor).toHaveBeenNthCalledWith(1, {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 0
+    });
+    expect(adapter.screenshot).toHaveBeenCalled();
+    expect(adapter.setScreenshotBackgroundColor).toHaveBeenNthCalledWith(2);
   });
 
   it("delegates pdf generation to the adapter and writes the buffer to disk", async () => {
@@ -1537,6 +1722,59 @@ describe("RoxyPage", () => {
     }
   });
 
+  it("aborts page route.fetch with a Playwright-style AbortSignal", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    let fetchSignal: AbortSignal | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      fetchSignal = init?.signal as AbortSignal | undefined;
+      if (fetchSignal?.aborted) {
+        throw fetchSignal.reason;
+      }
+      await new Promise((_resolve, reject) => {
+        fetchSignal?.addEventListener("abort", () => reject(fetchSignal?.reason), { once: true });
+      });
+      throw new Error("unreachable");
+    });
+    const controller = new AbortController();
+
+    try {
+      await page.route("**/slow", async (route) => {
+        const errorPromise = route
+          .fetch({
+            signal: controller.signal,
+            timeout: 0
+          })
+          .catch((error: Error) => error);
+        await Promise.resolve();
+        controller.abort("cancelled");
+        const error = await errorPromise;
+        expect(error.name).toBe("AbortError");
+        expect(fetchSignal?.aborted).toBe(true);
+        await route.abort();
+      });
+
+      await (page as any).dispatchRoutedRequest({
+        id: "request:route-fetch-abort",
+        url: "https://example.com/slow",
+        method: "GET",
+        headers: {},
+        postData: null
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("supports page.request.fetch(route.request()) for fulfill flows", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
@@ -2247,6 +2485,64 @@ describe("RoxyPage", () => {
     expect(adapter.requestGC).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts page.dispatchEvent before dispatching through the frame", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const dispatchSpy = vi.spyOn(page.mainFrame(), "dispatchEvent");
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page
+      .dispatchEvent("button", "click", undefined, { signal: controller.signal })
+      .catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(dispatchSpy).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.dispatchEvent while waiting for the frame dispatch", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const dispatchSpy = vi.spyOn(page.mainFrame(), "dispatchEvent").mockImplementation(async () => {
+      await new Promise(() => {});
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .dispatchEvent("button", "click", undefined, { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("dispatchEvent did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(dispatchSpy).toHaveBeenCalledWith("button", "click", undefined, {
+      signal: controller.signal,
+      timeout: 0
+    });
+  });
+
   it("returns a handle from evaluateHandle and waitForFunction", async () => {
     const adapter = createPageAdapterStub();
     adapter.evaluate = vi.fn(async <TResult>() => 3 as TResult);
@@ -2263,6 +2559,61 @@ describe("RoxyPage", () => {
 
     expect(await (await page.evaluateHandle("1 + 2")).jsonValue()).toBe(3);
     expect(await (await page.waitForFunction(() => 5)).jsonValue()).toBe(3);
+  });
+
+  it("aborts page.waitForFunction before polling the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page
+      .waitForFunction(() => true, undefined, { signal: controller.signal })
+      .catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.waitForFunction while waiting for the predicate", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.evaluate = vi.fn(async () => {
+      await new Promise(() => {});
+      return false as never;
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .waitForFunction(() => true, undefined, { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForFunction did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.evaluate).toHaveBeenCalledTimes(1);
   });
 
   it("serializes nested JSHandle arguments through page.evaluate", async () => {
@@ -2487,6 +2838,38 @@ describe("RoxyPage", () => {
         kind: "first"
       }
     }, 'Failed to find element matching selector "div >> text=Hello"');
+  });
+
+  it("aborts page.waitForSelector while polling like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.createHandleReference = vi.fn(async (_reference, missingMessage?: string) => {
+      throw new Error(missingMessage ?? "missing");
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+
+    const errorPromise = page
+      .waitForSelector("div", { signal: controller.signal, timeout: 1000 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForSelector did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.createHandleReference).toHaveBeenCalled();
   });
 
   it("proxies page query and eval helpers to the page adapter", async () => {
@@ -2783,6 +3166,81 @@ describe("RoxyPage", () => {
     expect(message.type()).toBe("log");
   });
 
+  it("aborts page.waitForEvent before registering the waiter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page
+      .waitForEvent("console", { signal: controller.signal })
+      .catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    adapter.emit("console", {
+      args: () => [],
+      location: () => ({
+        column: 0,
+        columnNumber: 0,
+        line: 0,
+        lineNumber: 0,
+        url: ""
+      }),
+      page: () => null,
+      text: () => "after-abort",
+      timestamp: () => 1,
+      type: () => "log",
+      worker: () => null
+    });
+  });
+
+  it("aborts page.waitForEvent while waiting for an event", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .waitForEvent("console", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    controller.abort("cancelled");
+    const error = await errorPromise;
+
+    expect(error.name).toBe("AbortError");
+    adapter.emit("console", {
+      args: () => [],
+      location: () => ({
+        column: 0,
+        columnNumber: 0,
+        line: 0,
+        lineNumber: 0,
+        url: ""
+      }),
+      page: () => null,
+      text: () => "after-abort",
+      timestamp: () => 1,
+      type: () => "log",
+      worker: () => null
+    });
+  });
+
   it("waits for dialog events and exposes dialog helpers", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
@@ -2937,6 +3395,64 @@ describe("RoxyPage", () => {
     expect(firstFrame).toContain("page.test.ts");
   });
 
+  it("aborts page.waitForRequest before registering the waiter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.waitForRequest(/target/, { signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    adapter.emit("request", {
+      url: "https://example.com/target.json",
+      method: "GET",
+      headers: []
+    });
+  });
+
+  it("aborts page.waitForResponse while waiting for an event", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page.waitForResponse(/target/, {
+      signal: controller.signal,
+      timeout: 0
+    }).catch((caught: Error) => caught);
+
+    controller.abort("cancelled");
+    const error = await errorPromise;
+
+    expect(error.name).toBe("AbortError");
+    adapter.emit("response", {
+      url: "https://example.com/target.json",
+      status: 200,
+      statusText: "OK",
+      headers: [],
+      mimeType: "application/json",
+      fromCache: false,
+      text: async () => "{}"
+    });
+  });
+
   it("surfaces waitForNavigation timeout stacks from the api call site", async () => {
     const adapter = createPageAdapterStub();
     adapter.waitForLoadState = vi.fn(async () => {
@@ -2961,6 +3477,470 @@ describe("RoxyPage", () => {
 
     expect(error).toBeInstanceOf(TimeoutError);
     expect(firstFrame).toContain("page.test.ts");
+  });
+
+  it("aborts page.waitForNavigation before registering navigation waiters", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.waitForNavigationResponse = vi.fn(async () => null);
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.waitForNavigation({ signal: controller.signal, timeout: 1 }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.waitForNavigationResponse).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.waitForNavigation while waiting for navigation", async () => {
+    const adapter = createPageAdapterStub();
+    let responseWaitSignal: AbortSignal | undefined;
+    adapter.waitForNavigationResponse = vi.fn(async (options) => {
+      responseWaitSignal = options?.signal;
+      await new Promise(() => {});
+      return null;
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .waitForNavigation({ signal: controller.signal, timeout: 25 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await errorPromise;
+
+    expect(error.name).toBe("AbortError");
+    expect(responseWaitSignal?.aborted).toBe(true);
+  });
+
+  it("aborts page.goto before dispatching to the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.goto("https://example.com/target", { signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.goto).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.goto while waiting for the adapter navigation", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.goto = vi.fn(async () => {
+      await new Promise(() => {});
+      return null;
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .goto("https://example.com/target", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("goto did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.goto).toHaveBeenCalledWith("https://example.com/target", {
+      signal: controller.signal,
+      timeout: 0
+    });
+  });
+
+  it("aborts page.goBack before dispatching to the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.goBack({ signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.goBack).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.goBack while waiting for the adapter navigation", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.goBack = vi.fn(async () => {
+      await new Promise(() => {});
+      return null;
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .goBack({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("goBack did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.goBack).toHaveBeenCalledWith({
+      signal: controller.signal,
+      timeout: 0
+    });
+  });
+
+  it("aborts page.goForward before dispatching to the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.goForward({ signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.goForward).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.goForward while waiting for the adapter navigation", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.goForward = vi.fn(async () => {
+      await new Promise(() => {});
+      return null;
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .goForward({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("goForward did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.goForward).toHaveBeenCalledWith({
+      signal: controller.signal,
+      timeout: 0
+    });
+  });
+
+  it("aborts page.reload before dispatching to the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.reload({ signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.reload).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.reload while waiting for the adapter navigation", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.reload = vi.fn(async () => {
+      await new Promise(() => {});
+      return null;
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .reload({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("reload did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.reload).toHaveBeenCalledWith({
+      signal: controller.signal,
+      timeout: 0
+    });
+  });
+
+  it("aborts page.setContent before dispatching to the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.setContent("<main>target</main>", { signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.setContent).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.setContent while waiting for the adapter content update", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.setContent = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .setContent("<main>target</main>", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("setContent did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.setContent).toHaveBeenCalledWith("<main>target</main>", {
+      signal: controller.signal,
+      timeout: 0
+    });
+  });
+
+  it("aborts page.waitForLoadState before waiting on the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page.waitForLoadState("load", { signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.waitForLoadState).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.waitForLoadState while waiting on the adapter", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.waitForLoadState = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page.waitForLoadState("load", { signal: controller.signal }).catch((caught: Error) => caught);
+
+    controller.abort("cancelled");
+    const error = await errorPromise;
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.waitForLoadState).toHaveBeenCalledWith("load", expect.any(Number));
+    expect(vi.mocked(adapter.waitForLoadState).mock.calls[0]?.[1]).toBeGreaterThan(29_900);
+  });
+
+  it("aborts page.waitForURL while waiting for the URL to match", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .waitForURL("https://example.com/target", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForURL did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.waitForLoadState).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.waitForURL while waiting for load state", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.waitForLoadState = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .waitForURL("https://example.com", { signal: controller.signal })
+      .catch((caught: Error) => caught);
+
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForURL did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.waitForLoadState).toHaveBeenCalledWith("load", 30000);
+  });
+
+  it("aborts frame.waitForURL while waiting for the URL to match", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .mainFrame()
+      .waitForURL("https://example.com/target", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForURL did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.waitForLoadState).not.toHaveBeenCalled();
   });
 
   it("waits for request and response by url matcher", async () => {
@@ -3388,6 +4368,54 @@ describe("RoxyPage", () => {
     ]);
     expect(await request.headerValue("header-a")).toBe("value-a, value-a-1, value-a-2");
     expect(await request.headerValue("not-there")).toBeNull();
+  });
+
+  it("updates observed request headers when CDP extra-info arrives after the request event", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const requestPromise = page.waitForRequest(/late-headers$/);
+    adapter.emit("request", {
+      headers: [{ name: "accept", value: "text/html" }],
+      method: "GET",
+      requestId: "late-headers-1",
+      url: "https://example.com/late-headers"
+    });
+    const request = await requestPromise;
+
+    adapter.emit("requestheaders", {
+      headers: [
+        { name: "accept", value: "text/html" },
+        { name: "cookie", value: "myCookie=myValue; myOtherCookie=myOtherValue" }
+      ],
+      method: "GET",
+      requestId: "late-headers-1",
+      url: "https://example.com/late-headers"
+    });
+    adapter.emit("response", {
+      headers: [{ name: "content-type", value: "text/html" }],
+      mimeType: "text/html",
+      fromCache: false,
+      requestId: "late-headers-1",
+      status: 200,
+      statusText: "OK",
+      text: async () => "<html></html>",
+      url: "https://example.com/late-headers"
+    });
+
+    expect(await request.allHeaders()).toEqual({
+      accept: "text/html",
+      cookie: "myCookie=myValue; myOtherCookie=myOtherValue"
+    });
   });
 
   it("preserves duplicate response headers and set-cookie separators", async () => {
@@ -4029,6 +5057,40 @@ describe("RoxyPage", () => {
     expect(seen).toEqual([worker]);
   });
 
+  it("aborts worker.waitForEvent before registering the waiter like Playwright", async () => {
+    const worker = new RoxyWorker("https://example.com/worker.js");
+    const controller = new AbortController();
+    const reason = new Error("Already aborted");
+    controller.abort(reason);
+
+    const errorPromise = worker.waitForEvent("console", { signal: controller.signal }).catch((caught: Error) => caught);
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForEvent did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(error.cause).toBe(reason);
+  });
+
+  it("aborts worker.waitForEvent while waiting for an event like Playwright", async () => {
+    const worker = new RoxyWorker("https://example.com/worker.js");
+    const controller = new AbortController();
+    const waitPromise = worker
+      .waitForEvent("console", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    const reason = new Error("cancelled");
+    controller.abort(reason);
+    const error = await Promise.race([
+      waitPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForEvent did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(error.cause).toBe(reason);
+  });
+
   it("supports Playwright page crash, download and websocket events", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
@@ -4165,6 +5227,67 @@ describe("RoxyPage", () => {
     expect((await waiter).message).toContain("Target page, context or browser has been closed");
   });
 
+  it("aborts websocket waiters before registering listeners like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const webSocketPromise = page.waitForEvent("websocket");
+    adapter.emit("websocket", {
+      kind: "created",
+      requestId: "ws-abort-before",
+      url: "wss://example.com/socket"
+    });
+    const webSocket = await webSocketPromise;
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await webSocket.waitForEvent("framesent", { signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+  });
+
+  it("aborts websocket waiters while waiting like Playwright", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const webSocketPromise = page.waitForEvent("websocket");
+    adapter.emit("websocket", {
+      kind: "created",
+      requestId: "ws-abort-waiting",
+      url: "wss://example.com/socket"
+    });
+    const webSocket = await webSocketPromise;
+    const controller = new AbortController();
+    const errorPromise = webSocket
+      .waitForEvent("framesent", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForEvent did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+  });
+
   it("emits websocket socketerror events", async () => {
     const adapter = createPageAdapterStub();
     const page = new RoxyPage(adapter, {
@@ -4294,6 +5417,354 @@ describe("RoxyPage", () => {
       mimeType: "application/json",
       buffer: Buffer.from('{"ok":true}')
     }, undefined);
+  });
+
+  it("aborts page selector query and state methods before dispatching through the frame", async () => {
+    const page = new RoxyPage(createPageAdapterStub(), {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const frame = page.mainFrame();
+    const controller = new AbortController();
+    controller.abort("cancelled");
+    const cases: Array<{
+      call: () => Promise<unknown>;
+      method: keyof Pick<typeof frame,
+        "textContent" | "innerText" | "innerHTML" | "getAttribute" | "inputValue" |
+        "isChecked" | "isDisabled" | "isEditable" | "isEnabled" | "focus">;
+    }> = [
+      { method: "textContent", call: () => page.textContent("#target", { signal: controller.signal }) },
+      { method: "innerText", call: () => page.innerText("#target", { signal: controller.signal }) },
+      { method: "innerHTML", call: () => page.innerHTML("#target", { signal: controller.signal }) },
+      { method: "getAttribute", call: () => page.getAttribute("#target", "data-id", { signal: controller.signal }) },
+      { method: "inputValue", call: () => page.inputValue("#target", { signal: controller.signal }) },
+      { method: "isChecked", call: () => page.isChecked("#target", { signal: controller.signal }) },
+      { method: "isDisabled", call: () => page.isDisabled("#target", { signal: controller.signal }) },
+      { method: "isEditable", call: () => page.isEditable("#target", { signal: controller.signal }) },
+      { method: "isEnabled", call: () => page.isEnabled("#target", { signal: controller.signal }) },
+      { method: "focus", call: () => page.focus("#target", { signal: controller.signal }) }
+    ];
+
+    for (const entry of cases) {
+      const spy = vi.spyOn(frame, entry.method);
+      const error = await entry.call().catch((caught: Error) => caught);
+
+      expect(error.name).toBe("AbortError");
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    }
+  });
+
+  it("aborts frame selector query and state methods before resolving element handles", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const frame = page.mainFrame();
+    const controller = new AbortController();
+    controller.abort("cancelled");
+    const cases: Array<() => Promise<unknown>> = [
+      () => frame.textContent("#target", { signal: controller.signal }),
+      () => frame.innerText("#target", { signal: controller.signal }),
+      () => frame.innerHTML("#target", { signal: controller.signal }),
+      () => frame.getAttribute("#target", "data-id", { signal: controller.signal }),
+      () => frame.inputValue("#target", { signal: controller.signal }),
+      () => frame.isChecked("#target", { signal: controller.signal }),
+      () => frame.isDisabled("#target", { signal: controller.signal }),
+      () => frame.isEditable("#target", { signal: controller.signal }),
+      () => frame.isEnabled("#target", { signal: controller.signal }),
+      () => frame.focus("#target", { signal: controller.signal })
+    ];
+
+    for (const call of cases) {
+      const error = await call().catch((caught: Error) => caught);
+
+      expect(error.name).toBe("AbortError");
+    }
+    expect(adapter.createHandleReference).not.toHaveBeenCalled();
+  });
+
+  it("aborts frame selector query methods while waiting for element resolution", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.createHandleReference = vi.fn(async () => {
+      await new Promise(() => {});
+      return {
+        chain: [],
+        handleId: "never"
+      };
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page.mainFrame()
+      .textContent("#target", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("textContent did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.createHandleReference).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts frame.waitForSelector while waiting for element resolution", async () => {
+    const adapter = createPageAdapterStub();
+    adapter.createHandleReference = vi.fn(async () => {
+      await new Promise(() => {});
+      return {
+        chain: [],
+        handleId: "never"
+      };
+    });
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page.mainFrame()
+      .waitForSelector("div", { signal: controller.signal, timeout: 1000 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForSelector did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.createHandleReference).toHaveBeenCalled();
+  });
+
+  it("aborts frame actions while waiting for element handle actions", async () => {
+    const adapter = createPageAdapterStub();
+    const elementAdapter = createElementHandleAdapterStub();
+    elementAdapter.click = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    adapter.createHandleReference = vi.fn(async () => ({
+      chain: [],
+      handleId: "target"
+    }));
+    adapter.createHandle = vi.fn(() => elementAdapter);
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const errorPromise = page.mainFrame()
+      .click("#target", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("frame.click did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(elementAdapter.click).toHaveBeenCalledWith({ signal: controller.signal, timeout: 0 });
+  });
+
+  it("aborts page actions while waiting for frame actions", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const clickSpy = vi.spyOn(page.mainFrame(), "click").mockImplementation(async () => {
+      await new Promise(() => {});
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .click("#target", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("page.click did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(clickSpy).toHaveBeenCalledWith("#target", { signal: controller.signal, timeout: 0 });
+  });
+
+  it("aborts page.setInputFiles before dispatching through the frame", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const setInputFilesSpy = vi.spyOn(page.mainFrame(), "setInputFiles");
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page
+      .setInputFiles("input[type=file]", "file.txt", { signal: controller.signal })
+      .catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(setInputFilesSpy).not.toHaveBeenCalled();
+  });
+
+  it("aborts page.setInputFiles while waiting for the frame dispatch", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const setInputFilesSpy = vi.spyOn(page.mainFrame(), "setInputFiles").mockImplementation(async () => {
+      await new Promise(() => {});
+    });
+    const controller = new AbortController();
+    const errorPromise = page
+      .setInputFiles("input[type=file]", "file.txt", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("setInputFiles did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(setInputFilesSpy).toHaveBeenCalledWith("input[type=file]", "file.txt", {
+      signal: controller.signal,
+      timeout: 0
+    });
+  });
+
+  it("aborts page.setInputFiles on an element handle before evaluating files", async () => {
+    const adapter = createElementHandleAdapterStub();
+    const handle = new RoxyElementHandle(adapter);
+    const page = new RoxyPage(createPageAdapterStub(), {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await page
+      .setInputFiles(handle, { name: "file.txt", mimeType: "text/plain", buffer: Buffer.from("body") }, {
+        signal: controller.signal
+      })
+      .catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("aborts fileChooser.setFiles while waiting for page dispatch", async () => {
+    const adapter = createPageAdapterStub();
+    const page = new RoxyPage(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const chooserPromise = page.waitForEvent("filechooser");
+    await adapter.emitFileChooserOpened({
+      element: {
+        chain: [],
+        handleId: "native-handle"
+      },
+      frameId: "main",
+      isMultiple: false
+    });
+    const chooser = await chooserPromise;
+    const setInputFilesSpy = vi.spyOn(page, "setInputFiles").mockImplementation(async () => {
+      await new Promise(() => {});
+    });
+    const controller = new AbortController();
+    const errorPromise = chooser
+      .setFiles({ name: "file.txt", mimeType: "text/plain", buffer: Buffer.from("body") }, {
+        signal: controller.signal,
+        timeout: 0
+      })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("setFiles did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(setInputFilesSpy).toHaveBeenCalledWith(
+      expect.any(RoxyElementHandle),
+      { name: "file.txt", mimeType: "text/plain", buffer: Buffer.from("body") },
+      { signal: controller.signal, timeout: 0 }
+    );
   });
 
   it("forwards page.dragAndDrop to the main frame", async () => {

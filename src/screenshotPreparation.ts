@@ -70,21 +70,26 @@ async function maskElements(options: ScreenshotMaskOptions): Promise<() => Promi
     return async () => {};
   }
 
-  const cleanups: Array<() => Promise<void>> = [];
-  try {
-    for (const locator of options.mask) {
-      const handle = await locator.elementHandle({ timeout: 0 }).catch(() => null);
-      const box = await handle?.boundingBox().catch(() => null);
-      if (!handle || !box) {
-        continue;
-      }
-      await maskElement(handle, box, options.maskColor ?? "#F0F");
-      cleanups.push(async () => {
-        await handle.evaluate(() => {
-          document.querySelectorAll("[data-roxy-screenshot-mask]").forEach((node) => node.remove());
-        }).catch(() => {});
-      });
-    }
+	  const cleanups: Array<() => Promise<void>> = [];
+	  try {
+	    for (const locator of options.mask) {
+	      const handles = await locator.elementHandles().catch(() => []);
+	      if (!handles.length) {
+	        continue;
+	      }
+	      for (const handle of handles) {
+	        const box = await handle.boundingBox().catch(() => null);
+	        if (!box) {
+	          continue;
+	        }
+	        await maskElement(handle as LocatorMaskHandle, box, options.maskColor ?? "#F0F");
+	        cleanups.push(async () => {
+	          await handle.evaluate(() => {
+	            document.querySelectorAll("[data-roxy-screenshot-mask]").forEach((node) => node.remove());
+	          }).catch(() => {});
+	        });
+	      }
+	    }
     return async () => {
       await Promise.all(cleanups.map((cleanup) => cleanup()));
     };

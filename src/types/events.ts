@@ -40,6 +40,13 @@ export interface PageRequestFailure {
   isNavigationRequest?: boolean;
 }
 
+export interface PageRequestHeaders {
+  url: string;
+  method: string;
+  headers: Header[];
+  requestId?: string;
+}
+
 export interface PageConsoleMessage {
   args(): JSHandle[];
   location(): {
@@ -146,6 +153,7 @@ export interface RawPageEventMap {
   load: void;
   pageerror: PageErrorEntry;
   request: PageRequest;
+  requestheaders: PageRequestHeaders;
   requestfinished: PageRequest;
   requestfailed: PageRequestFailure;
   response: PageResponse;
@@ -185,6 +193,7 @@ export interface BrowserContextEventMap {
   requestfailed: Request;
   requestfinished: Request;
   response: Response;
+  serviceworker: Worker;
 }
 
 export interface InternalRequestFinishedEvent {

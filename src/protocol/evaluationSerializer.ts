@@ -194,6 +194,12 @@ function __roxyParseEvaluationResultValue(value, handles = [], refs = []) {
     }
     if ("r" in value)
       return new RegExp(value.r.p, value.r.f);
+    if ("fn" in value) {
+      const binding = globalThis[value.fn];
+      if (typeof binding !== "function")
+        throw new Error(value.fn + " is not a function");
+      return (...args) => binding(...args);
+    }
     if ("a" in value) {
       const result = [];
       refs[refs.length] = { id: value.id, value: result };

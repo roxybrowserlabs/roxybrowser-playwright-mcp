@@ -8,6 +8,10 @@ import {
   resolveExecutableCandidates,
   waitForDebuggerEndpoint
 } from "../../src/protocol/cdp/backend.js";
+import {
+  registerTestBrowserProcessForCleanup,
+  terminateProcessTree
+} from "../../src/processCleanup.js";
 import type { Browser, BrowserContext, Page, ResolvedAriaRef } from "../../src/types/api.js";
 import type { LaunchOptions } from "../../src/types/options.js";
 import {
@@ -16,6 +20,7 @@ import {
 } from "./browser-process-cleanup.js";
 
 const TEST_CLOSE_TIMEOUT_MS = 5_000;
+const TEST_BROWSER_STARTUP_TIMEOUT_MS = positiveIntegerEnv("ROXY_E2E_BROWSER_STARTUP_TIMEOUT", 60_000);
 const TEST_LAUNCH_RETRIES = 3;
 
 export type SnapshotPage = Page & {
@@ -82,21 +87,33 @@ async function connectTestBrowserOnce(options: LaunchOptions): Promise<Browser> 
     throw new Error("No Chrome executable found. Set ROXY_E2E_EXECUTABLE_PATH to a Chrome binary path.");
   }
   const chromeProcess = spawn(chromePath, buildChromiumLaunchArgs(options, userDataDir), {
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"]
   });
+  const unregisterTestBrowserProcess = registerTestBrowserProcessForCleanup(chromeProcess, userDataDir);
 
   try {
-    const wsEndpoint = await waitForDebuggerEndpoint(chromeProcess, userDataDir, 15_000);
+    const wsEndpoint = await waitForDebuggerEndpoint(
+      chromeProcess,
+      userDataDir,
+      TEST_BROWSER_STARTUP_TIMEOUT_MS
+    );
     const browser = await chromium.connect(wsEndpoint);
-    return wrapBrowserCleanup(browser, chromeProcess, userDataDir);
+    return wrapBrowserCleanup(browser, chromeProcess, userDataDir, unregisterTestBrowserProcess);
   } catch (error) {
-    chromeProcess.kill();
+    unregisterTestBrowserProcess();
+    await terminateProcessTree(chromeProcess, { timeoutMs: 500 });
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
 }
 
-function wrapBrowserCleanup(browser: Browser, chromeProcess: ChildProcess, userDataDir: string): Browser {
+function wrapBrowserCleanup(
+  browser: Browser,
+  chromeProcess: ChildProcess,
+  userDataDir: string,
+  unregisterTestBrowserProcess: () => void
+): Browser {
   const close = browser.close.bind(browser);
   let closed = false;
   browser.close = async (options?: { reason?: string }) => {
@@ -107,11 +124,24 @@ function wrapBrowserCleanup(browser: Browser, chromeProcess: ChildProcess, userD
     try {
       await close(options);
     } finally {
-      chromeProcess.kill();
+      await terminateProcessTree(chromeProcess, { timeoutMs: 500 }).catch(() => {});
+      unregisterTestBrowserProcess();
       await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
     }
   };
   return browser;
+}
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  return parsed;
 }
 
 async function closeForTest(label: string, close: () => Promise<void>): Promise<void> {

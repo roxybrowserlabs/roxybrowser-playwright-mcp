@@ -31,6 +31,7 @@ export type SerializedValue =
   | { bi: string }
   | { e: { n: string; m: string; s: string } }
   | { r: { p: string; f: string } }
+  | { fn: string }
   | { a: SerializedValue[]; id: number }
   | { o: Array<{ k: string; v: SerializedValue }>; id: number }
   | { ref: number }
@@ -179,6 +180,13 @@ export function parseEvaluationResultValue(
     if ("r" in value) {
       return new RegExp(value.r.p, value.r.f);
     }
+    if ("fn" in value) {
+      const binding = (globalThis as typeof globalThis & Record<string, unknown>)[value.fn];
+      if (typeof binding !== "function") {
+        throw new Error(`${value.fn} is not a function`);
+      }
+      return (...args: unknown[]) => binding(...args);
+    }
     if ("a" in value) {
       const result: any[] = [];
       refs.set(value.id, result);
@@ -255,6 +263,9 @@ function innerSerialize(
 
   if (typeof value === "symbol") {
     return { v: "undefined" };
+  }
+  if (typeof value === "function") {
+    throw new Error(`Attempting to serialize unexpected value: ${String(value)}`);
   }
   if (Object.is(value, undefined)) {
     return { v: "undefined" };

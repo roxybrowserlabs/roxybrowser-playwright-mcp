@@ -73,13 +73,14 @@ export interface SelectorRuntimePayload {
   force?: boolean;
   missingMessage?: string;
   position?: { x: number; y: number };
+  scroll?: "auto" | "none";
   timeoutMs?: number;
   waitForEnabled?: boolean;
   resetSelectionIfNotFocused?: boolean;
   retargetForAction?: "follow-label";
 }
 
-function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
+async function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
   const resolveBridgeScope = (): (typeof globalThis & Record<string, unknown>) => {
     const candidates: Array<typeof globalThis & Record<string, unknown>> = [
       globalThis as typeof globalThis & Record<string, unknown>
@@ -1652,7 +1653,9 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     }
     return result;
   };
-  const resolveActionPointOnce = () => {
+	  const nextAnimationFrame = (): Promise<void> =>
+	    new Promise((resolve) => requestAnimationFrame(() => resolve()));
+	  const resolveActionPointOnce = async () => {
     const firstNode = resolveSingleNode();
     if (!firstNode) {
       throw new Error(payload.missingMessage ?? "No element found.");
@@ -1667,11 +1670,31 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       throw new Error("Element is not attached to the DOM");
     }
 
-    firstElement.scrollIntoView({
-      block: "center",
-      inline: "center",
-      behavior: "instant"
-    });
+    const scrollElementIntoView = (element: Element) => {
+      element.scrollIntoView({
+        block: "center",
+        inline: "center",
+        behavior: "instant"
+      });
+      let ancestor = element.parentElement;
+      while (ancestor) {
+        const style = getComputedStyle(ancestor);
+        const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+        if (/(auto|scroll|hidden|clip)/.test(overflow)) {
+          const elementRect = element.getBoundingClientRect();
+          const ancestorRect = ancestor.getBoundingClientRect();
+          const elementTop = elementRect.top - ancestorRect.top + ancestor.scrollTop;
+          const elementLeft = elementRect.left - ancestorRect.left + ancestor.scrollLeft;
+          ancestor.scrollTop = elementTop - (ancestor.clientHeight - elementRect.height) / 2;
+          ancestor.scrollLeft = elementLeft - (ancestor.clientWidth - elementRect.width) / 2;
+        }
+        ancestor = ancestor.parentElement;
+      }
+    };
+	    if (payload.scroll !== "none") {
+	      scrollElementIntoView(firstElement);
+	      await nextAnimationFrame();
+	    }
 
     if (!hasVisibleStyle(firstElement)) {
       throw new Error("Element is not visible.");
@@ -1696,24 +1719,62 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
       return new DOMRect(left, top, right - left, bottom - top);
     };
-    const chooseActionRect = (element: Element): DOMRect | null => {
-      for (const candidate of Array.from(element.getClientRects())) {
-        const visiblePart = intersectWithViewport(candidate);
-        if (visiblePart && visiblePart.width * visiblePart.height > 0.99) {
-          return visiblePart;
-        }
+    const intersectRects = (first: DOMRect, second: DOMRect): DOMRect | null => {
+      const left = Math.max(first.left, second.left);
+      const right = Math.min(first.right, second.right);
+      const top = Math.max(first.top, second.top);
+      const bottom = Math.min(first.bottom, second.bottom);
+      if (right - left <= 0 || bottom - top <= 0) {
+        return null;
       }
-      const visibleBoundingBox = intersectWithViewport(element.getBoundingClientRect());
-      if (visibleBoundingBox && visibleBoundingBox.width * visibleBoundingBox.height > 0.99) {
-        return visibleBoundingBox;
-      }
-      return null;
+      return new DOMRect(left, top, right - left, bottom - top);
     };
+    const clipToScrollableAncestors = (element: Element, rect: DOMRect): DOMRect | null => {
+      let clipped: DOMRect | null = rect;
+      let ancestor = element.parentElement;
+      while (ancestor && clipped) {
+        const style = getComputedStyle(ancestor);
+        const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+        if (/(auto|scroll|hidden|clip)/.test(overflow)) {
+          clipped = intersectRects(clipped, ancestor.getBoundingClientRect());
+        }
+        ancestor = ancestor.parentElement;
+      }
+      return clipped;
+    };
+	    const chooseActionRects = (element: Element): DOMRect[] => {
+	      const rects: DOMRect[] = [];
+	      for (const candidate of Array.from(element.getClientRects())) {
+	        const viewportPart = intersectWithViewport(candidate);
+	        const visiblePart = viewportPart ? clipToScrollableAncestors(element, viewportPart) : null;
+	        if (visiblePart && visiblePart.width * visiblePart.height > 0.99) {
+	          rects.push(visiblePart);
+	        }
+	      }
+	      const viewportBoundingBox = intersectWithViewport(element.getBoundingClientRect());
+	      const visibleBoundingBox = viewportBoundingBox ? clipToScrollableAncestors(element, viewportBoundingBox) : null;
+	      if (visibleBoundingBox && visibleBoundingBox.width * visibleBoundingBox.height > 0.99) {
+	        rects.push(visibleBoundingBox);
+	      }
+	      return rects;
+	    };
+	    const visibleBoundingRect = (element: Element): DOMRect | null => {
+	      const viewportBoundingBox = intersectWithViewport(element.getBoundingClientRect());
+	      return viewportBoundingBox ? clipToScrollableAncestors(element, viewportBoundingBox) : null;
+	    };
+	    const defaultActionOffset = (rect: DOMRect) => ({
+	      x: Math.min(Math.max(rect.width / 2, 1), Math.max(rect.width - 1, 0)),
+	      y: Math.min(Math.max(rect.height / 2, 1), Math.max(rect.height - 1, 0))
+	    });
+	    const isActionPointInsideTarget = (element: Element, rect: DOMRect, offset: { x: number; y: number }): boolean => {
+	      const hitTarget = element.ownerDocument.elementFromPoint(rect.left + offset.x, rect.top + offset.y);
+	      return !hitTarget || isInsideScope(element, hitTarget) || isInsideScope(hitTarget, element);
+	    };
 
-    const rect = isTextNode(firstNode)
-      ? (() => {
-          const range = document.createRange();
-          range.selectNodeContents(firstNode);
+	    const textRect = isTextNode(firstNode)
+	      ? (() => {
+	          const range = document.createRange();
+	          range.selectNodeContents(firstNode);
           const rangeRect = (() => {
             for (const candidate of Array.from(range.getClientRects())) {
               const visiblePart = intersectWithViewport(candidate);
@@ -1723,16 +1784,43 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
             }
             return intersectWithViewport(range.getBoundingClientRect());
           })();
-          range.detach();
-          return rangeRect;
-        })()
-      : chooseActionRect(firstElement);
-    if (!rect || rect.width <= 0 || rect.height <= 0) {
-      throw new Error("Element is outside of the viewport.");
-    }
+	          range.detach();
+	          return rangeRect;
+	        })()
+	      : null;
+	    const elementRects = isTextNode(firstNode) ? [] : chooseActionRects(firstElement);
+	    const rectAndOffset = (() => {
+	      if (textRect) {
+	        return {
+	          rect: textRect,
+	          offset: payload.position ?? defaultActionOffset(textRect)
+	        };
+	      }
+	      for (const candidate of elementRects) {
+	        const offset = payload.position ?? defaultActionOffset(candidate);
+	        if (payload.force || payload.position || isActionPointInsideTarget(firstElement, candidate, offset)) {
+	          return { rect: candidate, offset };
+	        }
+	      }
+	      const boundingRect = visibleBoundingRect(firstElement);
+	      if (payload.scroll === "none" && (!boundingRect || boundingRect.width * boundingRect.height <= 0.99)) {
+	        return null;
+	      }
+	      const fallback = elementRects[0] ?? null;
+	      return fallback
+	        ? {
+	            rect: fallback,
+	            offset: payload.position ?? defaultActionOffset(fallback)
+	          }
+	        : null;
+	    })();
+	    const rect = rectAndOffset?.rect ?? null;
+	    if (!rect || rect.width <= 0 || rect.height <= 0) {
+	      throw new Error("Element is outside of the viewport.");
+	    }
 
-    const offsetX = payload.position ? payload.position.x : rect.width / 2;
-    const offsetY = payload.position ? payload.position.y : rect.height / 2;
+	    const offsetX = rectAndOffset!.offset.x;
+	    const offsetY = rectAndOffset!.offset.y;
 
     let frameOffsetX = 0;
     let frameOffsetY = 0;
@@ -1746,12 +1834,12 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
 
     const x = frameOffsetX + rect.left + offsetX;
     const y = frameOffsetY + rect.top + offsetY;
-    if (!payload.force) {
-      const hitTarget = firstElement.ownerDocument.elementFromPoint(rect.left + offsetX, rect.top + offsetY);
-      if (hitTarget && !isInsideScope(firstElement, hitTarget) && !isInsideScope(hitTarget, firstElement)) {
-        throw new Error("Element intercepts pointer events.");
-      }
-    }
+	    if (!payload.force) {
+	      const hitTarget = firstElement.ownerDocument.elementFromPoint(rect.left + offsetX, rect.top + offsetY);
+	      if (hitTarget && !isInsideScope(firstElement, hitTarget) && !isInsideScope(hitTarget, firstElement)) {
+	        throw new Error("Element intercepts pointer events.");
+	      }
+	    }
 
     return { x, y };
   };
@@ -1777,7 +1865,7 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       error.message === "Element is not visible." ||
       error.message === "Element is not enabled." ||
       error.message === "Element does not have an actionable bounding box." ||
-      error.message === "Element intercepts pointer events."
+	      error.message === "Element intercepts pointer events."
     );
   };
   const resolvedElements = resolveReference(payload.reference);
@@ -2089,12 +2177,18 @@ function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         return new Promise<{ x: number; y: number }>((resolve, reject) => {
           const deadline = Date.now() + payload.timeoutMs!;
 
-          const tick = () => {
-            try {
-              resolve(resolveActionPointOnce());
-            } catch (error) {
-              if (!shouldRetryActionPointError(error) || Date.now() + 50 > deadline) {
-                reject(error);
+	          const tick = () => {
+	            try {
+	              resolveActionPointOnce().then(resolve, (error: unknown) => {
+	                if (!shouldRetryActionPointError(error) || Date.now() + 50 > deadline) {
+	                  reject(error);
+	                  return;
+	                }
+	                setTimeout(tick, 50);
+	              });
+	            } catch (error) {
+	              if (!shouldRetryActionPointError(error) || Date.now() + 50 > deadline) {
+	                reject(error);
                 return;
               }
               setTimeout(tick, 50);

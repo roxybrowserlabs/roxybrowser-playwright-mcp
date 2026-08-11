@@ -108,6 +108,18 @@ describe("generatePageApiReport", () => {
     expect(currentOptionsTypes()).not.toContain("waitFor?: WaitForSelectorState");
   });
 
+  it("exposes Playwright 1.62 waitForFunction AbortSignal option publicly", () => {
+    const waitForFunctionOptionsSource = currentOptionsTypes().match(/export interface WaitForFunctionOptions[\s\S]*?\n\}/)?.[0] ?? "";
+
+    expect(waitForFunctionOptionsSource).toContain("signal?: AbortSignal;");
+  });
+
+  it("exposes Playwright 1.62 waitForSelector AbortSignal option publicly", () => {
+    const waitForSelectorOptionsSource = currentOptionsTypes().match(/export interface WaitForSelectorOptions[\s\S]*?\n\}/)?.[0] ?? "";
+
+    expect(waitForSelectorOptionsSource).toContain("signal?: AbortSignal;");
+  });
+
   it("matches upstream Playwright Disposable async-dispose surface", () => {
     const disposableSource = currentApiTypes().match(/export interface Disposable \{[\s\S]*?\n\}/)?.[0] ?? "";
 
@@ -184,6 +196,26 @@ describe("generatePageApiReport", () => {
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
 
+  it("matches upstream Playwright Route.fetch signature", () => {
+    const report = generateApiMethodSignatureReport("Route", ["fetch"]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("matches upstream Playwright APIRequestContext fetch signatures", () => {
+    const report = generateApiMethodSignatureReport("APIRequestContext", [
+      "delete",
+      "fetch",
+      "get",
+      "head",
+      "patch",
+      "post",
+      "put"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
   it("matches upstream Playwright Page misc signatures", () => {
     const report = generateApiMethodSignatureReport("Page", [
       "addLocatorHandler",
@@ -201,6 +233,24 @@ describe("generatePageApiReport", () => {
 
   it("matches upstream Playwright Page waitForEvent signatures", () => {
     const report = generateApiMethodSignatureReport("Page", ["waitForEvent"]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("exposes Playwright 1.62 BrowserContext waitForEvent AbortSignal option publicly", () => {
+    const browserContextSource = currentApiTypes().match(/export interface BrowserContext \{[\s\S]*?\n\}/)?.[0] ?? "";
+
+    expect(browserContextSource).toContain("signal?: AbortSignal;");
+  });
+
+  it("matches upstream Playwright Worker waitForEvent signatures", () => {
+    const report = generateApiMethodSignatureReport("Worker", ["waitForEvent"]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("matches upstream Playwright WebSocket waitForEvent signatures", () => {
+    const report = generateApiMethodSignatureReport("WebSocket", ["waitForEvent"]);
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
   });
@@ -483,7 +533,29 @@ describe("generatePageApiReport", () => {
       "drop",
       "elementHandle",
       "evaluateAll",
-      "pressSequentially"
+      "pressSequentially",
+      "waitForFunction"
+    ]);
+
+    expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);
+  });
+
+  it("matches upstream Playwright Locator state and convenience signatures", () => {
+    const report = generateApiMethodSignatureReport("Locator", [
+      "ariaSnapshot",
+      "boundingBox",
+      "focus",
+      "getAttribute",
+      "innerHTML",
+      "innerText",
+      "inputValue",
+      "isChecked",
+      "isDisabled",
+      "isEditable",
+      "isEnabled",
+      "scrollIntoViewIfNeeded",
+      "selectText",
+      "textContent"
     ]);
 
     expect(report.currentMethodSignatures).toEqual(report.upstreamMethodSignatures);

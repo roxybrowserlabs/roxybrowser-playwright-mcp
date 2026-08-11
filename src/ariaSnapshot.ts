@@ -3,6 +3,7 @@ import type { AriaSnapshotOptions } from "./types/options.js";
 
 export interface AriaSnapshotResult {
   refs: Record<string, string>;
+  locators?: Record<string, string>;
   text: string;
   title: string;
   url: string;

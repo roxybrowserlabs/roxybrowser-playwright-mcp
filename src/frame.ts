@@ -1,6 +1,7 @@
 import { createSmartHandle } from "./jsHandle.js";
 import type { RoxyPage } from "./page.js";
 import { assertFillValue } from "./assertions.js";
+import { abortableDelay, createAbortError, raceWithAbortSignal, throwIfAborted } from "./abortSignal.js";
 import { TimeoutError } from "./errors.js";
 import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
@@ -15,6 +16,7 @@ import type {
   Locator,
   PageFunction,
   PageFunctionOn,
+  EvaluateOptions,
   EvaluationArgument,
   Response,
   SmartHandle
@@ -33,10 +35,12 @@ import type {
   PressOptions,
   SelectOptionValue,
   SelectorStrictOptions,
+  SelectorStrictSignalOptions,
   SetInputFilesOptions,
   TapOptions,
   TypeOptions,
   WaitForNavigationOptions,
+  WaitForURLOptions,
   WaitForSelectorOptions
 } from "./types/options.js";
 import { urlMatches } from "./urlMatch.js";
@@ -51,6 +55,7 @@ type LocatorOptions = {
 type PageWaitForFunctionOptions = {
   polling?: number | "raf";
   timeout?: number;
+  signal?: AbortSignal;
 };
 type FrameSelectOptionValues =
   | null
@@ -82,6 +87,10 @@ export class RoxyFrame implements Frame {
 
   setSnapshot(snapshot: RoxyFrameSnapshot): void {
     this.snapshot = snapshot;
+  }
+
+  _roxyFrameIdentity(): string {
+    return this.snapshot.id;
   }
 
   snapshotState(): RoxyFrameSnapshot {
@@ -132,6 +141,7 @@ export class RoxyFrame implements Frame {
   }
 
   async goto(url: string, options: PageGotoOptions = {}): Promise<Response | null> {
+    throwIfAborted(options);
     if (this.detached) {
       throw new Error("Navigating frame was detached!");
     }
@@ -139,6 +149,7 @@ export class RoxyFrame implements Frame {
   }
 
   async setContent(html: string, options?: PageSetContentOptions): Promise<void> {
+    throwIfAborted(options);
     await this.roxyPage.setContentInFrame(this.snapshot, html, options);
   }
 
@@ -146,28 +157,33 @@ export class RoxyFrame implements Frame {
     return this.roxyPage.titleInFrame(this.snapshot);
   }
 
-  async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<R>;
-  async evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<R>;
-  async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<R> {
+  async evaluate<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: EvaluateOptions): Promise<R>;
+  async evaluate<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: EvaluateOptions): Promise<R>;
+  async evaluate<R, Arg>(
+    pageFunction: PageFunction<Arg, R>,
+    arg?: Arg,
+    options?: EvaluateOptions
+  ): Promise<R> {
     await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
     if (this.detached) {
       throw new Error("frame.evaluate: Frame was detached");
     }
     await this.roxyPage.prepareForPendingFileChooser();
-    return this.roxyPage.evaluateInFrame(this.snapshot, pageFunction, arg);
+    return this.roxyPage.evaluateInFrame(this.snapshot, pageFunction, arg, options);
   }
 
-  async evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg): Promise<SmartHandle<R>>;
-  async evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any): Promise<SmartHandle<R>>;
+  async evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg: Arg, options?: EvaluateOptions): Promise<SmartHandle<R>>;
+  async evaluateHandle<R>(pageFunction: PageFunction<void, R>, arg?: any, options?: EvaluateOptions): Promise<SmartHandle<R>>;
   async evaluateHandle<R, Arg>(
     pageFunction: PageFunction<Arg, R>,
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>> {
     await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
     if (this.detached) {
       throw new Error("frame.evaluateHandle: Frame was detached");
     }
-    return this.roxyPage.evaluateHandleInFrame(this.snapshot, pageFunction, arg);
+    return this.roxyPage.evaluateHandleInFrame(this.snapshot, pageFunction, arg, options);
   }
 
   async waitForFunction<R, Arg>(
@@ -185,6 +201,7 @@ export class RoxyFrame implements Frame {
     arg?: Arg,
     options: PageWaitForFunctionOptions = {}
   ): Promise<SmartHandle<R>> {
+    throwIfAborted(options);
     const timeout = options.timeout ?? this.roxyPage.defaultTimeout();
     const polling = options.polling ?? "raf";
     if (polling !== "raf" && typeof polling !== "number") {
@@ -204,11 +221,13 @@ export class RoxyFrame implements Frame {
       let timer: ReturnType<typeof setTimeout> | null = null;
       let stop = false;
 
+      const signal = options.signal;
       const cleanup = () => {
         if (timer) {
           clearTimeout(timer);
           timer = null;
         }
+        signal?.removeEventListener("abort", abortListener);
         this.roxyPage.removeInternalFrameWaitListener("framedetached", frameDetachedListener);
         this.roxyPage.removeInternalFrameWaitListener("close", closeListener);
       };
@@ -247,6 +266,10 @@ export class RoxyFrame implements Frame {
         if (stop) {
           return;
         }
+        if (signal?.aborted) {
+          settleReject(createAbortError(signal));
+          return;
+        }
         timer = setTimeout(() => {
           void tick();
         }, polling === "raf" ? 16 : polling);
@@ -254,6 +277,10 @@ export class RoxyFrame implements Frame {
 
       const tick = async () => {
         if (stop) {
+          return;
+        }
+        if (signal?.aborted) {
+          settleReject(createAbortError(signal));
           return;
         }
         if (this.detached) {
@@ -288,6 +315,14 @@ export class RoxyFrame implements Frame {
 
       this.roxyPage.addInternalFrameWaitListener("framedetached", frameDetachedListener);
       this.roxyPage.addInternalFrameWaitListener("close", closeListener);
+      const abortListener = () => {
+        if (signal) {
+          settleReject(createAbortError(signal));
+        }
+      };
+      if (signal) {
+        signal.addEventListener("abort", abortListener, { once: true });
+      }
       void tick();
     });
   }
@@ -298,25 +333,35 @@ export class RoxyFrame implements Frame {
 
   async waitForURL(
     url: string | RegExp | URLPattern | ((url: URL) => boolean),
-    options: WaitForNavigationOptions = {}
+    options: WaitForURLOptions = {}
   ): Promise<void> {
+    throwIfAborted(options);
     const timeout = options.timeout ?? this.roxyPage.defaultNavigationTimeout();
     const start = Date.now();
     while (timeout === 0 || Date.now() - start <= timeout) {
+      throwIfAborted(options);
       if (this.detached) {
         throw new Error("Navigating frame was detached!");
       }
       await this.roxyPage.refreshFramesForExternalMutation().catch(() => {});
       if (!urlMatches(this.roxyPage.baseURLForMatching(), this.url(), url)) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await abortableDelay(50, options);
         continue;
       }
       if (options.waitUntil !== "commit") {
+        const loadStateOptions =
+          timeout === 0
+            ? options
+            : {
+                ...(options.signal ? { signal: options.signal } : {}),
+                timeout: Math.max(0, timeout - (Date.now() - start))
+              };
         await this.waitForLoadState(
           options.waitUntil,
-          timeout === 0 ? options : { timeout: Math.max(0, timeout - (Date.now() - start)) }
+          loadStateOptions
         );
       }
+      throwIfAborted(options);
       return;
     }
     throw new TimeoutError(`frame.waitForURL: Timeout ${timeout}ms exceeded.`);
@@ -335,8 +380,9 @@ export class RoxyFrame implements Frame {
 
   async waitForLoadState(
     state: LoadState = "load",
-    options: { timeout?: number } = {}
+    options: { signal?: AbortSignal; timeout?: number } = {}
   ): Promise<void> {
+    throwIfAborted(options);
     if (this.detached) {
       throw new Error("Navigating frame was detached!");
     }
@@ -344,6 +390,7 @@ export class RoxyFrame implements Frame {
       throw new Error("state: expected one of (load|domcontentloaded|networkidle|commit)");
     }
     await this.roxyPage.waitForFrameLoadState(this.snapshot, state, options);
+    throwIfAborted(options);
     if (this.detached) {
       throw new Error("Navigating frame was detached!");
     }
@@ -371,13 +418,19 @@ export class RoxyFrame implements Frame {
   ): Promise<ElementHandle | null> {
     const { state, timeout } = normalizeWaitForSelectorOptions(options, this.roxyPage.defaultTimeout());
     const startTime = Date.now();
+    throwIfAborted(options);
 
     while (Date.now() - startTime <= timeout) {
-      const handle = await this.$(
-        selector,
-        { strict: this.strictForSelectorOptions(options) }
+      const handle = await raceWithAbortSignal(
+        this.$(
+          selector,
+          { strict: this.strictForSelectorOptions(options) }
+        ),
+        options
       );
-      const visible = handle ? await handle.isVisible() : false;
+      throwIfAborted(options);
+      const visible = handle ? await raceWithAbortSignal(handle.isVisible(), options) : false;
+      throwIfAborted(options);
 
       if (state === "attached" && handle) {
         return handle;
@@ -392,7 +445,7 @@ export class RoxyFrame implements Frame {
         return null;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await abortableDelay(50, options);
     }
 
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
@@ -514,40 +567,49 @@ export class RoxyFrame implements Frame {
     return this.roxyPage.addStyleTagInFrame(this.snapshot, options);
   }
 
-  async textContent(selector: string, options?: SelectorStrictOptions): Promise<string | null> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.textContent", options)).textContent();
+  async textContent(selector: string, options?: SelectorStrictSignalOptions): Promise<string | null> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.textContent", options);
+    return raceWithAbortSignal(handle.textContent(), options);
   }
 
-  async innerText(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.innerText", options)).innerText();
+  async innerText(selector: string, options?: SelectorStrictSignalOptions): Promise<string> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.innerText", options);
+    return raceWithAbortSignal(handle.innerText(), options);
   }
 
-  async innerHTML(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.innerHTML", options)).innerHTML();
+  async innerHTML(selector: string, options?: SelectorStrictSignalOptions): Promise<string> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.innerHTML", options);
+    return raceWithAbortSignal(handle.innerHTML(), options);
   }
 
-  async getAttribute(selector: string, name: string, options?: SelectorStrictOptions): Promise<string | null> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.getAttribute", options)).getAttribute(name);
+  async getAttribute(selector: string, name: string, options?: SelectorStrictSignalOptions): Promise<string | null> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.getAttribute", options);
+    return raceWithAbortSignal(handle.getAttribute(name), options);
   }
 
-  async inputValue(selector: string, options?: SelectorStrictOptions): Promise<string> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.inputValue", options)).inputValue();
+  async inputValue(selector: string, options?: SelectorStrictSignalOptions): Promise<string> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.inputValue", options);
+    return raceWithAbortSignal(handle.inputValue(), options);
   }
 
-  async isChecked(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.isChecked", options)).isChecked();
+  async isChecked(selector: string, options?: SelectorStrictSignalOptions): Promise<boolean> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.isChecked", options);
+    return raceWithAbortSignal(handle.isChecked(), options);
   }
 
-  async isDisabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.isDisabled", options)).isDisabled();
+  async isDisabled(selector: string, options?: SelectorStrictSignalOptions): Promise<boolean> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.isDisabled", options);
+    return raceWithAbortSignal(handle.isDisabled(), options);
   }
 
-  async isEditable(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.isEditable", options)).isEditable();
+  async isEditable(selector: string, options?: SelectorStrictSignalOptions): Promise<boolean> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.isEditable", options);
+    return raceWithAbortSignal(handle.isEditable(), options);
   }
 
-  async isEnabled(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.isEnabled", options)).isEnabled();
+  async isEnabled(selector: string, options?: SelectorStrictSignalOptions): Promise<boolean> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.isEnabled", options);
+    return raceWithAbortSignal(handle.isEnabled(), options);
   }
 
   async isHidden(selector: string, options?: SelectorStrictOptions): Promise<boolean> {
@@ -560,24 +622,39 @@ export class RoxyFrame implements Frame {
     return handle ? handle.isVisible() : false;
   }
 
-  async focus(selector: string, options?: SelectorStrictOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.focus", options)).focus();
+  async focus(selector: string, options?: SelectorStrictSignalOptions): Promise<void> {
+    const handle = await this.requiredElementHandleForSelector(selector, "frame.focus", options);
+    await raceWithAbortSignal(handle.focus(), options);
   }
 
   async dispatchEvent(selector: string, type: string, eventInit?: EvaluationArgument, options?: DispatchEventOptions): Promise<void> {
-    await this.locator(selector).dispatchEvent(type, eventInit, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.locator(selector).dispatchEvent(type, eventInit, options), options);
   }
 
   async dragAndDrop(source: string, target: string, options?: DragAndDropOptions): Promise<void> {
+    throwIfAborted(options);
     await this.locator(source).dragTo(this.locator(target), options);
   }
 
   async click(selector: string, options?: ClickOptions): Promise<void> {
-    await this.roxyPage.prepareForPendingFileChooser();
-    const handle = await this.requiredElementHandleForSelector(selector, "frame.click", options);
-    if (options?.noWaitAfter) {
-      await handle.click(options);
-      return;
+    throwIfAborted(options);
+	    await this.roxyPage.prepareForPendingFileChooser();
+	    const handle = await this.requiredElementHandleForSelector(selector, "frame.click", options);
+	    const mayTriggerLinkNavigation = await handle.evaluate((element) => {
+	      if (!(element instanceof Element)) {
+	        return false;
+	      }
+	      const link = element.closest("a[href], area[href]");
+	      if (!link) {
+	        return false;
+	      }
+	      const target = (link.getAttribute("target") ?? "").toLowerCase();
+	      return !target || target === "_self";
+	    }).catch(() => false);
+	    if (options?.noWaitAfter) {
+	      await raceWithAbortSignal(handle.click(options), options);
+	      return;
     }
     let navigated = false;
     let resolveNavigationObserved: (() => void) | null = null;
@@ -592,11 +669,11 @@ export class RoxyFrame implements Frame {
     }) as (frame: Frame) => void;
     this.roxyPage.addInternalNavigationWaitListener("framenavigated", navigationListener);
     try {
-      await handle.click(options);
-      await Promise.race([
-        navigationObserved,
-        new Promise((resolve) => setTimeout(resolve, 50))
-      ]);
+	      await raceWithAbortSignal(handle.click(options), options);
+	      await Promise.race([
+	        navigationObserved,
+	        abortableDelay(mayTriggerLinkNavigation ? 300 : 50, options)
+	      ]);
     } finally {
       this.roxyPage.removeInternalNavigationWaitListener("framenavigated", navigationListener);
     }
@@ -604,54 +681,95 @@ export class RoxyFrame implements Frame {
       return;
     }
     await this.waitForLoadState("load", {
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
       ...(options?.timeout === undefined ? {} : { timeout: options.timeout })
     }).catch(() => null);
   }
 
   async dblclick(selector: string, options?: ClickOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.dblclick", options)).dblclick(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.dblclick", options)).dblclick(options),
+      options
+    );
   }
 
   async hover(selector: string, options?: HoverOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.hover", options)).hover(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.hover", options)).hover(options),
+      options
+    );
   }
 
   async tap(selector: string, options?: TapOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.tap", options)).tap(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.tap", options)).tap(options),
+      options
+    );
   }
 
   async fill(selector: string, value: string, options?: FillOptions): Promise<void> {
     assertFillValue(value);
+    throwIfAborted(options);
     const apiName = this.snapshot.parentId === null ? "page.fill" : "frame.fill";
-    await (await this.requiredElementHandleForSelector(selector, apiName, options)).fill(value, options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, apiName, options)).fill(value, options),
+      options
+    );
   }
 
   async type(selector: string, value: string, options?: TypeOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.type", options)).type(value, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.type", options)).type(value, options),
+      options
+    );
   }
 
   async press(selector: string, key: string, options?: PressOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.press", options)).press(key, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.press", options)).press(key, options),
+      options
+    );
   }
 
   async check(selector: string, options?: ClickOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.check", options)).check(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.check", options)).check(options),
+      options
+    );
   }
 
   async uncheck(selector: string, options?: ClickOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.uncheck", options)).uncheck(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.uncheck", options)).uncheck(options),
+      options
+    );
   }
 
   async setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
-    await (await this.requiredElementHandleForSelector(selector, "frame.setChecked", options)).setChecked(checked, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.setChecked", options)).setChecked(checked, options),
+      options
+    );
   }
 
   async selectOption(
     selector: string,
     values: FrameSelectOptionValues,
-    options?: { force?: boolean; noWaitAfter?: boolean; strict?: boolean; timeout?: number }
+    options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; strict?: boolean; timeout?: number }
   ): Promise<Array<string>> {
-    return (await this.requiredElementHandleForSelector(selector, "frame.selectOption", options)).selectOption(values, options);
+    throwIfAborted(options);
+    return raceWithAbortSignal(
+      (await this.requiredElementHandleForSelector(selector, "frame.selectOption", options)).selectOption(values, options),
+      options
+    );
   }
 
   async setInputFiles(
@@ -659,9 +777,11 @@ export class RoxyFrame implements Frame {
     files: InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
+    throwIfAborted(options);
     await setInputFilesOnElement(
-      await this.requiredElementHandleForSelector(selector, "frame.setInputFiles", options),
-      files
+      await raceWithAbortSignal(this.requiredElementHandleForSelector(selector, "frame.setInputFiles", options), options),
+      files,
+      options
     );
   }
 
@@ -687,9 +807,10 @@ export class RoxyFrame implements Frame {
   private async requiredElementHandleForSelector(
     selector: string,
     apiName: string,
-    options?: { strict?: boolean }
+    options?: { signal?: AbortSignal; strict?: boolean }
   ): Promise<ElementHandle> {
-    const handle = await this.elementHandleForSelector(selector, options);
+    throwIfAborted(options);
+    const handle = await raceWithAbortSignal(this.elementHandleForSelector(selector, options), options);
     if (!handle) {
       throw new Error(`${apiName}: Failed to find element matching selector "${selector}"`);
     }

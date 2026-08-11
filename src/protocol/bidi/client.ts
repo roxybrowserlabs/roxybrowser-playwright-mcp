@@ -44,6 +44,7 @@ export interface BidiProtocolClient {
   browsingContextHandleUserPrompt(
     params: unknown
   ): Promise<Commands["browsingContext.handleUserPrompt"]["returnType"]>;
+  browsingContextLocateNodes(params: unknown): Promise<Commands["browsingContext.locateNodes"]["returnType"]>;
   browsingContextNavigate(params: unknown): Promise<Commands["browsingContext.navigate"]["returnType"]>;
   browsingContextReload(params: unknown): Promise<Commands["browsingContext.reload"]["returnType"]>;
   browsingContextSetViewport(
@@ -59,6 +60,7 @@ export interface BidiProtocolClient {
   emulationSetUserAgentOverride(
     params: unknown
   ): Promise<Commands["emulation.setUserAgentOverride"]["returnType"]>;
+  emulationSetNetworkConditions(params: unknown): Promise<Commands["emulation.setNetworkConditions"]["returnType"]>;
   inputPerformActions(params: unknown): Promise<Commands["input.performActions"]["returnType"]>;
   inputReleaseActions(params: unknown): Promise<Commands["input.releaseActions"]["returnType"]>;
   inputSetFiles(params: unknown): Promise<Commands["input.setFiles"]["returnType"]>;
@@ -243,6 +245,10 @@ export class WebSocketBidiClient implements BidiProtocolClient {
     return (await this.sendCommand("browsingContext.handleUserPrompt", params as Commands["browsingContext.handleUserPrompt"]["params"])).result;
   }
 
+  async browsingContextLocateNodes(params: unknown) {
+    return (await this.sendCommand("browsingContext.locateNodes", params as Commands["browsingContext.locateNodes"]["params"])).result;
+  }
+
   async browsingContextNavigate(params: unknown) {
     return (await this.sendCommand("browsingContext.navigate", params as Commands["browsingContext.navigate"]["params"])).result;
   }
@@ -297,6 +303,10 @@ export class WebSocketBidiClient implements BidiProtocolClient {
 
   async networkSetExtraHeaders(params: unknown) {
     return (await this.sendCommand("network.setExtraHeaders", params as Commands["network.setExtraHeaders"]["params"])).result;
+  }
+
+  async emulationSetNetworkConditions(params: unknown) {
+    return (await this.sendCommand("emulation.setNetworkConditions", params as Commands["emulation.setNetworkConditions"]["params"])).result;
   }
 
   async scriptAddPreloadScript(params: unknown) {

@@ -1,10 +1,19 @@
-import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
+import {
+  assertMaxArguments,
+  isSerializedEvaluateCallbacksArg,
+  prepareEvaluateWithCallbacksArg,
+  serializePageFunction,
+  type EvaluateCallbackRegistrar,
+  type EvaluateOptions
+} from "./evaluation.js";
+import { PARSE_EVALUATION_RESULT_SOURCE } from "./protocol/evaluationSerializer.js";
 import { serializeEvaluationArgument } from "./elementHandle.js";
 import { RoxyElementHandle } from "./elementHandle.js";
 import type {
   ProtocolElementHandleReference,
   ProtocolJSHandleAdapter
 } from "./protocol/adapter.js";
+import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import type { SerializedValue } from "./utilityScriptSerializers.js";
 import type { ElementHandle, JSHandle, PageFunctionOn, SmartHandle, Unboxed } from "./types/api.js";
 
@@ -32,65 +41,83 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
     private readonly asElementHandle: ElementHandle | null = null,
     private readonly preview?: string,
     private readonly remoteAdapter?: ProtocolJSHandleAdapter<T>,
-    private readonly createElementHandle?: (reference: ProtocolElementHandleReference) => ElementHandle
+    private readonly createElementHandle?: (reference: ProtocolElementHandleReference) => ElementHandle,
+    private readonly evaluateCallbackOwner?: EvaluateCallbackRegistrar
   ) {}
 
   async evaluate<R, Arg, O extends T = T>(
     pageFunction: PageFunctionOn<O, Arg, R>,
-    arg: Arg
+    arg: Arg,
+    options?: EvaluateOptions
   ): Promise<R>;
   async evaluate<R, O extends T = T>(
     pageFunction: PageFunctionOn<O, void, R>,
-    arg?: any
+    arg?: any,
+    options?: EvaluateOptions
   ): Promise<R>;
   async evaluate<R, Arg, O extends T = T>(
     pageFunction: PageFunctionOn<O, Arg, R>,
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<R> {
-    assertMaxArguments(arguments.length, 2);
+    assertMaxArguments(arguments.length, 3);
+    const preparedArg = await prepareEvaluateWithCallbacksArg(this.evaluateCallbackOwner, arg, options);
     if (this.remoteAdapter) {
+      const expression = serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>));
       return this.remoteAdapter.evaluate<R>(
-        serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-        arg,
-        typeof pageFunction === "function"
+        wrapHandleEvaluateFunctionWithCallbacksIfNeeded(expression, preparedArg),
+        preparedArg,
+        typeof pageFunction === "function" || isSerializedEvaluateCallbacksArg(preparedArg)
       );
+    }
+    if (isSerializedEvaluateCallbacksArg(preparedArg)) {
+      throw new Error("Passing a function is not supported as an argument here");
     }
 
     if (typeof pageFunction === "string") {
       return (0, eval)(pageFunction) as R;
     }
 
-    return pageFunction(this.value as O, serializeEvaluationArgument(arg) as Unboxed<Arg>);
+    return pageFunction(this.value as O, serializeEvaluationArgument(preparedArg) as Unboxed<Arg>);
   }
 
   async evaluateHandle<R, Arg, O extends T = T>(
     pageFunction: PageFunctionOn<O, Arg, R>,
-    arg: Arg
+    arg: Arg,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>>;
   async evaluateHandle<R, O extends T = T>(
     pageFunction: PageFunctionOn<O, void, R>,
-    arg?: any
+    arg?: any,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>>;
   async evaluateHandle<R, Arg, O extends T = T>(
     pageFunction: PageFunctionOn<O, Arg, R>,
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>> {
-    assertMaxArguments(arguments.length, 2);
+    assertMaxArguments(arguments.length, 3);
+    const preparedArg = await prepareEvaluateWithCallbacksArg(this.evaluateCallbackOwner, arg, options);
     if (this.remoteAdapter?.evaluateHandle) {
+      const expression = serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>));
       return await createRemoteJSHandle(
         await this.remoteAdapter.evaluateHandle<R>(
-          serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-          arg,
-          typeof pageFunction === "function"
+          wrapHandleEvaluateFunctionWithCallbacksIfNeeded(expression, preparedArg),
+          preparedArg,
+          typeof pageFunction === "function" || isSerializedEvaluateCallbacksArg(preparedArg)
         ),
-        this.createElementHandle
+        this.createElementHandle,
+        this.evaluateCallbackOwner
       ) as unknown as SmartHandle<R>;
+    }
+    if (isSerializedEvaluateCallbacksArg(preparedArg)) {
+      throw new Error("Passing a function is not supported as an argument here");
     }
 
     const result =
       typeof pageFunction === "string"
         ? ((0, eval)(serializePageFunction(pageFunction)) as R)
-        : await pageFunction(this.value as O, serializeEvaluationArgument(arg) as Unboxed<Arg>);
+        : await pageFunction(this.value as O, serializeEvaluationArgument(preparedArg) as Unboxed<Arg>);
     return createSmartHandle(result);
   }
 
@@ -152,7 +179,7 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
       const properties = await this.remoteAdapter.getProperties();
       const result = new Map<string, JSHandle>();
       for (const [name, adapter] of properties) {
-        result.set(name, await createRemoteJSHandle(adapter, this.createElementHandle));
+        result.set(name, await createRemoteJSHandle(adapter, this.createElementHandle, this.evaluateCallbackOwner));
       }
       return result;
     }
@@ -172,7 +199,8 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
     if (this.remoteAdapter) {
       return createRemoteJSHandle(
         await this.remoteAdapter.getProperty(propertyName),
-        this.createElementHandle
+        this.createElementHandle,
+        this.evaluateCallbackOwner
       );
     }
 
@@ -197,6 +225,21 @@ export class RoxyJSHandle<T = unknown> implements JSHandle<T> {
   }
 }
 
+function wrapHandleEvaluateFunctionWithCallbacksIfNeeded(expression: string, arg: unknown): string {
+  if (!isSerializedEvaluateCallbacksArg(arg)) {
+    return expression;
+  }
+  const isFunction = looksLikeFunctionExpression(expression);
+  return `async (handle, payload) => {
+    ${PARSE_EVALUATION_RESULT_SOURCE}
+    const arg = __roxyParseEvaluationResultValue(payload.__roxyEvaluateCallbacksArg);
+    let result = (0, eval)(${JSON.stringify(isFunction ? `(${expression})` : expression)});
+    if (${isFunction ? "true" : "false"})
+      result = result(handle, arg);
+    return result;
+  }`;
+}
+
 export function createSmartHandle<T>(value: T): SmartHandle<T> {
   if (value instanceof RoxyJSHandle) {
     return value as unknown as SmartHandle<T>;
@@ -215,11 +258,12 @@ export function createJSHandle<T>(value: T, preview?: string): JSHandle<T> {
 
 export async function createRemoteJSHandle<T>(
   adapter: ProtocolJSHandleAdapter<T>,
-  createElementHandle?: (reference: ProtocolElementHandleReference) => ElementHandle
+  createElementHandle?: (reference: ProtocolElementHandleReference) => ElementHandle,
+  evaluateCallbackOwner?: EvaluateCallbackRegistrar
 ): Promise<JSHandle<T>> {
   const elementReference = await adapter.asElementReference?.();
   const asElementHandle = elementReference && createElementHandle
     ? createElementHandle(elementReference)
     : null;
-  return new RoxyJSHandle(undefined as T, asElementHandle, undefined, adapter, createElementHandle);
+  return new RoxyJSHandle(undefined as T, asElementHandle, undefined, adapter, createElementHandle, evaluateCallbackOwner);
 }

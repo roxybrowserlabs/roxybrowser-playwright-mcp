@@ -67,7 +67,7 @@ interface RoxyWorkspace {
 export async function resolveRoxyBrowserEndpoint(
   options: RoxyBrowserEndpointOptions
 ): Promise<string> {
-  const { RoxyClient } = await import("./roxybrowser-openai.mjs");
+  const { RoxyClient } = await import("../../scripts/roxybrowser-client.mjs");
   const client = new RoxyClient(options.apiPort, options.apiToken) as RoxyClient;
   debugRoxyBrowser(options, `Using RoxyBrowser API on 127.0.0.1:${options.apiPort}.`);
   await callRoxy(options, "RoxyBrowser API health check", () => client.health());

@@ -167,7 +167,7 @@ async function openEndpoint(protocol) {
 }
 
 async function openRoxyBrowserCdpEndpoint() {
-  const { RoxyClient } = await import("../tests/helpers/roxybrowser-openai.mjs");
+  const { RoxyClient } = await import("./roxybrowser-client.mjs");
   const apiPort = process.env.ROXYBROWSER_API_PORT ?? process.env.ROXY_API_PORT ?? "50000";
   const apiToken = process.env.ROXYBROWSER_API_TOKEN ?? process.env.ROXY_API_TOKEN;
   const client = new RoxyClient(apiPort, apiToken);
@@ -244,7 +244,7 @@ async function closeOpenedBrowser(openedBrowser) {
       return;
     }
 
-    const { RoxyClient } = await import("../tests/helpers/roxybrowser-openai.mjs");
+    const { RoxyClient } = await import("./roxybrowser-client.mjs");
     const client = new RoxyClient(openedBrowser.apiPort, openedBrowser.apiToken);
     await client.browser_close(openedBrowser.dirId);
   } catch (error) {

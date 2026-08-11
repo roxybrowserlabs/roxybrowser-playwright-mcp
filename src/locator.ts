@@ -2,11 +2,13 @@ import { readFile, stat } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 import { TimeoutError } from "./errors.js";
 import { assertFillValue } from "./assertions.js";
-import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
+import { abortableDelay, raceWithAbortSignal, throwIfAborted } from "./abortSignal.js";
+import { assertMaxArguments, serializePageFunction, type EvaluateCallbackRegistrar } from "./evaluation.js";
 import { RoxyElementHandle, serializeEvaluationArgument, type ElementHandleFrameResolver } from "./elementHandle.js";
 import { convertInputFiles, type InputFiles } from "./inputFiles.js";
 import { normalizeSelectOptionValues } from "./selectOptionValues.js";
 import { createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
+import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import {
   createAltTextLocatorSelector,
   createInternalTextLocatorSelector,
@@ -17,7 +19,7 @@ import {
   createTextLocatorSelector,
   createTitleLocatorSelector
 } from "./locatorSelectors.js";
-import type { LocatorSelector, ProtocolLocatorAdapter } from "./protocol/adapter.js";
+import type { LocatorSelector, ProtocolJSHandleAdapter, ProtocolLocatorAdapter } from "./protocol/adapter.js";
 import { parseSelectorChain } from "./selectors.js";
 import type {
   Disposable,
@@ -67,7 +69,7 @@ const LAST_SELECTOR: LocatorSelector = {
 };
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 
-type ActionOptionsLike = { force?: boolean; timeout?: number } | undefined;
+type ActionOptionsLike = { force?: boolean; signal?: AbortSignal; timeout?: number } | undefined;
 type PointerActionOptions = (ClickOptions | HoverOptions) | undefined;
 type LocatorOptions = {
   has?: Locator;
@@ -78,10 +80,13 @@ type LocatorOptions = {
 type LocatorFilterOptions = LocatorOptions & {
   visible?: boolean;
 };
-type LocatorClearOptions = { force?: boolean; noWaitAfter?: boolean; timeout?: number };
+type LocatorClearOptions = { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number };
+type LocatorEvaluateOptions = TimeoutOptions & { exposeFunctions?: boolean; signal?: AbortSignal };
 type LocatorDragToOptions = {
   force?: boolean;
   noWaitAfter?: boolean;
+  scroll?: "auto" | "none";
+  signal?: AbortSignal;
   sourcePosition?: { x: number; y: number };
   steps?: number;
   targetPosition?: { x: number; y: number };
@@ -92,8 +97,9 @@ type LocatorDropPayload = {
   files?: string | Array<string> | { name: string; mimeType: string; buffer: Buffer } | Array<{ name: string; mimeType: string; buffer: Buffer }>;
   data?: { [key: string]: string };
 };
-type LocatorDropOptions = { position?: { x: number; y: number }; timeout?: number };
-type LocatorPressSequentiallyOptions = { delay?: number; noWaitAfter?: boolean; timeout?: number };
+type LocatorDropOptions = { position?: { x: number; y: number }; signal?: AbortSignal; timeout?: number };
+type LocatorPressSequentiallyOptions = { delay?: number; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number };
+type LocatorSignalTimeoutOptions = { signal?: AbortSignal; timeout?: number };
 type LocatorDropFilePayload = {
   buffer: string;
   lastModifiedMs?: number;
@@ -102,6 +108,8 @@ type LocatorDropFilePayload = {
 };
 type LocatorActionPointOptions = {
   position?: { x: number; y: number };
+  scroll?: "auto" | "none";
+  signal?: AbortSignal;
   timeout?: number;
 };
 
@@ -281,8 +289,29 @@ export class RoxyLocator implements Locator {
     return this.selectorChain ? cloneLocatorSelectorChain(this.selectorChain) : null;
   }
 
+  _roxyCloneWithAdapter(
+    adapter: ProtocolLocatorAdapter,
+    selectorChain: LocatorSelector[] | null = this.selectorChain,
+    frameIdentity: string | undefined = this.frameIdentity
+  ): RoxyLocator {
+    return new RoxyLocator(
+      adapter,
+      undefined,
+      selectorChain,
+      this.beforeAction,
+      undefined,
+      this.frameResolver,
+      this.ownerPage,
+      frameIdentity
+    );
+  }
+
   _roxyFrameIdentity(): string | undefined {
     return this.frameIdentity;
+  }
+
+  _roxyProtocolLocatorAdapter(): ProtocolLocatorAdapter {
+    return this.adapter;
   }
 
   page(): Page {
@@ -296,16 +325,7 @@ export class RoxyLocator implements Locator {
     adapter: ProtocolLocatorAdapter,
     selectorChain: LocatorSelector[] | null = this.selectorChain
   ): RoxyLocator {
-    return new RoxyLocator(
-      adapter,
-      undefined,
-      selectorChain,
-      this.beforeAction,
-      undefined,
-      this.frameResolver,
-      this.ownerPage,
-      this.frameIdentity
-    );
+    return this._roxyCloneWithAdapter(adapter, selectorChain);
   }
 
   locator(selectorOrLocator: string | Locator, options?: LocatorOptions): Locator {
@@ -614,34 +634,42 @@ export class RoxyLocator implements Locator {
 
   async evaluate<R, Arg>(
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
-    arg: Arg,
-    options?: TimeoutOptions
+    arg?: Arg,
+    options?: LocatorEvaluateOptions
   ): Promise<R>;
   async evaluate<R>(
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, void, R>,
-    options?: TimeoutOptions
+    options?: LocatorEvaluateOptions
   ): Promise<R>;
   async evaluate<R, Arg>(
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
-    argOrOptions?: Arg | TimeoutOptions,
-    options?: TimeoutOptions
+    argOrOptions?: Arg | LocatorEvaluateOptions,
+    options?: LocatorEvaluateOptions
   ): Promise<R> {
     assertMaxArguments(arguments.length, 3);
     const hasArg = arguments.length >= 2 && (arguments.length !== 2 || !looksLikeTimeoutOptions(argOrOptions));
-    void (hasArg ? options : argOrOptions);
-    return this.adapter.evaluate<R>(
-      serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-      serializeEvaluationArgument(hasArg ? argOrOptions : undefined),
-      typeof pageFunction === "function"
+    const resolvedOptions = hasArg ? options : argOrOptions as LocatorEvaluateOptions | undefined;
+    throwIfAborted(resolvedOptions);
+    if (resolvedOptions?.exposeFunctions) {
+      const element = await raceWithAbortSignal(this.elementHandle(resolvedOptions), resolvedOptions);
+      return raceWithAbortSignal(
+        element.evaluate(pageFunction, hasArg ? argOrOptions as Arg : undefined as Arg, resolvedOptions),
+        resolvedOptions
+      );
+    }
+    return raceWithAbortSignal(
+      this.adapter.evaluate<R>(
+        serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
+        serializeEvaluationArgument(hasArg ? argOrOptions : undefined),
+        typeof pageFunction === "function"
+      ),
+      resolvedOptions
     );
   }
 
   async evaluateAll<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(
     pageFunction: PageFunctionOn<E[], Arg, R>,
-    arg: Arg
-  ): Promise<R>;
-  async evaluateAll<R, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(
-    pageFunction: PageFunctionOn<E[], void, R>
+    arg?: Arg
   ): Promise<R>;
   async evaluateAll<R, Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(
     pageFunction: PageFunctionOn<E[], Arg, R>,
@@ -657,42 +685,113 @@ export class RoxyLocator implements Locator {
 
   async evaluateHandle<R, Arg>(
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
-    arg: Arg,
-    options?: TimeoutOptions
+    arg?: Arg,
+    options?: LocatorEvaluateOptions
   ): Promise<SmartHandle<R>>;
   async evaluateHandle<R>(
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, void, R>,
-    options?: TimeoutOptions
+    options?: LocatorEvaluateOptions
   ): Promise<SmartHandle<R>>;
   async evaluateHandle<R, Arg>(
     pageFunction: PageFunctionOn<SVGElement | HTMLElement, Arg, R>,
-    argOrOptions?: Arg | TimeoutOptions,
-    options?: TimeoutOptions
+    argOrOptions?: Arg | LocatorEvaluateOptions,
+    options?: LocatorEvaluateOptions
   ): Promise<SmartHandle<R>> {
     assertMaxArguments(arguments.length, 3);
     const hasArg = arguments.length >= 2 && (arguments.length !== 2 || !looksLikeTimeoutOptions(argOrOptions));
-    void (hasArg ? options : argOrOptions);
+    const resolvedOptions = hasArg ? options : argOrOptions as LocatorEvaluateOptions | undefined;
+    throwIfAborted(resolvedOptions);
+    if (resolvedOptions?.exposeFunctions) {
+      const element = await raceWithAbortSignal(this.elementHandle(resolvedOptions), resolvedOptions);
+      return raceWithAbortSignal(
+        element.evaluateHandle(pageFunction, hasArg ? argOrOptions as Arg : undefined as Arg, resolvedOptions),
+        resolvedOptions
+      );
+    }
     if (this.adapter.evaluateHandle) {
       return await createRemoteJSHandle(
-        await this.adapter.evaluateHandle<R>(
-          serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-          serializeEvaluationArgument(hasArg ? argOrOptions : undefined),
-          typeof pageFunction === "function"
+        await raceWithAbortSignal(
+          this.adapter.evaluateHandle<R>(
+            serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
+            serializeEvaluationArgument(hasArg ? argOrOptions : undefined),
+            typeof pageFunction === "function"
+          ),
+          resolvedOptions
         ),
         (reference) => this.frameResolver?.createElementHandleFromReference(reference)
-          ?? new RoxyElementHandle(this.adapter.elementHandle() as never, this.frameResolver)
+          ?? new RoxyElementHandle(this.adapter.elementHandle() as never, this.frameResolver),
+        this.frameResolver?._exposeEvaluateCallback
+          ? this.frameResolver as EvaluateCallbackRegistrar
+          : undefined
       ) as unknown as SmartHandle<R>;
     }
     return createSmartHandle(await this.evaluate(pageFunction as PageFunctionOn<SVGElement | HTMLElement, Arg, R>, hasArg ? argOrOptions as Arg : undefined as Arg));
   }
 
-  async boundingBox(options?: TimeoutOptions): Promise<Rect | null> {
-    void options;
-    return this.adapter.boundingBox();
+  async waitForFunction<Arg, E extends SVGElement | HTMLElement = SVGElement | HTMLElement>(
+    pageFunction: PageFunctionOn<E, Arg, unknown>,
+    arg?: Arg,
+    options?: { timeout?: number; signal?: AbortSignal }
+  ): Promise<void> {
+    assertMaxArguments(arguments.length, 3);
+    throwIfAborted(options);
+    const timeout = options?.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const startTime = Date.now();
+    while (timeout === 0 || Date.now() - startTime <= timeout) {
+      throwIfAborted(options);
+      const count = await raceWithAbortSignal(this.count(), options);
+      if (count > 1) {
+        throw new Error(`strict mode violation: locator resolved to ${count} elements`);
+      }
+      if (count === 0) {
+        if (timeout !== 0 && Date.now() - startTime + 50 > timeout) {
+          break;
+        }
+        await abortableDelay(50, options);
+        continue;
+      }
+
+      const result = await raceWithAbortSignal(
+        this.adapter.evaluate<unknown>(
+          serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => unknown | Promise<unknown>)),
+          serializeEvaluationArgument(arg),
+          typeof pageFunction === "function" || looksLikeFunctionExpression(String(pageFunction))
+        ),
+        options
+      );
+      if (result) {
+        return;
+      }
+
+      if (timeout !== 0 && Date.now() - startTime + 50 > timeout) {
+        break;
+      }
+      await abortableDelay(50, options);
+    }
+    throw new TimeoutError(`locator.waitForFunction: Timeout ${timeout}ms exceeded.`);
+  }
+
+  async boundingBox(options?: LocatorSignalTimeoutOptions): Promise<Rect | null> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.boundingBox(), options);
   }
 
   private async actionPoint(options: LocatorActionPointOptions = {}): Promise<{ x: number; y: number }> {
-    const box = await this.boundingBox(options.timeout === undefined ? undefined : { timeout: options.timeout });
+    throwIfAborted(options);
+    const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const startTime = Date.now();
+    let box: Rect | null = null;
+    while (timeout === 0 || Date.now() - startTime <= timeout) {
+      throwIfAborted(options);
+      box = await this.boundingBox(options);
+      if (box) {
+        break;
+      }
+      if (timeout !== 0 && Date.now() - startTime + 50 > timeout) {
+        break;
+      }
+      await abortableDelay(50, options);
+    }
     if (!box) {
       throw new Error("locator.dragTo: Element is not visible.");
     }
@@ -708,14 +807,14 @@ export class RoxyLocator implements Locator {
 
   async dblclick(options?: ClickOptions): Promise<void> {
     const actionOptions = this.withBeforeActionRetry(options);
-    await this.beforeAction?.(this, actionOptions);
-    await this.adapter.dblclick(actionOptions);
+    await this.runBeforeAction(actionOptions);
+    await raceWithAbortSignal(this.adapter.dblclick(actionOptions), actionOptions);
   }
 
   async check(options?: ClickOptions): Promise<void> {
     const actionOptions = this.withBeforeActionRetry(options);
-    await this.beforeAction?.(this, actionOptions);
-    await this.adapter.check(actionOptions);
+    await this.runBeforeAction(actionOptions);
+    await raceWithAbortSignal(this.adapter.check(actionOptions), actionOptions);
   }
 
   async clear(options?: LocatorClearOptions): Promise<void> {
@@ -724,43 +823,47 @@ export class RoxyLocator implements Locator {
 
   async click(options?: ClickOptions): Promise<void> {
     const actionOptions = this.withBeforeActionRetry(options);
-    await this.beforeAction?.(this, actionOptions);
-    await this.adapter.click(actionOptions);
+    await this.runBeforeAction(actionOptions);
+    await raceWithAbortSignal(this.adapter.click(actionOptions), actionOptions);
   }
 
   async hover(options?: HoverOptions): Promise<void> {
     const actionOptions = this.withBeforeActionRetry(options);
-    await this.beforeAction?.(this, actionOptions);
-    await this.adapter.hover(actionOptions);
+    await this.runBeforeAction(actionOptions);
+    await raceWithAbortSignal(this.adapter.hover(actionOptions), actionOptions);
   }
 
   async fill(value: string, options?: FillOptions): Promise<void> {
     assertFillValue(value);
-    await this.beforeAction?.(this, options);
-    await this.adapter.fill(value, options);
+    throwIfAborted(options);
+    await this.runBeforeAction(options);
+    await raceWithAbortSignal(this.adapter.fill(value, options), options);
   }
 
   async type(value: string, options?: TypeOptions): Promise<void> {
-    await this.beforeAction?.(this, options);
-    await this.adapter.type(value, options);
+    throwIfAborted(options);
+    await this.runBeforeAction(options);
+    await raceWithAbortSignal(this.adapter.type(value, options), options);
   }
 
   async press(key: string, options?: PressOptions): Promise<void> {
-    await this.beforeAction?.(this, options);
-    await this.adapter.press(key, options);
+    throwIfAborted(options);
+    await this.runBeforeAction(options);
+    await raceWithAbortSignal(this.adapter.press(key, options), options);
   }
 
   async pressSequentially(text: string, options?: LocatorPressSequentiallyOptions): Promise<void> {
     await this.type(text, options);
   }
 
-  async focus(): Promise<void> {
-    await this.adapter.focus();
+  async focus(options?: LocatorSignalTimeoutOptions): Promise<void> {
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.focus(), options);
   }
 
-  async blur(options?: { timeout?: number }): Promise<void> {
-    void options;
-    await this.adapter.blur();
+  async blur(options?: { signal?: AbortSignal; timeout?: number }): Promise<void> {
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.blur(), options);
   }
 
   async dispatchEvent(
@@ -768,96 +871,114 @@ export class RoxyLocator implements Locator {
     eventInit?: unknown,
     options?: DispatchEventOptions
   ): Promise<void> {
-    await this.adapter.dispatchEvent(type, eventInit, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.dispatchEvent(type, eventInit, options), options);
   }
 
   async dragTo(target: Locator, options?: LocatorDragToOptions): Promise<void> {
+    throwIfAborted(options);
     const sourcePoint = await this.actionPoint({
+      ...(options?.scroll === undefined ? {} : { scroll: options.scroll }),
       ...(options?.sourcePosition === undefined ? {} : { position: options.sourcePosition }),
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
       ...(options?.timeout === undefined ? {} : { timeout: options.timeout })
     });
+    throwIfAborted(options);
     if (!(target instanceof RoxyLocator)) {
       throw new Error("locator.dragTo: Target must be a Roxy locator.");
     }
     const targetPoint = await target.actionPoint({
+      ...(options?.scroll === undefined ? {} : { scroll: options.scroll }),
       ...(options?.targetPosition === undefined ? {} : { position: options.targetPosition }),
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
       ...(options?.timeout === undefined ? {} : { timeout: options.timeout })
     });
+    throwIfAborted(options);
     if (options?.trial) {
       return;
     }
     const mouse = this.page().mouse;
     await mouse.move(sourcePoint.x, sourcePoint.y);
+    throwIfAborted(options);
     await mouse.down();
+    throwIfAborted(options);
     await mouse.move(
       targetPoint.x,
       targetPoint.y,
       options?.steps === undefined ? undefined : { steps: options.steps }
     );
+    throwIfAborted(options);
     await mouse.up();
   }
 
   async drop(payload: LocatorDropPayload, options?: LocatorDropOptions): Promise<void> {
+    throwIfAborted(options);
     const hasFiles = payload.files !== undefined && (Array.isArray(payload.files) ? payload.files.length > 0 : true);
     const hasData = payload.data !== undefined && Object.keys(payload.data).length > 0;
     if (!hasFiles && !hasData) {
       throw new Error('At least one of "files" or "data" must be provided.');
     }
 
-    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+    const handle = await raceWithAbortSignal(this.elementHandleForDrop(options), options);
     if (!handle) {
       throw new Error("No element found.");
     }
-    const files = hasFiles ? await convertDropFiles(payload.files) : [];
+    throwIfAborted(options);
+    const files = hasFiles ? await raceWithAbortSignal(convertDropFiles(payload.files), options) : [];
+    throwIfAborted(options);
     const data = payload.data ?? {};
-    const result = await handle.evaluate(
-      (element, dropPayload) => {
-        if (!element.isConnected) {
-          return "error:notconnected" as const;
-        }
-        const dataTransfer = new DataTransfer();
-        for (const file of dropPayload.files) {
-          const bytes = Uint8Array.from(atob(file.buffer), (char) => char.charCodeAt(0));
-          const fileOptions: FilePropertyBag = { type: file.mimeType || "application/octet-stream" };
-          if (file.lastModifiedMs !== undefined) {
-            fileOptions.lastModified = file.lastModifiedMs;
+    const result = await raceWithAbortSignal(
+      handle.evaluate(
+        (element, dropPayload) => {
+          if (!element.isConnected) {
+            return "error:notconnected" as const;
           }
-          dataTransfer.items.add(new File([bytes], file.name, fileOptions));
+          const dataTransfer = new DataTransfer();
+          for (const file of dropPayload.files) {
+            const bytes = Uint8Array.from(atob(file.buffer), (char) => char.charCodeAt(0));
+            const fileOptions: FilePropertyBag = { type: file.mimeType || "application/octet-stream" };
+            if (file.lastModifiedMs !== undefined) {
+              fileOptions.lastModified = file.lastModifiedMs;
+            }
+            dataTransfer.items.add(new File([bytes], file.name, fileOptions));
+          }
+          for (const [type, value] of Object.entries(dropPayload.data)) {
+            dataTransfer.setData(type, value);
+          }
+          const rect = element.getBoundingClientRect();
+          const point = dropPayload.position ?? {
+            x: rect.width / 2,
+            y: rect.height / 2
+          };
+          const clientX = rect.left + point.x;
+          const clientY = rect.top + point.y;
+          const makeEvent = (type: string) => new DragEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX,
+            clientY,
+            composed: true,
+            dataTransfer
+          });
+          element.dispatchEvent(makeEvent("dragenter"));
+          const over = makeEvent("dragover");
+          element.dispatchEvent(over);
+          if (!over.defaultPrevented) {
+            element.dispatchEvent(makeEvent("dragleave"));
+            return "not-accepted" as const;
+          }
+          element.dispatchEvent(makeEvent("drop"));
+          return "accepted" as const;
+        },
+        {
+          data,
+          files,
+          position: options?.position
         }
-        for (const [type, value] of Object.entries(dropPayload.data)) {
-          dataTransfer.setData(type, value);
-        }
-        const rect = element.getBoundingClientRect();
-        const point = dropPayload.position ?? {
-          x: rect.width / 2,
-          y: rect.height / 2
-        };
-        const clientX = rect.left + point.x;
-        const clientY = rect.top + point.y;
-        const makeEvent = (type: string) => new DragEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          clientX,
-          clientY,
-          composed: true,
-          dataTransfer
-        });
-        element.dispatchEvent(makeEvent("dragenter"));
-        const over = makeEvent("dragover");
-        element.dispatchEvent(over);
-        if (!over.defaultPrevented) {
-          element.dispatchEvent(makeEvent("dragleave"));
-          return "not-accepted" as const;
-        }
-        element.dispatchEvent(makeEvent("drop"));
-        return "accepted" as const;
-      },
-      {
-        data,
-        files,
-        position: options?.position
-      }
+      ),
+      options
     );
+    throwIfAborted(options);
     if (result === "error:notconnected") {
       throw new Error("Element is not attached to the DOM.");
     }
@@ -866,8 +987,34 @@ export class RoxyLocator implements Locator {
     }
   }
 
-  async getAttribute(name: string): Promise<string | null> {
-    return this.adapter.getAttribute(name);
+  private async elementHandleForDrop(options?: LocatorDropOptions): Promise<ElementHandle<SVGElement | HTMLElement> | null> {
+    const timeout = options?.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const startTime = Date.now();
+    let lastError: unknown;
+    while (timeout === 0 || Date.now() - startTime <= timeout) {
+      throwIfAborted(options);
+      try {
+        return await this.elementHandle({ timeout: 1 });
+	      } catch (error) {
+	        lastError = error;
+	        if (shouldRethrowWaitForResolutionError(error)) {
+	          throw error;
+	        }
+	        if (timeout !== 0 && Date.now() - startTime + 50 > timeout) {
+	          break;
+	        }
+        await abortableDelay(50, options);
+      }
+    }
+    if (lastError && timeout !== 0) {
+      throw lastError;
+    }
+    return null;
+  }
+
+  async getAttribute(name: string, options?: LocatorSignalTimeoutOptions): Promise<string | null> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.getAttribute(name), options);
   }
 
   async highlight(_options: { style?: string | { [key: string]: string | number } } = {}): Promise<Disposable> {
@@ -876,32 +1023,39 @@ export class RoxyLocator implements Locator {
 
   async hideHighlight(): Promise<void> {}
 
-  async innerHTML(): Promise<string> {
-    return this.adapter.innerHTML();
+  async innerHTML(options?: LocatorSignalTimeoutOptions): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.innerHTML(), options);
   }
 
-  async innerText(): Promise<string> {
-    return this.adapter.innerText();
+  async innerText(options?: LocatorSignalTimeoutOptions): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.innerText(), options);
   }
 
-  async inputValue(): Promise<string> {
-    return this.adapter.inputValue();
+  async inputValue(options?: LocatorSignalTimeoutOptions): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.inputValue(), options);
   }
 
-  async isChecked(): Promise<boolean> {
-    return this.adapter.isChecked();
+  async isChecked(options?: LocatorSignalTimeoutOptions): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.isChecked(), options);
   }
 
-  async isDisabled(): Promise<boolean> {
-    return this.adapter.isDisabled();
+  async isDisabled(options?: LocatorSignalTimeoutOptions): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.isDisabled(), options);
   }
 
-  async isEditable(): Promise<boolean> {
-    return this.adapter.isEditable();
+  async isEditable(options?: LocatorSignalTimeoutOptions): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.isEditable(), options);
   }
 
-  async isEnabled(): Promise<boolean> {
-    return this.adapter.isEnabled();
+  async isEnabled(options?: LocatorSignalTimeoutOptions): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.isEnabled(), options);
   }
 
   async isHidden(): Promise<boolean> {
@@ -909,26 +1063,34 @@ export class RoxyLocator implements Locator {
   }
 
   async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
-    void options;
-    const handle = await this.elementHandle();
+    throwIfAborted(options);
+    if (this.adapter.ariaSnapshot) {
+      return raceWithAbortSignal(this.adapter.ariaSnapshot(options), options);
+    }
+    const handle = await raceWithAbortSignal(
+      this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout }),
+      options
+    );
     if (!handle) {
       throw new Error("No element found.");
     }
-    return handle.evaluate((element) => element.textContent ?? "");
+    throwIfAborted(options);
+    return raceWithAbortSignal(handle.evaluate((element) => element.textContent ?? ""), options);
   }
 
   async normalize(): Promise<Locator> {
     return this;
   }
 
-  async textContent(): Promise<string | null> {
-    return this.adapter.textContent();
+  async textContent(options?: LocatorSignalTimeoutOptions): Promise<string | null> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.textContent(), options);
   }
 
   async uncheck(options?: ClickOptions): Promise<void> {
     const actionOptions = this.withBeforeActionRetry(options);
-    await this.beforeAction?.(this, actionOptions);
-    await this.adapter.uncheck(actionOptions);
+    await this.runBeforeAction(actionOptions);
+    await raceWithAbortSignal(this.adapter.uncheck(actionOptions), actionOptions);
   }
 
   async selectOption(
@@ -940,38 +1102,57 @@ export class RoxyLocator implements Locator {
       | SelectOptionValue
       | ReadonlyArray<ElementHandle>
       | ReadonlyArray<SelectOptionValue>,
-    options?: { force?: boolean; noWaitAfter?: boolean; timeout?: number }
+    options?: { force?: boolean; noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number }
   ): Promise<Array<string>> {
-    await this.beforeAction?.(this, options);
-    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+    throwIfAborted(options);
+    await this.runBeforeAction(options);
+    const handle = await raceWithAbortSignal(
+      this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout }),
+      options
+    );
     if (!handle) {
       throw new TimeoutError(`locator.elementHandle: Timeout ${options?.timeout ?? DEFAULT_WAIT_TIMEOUT_MS}ms exceeded.`);
     }
-    return this.adapter.selectOption(await normalizeSelectOptionValues(handle, values), options);
+    const normalized = await raceWithAbortSignal(normalizeSelectOptionValues(handle, values), options);
+    return raceWithAbortSignal(this.adapter.selectOption(normalized, options), options);
   }
 
   async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
-    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+    throwIfAborted(options);
+    const handle = await raceWithAbortSignal(
+      this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout }),
+      options
+    );
     if (!handle) {
       throw new Error("No element found.");
     }
-    return handle.screenshot(options);
+    return raceWithAbortSignal(handle.screenshot(options), options);
   }
 
-  async scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void> {
-    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+  async scrollIntoViewIfNeeded(options?: LocatorSignalTimeoutOptions): Promise<void> {
+    throwIfAborted(options);
+    const handle = await raceWithAbortSignal(
+      this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout }),
+      options
+    );
     if (!handle) {
       throw new Error("No element found.");
     }
-    await handle.scrollIntoViewIfNeeded(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(handle.scrollIntoViewIfNeeded(options), options);
   }
 
   async selectText(options: SelectTextOptions = {}): Promise<void> {
-    const handle = await this.elementHandle(options.timeout === undefined ? {} : { timeout: options.timeout });
+    throwIfAborted(options);
+    const handle = await raceWithAbortSignal(
+      this.elementHandle(options.timeout === undefined ? {} : { timeout: options.timeout }),
+      options
+    );
     if (!handle) {
       throw new Error("No element found.");
     }
-    await handle.selectText(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(handle.selectText(options), options);
   }
 
   async setChecked(checked: boolean, options?: ClickOptions): Promise<void> {
@@ -986,37 +1167,48 @@ export class RoxyLocator implements Locator {
     files: InputFiles,
     options?: SetInputFilesOptions
   ): Promise<void> {
-    const handle = await this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout });
+    throwIfAborted(options);
+    const handle = await raceWithAbortSignal(
+      this.elementHandle(options?.timeout === undefined ? {} : { timeout: options.timeout }),
+      options
+    );
     if (!handle) {
       throw new Error("No element found.");
     }
-    await handle.setInputFiles(files, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(handle.setInputFiles(files, options), options);
   }
 
   async tap(options?: TapOptions): Promise<void> {
-    await this.beforeAction?.(this, options);
-    await this.adapter.tap(options);
+    throwIfAborted(options);
+    await this.runBeforeAction(options);
+    await raceWithAbortSignal(this.adapter.tap(options), options);
   }
 
   async isVisible(): Promise<boolean> {
     return this.adapter.isVisible();
   }
 
-  async waitFor(options: { state?: "attached" | "detached" | "hidden" | "visible"; timeout?: number } = {}): Promise<void> {
+  async waitFor(options: { signal?: AbortSignal; state?: "attached" | "detached" | "hidden" | "visible"; timeout?: number } = {}): Promise<void> {
+    throwIfAborted(options);
     const state = options.state ?? "visible";
     const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (timeout === 0 || Date.now() - startTime <= timeout) {
+      throwIfAborted(options);
       await this.beforeAction?.(this, {
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
         timeout: timeout === 0 ? 0 : Math.max(0, timeout - (Date.now() - startTime))
       });
+      throwIfAborted(options);
       const count = await this.count().catch((error) => {
         if (shouldRethrowWaitForResolutionError(error)) {
           throw error;
         }
         return 0;
       });
+      throwIfAborted(options);
       const attached = count > 0;
       const visible = attached
         ? await this.isVisible().catch((error) => {
@@ -1030,13 +1222,13 @@ export class RoxyLocator implements Locator {
       if (state === "visible" && visible) return;
       if (state === "hidden" && !visible) return;
       if (state === "detached" && !attached) return;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await abortableDelay(50, options);
     }
 
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
 
-  async elementHandle(options: { timeout?: number } = {}): Promise<null | ElementHandle<SVGElement | HTMLElement>> {
+  async elementHandle(options: { timeout?: number } = {}): Promise<ElementHandle<SVGElement | HTMLElement>> {
     const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
     const startTime = Date.now();
     let lastError: unknown;
@@ -1045,7 +1237,7 @@ export class RoxyLocator implements Locator {
         return new RoxyElementHandle(await this.adapter.elementHandle(), this.frameResolver);
       } catch (error) {
         lastError = error;
-        if (timeout === 0) {
+        if (timeout !== 0 && Date.now() - startTime + 50 > timeout) {
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1118,6 +1310,235 @@ export class RoxyLocator implements Locator {
       }
     } as unknown as TOptions;
   }
+
+  private async runBeforeAction(options?: ActionOptionsLike): Promise<void> {
+    throwIfAborted(options);
+    if (!this.beforeAction) {
+      return;
+    }
+    await raceWithAbortSignal(this.beforeAction(this, options), options);
+    throwIfAborted(options);
+  }
+}
+
+class DeferredFrameLocatorAdapter implements ProtocolLocatorAdapter {
+  constructor(private readonly resolveLocator: () => Promise<Locator>) {}
+
+  private async resolveAdapter(): Promise<ProtocolLocatorAdapter> {
+    const locator = await this.resolveLocator();
+    if (!(locator instanceof RoxyLocator)) {
+      throw new Error("Frame locator resolution failed.");
+    }
+    return locator._roxyProtocolLocatorAdapter();
+  }
+
+  private derive(transform: (locator: Locator) => Locator): ProtocolLocatorAdapter {
+    return new DeferredFrameLocatorAdapter(async () => transform(await this.resolveLocator()));
+  }
+
+  locator(selector: LocatorSelector): ProtocolLocatorAdapter {
+    return this.derive((locator) => {
+      if (!(locator instanceof RoxyLocator)) {
+        throw new Error("Frame locator resolution failed.");
+      }
+      return locator._roxyLocatorFromChain([selector]);
+    });
+  }
+
+  getByText(text: string | RegExp, options?: GetByTextOptions): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.getByText(text, options));
+  }
+
+  getByAltText(text: string | RegExp, options?: GetByAltTextOptions): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.getByAltText(text, options));
+  }
+
+  getByLabel(text: string | RegExp, options?: GetByLabelOptions): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.getByLabel(text, options));
+  }
+
+  getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.getByPlaceholder(text, options));
+  }
+
+  getByTestId(testId: string | RegExp): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.getByTestId(testId));
+  }
+
+  getByRole(role: string, options?: GetByRoleOptions): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.getByRole(role as Parameters<Locator["getByRole"]>[0], options));
+  }
+
+  getByTitle(text: string | RegExp, options?: GetByTitleOptions): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.getByTitle(text, options));
+  }
+
+  first(): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.first());
+  }
+
+  last(): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.last());
+  }
+
+  nth(index: number): ProtocolLocatorAdapter {
+    return this.derive((locator) => locator.nth(index));
+  }
+
+  async dblclick(options?: ClickOptions): Promise<void> {
+    return (await this.resolveAdapter()).dblclick(options);
+  }
+
+  async check(options?: ClickOptions): Promise<void> {
+    return (await this.resolveAdapter()).check(options);
+  }
+
+  async click(options?: ClickOptions): Promise<void> {
+    return (await this.resolveAdapter()).click(options);
+  }
+
+  async hover(options?: HoverOptions): Promise<void> {
+    return (await this.resolveAdapter()).hover(options);
+  }
+
+  async fill(value: string, options?: FillOptions): Promise<void> {
+    return (await this.resolveAdapter()).fill(value, options);
+  }
+
+  async type(value: string, options?: TypeOptions): Promise<void> {
+    return (await this.resolveAdapter()).type(value, options);
+  }
+
+  async press(key: string, options?: PressOptions): Promise<void> {
+    return (await this.resolveAdapter()).press(key, options);
+  }
+
+  async focus(): Promise<void> {
+    return (await this.resolveAdapter()).focus();
+  }
+
+  async blur(): Promise<void> {
+    return (await this.resolveAdapter()).blur();
+  }
+
+  async count(): Promise<number> {
+    return (await this.resolveAdapter()).count();
+  }
+
+  async dispatchEvent(type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void> {
+    return (await this.resolveAdapter()).dispatchEvent(type, eventInit, options);
+  }
+
+  async evaluate<TResult>(expression: string, arg?: unknown, isFunction?: boolean): Promise<TResult> {
+    return (await this.resolveAdapter()).evaluate<TResult>(expression, arg, isFunction);
+  }
+
+  async evaluateAll<TResult>(expression: string, arg?: unknown, isFunction?: boolean): Promise<TResult> {
+    return (await this.resolveAdapter()).evaluateAll<TResult>(expression, arg, isFunction);
+  }
+
+  async evaluateHandle<TResult>(
+    expression: string,
+    arg?: unknown,
+    isFunction?: boolean
+  ): Promise<ProtocolJSHandleAdapter<TResult>> {
+    const adapter = await this.resolveAdapter();
+    if (!adapter.evaluateHandle) {
+      throw new Error("locator.evaluateHandle is not implemented by this protocol.");
+    }
+    return adapter.evaluateHandle<TResult>(expression, arg, isFunction);
+  }
+
+  async boundingBox(): Promise<Rect | null> {
+    return (await this.resolveAdapter()).boundingBox();
+  }
+
+  async getAttribute(name: string): Promise<string | null> {
+    return (await this.resolveAdapter()).getAttribute(name);
+  }
+
+  async innerHTML(): Promise<string> {
+    return (await this.resolveAdapter()).innerHTML();
+  }
+
+  async innerText(): Promise<string> {
+    return (await this.resolveAdapter()).innerText();
+  }
+
+  async inputValue(): Promise<string> {
+    return (await this.resolveAdapter()).inputValue();
+  }
+
+  async isChecked(): Promise<boolean> {
+    return (await this.resolveAdapter()).isChecked();
+  }
+
+  async isDisabled(): Promise<boolean> {
+    return (await this.resolveAdapter()).isDisabled();
+  }
+
+  async isEditable(): Promise<boolean> {
+    return (await this.resolveAdapter()).isEditable();
+  }
+
+  async isEnabled(): Promise<boolean> {
+    return (await this.resolveAdapter()).isEnabled();
+  }
+
+  async isHidden(): Promise<boolean> {
+    return (await this.resolveAdapter()).isHidden();
+  }
+
+  async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
+    const adapter = await this.resolveAdapter();
+    if (!adapter.ariaSnapshot) {
+      throw new Error("locator.ariaSnapshot is not implemented by this protocol.");
+    }
+    return adapter.ariaSnapshot(options);
+  }
+
+  async selectOption(
+    values: Parameters<ProtocolLocatorAdapter["selectOption"]>[0],
+    options?: Parameters<ProtocolLocatorAdapter["selectOption"]>[1]
+  ): Promise<string[]> {
+    return (await this.resolveAdapter()).selectOption(values, options);
+  }
+
+  async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
+    return (await this.resolveAdapter()).screenshot(options);
+  }
+
+  async scrollIntoViewIfNeeded(): Promise<void> {
+    return (await this.resolveAdapter()).scrollIntoViewIfNeeded();
+  }
+
+  async selectText(): Promise<void> {
+    return (await this.resolveAdapter()).selectText();
+  }
+
+  async tap(options?: TapOptions): Promise<void> {
+    return (await this.resolveAdapter()).tap(options);
+  }
+
+  async textContent(): Promise<string | null> {
+    return (await this.resolveAdapter()).textContent();
+  }
+
+  async uncheck(options?: ClickOptions): Promise<void> {
+    return (await this.resolveAdapter()).uncheck(options);
+  }
+
+  async isVisible(): Promise<boolean> {
+    return (await this.resolveAdapter()).isVisible();
+  }
+
+  async elementHandle(): Promise<Awaited<ReturnType<ProtocolLocatorAdapter["elementHandle"]>>> {
+    return (await this.resolveAdapter()).elementHandle();
+  }
+
+  async elementHandles(): Promise<Awaited<ReturnType<ProtocolLocatorAdapter["elementHandles"]>>> {
+    return (await this.resolveAdapter()).elementHandles();
+  }
 }
 
 export class RoxyFrameLocator implements FrameLocator {
@@ -1125,6 +1546,72 @@ export class RoxyFrameLocator implements FrameLocator {
     private readonly ownerLocator: RoxyLocator,
     private readonly contentLocator: RoxyLocator
   ) {}
+
+  private async resolveContentFrame() {
+    const ownerCount = await this.ownerLocator.count();
+    if (ownerCount === 0) {
+      throw new Error("No element found.");
+    }
+    if (ownerCount > 1) {
+      throw new Error(`strict mode violation: locator resolved to ${ownerCount} elements`);
+    }
+    const owner = await this.ownerLocator.elementHandle();
+    const frame = await owner.contentFrame();
+    if (!frame) {
+      throw new Error("<iframe> was expected");
+    }
+    return frame;
+  }
+
+  private dynamicLocator(staticLocator: Locator, resolve: () => Promise<Locator>): Locator {
+    if (!(staticLocator instanceof RoxyLocator)) {
+      return staticLocator;
+    }
+    return staticLocator._roxyCloneWithAdapter(new DeferredFrameLocatorAdapter(resolve));
+  }
+
+  private locatorOptionsForFrame(frameIdentity: string | undefined, options?: LocatorFilterOptions): LocatorFilterOptions | undefined {
+    if (!options) {
+      return undefined;
+    }
+    const rebaseLocator = (locator: Locator | undefined): Locator | undefined => {
+      const chain = locator?._roxySelectorChain?.();
+      if (!chain) {
+        return locator;
+      }
+      if (!(locator instanceof RoxyLocator)) {
+        return locator;
+      }
+      return locator._roxyCloneWithAdapter(
+        locator._roxyProtocolLocatorAdapter(),
+        chain,
+        frameIdentity
+      );
+    };
+    const rebased: LocatorFilterOptions = {};
+    if (options.has !== undefined) {
+      const has = rebaseLocator(options.has);
+      if (has !== undefined) {
+        rebased.has = has;
+      }
+    }
+    if (options.hasNot !== undefined) {
+      const hasNot = rebaseLocator(options.hasNot);
+      if (hasNot !== undefined) {
+        rebased.hasNot = hasNot;
+      }
+    }
+    if (options.hasText !== undefined) {
+      rebased.hasText = options.hasText;
+    }
+    if (options.hasNotText !== undefined) {
+      rebased.hasNotText = options.hasNotText;
+    }
+    if (options.visible !== undefined) {
+      rebased.visible = options.visible;
+    }
+    return rebased;
+  }
 
   first(): FrameLocator {
     return this.ownerLocator.first().contentFrame();
@@ -1139,7 +1626,7 @@ export class RoxyFrameLocator implements FrameLocator {
   }
 
   frameLocator(selector: string): FrameLocator {
-    return this.contentLocator.frameLocator(selector);
+    return this.locator(selector).contentFrame();
   }
 
   locator(selectorOrLocator: string | Locator, options?: LocatorFilterOptions): Locator {
@@ -1148,38 +1635,58 @@ export class RoxyFrameLocator implements FrameLocator {
       if (!chain) {
         throw new Error("Locators must belong to the same frame.");
       }
-      return this.contentLocator._roxyLocatorFromChain(chain, options);
-    }
-    const locator = this.contentLocator.locator(selectorOrLocator);
-    return options ? locator.filter(options) : locator;
+      const staticLocator = this.contentLocator._roxyLocatorFromChain(chain, options);
+      return this.dynamicLocator(staticLocator, async () => {
+        const frame = await this.resolveContentFrame();
+        const root = frame.locator(":root");
+	        if (!(root instanceof RoxyLocator)) {
+	          throw new Error("Frame locator resolution failed.");
+	        }
+	        return root._roxyLocatorFromChain(chain, this.locatorOptionsForFrame(frame._roxyFrameIdentity?.(), options));
+	      });
+	    }
+    const locator = this.contentLocator.locator(selectorOrLocator, options);
+    return this.dynamicLocator(locator, async () => {
+      const frame = await this.resolveContentFrame();
+      return frame.locator(selectorOrLocator, this.locatorOptionsForFrame(frame._roxyFrameIdentity?.(), options));
+    });
   }
 
   getByText(text: string | RegExp, options?: GetByTextOptions): Locator {
-    return this.contentLocator.getByText(text, options);
+    const locator = this.contentLocator.getByText(text, options);
+    return this.dynamicLocator(locator, async () => (await this.resolveContentFrame()).getByText(text, options));
   }
 
   getByAltText(text: string | RegExp, options?: GetByAltTextOptions): Locator {
-    return this.contentLocator.getByAltText(text, options);
+    const locator = this.contentLocator.getByAltText(text, options);
+    return this.dynamicLocator(locator, async () => (await this.resolveContentFrame()).getByAltText(text, options));
   }
 
   getByLabel(text: string | RegExp, options?: GetByLabelOptions): Locator {
-    return this.contentLocator.getByLabel(text, options);
+    const locator = this.contentLocator.getByLabel(text, options);
+    return this.dynamicLocator(locator, async () => (await this.resolveContentFrame()).getByLabel(text, options));
   }
 
   getByPlaceholder(text: string | RegExp, options?: GetByPlaceholderOptions): Locator {
-    return this.contentLocator.getByPlaceholder(text, options);
+    const locator = this.contentLocator.getByPlaceholder(text, options);
+    return this.dynamicLocator(locator, async () => (await this.resolveContentFrame()).getByPlaceholder(text, options));
   }
 
   getByTestId(testId: string | RegExp): Locator {
-    return this.contentLocator.getByTestId(testId);
+    const locator = this.contentLocator.getByTestId(testId);
+    return this.dynamicLocator(locator, async () => (await this.resolveContentFrame()).getByTestId(testId));
   }
 
   getByRole(role: string, options?: GetByRoleOptions): Locator {
-    return this.contentLocator.getByRole(role, options);
+    const locator = this.contentLocator.getByRole(role, options);
+    return this.dynamicLocator(locator, async () =>
+      (await this.resolveContentFrame()).getByRole(role as Parameters<Locator["getByRole"]>[0], options)
+    );
   }
 
   getByTitle(text: string | RegExp, options?: GetByTitleOptions): Locator {
-    return this.contentLocator.getByTitle(text, options);
+    const locator = this.contentLocator.getByTitle(text, options);
+    return this.dynamicLocator(locator, async () => (await this.resolveContentFrame()).getByTitle(text, options));
   }
 
   owner(): Locator {

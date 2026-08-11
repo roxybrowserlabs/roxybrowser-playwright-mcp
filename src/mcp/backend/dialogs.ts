@@ -14,11 +14,8 @@ const handleDialog = defineTool({
     type: "action"
   },
   handle: async (context, params, response) => {
-    const snapshot = await context.runtime.handleDialog(params.accept, params.promptText);
+    await context.runtime.handleDialog(params.accept, params.promptText);
     response.setIncludeSnapshot();
-    if (!snapshot) {
-      response.addTextResult(params.accept ? "Accepted dialog." : "Dismissed dialog.");
-    }
   }
 });
 

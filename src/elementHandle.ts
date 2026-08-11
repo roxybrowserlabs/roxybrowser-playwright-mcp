@@ -2,7 +2,16 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { TimeoutError } from "./errors.js";
 import { assertFillValue } from "./assertions.js";
-import { assertMaxArguments, serializePageFunction } from "./evaluation.js";
+import { abortableDelay, raceWithAbortSignal, throwIfAborted } from "./abortSignal.js";
+import {
+  assertMaxArguments,
+  isSerializedEvaluateCallbacksArg,
+  prepareEvaluateWithCallbacksArg,
+  serializePageFunction,
+  type EvaluateCallbackRegistrar,
+  type EvaluateOptions
+} from "./evaluation.js";
+import { PARSE_EVALUATION_RESULT_SOURCE } from "./protocol/evaluationSerializer.js";
 import { setInputFilesOnElement, type InputFiles } from "./inputFiles.js";
 import { RoxyJSHandle, createRemoteJSHandle, createSmartHandle } from "./jsHandle.js";
 import { normalizeWaitForSelectorOptions, type LegacyWaitForSelectorOptions } from "./waitForSelector.js";
@@ -18,6 +27,7 @@ import {
   screenshotOptionsWithFitsViewport,
   validateScreenshotOptions
 } from "./screenshotOptions.js";
+import { looksLikeFunctionExpression } from "./protocol/evaluate.js";
 import type {
   ProtocolElementHandleAdapter,
   ProtocolElementHandleReference
@@ -46,6 +56,7 @@ const ACTION_RETRY_DELAYS_MS = [0, 20, 100, 100, 500];
 export interface ElementHandleFrameResolver {
   contentFrameForElement(handle: RoxyElementHandle): Promise<Frame | null>;
   createElementHandleFromReference(reference: ProtocolElementHandleReference): ElementHandle;
+  _exposeEvaluateCallback?(name: string, callback: Function): Promise<void>;
   ownerFrameForElement(handle: RoxyElementHandle): Promise<Frame | null>;
   runScreenshotTask?<T>(task: () => Promise<T>): Promise<T>;
 }
@@ -120,52 +131,71 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
 
   async evaluate<R, Arg, O extends unknown = unknown>(
     pageFunction: PageFunctionOn<O, Arg, R>,
-    arg: Arg
+    arg: Arg,
+    options?: EvaluateOptions
   ): Promise<R>;
   async evaluate<R, O extends unknown = unknown>(
     pageFunction: PageFunctionOn<O, void, R>,
-    arg?: any
+    arg?: any,
+    options?: EvaluateOptions
   ): Promise<R>;
   async evaluate<R, Arg, O extends unknown = unknown>(
     pageFunction: PageFunctionOn<O, Arg, R>,
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<R> {
-    assertMaxArguments(arguments.length, 2);
-    return this.adapter.evaluate(
-      serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
+    assertMaxArguments(arguments.length, 3);
+    const preparedArg = await prepareEvaluateWithCallbacksArg(
+      this.frameResolver as EvaluateCallbackRegistrar | undefined,
       arg,
-      typeof pageFunction === "function"
+      options
+    );
+    const expression = serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>));
+    return this.adapter.evaluate(
+      wrapElementEvaluateFunctionWithCallbacksIfNeeded(expression, preparedArg),
+      preparedArg,
+      typeof pageFunction === "function" || isSerializedEvaluateCallbacksArg(preparedArg)
     );
   }
 
   async evaluateHandle<R, Arg, O extends unknown = unknown>(
     pageFunction: PageFunctionOn<O, Arg, R>,
-    arg: Arg
+    arg: Arg,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>>;
   async evaluateHandle<R, O extends unknown = unknown>(
     pageFunction: PageFunctionOn<O, void, R>,
-    arg?: any
+    arg?: any,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>>;
   async evaluateHandle<R, Arg, O extends unknown = unknown>(
     pageFunction: PageFunctionOn<O, Arg, R>,
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<SmartHandle<R>> {
-    assertMaxArguments(arguments.length, 2);
+    assertMaxArguments(arguments.length, 3);
+    const preparedArg = await prepareEvaluateWithCallbacksArg(
+      this.frameResolver as EvaluateCallbackRegistrar | undefined,
+      arg,
+      options
+    );
+    const expression = serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>));
     if (this.adapter.evaluateHandle) {
       return await createRemoteJSHandle(
         await this.adapter.evaluateHandle<R>(
-          serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-          arg,
-          typeof pageFunction === "function"
+          wrapElementEvaluateFunctionWithCallbacksIfNeeded(expression, preparedArg),
+          preparedArg,
+          typeof pageFunction === "function" || isSerializedEvaluateCallbacksArg(preparedArg)
         ),
         (reference) => this.frameResolver?.createElementHandleFromReference(reference)
-          ?? new RoxyElementHandle(this.adapter, this.frameResolver)
+          ?? new RoxyElementHandle(this.adapter, this.frameResolver),
+        this.frameResolver as EvaluateCallbackRegistrar | undefined
       ) as unknown as SmartHandle<R>;
     }
     const value = await this.adapter.evaluate<R>(
-      serializePageFunction(pageFunction as string | ((element: unknown, arg: Arg) => R | Promise<R>)),
-      arg,
-      typeof pageFunction === "function"
+      wrapElementEvaluateFunctionWithCallbacksIfNeeded(expression, preparedArg),
+      preparedArg,
+      typeof pageFunction === "function" || isSerializedEvaluateCallbacksArg(preparedArg)
     );
     return createSmartHandle(value);
   }
@@ -236,10 +266,13 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   ): Promise<ElementHandle | null> {
     const { state, timeout } = normalizeWaitForSelectorOptions(options, DEFAULT_WAIT_TIMEOUT_MS);
     const startTime = Date.now();
+    throwIfAborted(options);
 
     while (Date.now() - startTime <= timeout) {
       const handle = await this.$(selector);
+      throwIfAborted(options);
       const visible = handle ? await handle.isVisible() : false;
+      throwIfAborted(options);
 
       if (state === "attached" && handle) {
         return handle;
@@ -254,7 +287,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
         return null;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await abortableDelay(50, options);
     }
 
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
@@ -269,12 +302,14 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async screenshot(options?: ScreenshotOptions): Promise<Buffer> {
+    throwIfAborted(options);
     const screenshotTask = () => this.screenshotWithoutQueue(options);
     const queue = this.screenshotTaskQueue();
-    return queue ? queue(screenshotTask) : screenshotTask();
+    return raceWithAbortSignal(queue ? queue(screenshotTask) : screenshotTask(), options);
   }
 
   private async screenshotWithoutQueue(options?: ScreenshotOptions): Promise<Buffer> {
+    throwIfAborted(options);
     const screenshotOptions: ScreenshotOptions = { ...options };
     if (!screenshotOptions.type) {
       const inferredType = determineScreenshotType(options ?? {});
@@ -292,7 +327,7 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
       throw error;
     }
     await this.scrollIntoViewIfNeeded(options);
-    const box = await this.boundingBox();
+    const box = await raceWithAbortSignal(this.boundingBox(), options);
     if (!box) {
       throw new Error("Node is either not visible or not an HTMLElement");
     }
@@ -302,28 +337,28 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     if (box.height === 0) {
       throw new Error("Node has 0 height.");
     }
-    const cleanup = await this.prepareForScreenshot(screenshotOptions);
-    const restoreBackground = await this.prepareScreenshotBackground(screenshotOptions);
+    const cleanup = await raceWithAbortSignal(this.prepareForScreenshot(screenshotOptions), options);
+    const restoreBackground = await raceWithAbortSignal(this.prepareScreenshotBackground(screenshotOptions), options);
     try {
       if ((options as any)?.__testHookBeforeScreenshot) {
-        await (options as any).__testHookBeforeScreenshot();
+        await raceWithAbortSignal((options as any).__testHookBeforeScreenshot(), options);
       }
-      const clip = await normalizeElementScreenshotClip(box, this, this.screenshotClipOrigin());
+      const clip = await raceWithAbortSignal(normalizeElementScreenshotClip(box, this, this.screenshotClipOrigin()), options);
       const viewportSize = this.screenshotPageTarget()?.viewportSize();
       const fitsViewport = viewportSize
         ? box.width <= viewportSize.width && box.height <= viewportSize.height
         : true;
-      const screenshot = await this.adapter.screenshot({
+      const screenshot = await raceWithAbortSignal(this.adapter.screenshot({
         ...screenshotOptionsWithFitsViewport(screenshotOptions, fitsViewport),
         clip,
         fullPage: false
-      });
+      }), options);
       if ((options as any)?.__testHookAfterScreenshot) {
-        await (options as any).__testHookAfterScreenshot();
+        await raceWithAbortSignal((options as any).__testHookAfterScreenshot(), options);
       }
       if (options?.path) {
-        await mkdir(dirname(options.path), { recursive: true });
-        await writeFile(options.path, screenshot);
+        await raceWithAbortSignal(mkdir(dirname(options.path), { recursive: true }), options);
+        await raceWithAbortSignal(writeFile(options.path, screenshot), options);
       }
       return screenshot;
     } finally {
@@ -334,43 +369,47 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     }
   }
 
-  async scrollIntoViewIfNeeded(options?: TimeoutOptions): Promise<void> {
+  async scrollIntoViewIfNeeded(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<void> {
+    throwIfAborted(options);
     await this.waitForScrollIntoViewActionability(options ?? {});
-    await this.adapter.scrollIntoViewIfNeeded();
+    await raceWithAbortSignal(this.adapter.scrollIntoViewIfNeeded(), options);
   }
 
   async selectText(options: SelectTextOptions = {}): Promise<void> {
+    throwIfAborted(options);
     if (!options.force) {
       await this.waitForSelectTextActionability(options);
     }
-    await this.adapter.selectText();
+    await raceWithAbortSignal(this.adapter.selectText(), options);
   }
 
   async tap(options?: TapOptions): Promise<void> {
-    await this.adapter.tap(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.tap(options), options);
   }
 
   async waitForElementState(
     state: "disabled" | "editable" | "enabled" | "hidden" | "stable" | "visible",
-    options: TimeoutOptions = {}
+    options: TimeoutOptions & { signal?: AbortSignal } = {}
   ): Promise<void> {
+    throwIfAborted(options);
     const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
     const startTime = Date.now();
     while (timeout === 0 || Date.now() - startTime <= timeout) {
-      const connected = await this.isConnectedForElementState();
+      const connected = await raceWithAbortSignal(this.isConnectedForElementState(), options);
       if (!connected) {
         if (state === "hidden") {
           return;
         }
         throw new Error("Element is not attached to the DOM");
       }
-      if (state === "visible" && await this.waitForElementStateCheck(() => this.isVisible(), false)) return;
-      if (state === "hidden" && await this.waitForElementStateCheck(() => this.isHidden(), true)) return;
-      if (state === "enabled" && await this.waitForElementStateCheck(() => this.isEnabled(), false)) return;
-      if (state === "disabled" && await this.waitForElementStateCheck(() => this.isDisabled(), false)) return;
-      if (state === "editable" && await this.waitForElementStateCheck(() => this.isEditable(), false)) return;
+      if (state === "visible" && await raceWithAbortSignal(this.waitForElementStateCheck(() => this.isVisible(), false), options)) return;
+      if (state === "hidden" && await raceWithAbortSignal(this.waitForElementStateCheck(() => this.isHidden(), true), options)) return;
+      if (state === "enabled" && await raceWithAbortSignal(this.waitForElementStateCheck(() => this.isEnabled(), false), options)) return;
+      if (state === "disabled" && await raceWithAbortSignal(this.waitForElementStateCheck(() => this.isDisabled(), false), options)) return;
+      if (state === "editable" && await raceWithAbortSignal(this.waitForElementStateCheck(() => this.isEditable(), false), options)) return;
       if (state === "stable") return;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await abortableDelay(50, options);
     }
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
@@ -394,47 +433,49 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   private async waitForSelectTextActionability(options: SelectTextOptions): Promise<void> {
+    throwIfAborted(options);
     const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
     const startTime = Date.now();
     let retry = 0;
 
     while (timeout === 0 || Date.now() - startTime <= timeout) {
-      const connected = await this.isConnectedForElementState();
+      const connected = await raceWithAbortSignal(this.isConnectedForElementState(), options);
       if (!connected) {
         throw new Error("Element is not attached to the DOM");
       }
-      if (await this.isVisible().catch(() => false)) {
+      if (await raceWithAbortSignal(this.isVisible().catch(() => false), options)) {
         return;
       }
 
       const delay = ACTION_RETRY_DELAYS_MS[Math.min(retry, ACTION_RETRY_DELAYS_MS.length - 1)] ?? 0;
       retry += 1;
       if (delay > 0) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await abortableDelay(delay, options);
       }
     }
 
     throw new TimeoutError(`Timeout ${timeout}ms exceeded.\nelement is not visible`);
   }
 
-  private async waitForScrollIntoViewActionability(options: TimeoutOptions): Promise<void> {
+  private async waitForScrollIntoViewActionability(options: TimeoutOptions & { signal?: AbortSignal }): Promise<void> {
+    throwIfAborted(options);
     const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
     const startTime = Date.now();
     let retry = 0;
 
     while (timeout === 0 || Date.now() - startTime <= timeout) {
-      const connected = await this.isConnectedForElementState();
+      const connected = await raceWithAbortSignal(this.isConnectedForElementState(), options);
       if (!connected) {
         throw new Error("Element is not attached to the DOM");
       }
-      if (await this.isCssLayoutVisibleForScroll().catch(() => false)) {
+      if (await raceWithAbortSignal(this.isCssLayoutVisibleForScroll().catch(() => false), options)) {
         return;
       }
 
       const delay = ACTION_RETRY_DELAYS_MS[Math.min(retry, ACTION_RETRY_DELAYS_MS.length - 1)] ?? 0;
       retry += 1;
       if (delay > 0) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await abortableDelay(delay, options);
       }
     }
 
@@ -459,15 +500,18 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async click(options?: ClickOptions): Promise<void> {
-    await this.adapter.click(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.click(options), options);
   }
 
   async dblclick(options?: ClickOptions): Promise<void> {
-    await this.adapter.dblclick(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.dblclick(options), options);
   }
 
   async check(options?: ClickOptions): Promise<void> {
-    await this.adapter.check(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.check(options), options);
   }
 
   async setChecked(checked: boolean, options?: ClickOptions): Promise<void> {
@@ -479,56 +523,69 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
   }
 
   async hover(options?: HoverOptions): Promise<void> {
-    await this.adapter.hover(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.hover(options), options);
   }
 
   async fill(value: string, options?: FillOptions): Promise<void> {
     assertFillValue(value);
-    await this.adapter.fill(value, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.fill(value, options), options);
   }
 
   async type(value: string, options?: TypeOptions): Promise<void> {
-    await this.adapter.type(value, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.type(value, options), options);
   }
 
   async press(key: string, options?: PressOptions): Promise<void> {
-    await this.adapter.press(key, options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.press(key, options), options);
   }
 
-  async textContent(): Promise<string | null> {
-    return this.adapter.textContent();
+  async textContent(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<string | null> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.textContent(), options);
   }
 
-  async innerText(): Promise<string> {
-    return this.adapter.innerText();
+  async innerText(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.innerText(), options);
   }
 
-  async innerHTML(): Promise<string> {
-    return this.adapter.innerHTML();
+  async innerHTML(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.innerHTML(), options);
   }
 
-  async getAttribute(name: string): Promise<string | null> {
-    return this.adapter.getAttribute(name);
+  async getAttribute(name: string, options?: TimeoutOptions & { signal?: AbortSignal }): Promise<string | null> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.getAttribute(name), options);
   }
 
-  async inputValue(_options?: TimeoutOptions): Promise<string> {
-    return this.adapter.inputValue();
+  async inputValue(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<string> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.inputValue(), options);
   }
 
-  async isChecked(): Promise<boolean> {
-    return this.adapter.isChecked();
+  async isChecked(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.isChecked(), options);
   }
 
-  async isDisabled(): Promise<boolean> {
-    return this.adapter.isDisabled();
+  async isDisabled(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.isDisabled(), options);
   }
 
-  async isEditable(): Promise<boolean> {
-    return this.adapter.isEditable();
+  async isEditable(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.isEditable(), options);
   }
 
-  async isEnabled(): Promise<boolean> {
-    return this.adapter.isEnabled();
+  async isEnabled(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<boolean> {
+    throwIfAborted(options);
+    return raceWithAbortSignal(this.adapter.isEnabled(), options);
   }
 
   async isHidden(): Promise<boolean> {
@@ -539,12 +596,14 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     return this.adapter.isVisible();
   }
 
-  async focus(): Promise<void> {
-    await this.adapter.focus();
+  async focus(options?: TimeoutOptions & { signal?: AbortSignal }): Promise<void> {
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.focus(), options);
   }
 
   async uncheck(options?: ClickOptions): Promise<void> {
-    await this.adapter.uncheck(options);
+    throwIfAborted(options);
+    await raceWithAbortSignal(this.adapter.uncheck(options), options);
   }
 
   async selectOption(
@@ -556,16 +615,21 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
       | ReadonlyArray<string>
       | ReadonlyArray<SelectOptionValue>
       | ReadonlyArray<ElementHandle>,
-    options?: TimeoutOptions
+    options?: TimeoutOptions & { signal?: AbortSignal }
   ): Promise<Array<string>> {
-    return this.adapter.selectOption(await normalizeSelectOptionValues(this, values), options);
+    throwIfAborted(options);
+    const normalized = await raceWithAbortSignal(normalizeSelectOptionValues(this, values), options);
+    return raceWithAbortSignal(
+      this.adapter.selectOption(normalized, options),
+      options
+    );
   }
 
   async setInputFiles(
     files: InputFiles,
-    _options?: SetInputFilesOptions
+    options?: SetInputFilesOptions
   ): Promise<void> {
-    await setInputFilesOnElement(this, files);
+    await setInputFilesOnElement(this, files, options);
   }
 
   private async prepareForScreenshot(options: ScreenshotOptions): Promise<() => Promise<void>> {
@@ -601,6 +665,21 @@ export class RoxyElementHandle<T extends Node = Node> implements ElementHandle<T
     }
     return async () => {};
   }
+}
+
+function wrapElementEvaluateFunctionWithCallbacksIfNeeded(expression: string, arg: unknown): string {
+  if (!isSerializedEvaluateCallbacksArg(arg)) {
+    return expression;
+  }
+  const isFunction = looksLikeFunctionExpression(expression);
+  return `async (element, payload) => {
+    ${PARSE_EVALUATION_RESULT_SOURCE}
+    const arg = __roxyParseEvaluationResultValue(payload.__roxyEvaluateCallbacksArg);
+    let result = (0, eval)(${JSON.stringify(isFunction ? `(${expression})` : expression)});
+    if (${isFunction ? "true" : "false"})
+      result = result(element, arg);
+    return result;
+  }`;
 }
 
 export function serializeEvaluationArgument(value: unknown): unknown {

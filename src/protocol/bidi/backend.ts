@@ -4,6 +4,7 @@ import {
   normalizeAriaSnapshotOptions,
   withOptionalTimeout
 } from "../../ariaSnapshot.js";
+import { abortableDelay, throwIfAborted } from "../../abortSignal.js";
 import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../../vendor/playwright/ariaSnapshotEvaluate.js";
 import { NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
 import { mergeExtraHTTPHeaders } from "../../httpHeaders.js";
@@ -19,6 +20,7 @@ import {
   resolveSmartModifierString,
   splitKeyboardShortcut
 } from "../keyboardInput.js";
+import { BIDI_INSERT_TEXT_SOURCE } from "./insertText.js";
 import type { Disposable, ResolvedAriaRef } from "../../types/api.js";
 import {
   SCROLL_INTO_VIEW_IF_NEEDED_SOURCE,
@@ -140,8 +142,17 @@ type BidiEvaluateResult =
     };
 
 interface BidiRemoteValue {
+  handle?: string;
+  sharedId?: string;
   type: string | null;
   value?: unknown;
+}
+
+interface BidiBrowsingContextInfo {
+  children?: BidiBrowsingContextInfo[] | null;
+  context: string;
+  parent?: string | null;
+  url?: string;
 }
 
 type LocatorPick =
@@ -151,6 +162,7 @@ type LocatorPick =
 
 interface BidiLocatorState {
   chain: LocatorSelector[];
+  protocolFrameId?: string;
   pick?: LocatorPick;
   strict?: boolean;
 }
@@ -231,6 +243,7 @@ interface LocatorPayload {
   value?: string;
   force?: boolean;
   position?: { x: number; y: number };
+  scroll?: "auto" | "none";
   timeoutMs?: number;
 }
 
@@ -447,7 +460,17 @@ function locatorOperation(payload: LocatorPayload) {
       right: window.innerWidth,
       top: 0
     };
-    const intersect = (rect: DOMRect): DOMRect | null => {
+    const intersectRects = (first: DOMRect, second: DOMRect): DOMRect | null => {
+      const left = Math.max(first.left, second.left);
+      const right = Math.min(first.right, second.right);
+      const top = Math.max(first.top, second.top);
+      const bottom = Math.min(first.bottom, second.bottom);
+      if (right - left <= 0 || bottom - top <= 0) {
+        return null;
+      }
+      return new DOMRect(left, top, right - left, bottom - top);
+    };
+    const intersectWithViewport = (rect: DOMRect): DOMRect | null => {
       const left = Math.max(rect.left, viewport.left);
       const right = Math.min(rect.right, viewport.right);
       const top = Math.max(rect.top, viewport.top);
@@ -457,14 +480,50 @@ function locatorOperation(payload: LocatorPayload) {
       }
       return new DOMRect(left, top, right - left, bottom - top);
     };
+    const clipToScrollableAncestors = (rect: DOMRect): DOMRect | null => {
+      let clipped: DOMRect | null = rect;
+      let ancestor = element.parentElement;
+      while (ancestor && clipped) {
+        const style = getComputedStyle(ancestor);
+        const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+        if (/(auto|scroll|hidden|clip)/.test(overflow)) {
+          clipped = intersectRects(clipped, ancestor.getBoundingClientRect());
+        }
+        ancestor = ancestor.parentElement;
+      }
+      return clipped;
+    };
     for (const rect of Array.from(element.getClientRects())) {
-      const visiblePart = intersect(rect);
+      const viewportPart = intersectWithViewport(rect);
+      const visiblePart = viewportPart ? clipToScrollableAncestors(viewportPart) : null;
       if (visiblePart && visiblePart.width * visiblePart.height > 0.99) {
         return visiblePart;
       }
     }
-    const visibleBoundingBox = intersect(element.getBoundingClientRect());
+    const viewportBoundingBox = intersectWithViewport(element.getBoundingClientRect());
+    const visibleBoundingBox = viewportBoundingBox ? clipToScrollableAncestors(viewportBoundingBox) : null;
     return visibleBoundingBox && visibleBoundingBox.width * visibleBoundingBox.height > 0.99 ? visibleBoundingBox : null;
+  };
+  const scrollElementIntoView = (element: Element) => {
+    element.scrollIntoView({
+      block: "center",
+      inline: "center",
+      behavior: "instant"
+    });
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      const style = getComputedStyle(ancestor);
+      const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+      if (/(auto|scroll|hidden|clip)/.test(overflow)) {
+        const elementRect = element.getBoundingClientRect();
+        const ancestorRect = ancestor.getBoundingClientRect();
+        const elementTop = elementRect.top - ancestorRect.top + ancestor.scrollTop;
+        const elementLeft = elementRect.left - ancestorRect.left + ancestor.scrollLeft;
+        ancestor.scrollTop = elementTop - (ancestor.clientHeight - elementRect.height) / 2;
+        ancestor.scrollLeft = elementLeft - (ancestor.clientWidth - elementRect.width) / 2;
+      }
+      ancestor = ancestor.parentElement;
+    }
   };
   const isDisabled = (element: Element): boolean => {
     if (
@@ -628,11 +687,9 @@ function locatorOperation(payload: LocatorPayload) {
         throw new Error("No element found for locator.");
       }
 
-      firstElement.scrollIntoView({
-        block: "center",
-        inline: "center",
-        behavior: "instant"
-      });
+      if (payload.scroll !== "none") {
+        scrollElementIntoView(firstElement);
+      }
 
       if (!payload.force && !hasVisibleStyle(firstElement)) {
         throw new Error("Element is not visible.");
@@ -1525,10 +1582,16 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async ariaSnapshot(options: AriaSnapshotOptions = {}): Promise<string> {
+    return this.ariaSnapshotForTarget(undefined, options);
+  }
+
+  async ariaSnapshotForTarget(target: ProtocolElementHandleReference | undefined, options: AriaSnapshotOptions = {}): Promise<string> {
     const normalizedOptions = normalizeAriaSnapshotOptions(options);
+    const targetHandle = target?.handleId ? target : target ? await this.createHandleReference(target) : undefined;
     const result = await withOptionalTimeout(
       this.evaluateFunction<{ text: string }>(ARIA_SNAPSHOT_EVALUATE_SOURCE, {
-        options: normalizedOptions
+        options: normalizedOptions,
+        ...(targetHandle !== undefined ? { target: targetHandle } : {})
       }),
       normalizedOptions.timeout,
       'Timed out while generating page.ariaSnapshot().'
@@ -1586,6 +1649,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
+    const format = options.type ?? "png";
+    const quality = format === "jpeg"
+      ? options.quality ?? 80
+      : format === "webp" ? options.quality ?? 100 : undefined;
     const response = await this.client.browsingContextCaptureScreenshot({
       context: this.contextId,
       ...(options.clip
@@ -1601,8 +1668,8 @@ class BidiPageAdapter implements ProtocolPageAdapter {
           }
         : options.fullPage ? { origin: "document" as const } : {}),
       format: {
-        type: options.type ?? "png",
-        ...(options.quality !== undefined ? { quality: options.quality } : {})
+        type: format,
+        ...(quality !== undefined ? { quality } : {})
       }
     });
     return Buffer.from(response.data, "base64");
@@ -1837,51 +1904,91 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async keyboardInsertText(text: string): Promise<void> {
-    await this.evaluateFunction<void>(
-      `({ value }) => {
-        const activeElement = document.activeElement;
-        if (
-          activeElement instanceof HTMLInputElement ||
-          activeElement instanceof HTMLTextAreaElement
-        ) {
-          const start = activeElement.selectionStart ?? activeElement.value.length;
-          const end = activeElement.selectionEnd ?? activeElement.value.length;
-          activeElement.setRangeText(value, start, end, "end");
-          activeElement.dispatchEvent(new InputEvent("input", {
-            bubbles: true,
-            data: value,
-            inputType: "insertText"
-          }));
-          return;
-        }
+    let contextId: string | null = this.contextId;
+    while (contextId) {
+      const focusedFrameContextId = await this.keyboardInsertTextInContext(contextId, text);
+      contextId = focusedFrameContextId;
+    }
+  }
 
-        if (activeElement instanceof HTMLElement && activeElement.isContentEditable) {
-          document.execCommand("insertText", false, value);
-        }
-      }`,
-      { value: text }
-    );
+  private async keyboardInsertTextInContext(contextId: string, text: string): Promise<string | null> {
+    const response = await this.raceWithClose(this.client.scriptEvaluate({
+      expression: `(() => {
+        globalThis.__roxyBidiInsertText ??= (${BIDI_INSERT_TEXT_SOURCE});
+        return globalThis.__roxyBidiInsertText(${serializeForEvaluation({ text })});
+      })()`,
+      target: {
+        context: contextId
+      },
+      awaitPromise: true,
+      resultOwnership: "none",
+      serializationOptions: {
+        maxObjectDepth: 0,
+        maxDomDepth: 0
+      },
+      userActivation: true
+    })) as BidiEvaluateResult;
+
+    if (response.type === "exception") {
+      throw new Error(response.exceptionDetails.text || "BiDi evaluation failed.");
+    }
+
+    return await this.focusedFrameContextIdFromElement(contextId, response.result);
+  }
+
+  private async focusedFrameContextIdFromElement(parentContextId: string, value: BidiRemoteValue): Promise<string | null> {
+    if (value.type !== "node" || !value.sharedId) {
+      return null;
+    }
+
+    const tree = await this.raceWithClose(this.client.browsingContextGetTree({
+      root: parentContextId
+    })) as { contexts?: BidiBrowsingContextInfo[] };
+
+    for (const child of tree.contexts?.[0]?.children ?? []) {
+      const located = await this.raceWithClose(this.client.browsingContextLocateNodes({
+        context: parentContextId,
+        locator: {
+          type: "context",
+          value: {
+            context: child.context
+          }
+        },
+        maxNodeCount: 1
+      })) as { nodes?: BidiRemoteValue[] };
+      if (located.nodes?.[0]?.sharedId === value.sharedId) {
+        return child.context;
+      }
+    }
+
+    return null;
   }
 
   async keyboardPress(
     key: string,
     options?: {
       delay?: number;
+      signal?: AbortSignal;
     }
   ): Promise<void> {
+    throwIfAborted(options);
     const tokens = splitKeyboardShortcut(key);
     const keyName = tokens[tokens.length - 1] ?? "";
     for (let index = 0; index < tokens.length - 1; index += 1) {
+      throwIfAborted(options);
       await this.keyboardDown(tokens[index] ?? "");
     }
 
+    throwIfAborted(options);
     await this.keyboardDown(keyName);
     if (options?.delay) {
-      await new Promise((resolve) => setTimeout(resolve, options.delay));
+      await abortableDelay(options.delay, options);
     }
+    throwIfAborted(options);
     await this.keyboardUp(keyName);
 
     for (let index = tokens.length - 2; index >= 0; index -= 1) {
+      throwIfAborted(options);
       await this.keyboardUp(tokens[index] ?? "");
     }
   }
@@ -1890,22 +1997,31 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     text: string,
     options?: {
       delay?: number;
+      signal?: AbortSignal;
     }
   ): Promise<void> {
+    throwIfAborted(options);
     const chars = [...text];
     for (let index = 0; index < chars.length; index += 1) {
+      throwIfAborted(options);
       const character = chars[index]!;
       const charDelay = options?.delay;
       if (isUsKeyboardLayoutKey(character)) {
         await this.keyboardPress(
           character,
-          charDelay === undefined ? undefined : { delay: charDelay }
+          options === undefined
+            ? undefined
+            : {
+                ...(charDelay !== undefined ? { delay: charDelay } : {}),
+                ...(options.signal !== undefined ? { signal: options.signal } : {})
+              }
         );
         continue;
       }
       if (charDelay) {
-        await new Promise((resolve) => setTimeout(resolve, charDelay));
+        await abortableDelay(charDelay, options);
       }
+      throwIfAborted(options);
       await this.keyboardInsertText(character);
     }
   }
@@ -2078,10 +2194,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       }
       for (let index = 1; index <= clickCount; index += 1) {
         await this.performMousePointerActions([this.mousePointerDown(button)]);
-        await delay(delayMs);
+        await abortableDelay(delayMs, options);
         await this.performMousePointerActions([this.mousePointerUp(button)]);
         if (index < clickCount) {
-          await delay(delayMs);
+          await abortableDelay(delayMs, options);
         }
       }
       return;
@@ -2270,6 +2386,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     });
   }
 
+  locatorInFrame(frameId: string, selector: LocatorSelector): ProtocolLocatorAdapter {
+    return new BidiLocatorAdapter(this, {
+      chain: [selector],
+      protocolFrameId: frameId
+    });
+  }
+
   getByText(text: string | RegExp, options?: { exact?: boolean }): ProtocolLocatorAdapter {
     return new BidiLocatorAdapter(this, {
       chain: [createTextLocatorSelector(text, options)]
@@ -2426,6 +2549,51 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     return this.evaluateExpression<TResult>(wrappedExpression);
   }
 
+  async evaluateInFrame<TResult>(
+    frameId: string,
+    expression: string,
+    arg?: unknown,
+    isFunction?: boolean
+  ): Promise<TResult> {
+    const expressionStr = typeof expression === "function"
+      ? (expression as unknown as Function).toString()
+      : expression;
+
+    if (arg === undefined && !isFunction && !looksLikeFunctionExpression(expressionStr)) {
+      return this.evaluateExpressionInContext<TResult>(frameId, expressionStr);
+    }
+
+    return this.evaluateFunctionInContext<TResult>(frameId, expressionStr, arg);
+  }
+
+  private async evaluateExpressionInContext<TResult>(contextId: string, expression: string): Promise<TResult> {
+    const response = await this.raceWithClose(this.client.scriptEvaluate({
+      expression: wrapWithSerializedEvaluationResult(expression),
+      target: {
+        context: contextId
+      },
+      awaitPromise: true,
+      resultOwnership: "none"
+    })) as BidiEvaluateResult;
+
+    if (response.type === "exception") {
+      throw new Error(response.exceptionDetails.text || "BiDi evaluation failed.");
+    }
+
+    return parseSerializedEvaluationResult<TResult>(extractBiDiValue(response.result));
+  }
+
+  private async evaluateFunctionInContext<TResult>(
+    contextId: string,
+    expression: string,
+    arg?: unknown
+  ): Promise<TResult> {
+    const serializedArg = arg === undefined ? "" : serializeForEvaluation(arg);
+    const wrappedExpression =
+      arg === undefined ? `(${expression})()` : `(${expression})(${serializedArg})`;
+    return this.evaluateExpressionInContext<TResult>(contextId, wrappedExpression);
+  }
+
   async clickLocator(
     locator: BidiLocatorState,
     options?: ClickOptions,
@@ -2457,9 +2625,11 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     value: string,
     options?: FillOptions
   ): Promise<void> {
+    throwIfAborted(options);
     const timeout = options?.timeout ?? 30_000;
-    const deadline = Date.now() + timeout;
+    const deadline = timeout === 0 ? Number.POSITIVE_INFINITY : Date.now() + timeout;
     while (true) {
+      throwIfAborted(options);
       try {
         await this.runLocatorOperation<boolean>(locator, {
           operation: "fill",
@@ -2471,10 +2641,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         if (options?.force || !shouldRetryFillActionabilityError(error)) {
           throw error;
         }
-        if (timeout === 0 || Date.now() + 50 > deadline) {
+        if (Date.now() + 50 > deadline) {
           throw error;
         }
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await abortableDelay(50, options);
       }
     }
   }
@@ -2521,6 +2691,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     if (options?.trial) {
       return;
     }
+    throwIfAborted(options);
     if (await this.checkedStateLocator(locator) !== checked) {
       await this.runSelectorOperation<boolean>({
         operation: "domClick",
@@ -2530,6 +2701,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
         }
       });
     }
+    throwIfAborted(options);
     if (await this.checkedStateLocator(locator) !== checked) {
       await this.runLocatorOperation<boolean>(locator, {
         operation: "check",
@@ -2612,12 +2784,12 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   async selectOptionLocator(
     locator: BidiLocatorState,
     values: NormalizedSelectOption[],
-    options?: { timeout?: number }
+    options?: { signal?: AbortSignal; timeout?: number }
   ): Promise<string[]> {
     return this.runSelectOptionWithRetry(() => this.runLocatorOperation<string[] | SelectOptionRetryResult>(locator, {
       operation: "selectOption",
       values
-    }), options?.timeout);
+    }), options);
   }
 
   async textContentLocator(locator: BidiLocatorState): Promise<string | null> {
@@ -2719,12 +2891,14 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     if (options?.trial) {
       return;
     }
+    throwIfAborted(options);
     if (await this.checkedStateReference(reference) !== checked) {
       await this.runSelectorOperation<boolean>({
         operation: "domClick",
         reference
       });
     }
+    throwIfAborted(options);
     if (await this.checkedStateReference(reference) !== checked) {
       await this.runSelectorOperation<boolean>({
         operation: "check",
@@ -2755,13 +2929,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   async selectOptionReference(
     reference: ProtocolElementHandleReference,
     values: NormalizedSelectOption[],
-    options?: { timeout?: number }
+    options?: { signal?: AbortSignal; timeout?: number }
   ): Promise<string[]> {
     return this.runSelectOptionWithRetry(() => this.runSelectorOperation<string[] | SelectOptionRetryResult>({
       operation: "selectOption",
       reference,
       values
-    }), options?.timeout);
+    }), options);
   }
 
   private async resolveActionPoint(
@@ -2770,17 +2944,35 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     waitForEnabled?: boolean,
     retargetForAction?: "follow-label"
   ): Promise<ActionPoint> {
-    return this.runSelectorOperation<ActionPoint>({
+    const payload: Omit<SelectorRuntimePayload, "reference"> = {
       operation: "actionPoint",
-      reference: {
-        chain: locator.chain,
-        ...(locator.pick ? { pick: locator.pick } : {})
-      },
       ...(options?.force !== undefined ? { force: options.force } : {}),
       ...(options?.position ? { position: options.position } : {}),
+      ...(options?.scroll !== undefined ? { scroll: options.scroll } : {}),
       ...(waitForEnabled ? { waitForEnabled } : {}),
       ...(retargetForAction ? { retargetForAction } : {})
-    });
+    };
+    throwIfAborted(options);
+	    if (options?.force || options?.scroll === "none") {
+	      return this.runLocatorOperation<ActionPoint>(locator, payload);
+	    }
+    const timeout = options?.timeout ?? 30_000;
+    const deadline = timeout === 0 ? Number.POSITIVE_INFINITY : Date.now() + timeout;
+    let lastError: unknown;
+    while (Date.now() <= deadline) {
+      throwIfAborted(options);
+      try {
+        return await this.runLocatorOperation<ActionPoint>(locator, payload);
+      } catch (error) {
+        lastError = error;
+        if (!shouldRetryActionPointError(error)) {
+          throw error;
+        }
+	        await abortableDelay(50, options);
+	      }
+	    }
+	    void lastError;
+    throw new TimeoutError(`Timeout ${timeout}ms exceeded.`);
   }
 
   private async runLocatorOperation<TResult>(
@@ -2789,28 +2981,27 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   ): Promise<TResult> {
     return this.runSelectorOperation<TResult>({
       ...payload,
-      reference: {
-        chain: locator.chain,
-        ...(locator.pick ? { pick: locator.pick } : {})
-      }
+      reference: referenceFromBidiLocatorState(locator)
     });
   }
 
   private async runSelectOptionWithRetry(
     action: () => Promise<string[] | SelectOptionRetryResult>,
-    timeout: number | undefined
+    options: { signal?: AbortSignal; timeout?: number } | undefined
   ): Promise<string[]> {
-    const effectiveTimeout = timeout ?? 30_000;
-    const deadline = Date.now() + effectiveTimeout;
+    throwIfAborted(options);
+    const effectiveTimeout = options?.timeout ?? 30_000;
+    const deadline = effectiveTimeout === 0 ? Number.POSITIVE_INFINITY : Date.now() + effectiveTimeout;
     while (true) {
+      throwIfAborted(options);
       const result = await action();
       if (!isSelectOptionRetryResult(result)) {
         return result;
       }
-      if (effectiveTimeout === 0 || Date.now() + 50 > deadline) {
+      if (Date.now() + 50 > deadline) {
         throw new TimeoutError(`page.selectOption: Timeout ${effectiveTimeout}ms exceeded.`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await abortableDelay(50, options);
     }
   }
 
@@ -2890,6 +3081,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
+    throwIfAborted(options);
     const point = await this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
       reference,
@@ -2898,6 +3090,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       waitForEnabled: true
     });
     await this.performMouseMoveTo(point, options);
+    throwIfAborted(options);
     await this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
       reference,
@@ -2911,6 +3104,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async tapReference(reference: ProtocolElementHandleReference, options?: TapOptions): Promise<void> {
+    throwIfAborted(options);
     const point = await this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
       reference,
@@ -2922,11 +3116,13 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       if (options?.trial) {
         return;
       }
+      throwIfAborted(options);
       await this.touchscreenTap(point.x, point.y);
     });
   }
 
   async hoverReference(reference: ProtocolElementHandleReference, options?: HoverOptions): Promise<void> {
+    throwIfAborted(options);
     const point = await this.runSelectorOperation<ActionPoint>({
       operation: "actionPoint",
       reference,
@@ -2941,6 +3137,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     value: string,
     options?: FillOptions
   ): Promise<void> {
+    throwIfAborted(options);
     await this.runSelectorOperation<boolean>({
       operation: "fill",
       reference,
@@ -2986,25 +3183,120 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   private async runSelectorOperation<TResult>(payload: SelectorRuntimePayload): Promise<TResult> {
+    if (payload.reference.protocolFrameId) {
+      return this.evaluateFunctionInContext<TResult>(
+        payload.reference.protocolFrameId,
+        SELECTOR_RUNTIME_SOURCE,
+        payload
+      );
+    }
     return this.evaluateFunction<TResult>(SELECTOR_RUNTIME_SOURCE, payload);
   }
 
   async frameSnapshots(): Promise<Array<{
     id: string;
     name: string;
+    nativeFrameId?: string;
     ownerElementChain: LocatorSelector[];
     parentId: string | null;
     referenceChain: LocatorSelector[];
     url: string;
   }>> {
-    return [{
-      id: "main",
-      name: "",
-      ownerElementChain: [],
-      parentId: null,
-      referenceChain: [],
-      url: this.currentUrl
-    }];
+    const tree = await this.raceWithClose(this.client.browsingContextGetTree({
+      root: this.contextId
+    })) as { contexts?: BidiBrowsingContextInfo[] };
+    const root = tree.contexts?.[0];
+    if (!root) {
+      return [{
+        id: "main",
+        name: "",
+        ownerElementChain: [],
+        parentId: null,
+        referenceChain: [],
+        url: this.currentUrl
+      }];
+    }
+
+    const snapshots: Array<{
+      id: string;
+      name: string;
+      nativeFrameId?: string;
+      ownerElementChain: LocatorSelector[];
+      parentId: string | null;
+      referenceChain: LocatorSelector[];
+      url: string;
+    }> = [];
+
+    const visit = async (
+      context: BidiBrowsingContextInfo,
+      parentId: string | null,
+      syntheticId: string,
+      referenceChain: LocatorSelector[]
+    ) => {
+      snapshots.push({
+        id: syntheticId,
+        name: "",
+        nativeFrameId: context.context,
+        ownerElementChain: [],
+        parentId,
+        referenceChain,
+        url: context.url ?? (parentId === null ? this.currentUrl : "about:blank")
+      });
+
+      const ownerInfos = await this.collectFrameOwnerInfos(context.context).catch(() => []);
+      for (const [index, child] of (context.children ?? []).entries()) {
+        const ownerInfo = ownerInfos[index];
+        const ownerElementChain: LocatorSelector[] = ownerInfo
+          ? [...referenceChain, { strategy: "css", value: ownerInfo.selector }]
+          : [];
+        const childReferenceChain: LocatorSelector[] = ownerElementChain.length
+          ? [...ownerElementChain, { strategy: "control", value: "enter-frame" }]
+          : [];
+        const before = snapshots.length;
+        await visit(child, syntheticId, `${syntheticId}.${index + 1}`, childReferenceChain);
+        const childSnapshot = snapshots[before];
+        if (childSnapshot) {
+          childSnapshot.name = ownerInfo?.name ?? "";
+          childSnapshot.ownerElementChain = ownerElementChain;
+          childSnapshot.url = child.url ?? ownerInfo?.src ?? "about:blank";
+        }
+      }
+    };
+
+    await visit(root, null, "main", []);
+    return snapshots;
+  }
+
+  private async collectFrameOwnerInfos(contextId: string): Promise<Array<{ name: string; selector: string; src: string }>> {
+    return this.evaluateFunctionInContext<Array<{ name: string; selector: string; src: string }>>(
+      contextId,
+      `() => {
+        const escapeCss = (value) => {
+          if ("CSS" in globalThis && typeof CSS.escape === "function")
+            return CSS.escape(value);
+          return String(value).replace(/["\\\\]/g, "\\\\$&");
+        };
+        const cssPath = (element) => {
+          if (element.id)
+            return "#" + escapeCss(element.id);
+          const segments = [];
+          let current = element;
+          while (current && current.parentElement) {
+            const tag = current.tagName.toLowerCase();
+            const siblings = Array.from(current.parentElement.children).filter(child => child.tagName === current.tagName);
+            const index = siblings.indexOf(current) + 1;
+            segments.unshift(tag + ":nth-of-type(" + index + ")");
+            current = current.parentElement;
+          }
+          return segments.join(" > ");
+        };
+        return Array.from(document.querySelectorAll("iframe,frame")).map(element => ({
+          name: element.getAttribute("name") ?? element.id ?? "",
+          selector: cssPath(element),
+          src: element.src || "about:blank"
+        }));
+      }`
+    );
   }
 
   private setScreencastOverlay(
@@ -3692,6 +3984,14 @@ function formatSelectorChain(chain: LocatorSelector[]): string {
     .join(" >> ");
 }
 
+function referenceFromBidiLocatorState(state: BidiLocatorState): ProtocolElementHandleReference {
+  return {
+    chain: state.chain,
+    ...(state.pick ? { pick: state.pick } : {}),
+    ...(state.protocolFrameId ? { protocolFrameId: state.protocolFrameId } : {})
+  };
+}
+
 class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   constructor(
     private readonly page: BidiPageAdapter,
@@ -3798,10 +4098,7 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async count(): Promise<number> {
-    return this.page.countSelector({
-      chain: this.state.chain,
-      ...(this.state.pick ? { pick: this.state.pick } : {})
-    });
+    return this.page.countSelector(referenceFromBidiLocatorState(this.state));
   }
 
   async dispatchEvent(
@@ -3819,10 +4116,7 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
     isFunction?: boolean
   ): Promise<TResult> {
     return this.page.evaluateOnReference(
-      {
-        chain: this.state.chain,
-        ...(this.state.pick ? { pick: this.state.pick } : {})
-      },
+      referenceFromBidiLocatorState(this.state),
       expression,
       arg,
       `Could not resolve ${formatSelectorChain(this.state.chain)} to DOM Element`,
@@ -3836,10 +4130,7 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
     isFunction?: boolean
   ): Promise<TResult> {
     return this.page.evaluateOnReferenceAll(
-      {
-        chain: this.state.chain,
-        ...(this.state.pick ? { pick: this.state.pick } : {})
-      },
+      referenceFromBidiLocatorState(this.state),
       expression,
       arg,
       isFunction
@@ -3847,10 +4138,7 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async boundingBox(): Promise<Rect | null> {
-    return this.page.boundingBoxReference({
-      chain: this.state.chain,
-      ...(this.state.pick ? { pick: this.state.pick } : {})
-    });
+    return this.page.boundingBoxReference(referenceFromBidiLocatorState(this.state));
   }
 
   async getAttribute(name: string): Promise<string | null> {
@@ -3891,6 +4179,10 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
 
   async textContent(): Promise<string | null> {
     return this.page.textContentLocator(this.state);
+  }
+
+  async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
+    return this.page.ariaSnapshotForTarget(referenceFromBidiLocatorState(this.state), options);
   }
 
   async uncheck(options?: ClickOptions): Promise<void> {
@@ -3961,10 +4253,7 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async elementHandle(): Promise<ProtocolElementHandleAdapter> {
-    const reference: ProtocolElementHandleReference = {
-      chain: this.state.chain,
-      ...(this.state.pick ? { pick: this.state.pick } : {})
-    };
+    const reference = referenceFromBidiLocatorState(this.state);
     const handleReference = await this.page.createHandleReference(
       reference,
       `Could not resolve ${formatSelectorChain(this.state.chain)} to DOM Element`
@@ -3973,15 +4262,13 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async elementHandles(): Promise<ProtocolElementHandleAdapter[]> {
-    const count = await this.page.countSelector({
-      chain: this.state.chain,
-      ...(this.state.pick ? { pick: this.state.pick } : {})
-    });
+    const count = await this.page.countSelector(referenceFromBidiLocatorState(this.state));
     const handles: ProtocolElementHandleAdapter[] = [];
     for (let index = 0; index < count; index += 1) {
       const reference: ProtocolElementHandleReference = {
         chain: this.state.chain,
-        pick: { kind: "nth", index }
+        pick: { kind: "nth", index },
+        ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {})
       };
       handles.push(this.page.createHandle(await this.page.createHandleReference(reference)));
     }
@@ -4071,6 +4358,10 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
 
   async evaluate<TResult>(expression: string, arg?: unknown): Promise<TResult> {
     return this.page.evaluateOnReference(this.reference(), expression, arg, "No element found.");
+  }
+
+  async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
+    return this.page.ariaSnapshotForTarget(this.reference(), options);
   }
 
   async boundingBox(): Promise<Rect | null> {
@@ -4261,6 +4552,15 @@ function extractBiDiValue<TResult>(value: BidiRemoteValue): TResult {
   }
 
   return value.value as TResult;
+}
+
+function focusedFrameContextId(value: BidiRemoteValue): string | null {
+  if (value.type !== "window" || !value.value || typeof value.value !== "object") {
+    return null;
+  }
+
+  const context = (value.value as { context?: unknown }).context;
+  return typeof context === "string" && context ? context : null;
 }
 
 function serializeForEvaluation(value: unknown): string {
@@ -5003,6 +5303,20 @@ function currentPlatform(): string {
 
 function isSelectOptionRetryResult(value: string[] | SelectOptionRetryResult): value is SelectOptionRetryResult {
   return !Array.isArray(value) && value.__needsRetry === true;
+}
+
+function shouldRetryActionPointError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.replace(/^Error:\s*/, "") : "";
+  return (
+    Boolean(message) &&
+    (
+      message === "No element found." ||
+      message === "Element is not visible." ||
+      message === "Element is not enabled." ||
+      message === "Element does not have an actionable bounding box." ||
+      message === "Element intercepts pointer events."
+    )
+  );
 }
 
 // Linear tween for protocol-level pointer movement interpolation.

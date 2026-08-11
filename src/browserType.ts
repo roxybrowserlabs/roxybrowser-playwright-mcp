@@ -98,6 +98,7 @@ export class RoxyBrowserType implements BrowserType {
       videosDir: assetManager.roots.videosDir,
       networkDir: assetManager.roots.networkDir,
       consoleDir: assetManager.roots.consoleDir,
+      storageDir: assetManager.roots.storageDir,
       scriptsDir: assetManager.roots.scriptsDir,
       tempDir: assetManager.roots.tempDir,
       protocol

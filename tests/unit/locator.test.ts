@@ -120,6 +120,118 @@ describe("RoxyLocator", () => {
     );
   });
 
+  it("aborts locator.blur before dispatching to the adapter", async () => {
+    const adapter = createLocatorAdapterStub();
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await locator.blur({ signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.blur).not.toHaveBeenCalled();
+  });
+
+  it("aborts locator.dispatchEvent before dispatching to the adapter", async () => {
+    const adapter = createLocatorAdapterStub();
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await locator.dispatchEvent("click", undefined, { signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.dispatchEvent).not.toHaveBeenCalled();
+  });
+
+  it("aborts locator.waitFor before polling the adapter", async () => {
+    const adapter = createLocatorAdapterStub();
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await locator.waitFor({ signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.count).not.toHaveBeenCalled();
+  });
+
+  it("waits for a locator predicate like Playwright", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.count = vi.fn(async () => 1);
+    adapter.evaluate = vi.fn(async () => true);
+    const locator = new RoxyLocator(adapter);
+
+    await expect(locator.waitForFunction((element) => element.hasAttribute("aria-expanded"))).resolves.toBeUndefined();
+    expect(adapter.count).toHaveBeenCalledTimes(1);
+    expect(adapter.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats string function expressions as locator.waitForFunction predicates", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.count = vi.fn(async () => 1);
+    adapter.evaluate = vi.fn(async () => true);
+    const locator = new RoxyLocator(adapter);
+
+    await locator.waitForFunction("element => element.hasAttribute('aria-expanded')");
+
+    expect(adapter.evaluate).toHaveBeenCalledWith(
+      "element => element.hasAttribute('aria-expanded')",
+      undefined,
+      true
+    );
+  });
+
+  it("aborts locator.waitForFunction before polling the adapter", async () => {
+    const adapter = createLocatorAdapterStub();
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await locator
+      .waitForFunction((element) => element.hasAttribute("aria-expanded"), undefined, { signal: controller.signal })
+      .catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.count).not.toHaveBeenCalled();
+  });
+
+  it("aborts locator.waitForFunction while waiting for the predicate", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.count = vi.fn(async () => 1);
+    adapter.evaluate = vi.fn(async () => {
+      await new Promise(() => {});
+      return false;
+    });
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .waitForFunction((element) => element.hasAttribute("aria-expanded"), undefined, { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForFunction did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.count).toHaveBeenCalledTimes(1);
+    expect(adapter.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("delegates locator.ariaSnapshot to the locator adapter like Playwright", async () => {
+    const adapter = createLocatorAdapterStub();
+    const locator = new RoxyLocator(adapter);
+
+    const snapshot = await locator.ariaSnapshot({ mode: "ai", depth: 1 });
+
+    expect(snapshot).toBe("- locator snapshot");
+    expect(adapter.ariaSnapshot).toHaveBeenCalledWith({ mode: "ai", depth: 1 });
+    expect(adapter.elementHandle).not.toHaveBeenCalled();
+  });
+
   it("applies Playwright locator filter options when nesting locators", () => {
     const rootAdapter = createLocatorAdapterStub();
     const childAdapter = createLocatorAdapterStub();
@@ -555,6 +667,161 @@ describe("RoxyLocator", () => {
     expect(await locator.isVisible()).toBe(true);
   });
 
+  it("aborts locator state and convenience methods before dispatching", async () => {
+    const adapter = createLocatorAdapterStub();
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    controller.abort("cancelled");
+    const cases: Array<() => Promise<unknown>> = [
+      () => locator.boundingBox({ signal: controller.signal }),
+      () => locator.focus({ signal: controller.signal }),
+      () => locator.getAttribute("data-id", { signal: controller.signal }),
+      () => locator.innerHTML({ signal: controller.signal }),
+      () => locator.innerText({ signal: controller.signal }),
+      () => locator.inputValue({ signal: controller.signal }),
+      () => locator.isChecked({ signal: controller.signal }),
+      () => locator.isDisabled({ signal: controller.signal }),
+      () => locator.isEditable({ signal: controller.signal }),
+      () => locator.isEnabled({ signal: controller.signal }),
+      () => locator.textContent({ signal: controller.signal }),
+      () => locator.ariaSnapshot({ signal: controller.signal }),
+      () => locator.scrollIntoViewIfNeeded({ signal: controller.signal }),
+      () => locator.selectText({ force: true, signal: controller.signal })
+    ];
+
+    for (const call of cases) {
+      const error = await call().catch((caught: Error) => caught);
+
+      expect(error.name).toBe("AbortError");
+    }
+    expect(adapter.boundingBox).not.toHaveBeenCalled();
+    expect(adapter.focus).not.toHaveBeenCalled();
+    expect(adapter.getAttribute).not.toHaveBeenCalled();
+    expect(adapter.innerHTML).not.toHaveBeenCalled();
+    expect(adapter.innerText).not.toHaveBeenCalled();
+    expect(adapter.inputValue).not.toHaveBeenCalled();
+    expect(adapter.isChecked).not.toHaveBeenCalled();
+    expect(adapter.isDisabled).not.toHaveBeenCalled();
+    expect(adapter.isEditable).not.toHaveBeenCalled();
+    expect(adapter.isEnabled).not.toHaveBeenCalled();
+    expect(adapter.textContent).not.toHaveBeenCalled();
+    expect(adapter.elementHandle).not.toHaveBeenCalled();
+  });
+
+  it("aborts locator state reads while waiting for adapter dispatch", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.innerText = vi.fn(async () => {
+      await new Promise(() => {});
+      return "never";
+    });
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .innerText({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("innerText did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.innerText).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts locator.evaluate while waiting for the adapter like Playwright", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.evaluate = vi.fn(async <TResult>() => {
+      await new Promise(() => {});
+      return "never" as TResult;
+    });
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .evaluate((element) => element.textContent, undefined, { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("evaluate did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts locator.evaluateHandle while waiting for the adapter like Playwright", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.evaluateHandle = vi.fn(async () => {
+      await new Promise(() => {});
+      return createElementHandleAdapterStub();
+    });
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .evaluateHandle((element) => element, undefined, { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("evaluateHandle did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.evaluateHandle).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts locator actions while waiting for beforeAction", async () => {
+    const adapter = createLocatorAdapterStub();
+    const beforeAction = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    const locator = new RoxyLocator(adapter, undefined, null, beforeAction);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .click({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("click did not abort before action")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(beforeAction).toHaveBeenCalledTimes(1);
+    expect(adapter.click).not.toHaveBeenCalled();
+  });
+
+  it("aborts locator actions while waiting for adapter dispatch", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.click = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .click({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("click did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.click).toHaveBeenCalledWith({ signal: controller.signal, timeout: 0 });
+  });
+
   it("does not inject humanization through locator and element handle actions", async () => {
     const locatorAdapter = createLocatorAdapterStub();
     const elementAdapter = createElementHandleAdapterStub();
@@ -612,6 +879,199 @@ describe("RoxyLocator", () => {
     expect(elementAdapter.dblclick).toHaveBeenCalledWith({ delay: 6 });
   });
 
+  it("aborts locator.setInputFiles before resolving the element handle", async () => {
+    const adapter = createLocatorAdapterStub();
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await locator.setInputFiles("file.txt", { signal: controller.signal }).catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.elementHandle).not.toHaveBeenCalled();
+  });
+
+  it("aborts locator.setInputFiles while waiting for the element handle", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.elementHandle = vi.fn(async () => {
+      await new Promise(() => {});
+      return createElementHandleAdapterStub();
+    });
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .setInputFiles("file.txt", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("setInputFiles did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.elementHandle).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts locator.selectOption while waiting for the element handle", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.elementHandle = vi.fn(async () => {
+      await new Promise(() => {});
+      return createElementHandleAdapterStub();
+    });
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .selectOption("blue", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("selectOption did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.elementHandle).toHaveBeenCalledTimes(1);
+    expect(adapter.selectOption).not.toHaveBeenCalled();
+  });
+
+  it("aborts locator.screenshot while waiting for the element handle", async () => {
+    const adapter = createLocatorAdapterStub();
+    adapter.elementHandle = vi.fn(async () => {
+      await new Promise(() => {});
+      return createElementHandleAdapterStub();
+    });
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .screenshot({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("screenshot did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.elementHandle).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts elementHandle.setInputFiles before evaluating the files", async () => {
+    const adapter = createElementHandleAdapterStub();
+    const elementHandle = new RoxyElementHandle(adapter);
+    const controller = new AbortController();
+    controller.abort("cancelled");
+
+    const error = await elementHandle
+      .setInputFiles({ name: "file.txt", mimeType: "text/plain", buffer: Buffer.from("body") }, {
+        signal: controller.signal
+      })
+      .catch((caught: Error) => caught);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("aborts elementHandle.setInputFiles while waiting for the evaluation", async () => {
+    const adapter = createElementHandleAdapterStub();
+    adapter.evaluate = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    const elementHandle = new RoxyElementHandle(adapter);
+    const controller = new AbortController();
+    const errorPromise = elementHandle
+      .setInputFiles({ name: "file.txt", mimeType: "text/plain", buffer: Buffer.from("body") }, {
+        signal: controller.signal
+      })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("setInputFiles did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts element handle state and convenience methods before dispatching", async () => {
+    const adapter = createElementHandleAdapterStub();
+    adapter.screenshot = vi.fn(async () => Buffer.from("screenshot"));
+    adapter.scrollIntoViewIfNeeded = vi.fn(async () => {});
+    adapter.selectText = vi.fn(async () => {});
+    const elementHandle = new RoxyElementHandle(adapter);
+    const controller = new AbortController();
+    controller.abort("cancelled");
+    const cases: Array<() => Promise<unknown>> = [
+      () => elementHandle.screenshot({ signal: controller.signal }),
+      () => elementHandle.scrollIntoViewIfNeeded({ signal: controller.signal }),
+      () => elementHandle.selectText({ force: true, signal: controller.signal }),
+      () => elementHandle.waitForElementState("visible", { signal: controller.signal })
+    ];
+
+    for (const call of cases) {
+      const error = await call().catch((caught: Error) => caught);
+
+      expect(error.name).toBe("AbortError");
+    }
+    expect(adapter.evaluate).not.toHaveBeenCalled();
+    expect(adapter.screenshot).not.toHaveBeenCalled();
+    expect(adapter.scrollIntoViewIfNeeded).not.toHaveBeenCalled();
+    expect(adapter.selectText).not.toHaveBeenCalled();
+  });
+
+  it("aborts elementHandle.scrollIntoViewIfNeeded while waiting for adapter dispatch", async () => {
+    const adapter = createElementHandleAdapterStub();
+    adapter.evaluate = vi.fn(async <TResult>() => true as TResult);
+    adapter.scrollIntoViewIfNeeded = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    const elementHandle = new RoxyElementHandle(adapter);
+    const controller = new AbortController();
+    const errorPromise = elementHandle
+      .scrollIntoViewIfNeeded({ signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("scrollIntoViewIfNeeded did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.scrollIntoViewIfNeeded).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts elementHandle.selectText while waiting for adapter dispatch", async () => {
+    const adapter = createElementHandleAdapterStub();
+    adapter.selectText = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    const elementHandle = new RoxyElementHandle(adapter);
+    const controller = new AbortController();
+    const errorPromise = elementHandle
+      .selectText({ force: true, signal: controller.signal })
+      .catch((caught: Error) => caught);
+
+    await Promise.resolve();
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("selectText did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(adapter.selectText).toHaveBeenCalledTimes(1);
+  });
+
   it("dispatches drop through an element handle with normalized payloads", async () => {
     const adapter = createLocatorAdapterStub();
     const elementAdapter = createElementHandleAdapterStub();
@@ -645,5 +1105,29 @@ describe("RoxyLocator", () => {
     const locator = new RoxyLocator(createLocatorAdapterStub());
 
     await expect(locator.drop({})).rejects.toThrow('At least one of "files" or "data" must be provided.');
+  });
+
+  it("aborts locator.drop while waiting for the element evaluation", async () => {
+    const adapter = createLocatorAdapterStub();
+    const elementAdapter = createElementHandleAdapterStub();
+    elementAdapter.evaluate = vi.fn(async () => {
+      await new Promise(() => {});
+    });
+    adapter.elementHandle = vi.fn(async () => elementAdapter);
+    const locator = new RoxyLocator(adapter);
+    const controller = new AbortController();
+    const errorPromise = locator
+      .drop({ data: { "text/plain": "hello" } }, { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort("cancelled");
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("drop did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(elementAdapter.evaluate).toHaveBeenCalledTimes(1);
   });
 });

@@ -10,6 +10,9 @@ import { PLAYWRIGHT_INJECTED_SCRIPT_SOURCE } from "./generated/injectedScriptSou
 export const PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE = `(payload) => {
   const options = payload && payload.options ? payload.options : {};
   const target = payload && payload.target ? payload.target : undefined;
+  const testIdAttribute = payload && typeof payload.testIdAttribute === "string" && payload.testIdAttribute
+    ? payload.testIdAttribute
+    : "data-testid";
   const rootDocument = document;
   if (!rootDocument.body || rootDocument.readyState === "loading") {
     return {
@@ -36,6 +39,24 @@ export const PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE = `(payload) => {
         return { ok: false, error: { code: "stale" } };
       }
       return { ok: true, node: element };
+    }
+
+    if (target.handleId) {
+      const scopes = [];
+      try {
+        if (globalThis.top) {
+          scopes.push(globalThis.top);
+        }
+      } catch {}
+      scopes.push(globalThis);
+      for (const scope of scopes) {
+        const store = scope && scope.__roxyHandleStore;
+        const element = store && store[target.handleId];
+        if (element && element.isConnected) {
+          return { ok: true, node: element };
+        }
+      }
+      return { ok: false, error: { code: "stale" } };
     }
 
     const selector = target.selector || target.raw;
@@ -84,23 +105,43 @@ ${PLAYWRIGHT_INJECTED_SCRIPT_SOURCE
     throw new Error("Playwright snapshot injected bundle did not expose InjectedScript.");
   }
 
-  const injected = globalThis.__roxyPlaywrightInjectedScript || new snapshotBundle.InjectedScript(globalThis, {
-    isUnderTest: false,
-    sdkLanguage: "javascript",
-    testIdAttributeName: "data-testid",
-    stableRafCount: 1,
-    browserName: "chromium",
-    shouldPrependErrorPrefix: false,
-    isUtilityWorld: true,
-    customEngines: []
-  });
+  const injected = globalThis.__roxyPlaywrightInjectedScript
+    && globalThis.__roxyPlaywrightInjectedScriptTestIdAttribute === testIdAttribute
+      ? globalThis.__roxyPlaywrightInjectedScript
+      : new snapshotBundle.InjectedScript(globalThis, {
+        isUnderTest: false,
+        sdkLanguage: "javascript",
+        testIdAttributeName: testIdAttribute,
+        stableRafCount: 1,
+        browserName: "chromium",
+        shouldPrependErrorPrefix: false,
+        isUtilityWorld: true,
+        customEngines: []
+      });
   globalThis.__roxyPlaywrightInjectedScript = injected;
+  globalThis.__roxyPlaywrightInjectedScriptTestIdAttribute = testIdAttribute;
 
   const mcpState = {
     refs: new Map(),
     elements: new Map(),
+    locators: new Map(),
     nextFrameSeq: typeof previousState.nextFrameSeq === "number" ? previousState.nextFrameSeq : 1
   };
+
+  function jsString(value) {
+    const stringified = JSON.stringify(String(value));
+    return "'" + stringified.substring(1, stringified.length - 1).replace(/\\\\?"/g, '"').replace(/'/g, "\\\\'") + "'";
+  }
+
+  function testIdLocatorForElement(element) {
+    for (const attribute of testIdAttribute.split(",")) {
+      const testId = element.getAttribute && element.getAttribute(attribute);
+      if (testId !== null && testId !== undefined) {
+        return "getByTestId(" + jsString(testId) + ")";
+      }
+    }
+    return undefined;
+  }
 
   function rememberSnapshotElements(snapshotElements) {
     for (const entry of snapshotElements.entries()) {
@@ -108,14 +149,28 @@ ${PLAYWRIGHT_INJECTED_SCRIPT_SOURCE
       const element = entry[1];
       mcpState.refs.set(ref, ref);
       mcpState.elements.set(ref, element);
+      try {
+        const locator = testIdLocatorForElement(element);
+        if (locator) {
+          mcpState.locators.set(ref, locator);
+        }
+      } catch {}
     }
   }
 
   function captureSnapshot(node, snapshotOptions) {
     const snapshot = injected.incrementalAriaSnapshot(node, snapshotOptions);
-    const snapshotElements = injected._lastAriaSnapshotForQuery && injected._lastAriaSnapshotForQuery.elements
-      ? new Map(injected._lastAriaSnapshotForQuery.elements.entries())
-      : new Map();
+    const lastSnapshot = injected._lastAriaSnapshotForQuery;
+    const snapshotElements = new Map();
+    if (lastSnapshot && lastSnapshot.info) {
+      for (const entry of lastSnapshot.info.entries()) {
+        snapshotElements.set(entry[0], entry[1].element);
+      }
+    } else if (lastSnapshot && lastSnapshot.elements) {
+      for (const entry of lastSnapshot.elements.entries()) {
+        snapshotElements.set(entry[0], entry[1]);
+      }
+    }
     rememberSnapshotElements(snapshotElements);
     return { elements: snapshotElements, snapshot };
   }
@@ -200,6 +255,7 @@ ${PLAYWRIGHT_INJECTED_SCRIPT_SOURCE
 
   return {
     refs: Object.fromEntries(mcpState.refs.entries()),
+    locators: Object.fromEntries(mcpState.locators.entries()),
     text: stitched.full.join("\\n"),
     title: String(rootDocument.title || ""),
     url: String(globalThis.location && globalThis.location.href || "")

@@ -6,6 +6,8 @@ export type AssetKind =
   | "video"
   | "network"
   | "console"
+  | "pdf"
+  | "storage"
   | "script"
   | "temporary";
 
@@ -18,6 +20,8 @@ export interface AssetRoots {
   videosDir: string;
   networkDir: string;
   consoleDir: string;
+  pdfDir: string;
+  storageDir: string;
   scriptsDir: string;
   tempDir: string;
 }
@@ -31,6 +35,8 @@ export interface AssetOptions {
   videosDir?: string;
   networkDir?: string;
   consoleDir?: string;
+  pdfDir?: string;
+  storageDir?: string;
   scriptsDir?: string;
   tempDir?: string;
   allowAbsoluteAssetPaths?: boolean;

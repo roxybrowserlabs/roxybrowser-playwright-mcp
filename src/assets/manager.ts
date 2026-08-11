@@ -21,6 +21,8 @@ const KIND_DIR_NAMES: Record<Exclude<AssetKind, "temporary">, string> = {
   video: "videos",
   network: "network",
   console: "console",
+  pdf: ".",
+  storage: "storage",
   script: "scripts"
 };
 
@@ -33,6 +35,8 @@ const ENV_BY_ROOT = {
   videosDir: "ROXY_PLAYWRIGHT_VIDEOS_DIR",
   networkDir: "ROXY_PLAYWRIGHT_NETWORK_DIR",
   consoleDir: "ROXY_PLAYWRIGHT_CONSOLE_DIR",
+  pdfDir: "ROXY_PLAYWRIGHT_PDF_DIR",
+  storageDir: "ROXY_PLAYWRIGHT_STORAGE_DIR",
   scriptsDir: "ROXY_PLAYWRIGHT_SCRIPTS_DIR",
   tempDir: "ROXY_PLAYWRIGHT_TEMP_DIR"
 } as const;
@@ -67,6 +71,10 @@ export class AssetManager {
         return this.roots.networkDir;
       case "console":
         return this.roots.consoleDir;
+      case "pdf":
+        return this.roots.pdfDir;
+      case "storage":
+        return this.roots.storageDir;
       case "script":
         return this.roots.scriptsDir;
       case "temporary":
@@ -86,6 +94,20 @@ export class AssetManager {
     return {
       absolutePath: finalPath,
       relativePath: path.relative(this.roots.artifactsDir, finalPath) || path.basename(finalPath),
+      kind
+    };
+  }
+
+  resolveExistingFile(kind: AssetKind, filename: string): ResolvedAsset {
+    const root = this.rootFor(kind);
+    const candidate = filename.trim() || sanitizeAssetFilename(defaultFilename(kind));
+    const resolved = path.isAbsolute(candidate)
+      ? this.resolveAbsolutePath(candidate)
+      : path.resolve(root, normalizeRelativeFilename(candidate));
+
+    return {
+      absolutePath: resolved,
+      relativePath: path.relative(this.roots.artifactsDir, resolved) || path.basename(resolved),
       kind
     };
   }
@@ -189,6 +211,20 @@ export function resolveAssetRoots(options: ResolveAssetRootsOptions = {}): Asset
       envValue: process.env[ENV_BY_ROOT.consoleDir],
       artifactsDir,
       subdir: KIND_DIR_NAMES.console
+    }),
+    pdfDir: resolveKindRoot({
+      explicitRoot: hasExplicitArtifactsDir,
+      optionValue: options.pdfDir,
+      envValue: process.env[ENV_BY_ROOT.pdfDir],
+      artifactsDir,
+      subdir: KIND_DIR_NAMES.pdf
+    }),
+    storageDir: resolveKindRoot({
+      explicitRoot: hasExplicitArtifactsDir,
+      optionValue: options.storageDir,
+      envValue: process.env[ENV_BY_ROOT.storageDir],
+      artifactsDir,
+      subdir: KIND_DIR_NAMES.storage
     }),
     scriptsDir: resolveKindRoot({
       explicitRoot: hasExplicitArtifactsDir,

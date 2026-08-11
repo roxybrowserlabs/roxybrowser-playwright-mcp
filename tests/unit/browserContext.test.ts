@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { RoxyBrowserContext } from "../../src/browserContext.js";
 import { RoxyPage } from "../../src/page.js";
+import { RoxyWorker } from "../../src/worker.js";
 import {
   createBrowserContextAdapterStub,
   createPageAdapterStub
@@ -24,6 +25,29 @@ function createResponseWithSetCookies(
 }
 
 describe("RoxyBrowserContext", () => {
+  it("tracks current service workers like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const worker1 = new RoxyWorker("https://example.test/sw.js");
+    const worker2 = new RoxyWorker("https://other.test/sw.js");
+
+    const eventPromise = context.waitForEvent("serviceworker");
+    await adapter.emitServiceWorker(worker1);
+    await adapter.emitServiceWorker(worker2);
+
+    expect(await eventPromise).toBe(worker1);
+    expect(context.serviceWorkers()).toEqual([worker1, worker2]);
+  });
+
   it("auto-handles page dialogs when only context bubbling listeners are attached internally", async () => {
     const adapter = createBrowserContextAdapterStub();
     const pageAdapter = createPageAdapterStub();
@@ -155,6 +179,37 @@ describe("RoxyBrowserContext", () => {
     expect(contextDisposable.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it("registers browser context init script callback bindings before the user script", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    const disposable = await context.addInitScript(({ cb }) => {
+      void cb(42);
+    }, { cb: (n: number) => n * 2 }, { exposeFunctions: true });
+
+    expect(adapter.addInitScript).toHaveBeenCalledTimes(2);
+    const [bindingScriptCall, userScriptCall] = vi.mocked(adapter.addInitScript).mock.calls;
+    expect(bindingScriptCall?.[0]).toContain("installExposedBindingFunction");
+    expect(bindingScriptCall?.[0]).toContain("__roxy_fn_");
+    expect(userScriptCall?.[0]).toContain("__roxyParseEvaluationResultValue");
+    expect(userScriptCall?.[0]).toContain("__roxy_fn_");
+
+    await disposable.dispose();
+    const bindingDisposable = await vi.mocked(adapter.addInitScript).mock.results[0]!.value;
+    const userScriptDisposable = await vi.mocked(adapter.addInitScript).mock.results[1]!.value;
+    expect(bindingDisposable.dispose).toHaveBeenCalledTimes(1);
+    expect(userScriptDisposable.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to page-level browser context init scripts when the adapter does not support them", async () => {
     const adapter = createBrowserContextAdapterStub();
     delete adapter.addInitScript;
@@ -194,6 +249,33 @@ describe("RoxyBrowserContext", () => {
 
     expect(firstPageAdapter.initScriptDisposables.some((entry) => entry.dispose.mock.calls.length === 1)).toBe(true);
     expect(secondPageAdapter.initScriptDisposables.some((entry) => entry.dispose.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("registers browser context init script callback bindings for page-level fallback", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    delete adapter.addInitScript;
+    const firstPageAdapter = createPageAdapterStub();
+    adapter.newPage = vi.fn().mockResolvedValueOnce(firstPageAdapter);
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+
+    await context.newPage();
+    await context.addInitScript(({ cb }) => {
+      void cb(42);
+    }, { cb: (n: number) => n * 2 }, { exposeFunctions: true });
+
+    const addInitScriptCalls = vi.mocked(firstPageAdapter.addInitScript).mock.calls;
+    expect(addInitScriptCalls.length).toBeGreaterThanOrEqual(2);
+    expect(addInitScriptCalls.some(([source]) => source.includes("__roxy_fn_"))).toBe(true);
+    expect(addInitScriptCalls.some(([source]) => source.includes("__roxyParseEvaluationResultValue"))).toBe(true);
   });
 
   it("emits popup events for discovered pages and wires opener()", async () => {
@@ -247,6 +329,60 @@ describe("RoxyBrowserContext", () => {
     const popup = await popupPromise;
     expect(popup).toBeInstanceOf(RoxyPage);
     expect(popup.context()).toBe(context);
+  });
+
+  it("aborts browserContext.waitForEvent before registering the waiter like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const reason = new Error("Already aborted");
+    controller.abort(reason);
+
+    const errorPromise = context.waitForEvent("page", { signal: controller.signal }).catch((caught: Error) => caught);
+    const error = await Promise.race([
+      errorPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForEvent did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(error.cause).toBe(reason);
+  });
+
+  it("aborts browserContext.waitForEvent while waiting for an event like Playwright", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const controller = new AbortController();
+    const waitPromise = context
+      .waitForEvent("page", { signal: controller.signal, timeout: 0 })
+      .catch((caught: Error) => caught);
+
+    const reason = new Error("cancelled");
+    controller.abort(reason);
+    const error = await Promise.race([
+      waitPromise,
+      new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("waitForEvent did not abort")), 25))
+    ]);
+
+    expect(error.name).toBe("AbortError");
+    expect(error.cause).toBe(reason);
   });
 
   it("removes closed adapter pages from pages like Playwright", async () => {
@@ -909,6 +1045,108 @@ describe("RoxyBrowserContext", () => {
           }
         })
       );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("aborts APIRequestContext fetches with a Playwright-style AbortSignal", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    let fetchSignal: AbortSignal | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      fetchSignal = init?.signal as AbortSignal | undefined;
+      if (fetchSignal?.aborted) {
+        throw fetchSignal.reason;
+      }
+      await new Promise((_resolve, reject) => {
+        fetchSignal?.addEventListener("abort", () => reject(fetchSignal?.reason), { once: true });
+      });
+      throw new Error("unreachable");
+    });
+    const controller = new AbortController();
+
+    try {
+      const errorPromise = context.request
+        .get("https://example.com/slow", {
+          signal: controller.signal,
+          timeout: 0
+        })
+        .catch((error: Error) => error);
+
+      await Promise.resolve();
+      controller.abort("cancelled");
+      const error = await Promise.race([
+        errorPromise,
+        new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("request did not abort")), 25))
+      ]);
+
+      expect(error.name).toBe("AbortError");
+      expect(fetchSignal?.aborted).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("aborts browser-context route.fetch with a Playwright-style AbortSignal", async () => {
+    const adapter = createBrowserContextAdapterStub();
+    adapter.newPage = async () => createPageAdapterStub();
+    const context = new RoxyBrowserContext(adapter, {
+      enabled: true,
+      profile: "balanced",
+      moveJitterMs: 16,
+      clickHoldMs: 60,
+      scrollStepPx: 280,
+      typingDelayMs: 95,
+      typingVarianceMs: 35,
+      hoverBeforeClickMs: 110
+    });
+    const page = await context.newPage();
+    let fetchSignal: AbortSignal | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      fetchSignal = init?.signal as AbortSignal | undefined;
+      if (fetchSignal?.aborted) {
+        throw fetchSignal.reason;
+      }
+      await new Promise((_resolve, reject) => {
+        fetchSignal?.addEventListener("abort", () => reject(fetchSignal?.reason), { once: true });
+      });
+      throw new Error("unreachable");
+    });
+    const controller = new AbortController();
+
+    try {
+      await context.route("**/slow", async (route) => {
+        const errorPromise = route
+          .fetch({
+            signal: controller.signal,
+            timeout: 0
+          })
+          .catch((error: Error) => error);
+        await Promise.resolve();
+        controller.abort("cancelled");
+        const error = await errorPromise;
+        expect(error.name).toBe("AbortError");
+        expect(fetchSignal?.aborted).toBe(true);
+        await route.abort();
+      });
+
+      await (page as any).dispatchRoutedRequest({
+        id: "request:context-route-fetch-abort",
+        url: "https://example.com/slow",
+        method: "GET",
+        headers: {},
+        postData: null
+      });
     } finally {
       fetchSpy.mockRestore();
     }

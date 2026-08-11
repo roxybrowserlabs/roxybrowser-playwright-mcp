@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import { createPageResponse } from "../../src/pageResponse.js";
 import { RoxyBrowser } from "../../src/browser.js";
 import type { BrowserType } from "../../src/types/api.js";
+import type { Worker } from "../../src/types/api.js";
 import type {
   ProtocolBrowserAdapter,
   ProtocolBrowserContextAdapter,
@@ -65,21 +66,27 @@ export function createBrowser(options: CreateBrowserOptions = {}): RoxyBrowser {
 
 export function createBrowserContextAdapterStub(): ProtocolBrowserContextAdapter & {
   emitPage(page: ProtocolPageAdapter, opener?: ProtocolPageAdapter | null): Promise<void>;
+  emitServiceWorker(worker: Worker): Promise<void>;
 } {
   const pageListeners = new Set<
     (page: ProtocolPageAdapter, opener?: ProtocolPageAdapter | null) => void | Promise<void>
   >();
-  const initScriptDisposable = {
-    dispose: vi.fn(async () => {})
-  };
-
+  const serviceWorkerListeners = new Set<(worker: Worker) => void | Promise<void>>();
   return {
     newPage: vi.fn(),
-    addInitScript: vi.fn(async () => initScriptDisposable),
+    addInitScript: vi.fn(async () => ({
+      dispose: vi.fn(async () => {})
+    })),
     onPage: vi.fn((listener) => {
       pageListeners.add(listener);
       return () => {
         pageListeners.delete(listener);
+      };
+    }),
+    onServiceWorker: vi.fn((listener) => {
+      serviceWorkerListeners.add(listener);
+      return () => {
+        serviceWorkerListeners.delete(listener);
       };
     }),
     setExtraHTTPHeaders: vi.fn(async () => {}),
@@ -87,6 +94,11 @@ export function createBrowserContextAdapterStub(): ProtocolBrowserContextAdapter
     emitPage: async (page: ProtocolPageAdapter, opener?: ProtocolPageAdapter | null) => {
       for (const listener of Array.from(pageListeners)) {
         await listener(page, opener);
+      }
+    },
+    emitServiceWorker: async (worker: Worker) => {
+      for (const listener of Array.from(serviceWorkerListeners)) {
+        await listener(worker);
       }
     }
   };
@@ -117,6 +129,11 @@ export function createLocatorAdapterStub(): ProtocolLocatorAdapter {
     blur: vi.fn(async () => {}),
     count: vi.fn(async () => 1),
     dispatchEvent: vi.fn(async () => {}),
+    evaluate: vi.fn(async <TResult>() => "locator-value" as TResult),
+    evaluateAll: vi.fn(async <TResult>() => ["locator-value"] as TResult),
+    evaluateHandle: vi.fn(async <TResult>() => createElementHandleAdapterStub() as TResult),
+    ariaSnapshot: vi.fn(async () => "- locator snapshot"),
+    boundingBox: vi.fn(async () => ({ x: 1, y: 2, width: 3, height: 4 })),
     getAttribute: vi.fn(async () => "attr-value"),
     innerHTML: vi.fn(async () => "<span>html-value</span>"),
     innerText: vi.fn(async () => "inner-text-value"),
@@ -148,6 +165,7 @@ export function createElementHandleAdapterStub(): ProtocolElementHandleAdapter {
     evalOnSelector: vi.fn(async <TResult>() => "selector-value" as TResult),
     evalOnSelectorAll: vi.fn(async <TResult>() => ["selector-value"] as TResult),
     evaluate: vi.fn(async <TResult>() => "handle-value" as TResult),
+    ariaSnapshot: vi.fn(async () => "- handle snapshot"),
     boundingBox: vi.fn(async () => ({ x: 1, y: 2, width: 3, height: 4 })),
     dispatchEvent: vi.fn(async () => {}),
     dblclick: vi.fn(async () => {}),

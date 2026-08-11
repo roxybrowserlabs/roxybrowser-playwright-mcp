@@ -15,7 +15,11 @@ export type ToolSchema<Input extends AnyZodObject = AnyZodObject> = {
 
 export type Tool<Input extends AnyZodObject = AnyZodObject> = {
   schema: ToolSchema<Input>;
-  handle: (args: z.output<Input>, runtime: McpRuntime) => Promise<CallToolResult>;
+  handle: (
+    args: z.output<Input>,
+    runtime: McpRuntime,
+    signal?: AbortSignal
+  ) => Promise<CallToolResult>;
 };
 
 export function defineTool<Input extends AnyZodObject>(tool: Tool<Input>): Tool {

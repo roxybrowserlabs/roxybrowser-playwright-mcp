@@ -36,6 +36,7 @@ import type {
   PageResponse
 } from "../types/events.js";
 import type { Disposable, ResolvedAriaRef } from "../types/api.js";
+import type { Worker } from "../types/api.js";
 import type { ProtocolCapabilities } from "./capabilities.js";
 import type { RoutedRequestCall, RoutedRequestDecision } from "./routing.js";
 import type { SerializedValue } from "../utilityScriptSerializers.js";
@@ -151,6 +152,8 @@ export interface ProtocolBrowserContextAdapter {
       hasWindowOpener?: boolean
     ) => void | Promise<void>
   ): () => void;
+  onServiceWorker?(listener: (worker: Worker) => void | Promise<void>): () => void;
+  serviceWorkers?(): Worker[];
   setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void>;
   // Resolves once the adapter has finished its initial setup and any pre-existing
   // pages have been discovered and emitted. Callers (e.g. RoxyBrowser.newContext)
@@ -245,7 +248,7 @@ export interface ProtocolPageAdapter {
   selectOption(
     selector: LocatorSelector[],
     values: NormalizedSelectOption[],
-    options?: { timeout?: number }
+    options?: { signal?: AbortSignal; timeout?: number }
   ): Promise<string[]>;
   bringToFront(): Promise<void>;
   isClosed(): boolean;
@@ -461,6 +464,7 @@ export interface ProtocolElementHandleAdapter {
     arg?: unknown,
     isFunction?: boolean
   ): Promise<ProtocolJSHandleAdapter<TResult>>;
+  ariaSnapshot?(options?: AriaSnapshotOptions): Promise<string>;
   contentFrameId?(): Promise<string | null>;
   ownerFrameId?(): Promise<string | null>;
   boundingBox(): Promise<Rect | null>;
@@ -489,7 +493,7 @@ export interface ProtocolElementHandleAdapter {
   isVisible(): Promise<boolean>;
   focus(): Promise<void>;
   uncheck(options?: ClickOptions): Promise<void>;
-  selectOption(values: NormalizedSelectOption[], options?: { timeout?: number }): Promise<string[]>;
+  selectOption(values: NormalizedSelectOption[], options?: { signal?: AbortSignal; timeout?: number }): Promise<string[]>;
 }
 
 export interface ProtocolLocatorAdapter {
@@ -535,7 +539,8 @@ export interface ProtocolLocatorAdapter {
   isEditable(): Promise<boolean>;
   isEnabled(): Promise<boolean>;
   isHidden(): Promise<boolean>;
-  selectOption(values: NormalizedSelectOption[], options?: { timeout?: number }): Promise<string[]>;
+  ariaSnapshot?(options?: AriaSnapshotOptions): Promise<string>;
+  selectOption(values: NormalizedSelectOption[], options?: { signal?: AbortSignal; timeout?: number }): Promise<string[]>;
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   scrollIntoViewIfNeeded(): Promise<void>;
   selectText(): Promise<void>;

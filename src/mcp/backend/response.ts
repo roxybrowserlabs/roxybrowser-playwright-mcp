@@ -1,14 +1,15 @@
-import { writeFile } from "node:fs/promises";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { readdir, stat, unlink } from "node:fs/promises";
+import path from "node:path";
 import { formatSnapshot, formatTabs } from "../format.js";
-import type { BrowserSnapshot } from "../types.js";
+import type { BrowserSnapshot, SessionScreenshotMimeType } from "../types.js";
 import type { Context } from "./context.js";
 
 export class Response {
   private readonly results: string[] = [];
   private readonly errors: string[] = [];
   private readonly code: string[] = [];
-  private readonly images: Array<{ data: string; mimeType: "image/png" | "image/jpeg" }> = [];
+  private readonly images: Array<{ data: string; mimeType: SessionScreenshotMimeType }> = [];
   private structuredContent: Record<string, unknown> | undefined;
   private includeSnapshot: "none" | "full" = "none";
   private fullSnapshot:
@@ -44,8 +45,12 @@ export class Response {
     this.code.push(code);
   }
 
-  addImageResult(data: string, mimeType: "image/png" | "image/jpeg"): void {
+  addImageResult(data: string, mimeType: SessionScreenshotMimeType): void {
     this.images.push({ data, mimeType });
+  }
+
+  addFileLink(title: string, fileName: string): void {
+    this.results.push(`- [${title}](${fileName})`);
   }
 
   setClose(): void {
@@ -81,14 +86,11 @@ export class Response {
       if (this.results.length) {
         sections.push(...this.results);
       }
+      await this.enforceOutputBudget();
       return {
         content: [
           { type: "text", text: sections.join("\n") },
-          ...this.images.map((image) => ({
-            type: "image" as const,
-            data: image.data,
-            mimeType: image.mimeType
-          }))
+          ...this.serializedImages()
         ],
         ...(this.structuredContent ? { structuredContent: this.structuredContent } : {}),
         ...(this.isClose ? { isClose: true } : {}),
@@ -103,7 +105,7 @@ export class Response {
       sections.push("### Result", ...this.results);
     }
 
-    if (this.code.length) {
+    if (this.context.config.codegen !== "none" && this.code.length) {
       if (sections.length) {
         sections.push("");
       }
@@ -150,7 +152,7 @@ export class Response {
       }
       if (this.fullSnapshot.filename) {
         const resolvedFilename = await this.context.resolveOutputFile(this.fullSnapshot.filename, "snapshot");
-        await writeFile(resolvedFilename, snapshot.text);
+        await this.context.writeTextFile(resolvedFilename, snapshot.text);
         if (sections.length) {
           sections.push("");
         }
@@ -167,20 +169,86 @@ export class Response {
       }
     }
 
+    await this.enforceOutputBudget();
+
     return {
       content: [
-        { type: "text", text: sections.join("\n") },
-        ...this.images.map((image) => ({
-          type: "image" as const,
-          data: image.data,
-          mimeType: image.mimeType
-        }))
+        { type: "text", text: this.context.redactSecrets(sections.join("\n")) },
+        ...this.serializedImages()
       ],
       ...(this.structuredContent ? { structuredContent: this.structuredContent } : {}),
       ...(this.isClose ? { isClose: true } : {}),
       ...(this.errors.length ? { isError: true } : {})
     };
   }
+
+  private serializedImages(): Array<{ type: "image"; data: string; mimeType: SessionScreenshotMimeType }> {
+    if (this.context.config.imageResponses === "omit") {
+      return [];
+    }
+    return this.images.map((image) => ({
+      type: "image" as const,
+      data: image.data,
+      mimeType: image.mimeType
+    }));
+  }
+
+  private async enforceOutputBudget(): Promise<void> {
+    const maxSize = this.context.config.outputMaxSize;
+    if (!maxSize) {
+      return;
+    }
+
+    let entries: Array<{ path: string; size: number; mtimeMs: number }>;
+    try {
+      entries = await listFilesRecursive(this.context.runtime.getAssetManager().roots.artifactsDir);
+    } catch {
+      return;
+    }
+
+    let total = entries.reduce((sum, entry) => sum + entry.size, 0);
+    if (total <= maxSize) {
+      return;
+    }
+
+    const writtenFiles = this.context.writtenOutputFiles();
+    entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const entry of entries) {
+      if (total <= maxSize) {
+        break;
+      }
+      if (writtenFiles.has(entry.path)) {
+        continue;
+      }
+      try {
+        await unlink(entry.path);
+        total -= entry.size;
+      } catch {
+        // Match Playwright MCP: output budget cleanup is best-effort and should
+        // never fail the tool response.
+      }
+    }
+  }
+}
+
+async function listFilesRecursive(dir: string): Promise<Array<{ path: string; size: number; mtimeMs: number }>> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files = await Promise.all(entries.map(async (entry) => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      return listFilesRecursive(entryPath);
+    }
+    if (!entry.isFile()) {
+      return [];
+    }
+    const fileStat = await stat(entryPath);
+    return [{
+      path: path.resolve(entryPath),
+      size: fileStat.size,
+      mtimeMs: fileStat.mtimeMs
+    }];
+  }));
+  return files.flat();
 }
 
 async function reconcileSnapshotWithTabs(

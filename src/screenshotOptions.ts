@@ -26,17 +26,20 @@ export function determineScreenshotType(options: { path?: string; type?: Screens
   if (mimeType === "image/jpeg") {
     return "jpeg";
   }
+  if (mimeType === "image/webp") {
+    return "webp";
+  }
   throw new Error(`path: unsupported mime type "${mimeType}"`);
 }
 
-export function validateScreenshotOptions(options: ScreenshotOptions): "jpeg" | "png" {
+export function validateScreenshotOptions(options: ScreenshotOptions): ScreenshotType {
   const format = options.type ?? "png";
-  if (format !== "png" && format !== "jpeg") {
+  if (format !== "png" && format !== "jpeg" && format !== "webp") {
     throw new Error(`Unknown options.type value: ${format}`);
   }
 
   if (options.quality !== undefined) {
-    if (format !== "jpeg") {
+    if (format === "png") {
       throw new Error(`options.quality is unsupported for the ${format} screenshots`);
     }
     if (typeof options.quality !== "number") {
@@ -224,6 +227,8 @@ function getMimeTypeForPath(path: string): string {
     case ".jpg":
     case ".jpeg":
       return "image/jpeg";
+    case ".webp":
+      return "image/webp";
     case ".txt":
       return "text/plain";
     default:

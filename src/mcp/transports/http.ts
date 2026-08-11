@@ -12,6 +12,19 @@ import type {
 interface HttpSessionRecord {
   bundle: RoxyBrowserMcpServerBundle;
   transport: StreamableHTTPServerTransport;
+  heartbeatActive?: boolean;
+}
+
+const DEFAULT_PING_TIMEOUT_MS = 5000;
+const HEARTBEAT_INTERVAL_MS = 3000;
+
+function pingTimeoutMs(): number {
+  const value = process.env.PLAYWRIGHT_MCP_PING_TIMEOUT_MS;
+  if (value === undefined) {
+    return DEFAULT_PING_TIMEOUT_MS;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : DEFAULT_PING_TIMEOUT_MS;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -49,6 +62,7 @@ export async function startRoxyBrowserMcpHttp(
   const path = options.path ?? "/mcp";
   const prototypeBundle = createRoxyBrowserMcpServer(options);
   const sessions = new Map<string, HttpSessionRecord>();
+  let defaultAllowedHosts: string[] = [];
 
   const closeSession = async (sessionId: string): Promise<void> => {
     const record = sessions.get(sessionId);
@@ -56,9 +70,45 @@ export async function startRoxyBrowserMcpHttp(
       return;
     }
 
+    record.heartbeatActive = false;
     sessions.delete(sessionId);
     await record.bundle.close();
     await record.transport.close();
+  };
+
+  const startHeartbeat = (sessionId: string): void => {
+    const timeoutMs = pingTimeoutMs();
+    if (timeoutMs <= 0) {
+      return;
+    }
+
+    const record = sessions.get(sessionId);
+    if (!record) {
+      return;
+    }
+    record.heartbeatActive = true;
+
+    const beat = (): void => {
+      const current = sessions.get(sessionId);
+      if (!current?.heartbeatActive) {
+        return;
+      }
+
+      Promise.race([
+        current.bundle.server.server.ping(),
+        new Promise<never>((_, reject) => {
+          const timer = setTimeout(() => reject(new Error("ping timeout")), timeoutMs);
+          timer.unref?.();
+        })
+      ]).then(() => {
+        const timer = setTimeout(beat, HEARTBEAT_INTERVAL_MS);
+        timer.unref?.();
+      }).catch(() => {
+        void closeSession(sessionId);
+      });
+    };
+
+    beat();
   };
 
   const handleMcpRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -80,6 +130,7 @@ export async function startRoxyBrowserMcpHttp(
                 bundle,
                 transport: createdTransport
               });
+              startHeartbeat(createdSessionId);
             }
           }
         });
@@ -113,6 +164,17 @@ export async function startRoxyBrowserMcpHttp(
       }
 
       const requestUrl = new URL(req.url, `http://${req.headers.host ?? host}`);
+      const hostCheck = allowedHostCheck(req.headers.host, options.allowedHosts ?? defaultAllowedHosts);
+      if (!hostCheck.ok) {
+        if (hostCheck.reason === "missing") {
+          res.statusCode = 400;
+          res.end("Missing host");
+          return;
+        }
+        res.statusCode = 403;
+        res.end(`Access is only allowed at ${hostCheck.allowedHosts.join(", ")}`);
+        return;
+      }
       if (requestUrl.pathname === "/health" && req.method === "GET") {
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
@@ -148,6 +210,10 @@ export async function startRoxyBrowserMcpHttp(
     httpServer.once("error", reject);
     httpServer.listen(options.port, host, () => {
       httpServer.removeListener("error", reject);
+      const address = httpServer.address();
+      if (address && typeof address !== "string") {
+        defaultAllowedHosts = [`${host}:${address.port}`.toLowerCase()];
+      }
       resolve();
     });
   });
@@ -169,4 +235,21 @@ export async function startRoxyBrowserMcpHttp(
       });
     }
   };
+}
+
+function allowedHostCheck(
+  headerHost: string | string[] | undefined,
+  allowedHosts: string[]
+): { ok: true } | { ok: false; reason: "missing" | "denied"; allowedHosts: string[] } {
+  const normalizedAllowedHosts = allowedHosts.map((value) => value.toLowerCase());
+  if (normalizedAllowedHosts.includes("*")) {
+    return { ok: true };
+  }
+  const actualHost = Array.isArray(headerHost) ? headerHost[0] : headerHost;
+  if (!actualHost) {
+    return { ok: false, reason: "missing", allowedHosts: normalizedAllowedHosts };
+  }
+  return normalizedAllowedHosts.includes(actualHost.toLowerCase())
+    ? { ok: true }
+    : { ok: false, reason: "denied", allowedHosts: normalizedAllowedHosts };
 }

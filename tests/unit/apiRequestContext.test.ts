@@ -21,6 +21,34 @@ function createResponseWithSetCookies(
 }
 
 describe("RoxyAPIRequestContext", () => {
+  it("exposes Playwright-style APIResponse timing defaults", async () => {
+    const request = new RoxyAPIRequestContext();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("OK", {
+        status: 200,
+        statusText: "OK"
+      })
+    );
+
+    try {
+      const response = await request.get("https://example.com/data");
+
+      expect(response.timing()).toEqual({
+        startTime: -1,
+        domainLookupStart: -1,
+        domainLookupEnd: -1,
+        connectStart: -1,
+        secureConnectionStart: -1,
+        connectEnd: -1,
+        requestStart: -1,
+        responseStart: -1,
+        responseEnd: -1
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("returns redirect responses with location when maxRedirects is 0", async () => {
     const server = createServer((_request, response) => {
       response.writeHead(302, {

@@ -400,6 +400,93 @@ describe("BidiBrowserAdapterFactory", () => {
     ]);
   });
 
+  it("routes insertText through a focused child browsing context like Playwright", async () => {
+    const scriptEvaluate = vi.fn(async (params: {
+      expression: string;
+      target: { context: string };
+    }) => {
+      if (params.target.context === "ctx-1") {
+        return {
+          type: "success",
+          result: {
+            type: "node",
+            sharedId: "frame-shared-id",
+            value: {
+              localName: "iframe",
+              nodeType: 1
+            }
+          }
+        };
+      }
+
+      return {
+        type: "success",
+        result: {
+          type: "undefined"
+        }
+      };
+    });
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      browsingContextGetTree: vi.fn(async () => ({
+        contexts: [{
+          context: "ctx-1",
+          children: [{
+            context: "child-1",
+            children: [],
+            originalOpener: null,
+            parent: "ctx-1",
+            url: "about:blank"
+          }],
+          originalOpener: null,
+          parent: null,
+          url: "about:blank"
+        }]
+      })),
+      browsingContextLocateNodes: vi.fn(async () => ({
+        nodes: [{
+          type: "node",
+          sharedId: "frame-shared-id",
+          value: {
+            localName: "iframe",
+            nodeType: 1
+          }
+        }]
+      })),
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      scriptEvaluate,
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await page.keyboardInsertText("BiDi");
+
+    expect(scriptEvaluate).toHaveBeenCalledTimes(2);
+    const firstExpression = String(scriptEvaluate.mock.calls[0]?.[0]?.expression ?? "");
+    expect(firstExpression).toContain("__roxyBidiInsertText");
+    expect(firstExpression).not.toContain("contentWindow");
+    expect(scriptEvaluate.mock.calls.map(([params]) => params.target)).toEqual([
+      { context: "ctx-1" },
+      { context: "child-1" }
+    ]);
+  });
+
   it("keeps BiDi locator input in the target unless activation is explicit", async () => {
     const browsingContextActivate = vi.fn(async () => ({}));
     const client = createBidiClientStub({
@@ -865,6 +952,42 @@ describe("BidiBrowserAdapterFactory", () => {
         }]
       }
     ]);
+  });
+
+  it("passes webp screenshot quality to BiDi", async () => {
+    const browsingContextCaptureScreenshot = vi.fn(async () => ({ data: "" }));
+    const client = createBidiClientStub({
+      browsingContextCreate: vi.fn(async () => ({
+        context: "ctx-1"
+      })),
+      browsingContextCaptureScreenshot,
+      networkAddDataCollector: vi.fn(async () => ({
+        collector: "collector-1"
+      })),
+      sessionSubscribe: vi.fn(async () => ({}))
+    });
+    createClient.mockResolvedValue(client);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+    const browser = await adapter.browser();
+    const context = await browser.newContext({ reuseDefaultUserContext: true });
+    const page = await context.newPage();
+
+    await page.screenshot({ type: "webp", quality: 80 });
+
+    expect(browsingContextCaptureScreenshot).toHaveBeenCalledWith(expect.objectContaining({
+      format: {
+        type: "webp",
+        quality: 80
+      }
+    }));
   });
 
   it("treats screencast start and stop as no-op page operations", async () => {

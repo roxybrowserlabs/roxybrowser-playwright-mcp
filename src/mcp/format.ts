@@ -18,10 +18,15 @@ export function formatTabs(tabs: BrowserTab[]): string {
 export function formatSnapshot(snapshot: BrowserSnapshot): string {
   const url = snapshot.url || "about:blank";
   const title = snapshot.title || "(untitled)";
+  const events = formatSnapshotEvents(snapshot);
   return [
     "### Page",
     `- Page URL: ${url}`,
     `- Page Title: ${title}`,
+    ...(snapshot.mainDocumentStatus
+      && (snapshot.mainDocumentStatus.status < 200 || snapshot.mainDocumentStatus.status >= 300)
+      ? [`- HTTP status: ${snapshot.mainDocumentStatus.status}${snapshot.mainDocumentStatus.statusText ? ` ${snapshot.mainDocumentStatus.statusText}` : ""}`]
+      : []),
     ...(snapshot.console && (snapshot.console.errors || snapshot.console.warnings)
       ? [`- Console: ${snapshot.console.errors} errors, ${snapshot.console.warnings} warnings`]
       : []),
@@ -30,9 +35,20 @@ export function formatSnapshot(snapshot: BrowserSnapshot): string {
     snapshot.text,
     "```",
     ...(snapshot.consoleLink
-      ? ["### Events", `- New console entries: ${snapshot.consoleLink}`]
+      ? ["### Events", `- New console entries: ${snapshot.consoleLink}`, ...events]
+      : events.length
+        ? ["### Events", ...events]
       : [])
   ].join("\n");
+}
+
+function formatSnapshotEvents(snapshot: BrowserSnapshot): string[] {
+  return (snapshot.events ?? []).map((event) => {
+    if (event.type === "download-start") {
+      return `- Downloading file ${event.filename} ...`;
+    }
+    return `- Downloaded file ${event.filename} to "${event.path}"`;
+  });
 }
 
 export function formatConnectResult(input: {

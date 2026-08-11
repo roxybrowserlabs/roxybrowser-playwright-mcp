@@ -272,9 +272,9 @@ describe("browser process cleanup", () => {
           null,
           [
             "601 1 /Applications/Chromium.app/Contents/MacOS/Chromium --user-data-dir=/tmp/roxybrowser-cdp-sibling --remote-debugging-port=1111",
-            "602 601 /Applications/Chromium.app/Contents/MacOS/Chromium --type=renderer",
+            "602 601 /Applications/Chromium.app/Contents/MacOS/Chromium --type=renderer --user-data-dir=/tmp/roxybrowser-cdp-sibling --remote-debugging-port=0",
             "701 1 /Applications/Chromium.app/Contents/MacOS/Chromium --user-data-dir=/tmp/roxybrowser-cdp-orphan --remote-debugging-port=2222",
-            "702 701 /Applications/Chromium.app/Contents/MacOS/Chromium --type=renderer"
+            "702 701 /Applications/Chromium.app/Contents/MacOS/Chromium --type=renderer --user-data-dir=/tmp/roxybrowser-cdp-orphan --remote-debugging-port=0"
           ].join("\n")
         );
         return undefined as never;

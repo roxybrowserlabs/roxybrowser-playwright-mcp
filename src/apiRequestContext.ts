@@ -5,6 +5,7 @@ import { basename, dirname } from "node:path";
 import { Readable } from "node:stream";
 import { writeFile } from "node:fs/promises";
 import { RoxyTracing } from "./tracing/index.js";
+import { linkAbortSignal } from "./abortSignal.js";
 import type {
   APIRequestContext,
   APIRequestFetchOptions,
@@ -130,6 +131,7 @@ export class RoxyAPIRequestContext implements APIRequestContext {
     const body = await buildRequestBody(sourceRequest, headers, options);
     const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
+    const unlinkAbortSignal = linkAbortSignal(controller, options.signal);
     const timeoutHandle =
       timeout > 0
         ? setTimeout(() => controller.abort(new Error(`Request timed out after ${timeout}ms`)), timeout)
@@ -181,6 +183,7 @@ export class RoxyAPIRequestContext implements APIRequestContext {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
+      unlinkAbortSignal();
     }
   }
 
@@ -752,6 +755,17 @@ export function createApiResponse(fetchResponse: globalThis.Response): APIRespon
   const headers = aggregateHeaders(headerEntries);
   let bodyPromise: Promise<Buffer> | null = null;
   let disposed = false;
+  const timing = {
+    startTime: -1,
+    domainLookupStart: -1,
+    domainLookupEnd: -1,
+    connectStart: -1,
+    secureConnectionStart: -1,
+    connectEnd: -1,
+    requestStart: -1,
+    responseStart: -1,
+    responseEnd: -1
+  };
 
   const readBody = async (): Promise<Buffer> => {
     if (disposed) {
@@ -781,6 +795,7 @@ export function createApiResponse(fetchResponse: globalThis.Response): APIRespon
     status: () => fetchResponse.status,
     statusText: () => fetchResponse.statusText,
     text: async () => (await readBody()).toString("utf8"),
+    timing: () => ({ ...timing }),
     url: () => fetchResponse.url,
     [Symbol.asyncDispose]: dispose
   };

@@ -1,4 +1,5 @@
 import { createSmartHandle } from "./jsHandle.js";
+import { createAbortError, throwIfAborted } from "./abortSignal.js";
 import { serializePageFunction } from "./evaluation.js";
 import { serializeEvaluationArgument } from "./elementHandle.js";
 import { TimeoutError } from "./errors.js";
@@ -162,6 +163,7 @@ export class RoxyWorker implements Worker {
       | ((worker: Worker) => boolean | Promise<boolean>)
       | {
           predicate?: (worker: Worker) => boolean | Promise<boolean>;
+          signal?: AbortSignal;
           timeout?: number;
         }
   ): Promise<Worker>;
@@ -171,6 +173,7 @@ export class RoxyWorker implements Worker {
       | ((consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>)
       | {
           predicate?: (consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>;
+          signal?: AbortSignal;
           timeout?: number;
         }
   ): Promise<PageConsoleMessage>;
@@ -183,6 +186,7 @@ export class RoxyWorker implements Worker {
           predicate?:
             | ((worker: Worker) => boolean | Promise<boolean>)
             | ((consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>);
+          signal?: AbortSignal;
           timeout?: number;
         }
   ): Promise<Worker | PageConsoleMessage> {
@@ -193,6 +197,7 @@ export class RoxyWorker implements Worker {
           | ((worker: Worker) => boolean | Promise<boolean>)
           | {
               predicate?: (worker: Worker) => boolean | Promise<boolean>;
+              signal?: AbortSignal;
               timeout?: number;
             }
       );
@@ -202,6 +207,7 @@ export class RoxyWorker implements Worker {
         | ((consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>)
         | {
             predicate?: (consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>;
+            signal?: AbortSignal;
             timeout?: number;
           }
     );
@@ -229,6 +235,7 @@ export class RoxyWorker implements Worker {
       | ((worker: Worker) => boolean | Promise<boolean>)
       | {
           predicate?: (worker: Worker) => boolean | Promise<boolean>;
+          signal?: AbortSignal;
           timeout?: number;
         }
   ): Promise<Worker> {
@@ -240,6 +247,11 @@ export class RoxyWorker implements Worker {
       typeof optionsOrPredicate === "function"
         ? 30_000
         : optionsOrPredicate?.timeout ?? 30_000;
+    const signal =
+      typeof optionsOrPredicate === "function"
+        ? undefined
+        : optionsOrPredicate?.signal;
+    throwIfAborted(signal ? { signal } : undefined);
 
     if (this.closed) {
       const accepted = predicate ? await predicate(this) : true;
@@ -249,25 +261,35 @@ export class RoxyWorker implements Worker {
     }
 
     return new Promise<Worker>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener("close", listener);
+        signal?.removeEventListener("abort", abortListener);
+      };
+      const abortListener = () => {
+        cleanup();
+        if (signal) {
+          reject(createAbortError(signal));
+        }
+      };
       const listener = async (worker: Worker) => {
         try {
           const accepted = predicate ? await predicate(worker) : true;
           if (!accepted) {
             return;
           }
-          clearTimeout(timer);
-          this.removeListener("close", listener);
+          cleanup();
           resolve(worker);
         } catch (error) {
-          clearTimeout(timer);
-          this.removeListener("close", listener);
+          cleanup();
           reject(error instanceof Error ? error : new Error(String(error)));
         }
       };
       const timer = setTimeout(() => {
-        this.removeListener("close", listener);
+        cleanup();
         reject(new TimeoutError(`Timed out waiting for event "${event}".`));
       }, timeout);
+      signal?.addEventListener("abort", abortListener, { once: true });
       this.on("close", listener);
     });
   }
@@ -277,6 +299,7 @@ export class RoxyWorker implements Worker {
       | ((consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>)
       | {
           predicate?: (consoleMessage: PageConsoleMessage) => boolean | Promise<boolean>;
+          signal?: AbortSignal;
           timeout?: number;
         }
   ): Promise<PageConsoleMessage> {
@@ -288,27 +311,42 @@ export class RoxyWorker implements Worker {
       typeof optionsOrPredicate === "function"
         ? 30_000
         : optionsOrPredicate?.timeout ?? 30_000;
+    const signal =
+      typeof optionsOrPredicate === "function"
+        ? undefined
+        : optionsOrPredicate?.signal;
+    throwIfAborted(signal ? { signal } : undefined);
 
     return new Promise<PageConsoleMessage>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener("console", listener);
+        signal?.removeEventListener("abort", abortListener);
+      };
+      const abortListener = () => {
+        cleanup();
+        if (signal) {
+          reject(createAbortError(signal));
+        }
+      };
       const listener = async (message: PageConsoleMessage) => {
         try {
           const accepted = predicate ? await predicate(message) : true;
           if (!accepted) {
             return;
           }
-          clearTimeout(timer);
-          this.removeListener("console", listener);
+          cleanup();
           resolve(message);
         } catch (error) {
-          clearTimeout(timer);
-          this.removeListener("console", listener);
+          cleanup();
           reject(error instanceof Error ? error : new Error(String(error)));
         }
       };
       const timer = setTimeout(() => {
-        this.removeListener("console", listener);
+        cleanup();
         reject(new TimeoutError(`Timed out waiting for event "console".`));
       }, timeout);
+      signal?.addEventListener("abort", abortListener, { once: true });
       this.on("console", listener);
     });
   }

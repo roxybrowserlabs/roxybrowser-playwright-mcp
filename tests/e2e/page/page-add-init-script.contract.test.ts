@@ -2,6 +2,17 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withPage } from "../../helpers/browser.js";
 import { createHistoryPageFixture } from "../../helpers/server.js";
 
+async function waitForCondition(condition: () => boolean, timeout = 5000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start <= timeout) {
+    if (condition()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 describe("page addInitScript contract e2e", () => {
   let fixture: Awaited<ReturnType<typeof createHistoryPageFixture>>;
 
@@ -48,6 +59,66 @@ describe("page addInitScript contract e2e", () => {
       await page.addInitScript('window["injected"] = 123');
       await page.goto(fixture.server.PREFIX + "/tamperable.html");
       expect(await page.evaluate(() => (window as typeof window & { result?: number }).result)).toBe(123);
+    });
+  });
+
+  it("should drop functions without the exposeFunctions option", async () => {
+    await withPage(async (page) => {
+      await page.addInitScript(({ cb }) => {
+        (window as typeof window & { cbType?: string }).cbType = typeof cb;
+      }, { cb: () => {} });
+      await page.goto(fixture.server.EMPTY_PAGE);
+      expect(await page.evaluate(() => (window as typeof window & { cbType?: string }).cbType)).toBe("undefined");
+    });
+  });
+
+  it("should throw when exposeFunctions is used with a non-function init script", async () => {
+    await withPage(async (page) => {
+      const error = await page.addInitScript(
+        { content: "window.foo = 1;" },
+        undefined,
+        { exposeFunctions: true }
+      ).catch((caught) => caught as Error);
+      expect(error.message).toContain("Passing functions requires the init script to be a function");
+    });
+  });
+
+  it("should call a function passed as an argument", async () => {
+    await withPage(async (page) => {
+      const received: number[] = [];
+      await page.addInitScript(async ({ cb }) => {
+        await cb(1);
+        await cb(2);
+      }, { cb: async (n: number) => { received.push(n); } }, { exposeFunctions: true });
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await waitForCondition(() => received.length === 2);
+      expect(received).toEqual([1, 2]);
+    });
+  });
+
+  it("should return the callback result to the page", async () => {
+    await withPage(async (page) => {
+      await page.addInitScript(async ({ double }) => {
+        (window as typeof window & { result?: number }).result = await double(21);
+      }, { double: async (n: number) => n * 2 }, { exposeFunctions: true });
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.waitForFunction(() => (window as typeof window & { result?: number }).result === 42);
+      expect(await page.evaluate(() => (window as typeof window & { result?: number }).result)).toBe(42);
+    });
+  });
+
+  it("should remove exposed functions after dispose", async () => {
+    await withPage(async (page) => {
+      const received: number[] = [];
+      const disposable = await page.addInitScript(({ cb }) => {
+        (window as typeof window & { cb?: (n: number) => void }).cb = cb;
+      }, { cb: (n: number) => { received.push(n); } }, { exposeFunctions: true });
+      await page.goto(fixture.server.EMPTY_PAGE);
+      await page.evaluate(() => (window as typeof window & { cb: (n: number) => void }).cb(1));
+      await disposable.dispose();
+      await page.goto(fixture.server.EMPTY_PAGE);
+      expect(await page.evaluate(() => typeof (window as typeof window & { cb?: unknown }).cb)).toBe("undefined");
+      expect(received).toEqual([1]);
     });
   });
 

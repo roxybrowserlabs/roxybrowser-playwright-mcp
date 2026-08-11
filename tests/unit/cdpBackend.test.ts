@@ -65,6 +65,8 @@ describe("buildChromiumLaunchArgs", () => {
       "--disable-renderer-backgrounding",
       "--no-first-run",
       "--no-default-browser-check",
+      "--password-store=basic",
+      "--use-mock-keychain",
       "--no-startup-window"
     ]);
   });
@@ -80,6 +82,8 @@ describe("buildChromiumLaunchArgs", () => {
       "--disable-renderer-backgrounding",
       "--no-first-run",
       "--no-default-browser-check",
+      "--password-store=basic",
+      "--use-mock-keychain",
       "--no-startup-window",
       "--headless=new"
     ]);
@@ -104,6 +108,8 @@ describe("buildChromiumLaunchArgs", () => {
       "--disable-renderer-backgrounding",
       "--no-first-run",
       "--no-default-browser-check",
+      "--password-store=basic",
+      "--use-mock-keychain",
       "--no-startup-window",
       "--start-maximized",
       "--lang=en-US"

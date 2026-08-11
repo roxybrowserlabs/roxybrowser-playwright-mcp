@@ -6,11 +6,18 @@ import { join } from "node:path";
 import { createApiResponse, fetchWithRetries, RoxyAPIRequestContext } from "./apiRequestContext.js";
 import { RoxyBrowserContextClockDelegate } from "./browserContextClock.js";
 import { RoxyClock } from "./clock.js";
+import { createAbortError, linkAbortSignal, throwIfAborted } from "./abortSignal.js";
 import { TimeoutError } from "./errors.js";
 import { normalizeExtraHTTPHeaders } from "./httpHeaders.js";
-import { RoxyPage } from "./page.js";
+import { installExposedBindingFunction, RoxyPage } from "./page.js";
 import { RoxyTracing } from "./tracing/index.js";
-import { serializePageFunction } from "./evaluation.js";
+import {
+  isSerializedEvaluateCallbacksArg,
+  prepareEvaluateWithCallbacksArg,
+  serializePageFunction,
+  type EvaluateOptions
+} from "./evaluation.js";
+import { PARSE_EVALUATION_RESULT_SOURCE } from "./protocol/evaluationSerializer.js";
 import type { RouteHandlerEntry, RouteMatcher } from "./routeHandler.js";
 import { urlMatches } from "./urlMatch.js";
 import { RoxyVideo } from "./video.js";
@@ -19,7 +26,7 @@ import type {
   ProtocolBrowserContextAdapter,
   ProtocolPageAdapter
 } from "./protocol/adapter.js";
-import type { BrowserContext, Clock, Dialog, Page, Request, Response } from "./types/api.js";
+import type { BrowserContext, Clock, Dialog, Page, Request, Response, Worker } from "./types/api.js";
 import type { Disposable, PageFunction } from "./types/api.js";
 import type {
   BrowserContextEventListener,
@@ -60,6 +67,9 @@ interface WebSocketRouteHandlerEntry {
 }
 
 interface ContextInitScriptEntry {
+  callbacks: Array<{ callback: Function; name: string }>;
+  callbackInitScriptDisposables: Disposable[];
+  callbackDisposablesByPage: WeakMap<RoxyPage, Disposable[]>;
   source: string;
   disposablesByPage: WeakMap<RoxyPage, Disposable>;
 }
@@ -67,6 +77,7 @@ interface ContextInitScriptEntry {
 export class RoxyBrowserContext implements BrowserContext {
   private readonly pageSet = new Set<RoxyPage>();
   private readonly pageByAdapter = new Map<ProtocolPageAdapter, RoxyPage>();
+  private readonly serviceWorkerSet = new Set<Worker>();
   private readonly adapterByPage = new WeakMap<RoxyPage, ProtocolPageAdapter>();
   private readonly pendingPageRegistrations = new Map<ProtocolPageAdapter, Promise<RoxyPage>>();
   private readonly emittedPages = new WeakSet<RoxyPage>();
@@ -78,6 +89,7 @@ export class RoxyBrowserContext implements BrowserContext {
   private readonly initScripts = new Set<ContextInitScriptEntry>();
   private readonly routeMatcherIds = new WeakMap<object, string>();
   private readonly disposeAdapterPageListener: (() => void) | null;
+  private readonly disposeAdapterServiceWorkerListener: (() => void) | null;
   private closed = false;
   private nextRouteMatcherId = 0;
   private videoOutputDirPromise: Promise<string> | null = null;
@@ -131,6 +143,11 @@ export class RoxyBrowserContext implements BrowserContext {
           hasWindowOpener ?? true
         )
       ) ?? null;
+    this.disposeAdapterServiceWorkerListener =
+      this.adapter.onServiceWorker?.((worker) => this.registerServiceWorker(worker)) ?? null;
+    for (const worker of this.adapter.serviceWorkers?.() ?? []) {
+      this.registerServiceWorker(worker);
+    }
   }
 
   async newPage(): Promise<Page> {
@@ -142,33 +159,70 @@ export class RoxyBrowserContext implements BrowserContext {
 
   async addInitScript<Arg>(
     script: PageFunction<Arg, any> | { path?: string; content?: string },
-    arg?: Arg
+    arg?: Arg,
+    options?: EvaluateOptions
   ): Promise<Disposable> {
-    const source = await evaluationScript(script, arg as any);
-    if (this.adapter.addInitScript) {
-      return this.adapter.addInitScript(source);
-    }
+    const callbacks: Array<{ callback: Function; name: string }> = [];
+    const source = options?.exposeFunctions
+      ? await this.initScriptSourceWithExposedFunctions(script, arg as any, callbacks)
+      : await evaluationScript(script, arg as any);
     const entry: ContextInitScriptEntry = {
+      callbacks,
+      callbackInitScriptDisposables: [],
+      callbackDisposablesByPage: new WeakMap<RoxyPage, Disposable[]>(),
       source,
       disposablesByPage: new WeakMap<RoxyPage, Disposable>()
     };
     this.initScripts.add(entry);
-    await Promise.all(Array.from(this.pageSet, async (page) => {
-      const disposable = await page.addInitScript(source);
-      entry.disposablesByPage.set(page, disposable);
-    }));
-    const dispose = async () => {
-      if (!this.initScripts.delete(entry)) {
-        return;
+    try {
+      if (this.adapter.addInitScript) {
+        entry.callbackInitScriptDisposables = await this.installInitScriptCallbacksOnContext(callbacks);
+        await Promise.all(Array.from(this.pageSet, async (page) => {
+          entry.callbackDisposablesByPage.set(page, await this.installInitScriptCallbacksOnPage(page, callbacks));
+        }));
+        const initScriptDisposable = await this.adapter.addInitScript(source);
+        const dispose = async () => {
+          if (!this.initScripts.delete(entry)) {
+            return;
+          }
+          await initScriptDisposable.dispose();
+          await Promise.all(entry.callbackInitScriptDisposables.map((disposable) => disposable.dispose().catch(() => {})));
+          await Promise.all(Array.from(this.pageSet, async (page) => {
+            await Promise.all((entry.callbackDisposablesByPage.get(page) ?? []).map((disposable) => disposable.dispose().catch(() => {})));
+          }));
+        };
+        return {
+          dispose,
+          [Symbol.asyncDispose]: dispose
+        };
       }
       await Promise.all(Array.from(this.pageSet, async (page) => {
+        entry.callbackDisposablesByPage.set(page, await this.installInitScriptCallbacksOnPage(page, callbacks));
+        const disposable = await page.addInitScript(source);
+        entry.disposablesByPage.set(page, disposable);
+      }));
+      const dispose = async () => {
+        if (!this.initScripts.delete(entry)) {
+          return;
+        }
+        await Promise.all(Array.from(this.pageSet, async (page) => {
+          await Promise.all((entry.callbackDisposablesByPage.get(page) ?? []).map((disposable) => disposable.dispose().catch(() => {})));
+          await entry.disposablesByPage.get(page)?.dispose();
+        }));
+      };
+      return {
+        dispose,
+        [Symbol.asyncDispose]: dispose
+      };
+    } catch (error) {
+      this.initScripts.delete(entry);
+      await Promise.all(entry.callbackInitScriptDisposables.map((disposable) => disposable.dispose().catch(() => {})));
+      await Promise.all(Array.from(this.pageSet, async (page) => {
+        await Promise.all((entry.callbackDisposablesByPage.get(page) ?? []).map((disposable) => disposable.dispose().catch(() => {})));
         await entry.disposablesByPage.get(page)?.dispose();
       }));
-    };
-    return {
-      dispose,
-      [Symbol.asyncDispose]: dispose
-    };
+      throw error;
+    }
   }
 
   async _ensureCursorVisualizationOnCurrentPages(): Promise<void> {
@@ -234,6 +288,10 @@ export class RoxyBrowserContext implements BrowserContext {
     return Array.from(this.pageSet);
   }
 
+  serviceWorkers(): Worker[] {
+    return Array.from(this.serviceWorkerSet);
+  }
+
   async close(): Promise<void> {
     if (this.closed) {
       return;
@@ -241,6 +299,7 @@ export class RoxyBrowserContext implements BrowserContext {
     this.closed = true;
     try {
       this.disposeAdapterPageListener?.();
+      this.disposeAdapterServiceWorkerListener?.();
       await Promise.all(
         Array.from(this.pageSet).map(async (page) => {
           await page.close();
@@ -260,6 +319,7 @@ export class RoxyBrowserContext implements BrowserContext {
     }
     this.closed = true;
     this.disposeAdapterPageListener?.();
+    this.disposeAdapterServiceWorkerListener?.();
     for (const page of Array.from(this.pageSet)) {
       await page._didDisconnect();
     }
@@ -452,6 +512,7 @@ export class RoxyBrowserContext implements BrowserContext {
       | BrowserContextEventPredicate<K>
       | {
           predicate?: BrowserContextEventPredicate<K>;
+          signal?: AbortSignal;
           timeout?: number;
         }
   ): Promise<BrowserContextEventMap[K]> {
@@ -463,6 +524,11 @@ export class RoxyBrowserContext implements BrowserContext {
       typeof optionsOrPredicate === "function"
         ? DEFAULT_CONTEXT_EVENT_TIMEOUT_MS
         : optionsOrPredicate?.timeout ?? DEFAULT_CONTEXT_EVENT_TIMEOUT_MS;
+    const signal =
+      typeof optionsOrPredicate === "function"
+        ? undefined
+        : optionsOrPredicate?.signal;
+    throwIfAborted(signal ? { signal } : undefined);
 
     return new Promise<BrowserContextEventMap[K]>((resolve, reject) => {
       const timer =
@@ -479,6 +545,13 @@ export class RoxyBrowserContext implements BrowserContext {
         this.removeListener(event, listener);
         if (event !== "close") {
           this.removeListener("close", closeListener as BrowserContextEventListener<"close">);
+        }
+        signal?.removeEventListener("abort", abortListener);
+      };
+      const abortListener = () => {
+        cleanup();
+        if (signal) {
+          reject(createAbortError(signal));
         }
       };
       const closeListener = (() => {
@@ -501,6 +574,7 @@ export class RoxyBrowserContext implements BrowserContext {
       if (event !== "close") {
         this.on("close", closeListener);
       }
+      signal?.addEventListener("abort", abortListener, { once: true });
       this.on(event, listener);
     });
   }
@@ -562,8 +636,13 @@ export class RoxyBrowserContext implements BrowserContext {
     this.tracing.attachPage(page);
     try {
       for (const entry of this.initScripts) {
-        const disposable = await page.addInitScript(entry.source);
-        entry.disposablesByPage.set(page, disposable);
+        if (this.adapter.addInitScript) {
+          entry.callbackDisposablesByPage.set(page, await this.installInitScriptCallbacksOnPage(page, entry.callbacks));
+        } else {
+          entry.callbackDisposablesByPage.set(page, await this.installInitScriptCallbacksOnPage(page, entry.callbacks));
+          const disposable = await page.addInitScript(entry.source);
+          entry.disposablesByPage.set(page, disposable);
+        }
       }
       await page._ensurePlaywrightBuiltinsInstalled().catch((error) => {
         if (isClosedPageRegistrationError(error)) {
@@ -612,6 +691,49 @@ export class RoxyBrowserContext implements BrowserContext {
     }
     this.emittedPages.add(page);
     this.emit("page", page);
+  }
+
+  private async initScriptSourceWithExposedFunctions<Arg>(
+    script: PageFunction<Arg, any> | { path?: string; content?: string },
+    arg: Arg,
+    callbacks: Array<{ callback: Function; name: string }>
+  ): Promise<string> {
+    if (typeof script !== "function") {
+      throw new Error("Passing functions requires the init script to be a function");
+    }
+    const preparedArg = await prepareEvaluateWithCallbacksArg({
+      _exposeEvaluateCallback: async (name, callback) => {
+        callbacks.push({ name, callback });
+      }
+    }, arg, { exposeFunctions: true });
+    if (!isSerializedEvaluateCallbacksArg(preparedArg)) {
+      throw new Error("Internal error while serializing init script callbacks");
+    }
+    const source = serializePageFunction(script as any);
+    return `(() => {
+      ${PARSE_EVALUATION_RESULT_SOURCE}
+      const arg = __roxyParseEvaluationResultValue(${JSON.stringify(preparedArg.__roxyEvaluateCallbacksArg)});
+      return (${source})(arg);
+    })()`;
+  }
+
+  private async installInitScriptCallbacksOnPage(
+    page: RoxyPage,
+    callbacks: Array<{ callback: Function; name: string }>
+  ): Promise<Disposable[]> {
+    return Promise.all(callbacks.map(({ name, callback }) => page._exposeCallbackBinding(name, callback)));
+  }
+
+  private async installInitScriptCallbacksOnContext(
+    callbacks: Array<{ callback: Function; name: string }>
+  ): Promise<Disposable[]> {
+    if (!this.adapter.addInitScript) {
+      return [];
+    }
+    const addInitScript = this.adapter.addInitScript;
+    return Promise.all(callbacks.map(({ name }) =>
+      addInitScript.call(this.adapter, `(${installExposedBindingFunction.toString()})(${JSON.stringify(name)})`)
+    ));
   }
 
   private async enableRecordVideo(page: RoxyPage, options: RecordVideoOptions): Promise<void> {
@@ -762,6 +884,17 @@ export class RoxyBrowserContext implements BrowserContext {
         this.emit("request", request);
       }
     }).catch(() => {});
+  }
+
+  private registerServiceWorker(worker: Worker): void {
+    if (this.serviceWorkerSet.has(worker)) {
+      return;
+    }
+    this.serviceWorkerSet.add(worker);
+    worker.once("close", () => {
+      this.serviceWorkerSet.delete(worker);
+    });
+    this.emit("serviceworker", worker);
   }
 
   async _onWebSocketRoute(websocketroute: import("./types/api.js").WebSocketRoute): Promise<boolean> {
@@ -1291,6 +1424,7 @@ async function fetchContextRouteRequest(
     maxRetries?: number;
     method?: string;
     postData?: string | Buffer | unknown;
+    signal?: AbortSignal;
     timeout?: number;
     url?: string;
   }
@@ -1313,6 +1447,7 @@ async function fetchContextRouteRequest(
     }
   }
   const controller = new AbortController();
+  const unlinkAbortSignal = linkAbortSignal(controller, options?.signal);
   const timeout = options?.timeout ?? DEFAULT_CONTEXT_EVENT_TIMEOUT_MS;
   const timeoutHandle =
     timeout > 0
@@ -1334,6 +1469,7 @@ async function fetchContextRouteRequest(
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
     }
+    unlinkAbortSignal();
   }
 }
 

@@ -5,6 +5,7 @@ import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../../../../src/vendor
 
 interface PlaywrightAriaSnapshotResult {
   refs: Record<string, string>;
+  locators?: Record<string, string>;
   text: string;
   title: string;
   url: string;
@@ -55,6 +56,7 @@ function createHelpers(window: Window) {
   return {
     snapshot: window.eval(`(${PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE})`) as (payload: {
       options: { mode: "ai" | "default"; depth?: number; boxes?: boolean; timeout?: number };
+      testIdAttribute?: string;
       target?: { nodeToken?: string; selector?: string; raw?: string };
     }) => PlaywrightAriaSnapshotResult,
     resolveRef: window.eval(`(${ARIA_REF_SELECTOR_EVALUATE_SOURCE})`) as (payload: {
@@ -143,5 +145,51 @@ describe("Playwright aria snapshot evaluate wrapper", () => {
         xpath: '//*[@id="frame-a"]'
       }
     ]);
+  });
+
+  it("truncates data URL link payloads like Playwright 1.62.1", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <a href="data:text/plain;base64,c2VjcmV0LXBheWxvYWQtdGhhdC1zaG91bGQtbm90LWFwcGVhcg==">Download</a>
+        </body>
+      </html>
+    `);
+    const { snapshot } = createHelpers(window);
+
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      }
+    });
+
+    expect(result.text).toContain("- /url: data:text/plain;base64,\u2026");
+    expect(result.text).not.toContain("c2VjcmV0LXBheWxvYWQ");
+  });
+
+  it("generates locator metadata with the configured Playwright MCP test id attribute", () => {
+    const window = createWindow(`
+      <!doctype html>
+      <html>
+        <body>
+          <button data-tid="submit">Submit</button>
+          <button data-tid="save's">Save</button>
+        </body>
+      </html>
+    `);
+    const { snapshot } = createHelpers(window);
+
+    const result = snapshot({
+      options: {
+        mode: "ai"
+      },
+      testIdAttribute: "data-tid"
+    });
+
+    const submitRef = refForLine(result, 'button "Submit"');
+    const saveRef = refForLine(result, 'button "Save"');
+    expect(result.locators?.[submitRef]).toBe("getByTestId('submit')");
+    expect(result.locators?.[saveRef]).toBe("getByTestId('save\\'s')");
   });
 });

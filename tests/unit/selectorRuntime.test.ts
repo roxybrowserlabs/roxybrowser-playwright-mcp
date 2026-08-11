@@ -5,7 +5,7 @@ import type { SelectorRuntimePayload } from "../../src/protocol/selectorRuntime.
 
 function createRuntime(html: string): {
   document: Document;
-  run: (payload: SelectorRuntimePayload) => unknown;
+  run: (payload: SelectorRuntimePayload) => Promise<unknown>;
 } {
   const dom = new JSDOM(html, {
     url: "https://example.test",
@@ -13,12 +13,12 @@ function createRuntime(html: string): {
   });
   return {
     document: dom.window.document,
-    run: dom.window.eval(`(${SELECTOR_RUNTIME_SOURCE})`) as (payload: SelectorRuntimePayload) => unknown
+    run: dom.window.eval(`(${SELECTOR_RUNTIME_SOURCE})`) as (payload: SelectorRuntimePayload) => Promise<unknown>
   };
 }
 
 describe("selector runtime", () => {
-  it("does not match internal overlay shadow DOM nodes with CSS selectors", () => {
+  it("does not match internal overlay shadow DOM nodes with CSS selectors", async () => {
     const { document, run } = createRuntime(`<!doctype html><html><body>
       <div>hello</div>
       <x-pw-user-overlays></x-pw-user-overlays>
@@ -28,7 +28,7 @@ describe("selector runtime", () => {
     const internalDiv = document.createElement("div");
     shadowRoot.append(internalDiv);
 
-    const count = run({
+    const count = await run({
       operation: "count",
       reference: {
         chain: [{ strategy: "css", value: "div" }]
@@ -38,13 +38,13 @@ describe("selector runtime", () => {
     expect(count).toBe(1);
   });
 
-  it("does not match cursor visualization nodes with CSS selectors", () => {
+  it("does not match cursor visualization nodes with CSS selectors", async () => {
     const { run } = createRuntime(`<!doctype html><html><body>
       <div>hello</div>
       <div class="curzr"></div>
     </body></html>`);
 
-    const count = run({
+    const count = await run({
       operation: "count",
       reference: {
         chain: [{ strategy: "css", value: "div" }]

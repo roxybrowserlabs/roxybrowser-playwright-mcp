@@ -192,7 +192,7 @@ async function resolveCdpEndpoint(): Promise<string> {
   }
 
   const require = createRequire(import.meta.url);
-  const modulePath = require.resolve("../../tests/helpers/roxybrowser-openai.mjs");
+  const modulePath = require.resolve("../../scripts/roxybrowser-client.mjs");
   throw new Error(`A CDP endpoint is required for this test. Set ROXY_CDP_WS_ENDPOINT or ROXY_USE_ROXYBROWSER_API=1. Helper: ${dirname(modulePath)}`);
 }
 

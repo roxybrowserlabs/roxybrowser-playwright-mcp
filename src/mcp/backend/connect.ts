@@ -1,3 +1,4 @@
+import { RoxyBrowserClient } from "@roxybrowser/openapi";
 import { z } from "zod";
 import { formatConnectResult } from "../format.js";
 import type {
@@ -148,51 +149,31 @@ function resolveRoxyBrowserLaunchConfig(
   }
   return {
     workspaceId: config.workspaceId,
-    client: new HttpRoxyBrowserLaunchClient(config)
+    client: new OpenApiRoxyBrowserLaunchClient(config)
   };
 }
 
-class HttpRoxyBrowserLaunchClient implements RoxyBrowserLaunchClient {
-  private readonly baseUrl: string;
+class OpenApiRoxyBrowserLaunchClient implements RoxyBrowserLaunchClient {
+  private readonly client: RoxyBrowserClient;
 
-  constructor(private readonly options: RoxyBrowserLaunchClientOptions) {
+  constructor(options: RoxyBrowserLaunchClientOptions) {
     const host = options.host ?? "127.0.0.1";
     const apiPort = options.apiPort ?? "50000";
-    this.baseUrl = `http://${host}:${apiPort}`;
+    this.client = new RoxyBrowserClient({
+      baseUrl: `http://${host}:${apiPort}`,
+      apiKey: options.apiToken,
+      workspaceId: options.workspaceId
+    });
   }
 
   async getConnectionInfo(dirIds?: string[]): Promise<RoxyBrowserLaunchApiResponse> {
-    const url = new URL("/browser/connection_info", this.baseUrl);
-    if (dirIds && dirIds.length > 0) {
-      url.searchParams.set("dirIds", dirIds.join(","));
-    }
-    return await this.request(url, { method: "GET" });
+    return await this.client.api.browser.connectionInfo(
+      dirIds && dirIds.length > 0 ? { dirIds: dirIds.join(",") } : undefined
+    );
   }
 
   async openBrowser(args: RoxyBrowserLaunchOpenArgs): Promise<RoxyBrowserLaunchApiResponse> {
-    return await this.request(new URL("/browser/open", this.baseUrl), {
-      method: "POST",
-      body: JSON.stringify(args)
-    });
-  }
-
-  private async request(
-    url: URL,
-    init: RequestInit
-  ): Promise<RoxyBrowserLaunchApiResponse> {
-    const fetchResponse = await fetch(url, {
-      ...init,
-      headers: {
-        "content-type": "application/json",
-        token: this.options.apiToken
-      }
-    });
-    if (!fetchResponse.ok) {
-      throw new Error(
-        `RoxyBrowser API request failed: ${fetchResponse.status} ${fetchResponse.statusText}`
-      );
-    }
-    return await fetchResponse.json() as RoxyBrowserLaunchApiResponse;
+    return await this.client.api.browser.open(args);
   }
 }
 

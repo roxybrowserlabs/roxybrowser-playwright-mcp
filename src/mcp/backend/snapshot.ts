@@ -211,10 +211,25 @@ export const selectOption = defineTabTool({
     response.setIncludeSnapshot();
 
     const { locator, resolved } = await tab.targetLocator(params);
-    response.addCode(`await page.${resolved}.selectOption(${JSON.stringify(params.values)});`);
+    response.addCode(`await page.${resolved}.selectOption(${JSON.stringify(params.values).replaceAll(",", ", ")});`);
 
-    const selected = await locator.selectOption(params.values, tab.actionTimeoutOptions);
-    response.addTextResult(`Selected options: ${selected.join(", ")}`);
+    await locator.selectOption(params.values, tab.actionTimeoutOptions);
+  }
+});
+
+export const generateLocator = defineTabTool({
+  capability: "testing",
+  schema: {
+    name: "browser_generate_locator",
+    title: "Create locator for element",
+    description: "Generate locator for the given element to use in tests",
+    inputSchema: elementSchema,
+    type: "readOnly"
+  },
+
+  handle: async (tab, params, response) => {
+    const { resolved } = await tab.targetLocator(params);
+    response.addTextResult(resolved);
   }
 });
 
@@ -223,5 +238,6 @@ export default [
   click,
   drag,
   hover,
-  selectOption
+  selectOption,
+  generateLocator
 ];

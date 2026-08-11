@@ -38,6 +38,7 @@ const goBack = defineTool({
 
 const goForward = defineTool({
   capability: "core-navigation",
+  skillOnly: true,
   schema: {
     name: "browser_navigate_forward",
     title: "Go forward",
@@ -49,6 +50,23 @@ const goForward = defineTool({
     await context.runtime.goForward();
     response.setIncludeSnapshot();
     response.addCode("await page.goForward();");
+  }
+});
+
+const reload = defineTool({
+  capability: "core-navigation",
+  skillOnly: true,
+  schema: {
+    name: "browser_reload",
+    title: "Reload the page",
+    description: "Reload the current page",
+    inputSchema: z.object({}),
+    type: "action"
+  },
+  handle: async (context, _params, response) => {
+    await context.runtime.reload();
+    response.setIncludeSnapshot();
+    response.addCode("await page.reload();");
   }
 });
 
@@ -71,16 +89,20 @@ const waitFor = defineTool({
     }
     const waitSeconds = params.time;
     if (waitSeconds !== undefined) {
+      response.addCode(`await new Promise(f => setTimeout(f, ${waitSeconds} * 1000));`);
       await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, waitSeconds * 1000)));
     }
-    if (params.text || params.textGone) {
-      await context.runtime.waitFor({
-        ...(params.text !== undefined ? { text: params.text } : {}),
-        ...(params.textGone !== undefined ? { textGone: params.textGone } : {})
-      }, 5000);
+    if (params.textGone !== undefined) {
+      response.addCode(`await page.getByText(${JSON.stringify(params.textGone)}).first().waitFor({ state: 'hidden' });`);
+      await context.runtime.waitFor({ textGone: params.textGone }, 5000);
     }
+    if (params.text !== undefined) {
+      response.addCode(`await page.getByText(${JSON.stringify(params.text)}).first().waitFor({ state: 'visible' });`);
+      await context.runtime.waitFor({ text: params.text }, 5000);
+    }
+    response.addTextResult(`Waited for ${params.text || params.textGone || params.time}`);
     response.setIncludeSnapshot();
   }
 });
 
-export default [navigate, goBack, goForward, waitFor];
+export default [navigate, goBack, goForward, reload, waitFor];

@@ -59,4 +59,23 @@ describe("locator elementHandle contract e2e", () => {
       expect(await html.locator("xpath=/div[contains(@class, 'third')]").elementHandles()).toEqual([]);
     });
   });
+
+  it("elementHandle timeout 0 waits indefinitely like Playwright", async () => {
+    await withPage(async (page) => {
+      await page.setContent("<main></main>");
+      const promise = page.locator("#late").elementHandle({ timeout: 0 });
+
+      await page.evaluate(() => {
+        setTimeout(() => {
+          const div = document.createElement("div");
+          div.id = "late";
+          div.textContent = "ready";
+          document.querySelector("main")?.appendChild(div);
+        }, 100);
+      });
+
+      const handle = await promise;
+      await expect(handle.evaluate((element) => element.textContent)).resolves.toBe("ready");
+    });
+  });
 });

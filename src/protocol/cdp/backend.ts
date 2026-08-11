@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import * as cdpModule from "chrome-remote-interface";
 import {
   ARIA_REF_SELECTOR_EVALUATE_SOURCE,
@@ -12,8 +12,9 @@ import {
   retryUntilReady,
   withOptionalTimeout
 } from "../../ariaSnapshot.js";
+import { abortableDelay, throwIfAborted } from "../../abortSignal.js";
 import { PLAYWRIGHT_ARIA_SNAPSHOT_EVALUATE_SOURCE as ARIA_SNAPSHOT_EVALUATE_SOURCE } from "../../vendor/playwright/ariaSnapshotEvaluate.js";
-import { LocatorError, NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
+import { AbortError, LocatorError, NotImplementedInProtocolError, TimeoutError } from "../../errors.js";
 import { mergeExtraHTTPHeaders } from "../../httpHeaders.js";
 import { RoxyElementHandle } from "../../elementHandle.js";
 import { RoxyJSHandle, createJSHandle, createRemoteJSHandle } from "../../jsHandle.js";
@@ -142,6 +143,7 @@ const CDP_CLIENT_CLOSE_TIMEOUT_MS = 1_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_MS = 500;
 const REQUEST_EXTRA_INFO_FALLBACK_MS = 250;
+const RESPONSE_EXTRA_INFO_FALLBACK_MS = 250;
 const POPUP_ATTACH_MATCH_WINDOW_MS = 1_000;
 const POPUP_FALLBACK_BINDING_NAME = "__roxyOnPopupOpenedFallback";
 const HYDRATE_DECLARATIVE_SHADOW_ROOTS_SOURCE = `() => {
@@ -329,7 +331,8 @@ interface CdpEvaluationTargetContext {
 interface CdpDomClient {
   send(
     method: "DOM.getBoxModel",
-    params: { objectId: string }
+    params: { objectId: string },
+    sessionId?: string
   ): Promise<{
     model: {
       border: [number, number, number, number, number, number, number, number];
@@ -1193,6 +1196,11 @@ function cdpDownloadBehavior(options: BrowserContextOptions): Record<string, unk
 class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Map<string, ProtocolPageAdapter>();
   private readonly pageSessionIds = new Map<string, string>();
+  private readonly serviceWorkersByTargetId = new Map<string, {
+    delegate: CdpWorkerDelegate;
+    sessionId: string;
+    worker: RoxyWorker;
+  }>();
   private readonly initializingPages = new Map<string, CdpPageAdapter>();
   private readonly pendingPages = new Map<string, Promise<ProtocolPageAdapter>>();
   private readonly initScripts = new Set<{
@@ -1223,6 +1231,7 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       hasWindowOpener?: boolean
     ) => void | Promise<void>
   >();
+  private readonly serviceWorkerListeners = new Set<(worker: RoxyWorker) => void | Promise<void>>();
   private readonly targetDiscoveryReady: Promise<void>;
   private targetPollTimer: ReturnType<typeof setInterval> | null = null;
   private closing = false;
@@ -1338,8 +1347,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     secure: boolean;
     sameSite: "Strict" | "Lax" | "None";
     partitionKey?: string;
-  }>> {
-    const storageClient = this.state.browserClient as CdpClient & {
+	  }>> {
+	    await this.targetDiscoveryReady;
+	    const storageClient = this.state.browserClient as CdpClient & {
       send(
         method: "Storage.getCookies",
         params: { browserContextId?: string }
@@ -1357,23 +1367,21 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         }>;
       }>;
     };
-    const { cookies } = await storageClient.send("Storage.getCookies", {
-      ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
-    });
-    return filterCdpCookies(
-      cookies.map((cookie) => ({
-        domain: cookie.domain,
-        expires: cookie.expires,
-        httpOnly: cookie.httpOnly,
-        name: cookie.name,
-        path: cookie.path,
-        ...(cookie.partitionKey?.topLevelSite ? { partitionKey: cookie.partitionKey.topLevelSite } : {}),
-        sameSite: cookie.sameSite ?? "Lax",
-        secure: cookie.secure,
-        value: cookie.value
-      })),
-      urls ?? []
-    );
+	    const { cookies } = await storageClient.send("Storage.getCookies", {
+	      ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
+	    });
+	    let normalizedCookies = normalizeCdpCookies(cookies);
+	    if (!this.browserContextId && urls?.length && normalizedCookies.length === 0) {
+	      for (const page of this.pages.values()) {
+	        if (page instanceof CdpPageAdapter) {
+	          normalizedCookies = await page.cookies(urls).catch(() => []);
+	          if (normalizedCookies.length) {
+	            break;
+	          }
+	        }
+	      }
+	    }
+	    return filterCdpCookies(normalizedCookies, urls ?? []);
   }
 
   async clearCookies(options?: {
@@ -1387,12 +1395,12 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
         params: { browserContextId?: string }
       ): Promise<unknown>;
     };
-    if (!options?.domain && !options?.name && !options?.path) {
-      await storageClient.send("Storage.clearCookies", {
-        ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
-      });
-      return;
-    }
+	    if (!options?.domain && !options?.name && !options?.path) {
+	      await storageClient.send("Storage.clearCookies", {
+	        ...(this.browserContextId ? { browserContextId: this.browserContextId } : {})
+	      });
+	      return;
+	    }
 
     const cookies = await this.cookies();
     const retained = cookies.filter((cookie) => !matchesCookieFilter(cookie, options));
@@ -1415,6 +1423,17 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     return () => {
       this.pageListeners.delete(listener);
     };
+  }
+
+  onServiceWorker(listener: (worker: RoxyWorker) => void | Promise<void>): () => void {
+    this.serviceWorkerListeners.add(listener);
+    return () => {
+      this.serviceWorkerListeners.delete(listener);
+    };
+  }
+
+  serviceWorkers(): RoxyWorker[] {
+    return Array.from(this.serviceWorkersByTargetId.values(), ({ worker }) => worker);
   }
 
   async setExtraHTTPHeaders(headers: { [key: string]: string }): Promise<void> {
@@ -1621,6 +1640,9 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
       if (!this.matchesBrowserContextTarget(targetInfo)) {
         return;
       }
+      if (targetInfo.type === "service_worker") {
+        await this.attachServiceWorker(targetInfo.targetId, event.sessionId, targetInfo.url ?? "");
+      }
       await sendBrowserCommandInSession(this.state.browserClient, "Runtime.enable", {}, event.sessionId).catch(() => {});
       await sendBrowserCommandInSession(this.state.browserClient, "Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
       return;
@@ -1767,7 +1789,34 @@ class CdpBrowserContextAdapter implements ProtocolBrowserContextAdapter {
     // handled by discoverTargets() at initialization time and on each poll tick.
   }
 
+  private async attachServiceWorker(targetId: string, sessionId: string, url: string): Promise<void> {
+    if (this.serviceWorkersByTargetId.has(targetId)) {
+      return;
+    }
+    const workerClient = createSessionTargetClient(this.state.browserClient, sessionId);
+    const delegate = new CdpWorkerDelegate(undefined, workerClient, sessionId, url);
+    const worker = new RoxyWorker(url, delegate);
+    this.serviceWorkersByTargetId.set(targetId, {
+      delegate,
+      sessionId,
+      worker
+    });
+    for (const listener of Array.from(this.serviceWorkerListeners)) {
+      await listener(worker);
+    }
+  }
+
   private async handleTargetDetached(targetId: string, sessionId?: string): Promise<void> {
+    const serviceWorker = this.serviceWorkersByTargetId.get(targetId);
+    if (serviceWorker) {
+      if (sessionId && serviceWorker.sessionId !== sessionId) {
+        return;
+      }
+      this.serviceWorkersByTargetId.delete(targetId);
+      serviceWorker.delegate.markClosed();
+      serviceWorker.worker.emitClose();
+      return;
+    }
     const attachedSessionId = this.pageSessionIds.get(targetId);
     if (attachedSessionId && sessionId && attachedSessionId !== sessionId) {
       return;
@@ -2433,6 +2482,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     string,
     Array<Array<{ name: string; value: string }>>
   >();
+  private readonly emittedRequestIds = new Set<string>();
   private readonly requestHeadersForResponse = new Map<
     string,
     Array<Array<{ name: string; value: string }>>
@@ -3606,9 +3656,19 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           ...next.payload,
           headers
         });
+        this.emittedRequestIds.add(event.requestId);
         for (const callback of next.responseCallbacks) {
           callback();
         }
+        return;
+      }
+      if (this.emittedRequestIds.has(event.requestId) && request) {
+        this.emit("requestheaders", {
+          headers,
+          method: request.method,
+          requestId: event.requestId,
+          url: request.url
+        });
         return;
       }
       const queued = this.requestExtraInfoHeaders.get(event.requestId) ?? [];
@@ -3632,6 +3692,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.requestMetadata.delete(requestId);
         this.continuedRequestUrls.delete(requestId);
         this.requestHeadersForResponse.delete(requestId);
+        this.emittedRequestIds.delete(requestId);
         if (frameId) {
           this.markFrameNetworkRequestSettled(frameId);
         }
@@ -3787,9 +3848,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             requestId: event.requestId,
             resourceType: toPlaywrightResourceType(request.type),
             url: request.url
-          });
-          return;
-        }
+	        });
+	        return;
+	      }
         this.ensureResponseBodyState(event.requestId).resolveReady();
         this.emit("requestfinished", {
           headers: [],
@@ -4003,7 +4064,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           setTimeout(() => {
             this.pendingResponseFallbackTimers.delete(responseEvent.requestId);
             this.flushPendingResponseEvent(responseEvent.requestId);
-          }, 50)
+          }, RESPONSE_EXTRA_INFO_FALLBACK_MS)
         );
       }
       return;
@@ -4758,10 +4819,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async ariaSnapshot(options: AriaSnapshotOptions = {}): Promise<string> {
+    return this.ariaSnapshotForTarget(undefined, options);
+  }
+
+  async ariaSnapshotForTarget(target: ProtocolElementHandleReference | undefined, options: AriaSnapshotOptions = {}): Promise<string> {
     const normalizedOptions = normalizeAriaSnapshotOptions(options);
+    const targetHandle = target?.handleId ? target : target ? await this.createHandleReference(target) : undefined;
     const result = await retryUntilReady(
       () => this.evaluateFunction<AriaSnapshotResult>(ARIA_SNAPSHOT_EVALUATE_SOURCE, {
-        options: normalizedOptions
+        options: normalizedOptions,
+        ...(targetHandle !== undefined ? { target: targetHandle } : {})
       }),
       { timeoutMs: normalizedOptions.timeout ?? 15_000 }
     );
@@ -4795,6 +4862,56 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     await this.updateExtraHTTPHeaders();
   }
 
+  async cookies(urls: string[]): Promise<Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+    partitionKey?: string;
+  }>> {
+    const networkClient = this.options.client as CdpClient & {
+      Network: {
+        getCookies(params: { urls?: string[] }): Promise<{
+          cookies: Array<{
+            name: string;
+            value: string;
+            domain: string;
+            path: string;
+            expires: number;
+            httpOnly: boolean;
+            secure: boolean;
+            sameSite?: "Strict" | "Lax" | "None";
+            partitionKey?: { topLevelSite?: string };
+          }>;
+        }>;
+        getAllCookies?(): Promise<{
+          cookies: Array<{
+            name: string;
+            value: string;
+            domain: string;
+            path: string;
+            expires: number;
+            httpOnly: boolean;
+            secure: boolean;
+            sameSite?: "Strict" | "Lax" | "None";
+            partitionKey?: { topLevelSite?: string };
+          }>;
+        }>;
+      };
+    };
+    const { cookies } = await networkClient.Network.getCookies({ urls });
+    const normalizedCookies = normalizeCdpCookies(cookies);
+    if (normalizedCookies.length || !networkClient.Network.getAllCookies) {
+      return filterCdpCookies(normalizedCookies, urls);
+    }
+    const allCookies = await networkClient.Network.getAllCookies();
+    return filterCdpCookies(normalizeCdpCookies(allCookies.cookies), urls);
+  }
+
   private resolveNavigationReferer(options: PageGotoOptions, targetUrl: string): string | undefined {
     const headers = mergeExtraHTTPHeaders(
       this.options.contextOptions.extraHTTPHeaders,
@@ -4825,6 +4942,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async screenshot(options: InternalScreenshotOptions = {}): Promise<Buffer> {
     const format = options.type ?? "png";
+    const quality = format === "jpeg"
+      ? options.quality ?? 80
+      : format === "webp" ? options.quality ?? 100 : undefined;
     const response = await this.options.client.Page.captureScreenshot({
       captureBeyondViewport: !(options.__fitsViewport ?? !options.fullPage),
       ...(options.clip
@@ -4838,10 +4958,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
             }
           }
         : {}),
-      ...(format === "jpeg"
+      ...(quality !== undefined
         ? {
             format,
-            ...(options.quality !== undefined ? { quality: options.quality } : {})
+            quality
           }
         : { format })
     });
@@ -5634,21 +5754,27 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     key: string,
     options?: {
       delay?: number;
+      signal?: AbortSignal;
     }
   ): Promise<void> {
+    throwIfAborted(options);
     const tokens = splitKeyboardShortcut(key);
     const keyName = tokens[tokens.length - 1] ?? "";
     for (let index = 0; index < tokens.length - 1; index += 1) {
+      throwIfAborted(options);
       await this.keyboardDown(tokens[index] ?? "");
     }
 
+    throwIfAborted(options);
     await this.keyboardDown(keyName);
     if (options?.delay) {
-      await delay(options.delay);
+      await abortableDelay(options.delay, options);
     }
+    throwIfAborted(options);
     await this.keyboardUp(keyName);
 
     for (let index = tokens.length - 2; index >= 0; index -= 1) {
+      throwIfAborted(options);
       await this.keyboardUp(tokens[index] ?? "");
     }
   }
@@ -5657,22 +5783,31 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     text: string,
     options?: {
       delay?: number;
+      signal?: AbortSignal;
     }
   ): Promise<void> {
+    throwIfAborted(options);
     const chars = [...text];
     for (let index = 0; index < chars.length; index += 1) {
+      throwIfAborted(options);
       const character = chars[index]!;
       const charDelay = options?.delay;
       if (isUsKeyboardLayoutKey(character)) {
         await this.keyboardPress(
           character,
-          charDelay === undefined ? undefined : { delay: charDelay }
+          options === undefined
+            ? undefined
+            : {
+                ...(charDelay !== undefined ? { delay: charDelay } : {}),
+                ...(options.signal !== undefined ? { signal: options.signal } : {})
+              }
         );
         continue;
       }
       if (charDelay) {
-        await delay(charDelay);
+        await abortableDelay(charDelay, options);
       }
+      throwIfAborted(options);
       await this.keyboardInsertText(character);
     }
   }
@@ -5911,8 +6046,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async clickLocator(locator: CdpLocatorState, options?: ClickOptions): Promise<void> {
     if (!options?.__roxyBeforeActionRetry) {
-      await this.enqueuePointerAction(async () => {
-        const actionPoint = await this.resolveActionPoint(locator, options, true);
+	      await this.enqueuePointerAction(async () => {
+	        const actionPoint = await this.resolveActionPoint(locator, options, true);
         const button = options?.button ?? "left";
         const clickCount = options?.clickCount ?? 1;
         await this.withPointerActionModifiers(options?.modifiers, async () => {
@@ -5924,13 +6059,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           void this.showScreencastAction("click", actionPoint).catch(() => {});
           for (let index = 0; index < clickCount; index += 1) {
             await this.dispatchMouseDown(actionPoint, button, index + 1);
-            await delay(options?.delay ?? 0);
+            await abortableDelay(options?.delay ?? 0, options);
             await this.dispatchMouseUp(actionPoint, button, index + 1);
           }
-        });
-      });
-      return;
-    }
+	        });
+	      });
+	      await this.syncCurrentUrlFromDocument();
+	      return;
+	    }
 
     while (true) {
       const actionPoint = await this.resolveActionPoint(locator, options, true);
@@ -5967,7 +6103,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           void this.showScreencastAction("click", actionPoint).catch(() => {});
           for (let index = 0; index < clickCount; index += 1) {
             await this.dispatchMouseDown(actionPoint, button, index + 1);
-            await delay(options?.delay ?? 0);
+            await abortableDelay(options?.delay ?? 0, options);
             await this.dispatchMouseUp(actionPoint, button, index + 1);
           }
         });
@@ -6021,9 +6157,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     value: string,
     options?: FillOptions
   ): Promise<void> {
+    throwIfAborted(options);
     const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
-    const deadline = Date.now() + timeout;
+    const deadline = timeout === 0 ? Number.POSITIVE_INFINITY : Date.now() + timeout;
     while (true) {
+      throwIfAborted(options);
       try {
         await this.runLocatorOperation<boolean>(locator, {
           operation: "fill",
@@ -6035,10 +6173,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         if (options?.force || !shouldRetryFillActionabilityError(error)) {
           throw error;
         }
-        if (timeout === 0 || Date.now() + 50 > deadline) {
+        if (Date.now() + 50 > deadline) {
           throw error;
         }
-        await delay(50);
+        await abortableDelay(50, options);
       }
     }
   }
@@ -6168,12 +6306,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async selectOptionLocator(
     locator: CdpLocatorState,
     values: NormalizedSelectOption[],
-    options?: { timeout?: number }
+    options?: { signal?: AbortSignal; timeout?: number }
   ): Promise<string[]> {
     return this.runSelectOptionWithRetry(() => this.runLocatorOperation<string[] | SelectOptionRetryResult>(locator, {
       operation: "selectOption",
       values
-    }), options?.timeout);
+    }), options);
   }
 
   async textContentLocator(locator: CdpLocatorState): Promise<string | null> {
@@ -6258,13 +6396,13 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   async selectOptionReference(
     reference: ProtocolElementHandleReference,
     values: NormalizedSelectOption[],
-    options?: { timeout?: number }
+    options?: { signal?: AbortSignal; timeout?: number }
   ): Promise<string[]> {
     return this.runSelectOptionWithRetry(() => this.runSelectorOperation<string[] | SelectOptionRetryResult>({
       operation: "selectOption",
       reference,
       values
-    }), options?.timeout);
+    }), options);
   }
 
   private async applyContextOptions(): Promise<void> {
@@ -6473,15 +6611,18 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       reference,
       ...(options?.force !== undefined ? { force: options.force } : {}),
       ...(options?.position ? { position: options.position } : {}),
+      ...(options?.scroll !== undefined ? { scroll: options.scroll } : {}),
       ...(waitForEnabled ? { waitForEnabled } : {})
     };
+    throwIfAborted(options);
     const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
-    if (options?.force || timeout <= 0) {
+    if (options?.force) {
       return this.runSelectorOperation<ActionPoint>(payload);
     }
-    const deadline = Date.now() + timeout;
+    const deadline = timeout === 0 ? Number.POSITIVE_INFINITY : Date.now() + timeout;
     let lastError: unknown;
     while (Date.now() <= deadline) {
+      throwIfAborted(options);
       try {
         return await this.runSelectorOperation<ActionPoint>(payload);
       } catch (error) {
@@ -6490,7 +6631,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           throw error;
         }
         await options?.__roxyBeforeActionRetry?.();
-        await delay(50);
+        await abortableDelay(50, options);
       }
     }
     void lastError;
@@ -6517,19 +6658,21 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   private async runSelectOptionWithRetry(
     action: () => Promise<string[] | SelectOptionRetryResult>,
-    timeout: number | undefined
+    options: { signal?: AbortSignal; timeout?: number } | undefined
   ): Promise<string[]> {
-    const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_MS;
-    const deadline = Date.now() + effectiveTimeout;
+    throwIfAborted(options);
+    const effectiveTimeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
+    const deadline = effectiveTimeout === 0 ? Number.POSITIVE_INFINITY : Date.now() + effectiveTimeout;
     while (true) {
+      throwIfAborted(options);
       const result = await action();
       if (!isSelectOptionRetryResult(result)) {
         return result;
       }
-      if (effectiveTimeout === 0 || Date.now() + 50 > deadline) {
+      if (Date.now() + 50 > deadline) {
         throw new TimeoutError(`page.selectOption: Timeout ${effectiveTimeout}ms exceeded.`);
       }
-      await delay(50);
+      await abortableDelay(50, options);
     }
   }
 
@@ -6541,6 +6684,16 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async boundingBoxReference(reference: ProtocolElementHandleReference): Promise<Rect | null> {
+    if (!reference.protocolObjectId) {
+      try {
+        return await this.runSelectorOperation<Rect | null>({
+          operation: "boundingBox",
+          reference
+        });
+      } catch {
+        // Fall through to the CDP DOM path for stale handles or contexts that can no longer run injected code.
+      }
+    }
     const boxModel = await this.boundingBoxReferenceViaDom(reference);
     if (boxModel) {
       return boxModel;
@@ -6672,7 +6825,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }
       const result = await (this.options.client as CdpDomClient).send("DOM.getBoxModel", {
         objectId
-      });
+      }, handle.sessionId());
       const quad = result.model.border;
       const x = Math.min(quad[0], quad[2], quad[4], quad[6]);
       const y = Math.min(quad[1], quad[3], quad[5], quad[7]);
@@ -6763,8 +6916,8 @@ class CdpPageAdapter implements ProtocolPageAdapter {
 
   async clickReference(reference: ProtocolElementHandleReference, options?: ClickOptions): Promise<void> {
     if (!options?.__roxyBeforeActionRetry) {
-      await this.enqueuePointerAction(async () => {
-        const actionPoint = await this.resolveActionPointReference(reference, options, true);
+	      await this.enqueuePointerAction(async () => {
+	        const actionPoint = await this.resolveActionPointReference(reference, options, true);
         const button = options?.button ?? "left";
         const clickCount = options?.clickCount ?? 1;
         await this.withPointerActionModifiers(options?.modifiers, async () => {
@@ -6776,13 +6929,14 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           void this.showScreencastAction("click", actionPoint).catch(() => {});
           for (let index = 0; index < clickCount; index += 1) {
             await this.dispatchMouseDown(actionPoint, button, index + 1);
-            await delay(options?.delay ?? 0);
+            await abortableDelay(options?.delay ?? 0, options);
             await this.dispatchMouseUp(actionPoint, button, index + 1);
           }
-        });
-      });
-      return;
-    }
+	        });
+	      });
+	      await this.syncCurrentUrlFromDocument();
+	      return;
+	    }
 
     while (true) {
       const actionPoint = await this.resolveActionPointReference(reference, options, true);
@@ -6819,7 +6973,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
           void this.showScreencastAction("click", actionPoint).catch(() => {});
           for (let index = 0; index < clickCount; index += 1) {
             await this.dispatchMouseDown(actionPoint, button, index + 1);
-            await delay(options?.delay ?? 0);
+            await abortableDelay(options?.delay ?? 0, options);
             await this.dispatchMouseUp(actionPoint, button, index + 1);
           }
         });
@@ -6906,6 +7060,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     value: string,
     options?: FillOptions
   ): Promise<void> {
+    throwIfAborted(options);
     try {
       const actionPoint = await this.runSelectorOperation<ActionPoint>({
         operation: "actionPoint",
@@ -7887,6 +8042,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         ...payload,
         headers: extraInfoHeaders
       });
+      this.emittedRequestIds.add(requestId);
       return;
     }
 
@@ -7916,6 +8072,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.pendingRequestEvents.delete(requestId);
     }
     this.emit("request", next.payload);
+    this.emittedRequestIds.add(requestId);
     for (const callback of next.responseCallbacks) {
       callback();
     }
@@ -9133,6 +9290,14 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
       : this.page.evaluateHandle<TResult>(expression, arg, isFunction);
   }
 
+  async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
+    return this.page.ariaSnapshotForTarget({
+      chain: this.state.chain,
+      ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
+      ...(this.state.pick ? { pick: this.state.pick } : {})
+    }, options);
+  }
+
   async boundingBox(): Promise<Rect | null> {
     return this.page.boundingBoxReference({
       chain: this.state.chain,
@@ -9387,6 +9552,10 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
     return handle.evaluateHandle<TResult>(expression, arg, isFunction);
   }
 
+  async ariaSnapshot(options?: AriaSnapshotOptions): Promise<string> {
+    return this.page.ariaSnapshotForTarget(this.reference(), options);
+  }
+
   async contentFrameId(): Promise<string | null> {
     return this.page.contentFrameIdForReference(this.reference());
   }
@@ -9572,7 +9741,7 @@ class CdpWorkerDelegate implements WorkerDelegate {
   private closed = false;
 
   constructor(
-    private readonly page: CdpPageAdapter,
+    private readonly page: CdpPageAdapter | undefined,
     private readonly client: CdpClient,
     private readonly sessionId: string,
     private readonly workerUrl: string
@@ -9592,6 +9761,13 @@ class CdpWorkerDelegate implements WorkerDelegate {
   }
 
   async evaluateHandle<R, Arg>(pageFunction: PageFunction<Arg, R>, arg?: Arg): Promise<SmartHandle<R>> {
+    if (!this.page) {
+      // ⚠️ DIVERGENCE FROM PLAYWRIGHT: CDP service worker targets can evaluate
+      // by value through their own session, but our remote JSHandle adapter is
+      // currently page-backed. Keep serviceWorkers() and worker.evaluate()
+      // Playwright-compatible while avoiding a fake page-bound handle.
+      throw new Error("worker.evaluateHandle is not available for service workers yet.");
+    }
     const expression = serializePageFunctionForWorker(pageFunction);
     const isFunction = typeof pageFunction === "function";
     const remoteHandle = await this.page.evaluateWithArgumentsInSession<R>(
@@ -10241,6 +10417,7 @@ export function buildChromiumLaunchArgs(
   options: Pick<LaunchOptions, "args" | "headless">,
   userDataDir: string
 ): string[] {
+  const shouldUseMockKeychain = process.platform === "darwin" && !basename(userDataDir).startsWith("roxybrowser-cdp-");
   return [
     `--user-data-dir=${userDataDir}`,
     "--remote-debugging-port=0",
@@ -10248,10 +10425,12 @@ export function buildChromiumLaunchArgs(
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-popup-blocking",
-    "--disable-renderer-backgrounding",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--no-startup-window",
+	    "--disable-renderer-backgrounding",
+	    "--no-first-run",
+	    "--no-default-browser-check",
+	    "--password-store=basic",
+	    ...(shouldUseMockKeychain ? ["--use-mock-keychain"] : []),
+	    "--no-startup-window",
     ...(options.headless === false ? [] : ["--headless=new"]),
     ...(options.args ?? [])
   ];
@@ -11500,7 +11679,43 @@ function rewriteCdpCookies(cookies: ReadonlyArray<{
       rewritten.secure = parsed.protocol === "https:";
     }
     return rewritten;
-  });
+	  });
+}
+
+function normalizeCdpCookies(cookies: Array<{
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+  partitionKey?: string | { topLevelSite?: string };
+}>): Array<{
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "Strict" | "Lax" | "None";
+  partitionKey?: string;
+}> {
+  return cookies.map((cookie) => ({
+    domain: cookie.domain,
+    expires: cookie.expires,
+    httpOnly: cookie.httpOnly,
+    name: cookie.name,
+    path: cookie.path,
+    ...(typeof cookie.partitionKey === "string"
+      ? { partitionKey: cookie.partitionKey }
+      : cookie.partitionKey?.topLevelSite ? { partitionKey: cookie.partitionKey.topLevelSite } : {}),
+    sameSite: cookie.sameSite ?? "Lax",
+    secure: cookie.secure,
+    value: cookie.value
+  }));
 }
 
 function filterCdpCookies<T extends {
@@ -11894,6 +12109,9 @@ async function waitForAbortableTimeout(duration: number, signal: AbortSignal): P
 function wrapLocatorError(locator: CdpLocatorState, error: unknown): LocatorError {
   if (error instanceof LocatorError) {
     return error;
+  }
+  if (error instanceof AbortError) {
+    throw error;
   }
 
   const message = error instanceof Error ? error.message : String(error);

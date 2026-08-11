@@ -19,6 +19,7 @@ export function escapeWithQuotes(text: string, char = "'"): string {
 }
 
 export async function waitForCompletion<R>(tab: Tab, callback: () => Promise<R>): Promise<R> {
+  const settleMs = tab.context.config.timeouts?.settle ?? 500;
   const requests = await collectRequestsDuringAction(tab, callback);
 
   const requestedNavigation = requests.requests.some((request) => request.isNavigationRequest);
@@ -37,7 +38,7 @@ export async function waitForCompletion<R>(tab: Tab, callback: () => Promise<R>)
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
   await Promise.race([Promise.all(promises), timeout]);
   if (requests.requests.length) {
-    await tab.waitForTimeout(500).catch(() => {});
+    await tab.waitForTimeout(settleMs).catch(() => {});
   }
 
   return requests.result;
@@ -47,13 +48,14 @@ async function collectRequestsDuringAction<R>(
   tab: Tab,
   callback: () => Promise<R>
 ): Promise<{ result: R; requests: Awaited<ReturnType<McpRuntime["endRequestCollection"]>> }> {
+  const settleMs = tab.context.config.timeouts?.settle ?? 500;
   const runtime = tab.context.runtime;
   const requestCollectionState = await runtime.beginRequestCollection();
   let requests: Awaited<ReturnType<McpRuntime["endRequestCollection"]>> = [];
   let result: R;
   try {
     result = await callback();
-    await tab.waitForTimeout(500);
+    await tab.waitForTimeout(settleMs);
   } finally {
     requests = await runtime.endRequestCollection(requestCollectionState);
   }

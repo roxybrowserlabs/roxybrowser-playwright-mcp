@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { chromeRemoteInterfaceMock } = vi.hoisted(() => ({
@@ -19,6 +22,8 @@ type Listener = (...args: any[]) => void;
 function createCdpClientStub() {
   const listeners = new Map<string, Set<Listener>>();
   let logEntryAddedListener: Listener | undefined;
+  let downloadWillBeginListener: Listener | undefined;
+  let downloadProgressListener: Listener | undefined;
 
   const client = {
     on: vi.fn((event: string, listener: Listener) => {
@@ -49,12 +54,24 @@ function createCdpClientStub() {
     Page: {
       enable: vi.fn(async () => ({})),
       createIsolatedWorld: vi.fn(async () => ({ executionContextId: 7 })),
+      captureScreenshot: vi.fn(async () => ({ data: "" })),
       getFrameTree: vi.fn(async () => ({
         frameTree: {
           frame: {
             id: "frame-1",
             url: "about:blank"
           }
+        }
+      })),
+      getLayoutMetrics: vi.fn(async () => ({
+        contentSize: { x: 0, y: 0, width: 1280, height: 720 },
+        cssContentSize: { x: 0, y: 0, width: 1280, height: 720 },
+        cssVisualViewport: {
+          pageX: 0,
+          pageY: 0,
+          clientWidth: 1280,
+          clientHeight: 720,
+          scale: 1
         }
       })),
       setLifecycleEventsEnabled: vi.fn(async () => ({})),
@@ -98,6 +115,22 @@ function createCdpClientStub() {
       loadingFinished: vi.fn(),
       loadingFailed: vi.fn()
     },
+    Fetch: {
+      enable: vi.fn(async () => ({})),
+      disable: vi.fn(async () => ({})),
+      requestPaused: vi.fn(),
+      continueRequest: vi.fn(async () => ({})),
+      fulfillRequest: vi.fn(async () => ({})),
+      failRequest: vi.fn(async () => ({}))
+    },
+    Browser: {
+      downloadWillBegin: vi.fn((listener: Listener) => {
+        downloadWillBeginListener = listener;
+      }),
+      downloadProgress: vi.fn((listener: Listener) => {
+        downloadProgressListener = listener;
+      })
+    },
     Input: {
       dispatchKeyEvent: vi.fn(async () => ({})),
       dispatchMouseEvent: vi.fn(async () => ({})),
@@ -105,6 +138,12 @@ function createCdpClientStub() {
     },
     emitLogEntryAdded(payload: unknown) {
       logEntryAddedListener?.(payload);
+    },
+    emitDownloadWillBegin(payload: unknown) {
+      downloadWillBeginListener?.(payload);
+    },
+    emitDownloadProgress(payload: unknown) {
+      downloadProgressListener?.(payload);
     }
   };
 
@@ -233,10 +272,105 @@ describe("CDP coverage", () => {
     expect(browserClient.Target.activateTarget).toHaveBeenCalledOnce();
   });
 
-  it("does not install cursor visualization from bare CDP browser session connect", async () => {
+  it("emits requestheaders when CDP request extra-info arrives after request fallback", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+    vi.useFakeTimers();
+    const requestListener = vi.fn();
+    const requestHeadersListener = vi.fn();
+    page.on("request", requestListener);
+    page.on("requestheaders", requestHeadersListener);
+
+    pageClient.Network.requestWillBeSent.mock.calls[0]?.[0]({
+      requestId: "late-extra-info",
+      loaderId: "late-extra-info",
+      type: "Document",
+      request: {
+        method: "GET",
+        url: "https://example.com/late-extra-info",
+        headers: { accept: "text/html" }
+      },
+      timestamp: 1
+    });
+    await vi.advanceTimersByTimeAsync(251);
+    pageClient.Network.requestWillBeSentExtraInfo.mock.calls[0]?.[0]({
+      requestId: "late-extra-info",
+      headers: {
+        accept: "text/html",
+        cookie: "a=b"
+      }
+    });
+
+    expect(requestListener).toHaveBeenCalledWith(expect.objectContaining({
+      url: "https://example.com/late-extra-info",
+      headers: expect.arrayContaining([{ name: "accept", value: "text/html" }])
+    }));
+    expect(requestHeadersListener).toHaveBeenCalledWith(expect.objectContaining({
+      url: "https://example.com/late-extra-info",
+      headers: expect.arrayContaining([
+        { name: "accept", value: "text/html" },
+        { name: "cookie", value: "a=b" }
+      ])
+    }));
+  });
+
+  it("waits long enough for CDP response extra-info to preserve duplicate headers", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+    vi.useFakeTimers();
+    const responseListener = vi.fn();
+    page.on("response", responseListener);
+
+    pageClient.Network.requestWillBeSent.mock.calls[0]?.[0]({
+      requestId: "duplicate-response-headers",
+      loaderId: "duplicate-response-headers",
+      type: "Document",
+      request: {
+        method: "GET",
+        url: "https://example.com/duplicate-response-headers",
+        headers: { accept: "text/html" }
+      },
+      timestamp: 1
+    });
+    pageClient.Network.requestWillBeSentExtraInfo.mock.calls[0]?.[0]({
+      requestId: "duplicate-response-headers",
+      headers: { accept: "text/html" }
+    });
+    pageClient.Network.responseReceived.mock.calls[0]?.[0]({
+      requestId: "duplicate-response-headers",
+      hasExtraInfo: true,
+      type: "Document",
+      response: {
+        url: "https://example.com/duplicate-response-headers",
+        status: 200,
+        statusText: "OK",
+        headers: { "header-a": "value-a, value-a-1" },
+        mimeType: "text/html"
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(responseListener).not.toHaveBeenCalled();
+
+    pageClient.Network.responseReceivedExtraInfo.mock.calls[0]?.[0]({
+      requestId: "duplicate-response-headers",
+      headers: { "header-a": "value-a, value-a-1" },
+      headersText: "HTTP/1.1 200 OK\r\nheader-a: value-a\r\nheader-a: value-a-1\r\n\r\n"
+    });
+
+    expect(responseListener).toHaveBeenCalledWith(expect.objectContaining({
+      headers: [
+        { name: "header-a", value: "value-a" },
+        { name: "header-a", value: "value-a-1" }
+      ]
+    }));
+  });
+
+  it("installs cursor visualization when a CDP browser session connects to an active page", async () => {
     const module = await import("../../src/mcp/connectedBrowser.js");
     const browserClient = createCdpClientStub();
     const pageClient = createCdpClientStub();
+    Object.assign(pageClient.Page, {
+      addScriptToEvaluateOnNewDocument: vi.fn(async () => ({ identifier: "cursor-script" }))
+    });
     browserClient.Target.getTargets.mockResolvedValue({
       targetInfos: [
         {
@@ -264,9 +398,237 @@ describe("CDP coverage", () => {
       endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
     });
 
-    expect(pageClient.Runtime.evaluate).not.toHaveBeenCalledWith(expect.objectContaining({
+    expect(pageClient.Page.addScriptToEvaluateOnNewDocument).toHaveBeenCalledWith(expect.objectContaining({
+      source: expect.stringContaining("__roxyBubbleCursor")
+    }));
+    expect(pageClient.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
       expression: expect.stringContaining("__roxyBubbleCursor")
     }));
+  });
+
+  it("surfaces CDP download events in MCP snapshots like Playwright MCP", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browserClient = createCdpClientStub();
+    const pageClient = createCdpClientStub();
+    Object.assign(pageClient.Page, {
+      addScriptToEvaluateOnNewDocument: vi.fn(async () => ({ identifier: "cursor-script" }))
+    });
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "tab-1",
+          type: "page",
+          title: "Ready",
+          url: "https://example.test/"
+        }
+      ]
+    });
+    pageClient.Runtime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          refs: {},
+          text: "- link \"Download\" [ref=e1]",
+          title: "Ready",
+          url: "https://example.test/"
+        }
+      }
+    });
+    chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+      if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+        return browserClient;
+      }
+      return pageClient;
+    });
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/123.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    const session = await module.CdpConnectedBrowserSession.connect({
+      browser: "chromium",
+      protocol: "cdp",
+      endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    browserClient.emitDownloadWillBegin({
+      frameId: "frame-1",
+      guid: "download-1",
+      suggestedFilename: "test.txt",
+      url: "https://example.test/download"
+    });
+    browserClient.emitDownloadProgress({
+      guid: "download-1",
+      state: "completed"
+    });
+
+    await expect(session.snapshot()).resolves.toMatchObject({
+      events: [
+        { type: "download-start", filename: "test.txt" },
+        { type: "download-finish", filename: "test.txt" }
+      ]
+    });
+  });
+
+  it("redacts secrets in MCP CDP console log artifacts", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "roxy-cdp-console-secrets-"));
+    try {
+      const module = await import("../../src/mcp/connectedBrowser.js");
+      const browserClient = createCdpClientStub();
+      const pageClient = createCdpClientStub();
+      Object.assign(pageClient.Page, {
+        addScriptToEvaluateOnNewDocument: vi.fn(async () => ({ identifier: "cursor-script" }))
+      });
+      browserClient.Target.getTargets.mockResolvedValue({
+        targetInfos: [
+          {
+            targetId: "tab-1",
+            type: "page",
+            title: "Ready",
+            url: "https://example.test/"
+          }
+        ]
+      });
+      chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+        if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+          return browserClient;
+        }
+        return pageClient;
+      });
+      chromeRemoteInterfaceMock.Version.mockResolvedValue({
+        Browser: "Chrome/123.0.0.0",
+        webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+      });
+      pageClient.Runtime.evaluate.mockImplementation(async (options: { returnByValue?: boolean }) => {
+        if (options.returnByValue) {
+          return {
+            result: {
+              value: {
+                refs: {},
+                text: "- document \"Ready\"",
+                title: "Ready",
+                url: "https://example.test/"
+              }
+            }
+          };
+        }
+        return { result: { type: "string", value: "about:blank" } };
+      });
+
+      const session = await module.CdpConnectedBrowserSession.connect({
+        browser: "chromium",
+        protocol: "cdp",
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/example",
+        assetRoots: {
+          tempDir,
+          artifactsDir: tempDir,
+          downloadsDir: tempDir,
+          screenshotsDir: tempDir,
+          snapshotsDir: tempDir,
+          tracesDir: tempDir,
+          videosDir: tempDir,
+          networkDir: tempDir,
+          consoleDir: tempDir,
+          scriptsDir: tempDir
+        },
+        redactText: (text) => text.replaceAll("password123", "<secret>X-PASSWORD</secret>")
+      });
+      pageClient.Runtime.consoleAPICalled.mock.calls[0]?.[0]({
+        type: "log",
+        timestamp: 1700000000000,
+        args: [{ type: "string", value: "password123" }],
+        stackTrace: {
+          callFrames: [{ url: "https://example.test/", lineNumber: 4 }]
+        }
+      });
+
+      const snapshot = await session.snapshot();
+      expect(snapshot.consoleLink).toBeDefined();
+      const [filePath] = snapshot.consoleLink!.split("#L");
+      const logText = await readFile(filePath!, "utf8");
+
+      expect(logText).not.toContain("password123");
+      expect(logText).toContain("<secret>X-PASSWORD</secret>");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("tracks MCP CDP main document response status in snapshots", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browserClient = createCdpClientStub();
+    const pageClient = createCdpClientStub();
+    Object.assign(pageClient.Page, {
+      addScriptToEvaluateOnNewDocument: vi.fn(async () => ({ identifier: "cursor-script" }))
+    });
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "tab-1",
+          type: "page",
+          title: "Ready",
+          url: "https://example.test/locked"
+        }
+      ]
+    });
+    chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+      if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+        return browserClient;
+      }
+      return pageClient;
+    });
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/123.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+    pageClient.Runtime.evaluate.mockImplementation(async (options: { returnByValue?: boolean }) => {
+      if (options.returnByValue) {
+        return {
+          result: {
+            value: {
+              refs: {},
+              text: "- document \"Payment Required\"",
+              title: "Payment Required",
+              url: "https://example.test/locked"
+            }
+          }
+        };
+      }
+      return { result: { type: "string", value: "about:blank" } };
+    });
+
+    const session = await module.CdpConnectedBrowserSession.connect({
+      browser: "chromium",
+      protocol: "cdp",
+      endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+    pageClient.Network.requestWillBeSent.mock.calls[0]?.[0]({
+      requestId: "nav-1",
+      loaderId: "nav-1",
+      type: "Document",
+      request: {
+        method: "GET",
+        url: "https://example.test/locked",
+        headers: {}
+      },
+      timestamp: 1
+    });
+    pageClient.Network.responseReceived.mock.calls[0]?.[0]({
+      requestId: "nav-1",
+      type: "Document",
+      response: {
+        status: 402,
+        statusText: "Payment Required",
+        headers: {},
+        mimeType: "text/html"
+      }
+    });
+
+    const snapshot = await session.snapshot();
+
+    expect(snapshot.mainDocumentStatus).toEqual({
+      status: 402,
+      statusText: "Payment Required"
+    });
   });
 
   it("does not activate the browser window for MCP CDP interactions", async () => {
@@ -582,6 +944,71 @@ describe("CDP coverage", () => {
       key: "a",
       code: "KeyA"
     }));
+  });
+
+  it("scales MCP CDP screenshots like Playwright", async () => {
+    const pageClient = createCdpClientStub();
+    pageClient.send.mockImplementation(async (method: string) => {
+      if (method === "Page.getLayoutMetrics") {
+        return {
+          contentSize: { x: 0, y: 0, width: 800, height: 600 },
+          cssContentSize: { x: 0, y: 0, width: 400, height: 300 },
+          cssVisualViewport: {
+            pageX: 0,
+            pageY: 0,
+            clientWidth: 400,
+            clientHeight: 300,
+            scale: 1
+          }
+        };
+      }
+      return {};
+    });
+
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      getActivePageClient(): Promise<typeof pageClient>;
+      screenshot(options?: { scale?: "css" | "device" }): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
+    };
+    session.getActivePageClient = async () => pageClient;
+
+    await session.screenshot();
+    await session.screenshot({ scale: "device" });
+
+    expect(pageClient.Page.captureScreenshot).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      clip: expect.objectContaining({ scale: 0.5 })
+    }));
+    expect(pageClient.Page.captureScreenshot).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      clip: expect.objectContaining({ scale: 1 })
+    }));
+  });
+
+  it("passes webp screenshot quality to CDP", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+
+    await page.screenshot({ type: "webp", quality: 80 });
+
+    expect(pageClient.Page.captureScreenshot).toHaveBeenCalledWith(expect.objectContaining({
+      format: "webp",
+      quality: 80
+    }));
+  });
+
+  it("passes MCP CDP webp screenshots through to the browser", async () => {
+    const pageClient = createCdpClientStub();
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      getActivePageClient(): Promise<typeof pageClient>;
+      screenshot(options?: { type?: "png" | "jpeg" | "webp" }): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
+    };
+    session.getActivePageClient = async () => pageClient;
+
+    const result = await session.screenshot({ type: "webp" });
+
+    expect(pageClient.Page.captureScreenshot).toHaveBeenCalledWith(expect.objectContaining({
+      format: "webp"
+    }));
+    expect(result.mimeType).toBe("image/webp");
   });
 
   it("does not resolve CDP clicks before the mouse release command finishes", async () => {
@@ -1169,6 +1596,58 @@ describe("CDP coverage", () => {
     });
   });
 
+  it("lists a failed request once like Playwright MCP", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageNetworkStates: Map<string, any>;
+      completionCollectorsByTabId: Map<string, Set<{ requests: any[] }>>;
+      installNetworkCollection(tabId: string, client: ReturnType<typeof createCdpClientStub>): void;
+      networkRequests(): Promise<any[]>;
+      getActiveTabId(): Promise<string>;
+      hydratePerformanceResourceRequests(tabId: string): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestWillBeSentListener = vi.fn();
+    const loadingFailedListener = vi.fn();
+
+    pageClient.Network.requestWillBeSent.mockImplementation((listener: Listener) => {
+      requestWillBeSentListener.mockImplementation(listener);
+    });
+    pageClient.Network.loadingFailed.mockImplementation((listener: Listener) => {
+      loadingFailedListener.mockImplementation(listener);
+    });
+
+    session.pageNetworkStates = new Map();
+    session.completionCollectorsByTabId = new Map();
+    session.getActiveTabId = async () => "tab-1";
+    session.hydratePerformanceResourceRequests = async () => {};
+
+    session.installNetworkCollection("tab-1", pageClient);
+
+    requestWillBeSentListener({
+      requestId: "failed-image",
+      loaderId: "main",
+      type: "Image",
+      request: {
+        url: "http://does-not-exist.invalid/api/x",
+        method: "GET",
+        headers: {}
+      }
+    });
+    loadingFailedListener({
+      requestId: "failed-image",
+      errorText: "net::ERR_NAME_NOT_RESOLVED"
+    });
+
+    const requests = await session.networkRequests();
+    expect(requests.filter((request) => request.url.endsWith("/api/x"))).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requestId: "failed-image",
+      failureText: "net::ERR_NAME_NOT_RESOLVED"
+    });
+  });
+
   it("does not treat loadingFinished without a response as a completed response like Playwright", async () => {
     const module = await import("../../src/mcp/connectedBrowser.js");
     const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
@@ -1271,6 +1750,119 @@ describe("CDP coverage", () => {
     });
 
     await expect(waitPromise).resolves.toBeUndefined();
+  });
+
+  it("routes CDP requests for Playwright MCP browser_route mocks and header overrides", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageClients: Map<string, any>;
+      routesList: any[];
+      activeTabId: string;
+      refreshRouteInterception(): Promise<void>;
+      addRoute(route: any): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestPausedListener = vi.fn();
+    pageClient.Fetch.requestPaused.mockImplementation((listener: Listener) => {
+      requestPausedListener.mockImplementation(listener);
+    });
+
+    session.pageClients = new Map([["tab-1", pageClient]]);
+    session.routesList = [];
+    session.activeTabId = "tab-1";
+
+    await session.addRoute({
+      pattern: "**/api/users",
+      status: 201,
+      body: "[{\"id\":1}]",
+      contentType: "application/json"
+    });
+    await session.addRoute({
+      pattern: "**/api/check",
+      addHeaders: { "X-Custom-Header": "test-value" },
+      removeHeaders: ["authorization"]
+    });
+
+    requestPausedListener({
+      requestId: "fetch-users",
+      request: {
+        url: "https://example.test/api/users",
+        method: "GET",
+        headers: {}
+      },
+      resourceType: "Fetch"
+    });
+    requestPausedListener({
+      requestId: "fetch-check",
+      request: {
+        url: "https://example.test/api/check",
+        method: "GET",
+        headers: {
+          authorization: "secret",
+          accept: "application/json"
+        }
+      },
+      resourceType: "Fetch"
+    });
+
+    await vi.waitFor(() => {
+      expect(pageClient.Fetch.fulfillRequest).toHaveBeenCalledTimes(1);
+      expect(pageClient.Fetch.continueRequest).toHaveBeenCalledTimes(1);
+    });
+    expect(pageClient.Fetch.fulfillRequest).toHaveBeenCalledWith({
+      requestId: "fetch-users",
+      responseCode: 201,
+      responseHeaders: [{ name: "content-type", value: "application/json" }],
+      body: Buffer.from("[{\"id\":1}]", "utf8").toString("base64")
+    });
+    expect(pageClient.Fetch.continueRequest).toHaveBeenCalledWith({
+      requestId: "fetch-check",
+      headers: [
+        { name: "accept", value: "application/json" },
+        { name: "X-Custom-Header", value: "test-value" }
+      ]
+    });
+  });
+
+  it("aborts CDP requests for Playwright MCP origin blocking", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.CdpConnectedBrowserSession.prototype) as {
+      pageClients: Map<string, any>;
+      routesList: any[];
+      addRoute(route: any): Promise<void>;
+    };
+
+    const pageClient = createCdpClientStub();
+    const requestPausedListener = vi.fn();
+    pageClient.Fetch.requestPaused.mockImplementation((listener: Listener) => {
+      requestPausedListener.mockImplementation(listener);
+    });
+
+    session.pageClients = new Map([["tab-1", pageClient]]);
+    session.routesList = [];
+
+    await session.addRoute({
+      pattern: "https://example.com/**",
+      abort: "blockedbyclient"
+    });
+    requestPausedListener({
+      requestId: "fetch-blocked",
+      request: {
+        url: "https://example.com/",
+        method: "GET",
+        headers: {}
+      },
+      resourceType: "Document"
+    });
+
+    await vi.waitFor(() => {
+      expect(pageClient.Fetch.failRequest).toHaveBeenCalledTimes(1);
+    });
+    expect(pageClient.Fetch.failRequest).toHaveBeenCalledWith({
+      requestId: "fetch-blocked",
+      errorReason: "BlockedByClient"
+    });
   });
 
   it("distinguishes response availability from request finished like Playwright request.response() and response.finished()", async () => {
@@ -1410,6 +2002,25 @@ describe("CDP coverage", () => {
     expect(requests[1]?.redirectedToRequestKey).toBeUndefined();
   });
 
+  it("passes MCP BiDi webp screenshots through to the browser", async () => {
+    const browsingContextCaptureScreenshot = vi.fn(async () => ({ data: "" }));
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const session = Object.create(module.BidiConnectedBrowserSession.prototype) as {
+      client: { browsingContextCaptureScreenshot: typeof browsingContextCaptureScreenshot };
+      getActiveTabId(): Promise<string>;
+      screenshot(options?: { type?: "png" | "jpeg" | "webp" }): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
+    };
+    session.client = { browsingContextCaptureScreenshot };
+    session.getActiveTabId = async () => "tab-1";
+
+    const result = await session.screenshot({ type: "webp" });
+
+    expect(browsingContextCaptureScreenshot).toHaveBeenCalledWith(expect.objectContaining({
+      format: { type: "image/webp" }
+    }));
+    expect(result.mimeType).toBe("image/webp");
+  });
+
   it("keeps provisional raw request headers on BiDi fetchError like Playwright", async () => {
     const module = await import("../../src/mcp/connectedBrowser.js");
     const session = Object.create(module.BidiConnectedBrowserSession.prototype) as {
@@ -1460,6 +2071,46 @@ describe("CDP coverage", () => {
       failureText: "NS_BINDING_ABORTED",
       durationMs: 100
     });
+  });
+
+  it("types BiDi MCP slow text through per-character insertText calls", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const scriptEvaluate = vi.fn(async (params: {
+      awaitPromise?: boolean;
+      expression: string;
+      target: { context: string };
+    }) => {
+      expect(params.awaitPromise).toBe(true);
+      expect(params.target).toEqual({ context: "tab-1" });
+      if ((params as { resultOwnership?: string }).resultOwnership === "root") {
+        return { type: "success", result: { sharedId: "field-1", handle: "handle-1" } };
+      }
+      if (params.expression.includes("__roxyMcpState")) {
+        return { result: { type: "object", value: [["ok", { type: "boolean", value: true }]] } };
+      }
+      return { result: { type: "undefined" } };
+    });
+    const session = Object.create(module.BidiConnectedBrowserSession.prototype) as {
+      client: { scriptEvaluate: typeof scriptEvaluate };
+      getActiveTabId(): Promise<string>;
+      type(target: { selector: string }, text: string, options?: {
+        delayMs?: number;
+        slowly?: boolean;
+        strategy?: "sequential" | "fill";
+      }): Promise<void>;
+    };
+
+    session.client = { scriptEvaluate };
+    session.getActiveTabId = async () => "tab-1";
+
+    await session.type({ selector: "#field" }, "ab", { slowly: true, delayMs: 0 });
+
+    const serializedArgs = scriptEvaluate.mock.calls.map(([params]) => params.expression);
+    const insertTextExpressions = serializedArgs.filter((arg) => arg.includes("bidiInsertText(window"));
+    expect(insertTextExpressions).toHaveLength(2);
+    expect(insertTextExpressions.some((arg) => arg.includes('\\"text\\":\\"a\\"') || arg.includes('"text":"a"'))).toBe(true);
+    expect(insertTextExpressions.some((arg) => arg.includes('\\"text\\":\\"b\\"') || arg.includes('"text":"b"'))).toBe(true);
+    expect(serializedArgs.some((arg) => arg.includes('\\"text\\":\\"ab\\"') || arg.includes('"text":"ab"'))).toBe(false);
   });
 
   it("waits for BiDi main-frame load on navigation requests like Playwright", async () => {

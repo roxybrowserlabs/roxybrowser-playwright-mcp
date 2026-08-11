@@ -1,7 +1,9 @@
 import type { BrowserEvaluateResult, ClickTarget } from "../types.js";
+import type { SessionScreenshotMimeType } from "../types.js";
 import type { McpRuntime } from "../runtime.js";
 import type { Context } from "./context.js";
 import type { ModalState } from "./tool.js";
+import { parseLocatorOrSelector } from "./locatorParser.js";
 import { escapeWithQuotes, waitForCompletion } from "./utils.js";
 
 type TargetParams = { element?: string | undefined; target: string };
@@ -46,6 +48,22 @@ class Locator {
     return this.runtime.evaluate(expression, this.target);
   }
 
+  getByText(text: string): LocatorTextQuery {
+    return new LocatorTextQuery(this.runtime, this.target, text);
+  }
+
+  async textContent(_options?: { timeout?: number }): Promise<string | null> {
+    return this.runtime.textContent(this.target);
+  }
+
+  async inputValue(_options?: { timeout?: number }): Promise<string> {
+    return this.runtime.inputValue(this.target);
+  }
+
+  async isChecked(_options?: { timeout?: number }): Promise<boolean> {
+    return this.runtime.isChecked(this.target);
+  }
+
   async selectOption(values: string[], _options?: { timeout?: number }): Promise<string[]> {
     const result = await this.runtime.selectOption(this.target, values);
     return result.selected;
@@ -72,6 +90,14 @@ class Locator {
     });
   }
 
+  async press(key: string, options?: { timeout?: number; human?: HumanOptions }): Promise<void> {
+    await this.runtime.press(
+      this.target,
+      key,
+      options?.human?.profile !== undefined ? { profile: options.human.profile } : undefined
+    );
+  }
+
   async type(value: string, options?: {
     submit?: boolean;
     slowly?: boolean;
@@ -84,6 +110,22 @@ class Locator {
       ...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
       ...(options?.human?.profile !== undefined ? { human: { profile: options.human.profile } } : {})
     });
+  }
+}
+
+class LocatorTextQuery {
+  constructor(
+    private readonly runtime: McpRuntime,
+    private readonly target: string,
+    private readonly text: string
+  ) {}
+
+  async count(): Promise<number> {
+    return (await this.runtime.textContentsByText(this.text, { target: this.target })).length;
+  }
+
+  async textContents(): Promise<string[]> {
+    return this.runtime.textContentsByText(this.text, { target: this.target });
   }
 }
 
@@ -143,10 +185,14 @@ export class Tab {
   }
 
   async targetLocator(params: TargetParams): Promise<{ locator: Locator; resolved: string }> {
-    const target = this.context.runtime.resolveTarget(params.target);
+    const parsed = parseLocatorOrSelector(
+      params.target,
+      this.context.config.testIdAttribute ?? "data-testid"
+    );
+    const target = this.context.runtime.resolveTarget(parsed.selector);
     return {
-      locator: new Locator(this.context.runtime, params.target),
-      resolved: resolvedLocator(params.target, target)
+      locator: new Locator(this.context.runtime, parsed.selector),
+      resolved: parsed.resolved ?? this.context.runtime.resolveLocatorForCode(params.target) ?? resolvedLocator(parsed.selector, target)
     };
   }
 
@@ -163,5 +209,15 @@ export class Tab {
 
   async uploadFile(paths: string[] | undefined): Promise<void> {
     await this.context.runtime.performFileUpload(paths);
+  }
+
+  async takeScreenshot(options?: {
+    type?: "png" | "jpeg" | "webp";
+    quality?: number;
+    fullPage?: boolean;
+    scale?: "css" | "device";
+    target?: string;
+  }): Promise<{ data: string; mimeType: SessionScreenshotMimeType }> {
+    return this.context.takeScreenshot(options);
   }
 }

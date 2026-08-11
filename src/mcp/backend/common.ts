@@ -13,7 +13,7 @@ const close = defineTool({
   handle: async (context, _params, response) => {
     await context.runtime.close();
     response.setClose();
-    response.addTextResult("Browser session closed.");
+    response.addCode("await page.close()");
   }
 });
 
@@ -30,12 +30,9 @@ const resize = defineTool({
     type: "action"
   },
   handle: async (context, params, response) => {
-    const snapshot = await context.runtime.resize(params.width, params.height);
+    await context.runtime.resize(params.width, params.height);
     response.setIncludeSnapshot();
     response.addCode(`await page.setViewportSize({ width: ${params.width}, height: ${params.height} });`);
-    if (!snapshot) {
-      response.addTextResult(`Resized viewport to ${params.width}x${params.height}.`);
-    }
   }
 });
 

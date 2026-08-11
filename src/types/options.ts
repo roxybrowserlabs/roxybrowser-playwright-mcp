@@ -85,7 +85,14 @@ export interface RecordVideoOptions {
 
 export interface BrowserContextOptions {
   viewport?: ViewportSize | null;
+  screen?: ViewportSize;
+  deviceScaleFactor?: number;
+  isMobile?: boolean;
+  hasTouch?: boolean;
   userAgent?: string;
+  ignoreHTTPSErrors?: boolean;
+  permissions?: string[];
+  storageState?: string;
   locale?: string;
   timezoneId?: string;
   baseURL?: string;
@@ -95,6 +102,7 @@ export interface BrowserContextOptions {
   strictSelectors?: boolean;
   acceptDownloads?: boolean;
   downloadsDir?: string;
+  serviceWorkers?: "allow" | "block";
 }
 
 export interface TimeoutOptions {
@@ -103,23 +111,31 @@ export interface TimeoutOptions {
 
 export interface SelectTextOptions extends TimeoutOptions {
   force?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface SelectorStrictOptions extends TimeoutOptions {
   strict?: boolean;
 }
 
+export interface SelectorStrictSignalOptions extends SelectorStrictOptions {
+  signal?: AbortSignal;
+}
+
 export interface PageGotoOptions extends TimeoutOptions {
   referer?: string;
+  signal?: AbortSignal;
   waitUntil?: WaitUntilState;
 }
 
 export interface PageSetContentOptions extends TimeoutOptions {
+  signal?: AbortSignal;
   waitUntil?: WaitUntilState;
 }
 
 export interface WaitForFunctionOptions extends TimeoutOptions {
   polling?: number | "raf";
+  signal?: AbortSignal;
 }
 
 export interface PageCloseOptions {
@@ -128,16 +144,20 @@ export interface PageCloseOptions {
 }
 
 export interface WaitForURLOptions extends TimeoutOptions {
+  signal?: AbortSignal;
   waitUntil?: WaitUntilState;
 }
 
-export interface WaitForNavigationOptions extends WaitForURLOptions {
+export interface WaitForNavigationOptions extends TimeoutOptions {
+  signal?: AbortSignal;
   url?: string | RegExp | URLPattern | ((url: URL) => boolean);
+  waitUntil?: WaitUntilState;
 }
 
 export type WaitForSelectorState = "attached" | "detached" | "hidden" | "visible";
 
 export interface WaitForSelectorOptions extends TimeoutOptions {
+  signal?: AbortSignal;
   state?: WaitForSelectorState;
   strict?: boolean;
 }
@@ -145,6 +165,8 @@ export interface WaitForSelectorOptions extends TimeoutOptions {
 export interface HoverOptions extends SelectorStrictOptions {
   force?: boolean;
   modifiers?: KeyboardModifier[];
+  scroll?: "auto" | "none";
+  signal?: AbortSignal;
   trial?: boolean;
   position?: Point;
   __roxyBeforeActionRetry?: () => Promise<boolean | void>;
@@ -161,6 +183,7 @@ export interface ClickOptions extends HoverOptions {
 export interface FillOptions extends SelectorStrictOptions {
   force?: boolean;
   noWaitAfter?: boolean;
+  signal?: AbortSignal;
   timeout?: number;
 }
 
@@ -174,14 +197,17 @@ export type SelectOptionValue = string | SelectOption;
 
 export interface TypeOptions extends SelectorStrictOptions {
   delay?: number;
+  signal?: AbortSignal;
 }
 
 export interface PressOptions extends SelectorStrictOptions {
   delay?: number;
   noWaitAfter?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface DispatchEventOptions extends TimeoutOptions {
+  signal?: AbortSignal;
   strict?: boolean;
 }
 
@@ -199,6 +225,8 @@ export interface AddLocatorHandlerOptions {
 export interface DragAndDropOptions extends TimeoutOptions {
   force?: boolean;
   noWaitAfter?: boolean;
+  scroll?: "auto" | "none";
+  signal?: AbortSignal;
   sourcePosition?: Point;
   steps?: number;
   strict?: boolean;
@@ -239,6 +267,7 @@ export interface PdfOptions {
 
 export interface SetInputFilesOptions extends SelectorStrictOptions {
   noWaitAfter?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface TapOptions extends HoverOptions {
@@ -266,7 +295,7 @@ export interface GetByRoleOptions {
 
 export interface GetByTitleOptions extends ExactTextLocatorOptions {}
 
-export type ScreenshotType = "jpeg" | "png";
+export type ScreenshotType = "jpeg" | "png" | "webp";
 
 export interface ScreenshotOptions {
   animations?: "disabled" | "allow";
@@ -279,6 +308,7 @@ export interface ScreenshotOptions {
   path?: string;
   quality?: number;
   scale?: "css" | "device";
+  signal?: AbortSignal;
   style?: string;
   timeout?: number;
   type?: ScreenshotType;
@@ -305,5 +335,6 @@ export interface AriaSnapshotOptions {
   boxes?: boolean;
   depth?: number;
   mode?: "ai" | "default";
+  signal?: AbortSignal;
   timeout?: number;
 }

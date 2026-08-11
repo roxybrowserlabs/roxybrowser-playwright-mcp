@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import mime from "mime";
+import { raceWithAbortSignal, throwIfAborted, type AbortSignalOptions } from "./abortSignal.js";
 import type { ElementHandle } from "./types/api.js";
 import type { FilePayload } from "./types/options.js";
 
@@ -70,10 +71,12 @@ export function applyResolvedInputFilesToInputElement(
 
 export async function setInputFilesOnElement(
   handle: ElementHandle,
-  files: InputFiles
+  files: InputFiles,
+  options?: AbortSignalOptions
 ): Promise<void> {
-  const resolved = await convertInputFiles(files);
-  await handle.evaluate(applyResolvedInputFilesToInputElement, resolved);
+  throwIfAborted(options);
+  const resolved = await raceWithAbortSignal(convertInputFiles(files), options);
+  await raceWithAbortSignal(handle.evaluate(applyResolvedInputFilesToInputElement, resolved), options);
 }
 
 export async function convertInputFiles(files: InputFiles): Promise<ResolvedInputFiles> {

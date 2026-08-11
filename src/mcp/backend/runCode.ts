@@ -8,7 +8,7 @@ const codeSchema = z.object({
 });
 
 const runCode = defineTool({
-  capability: "devtools",
+  capability: "core",
   schema: {
     name: "browser_run_code_unsafe",
     title: "Run code (unsafe)",

@@ -9,7 +9,19 @@ if (existsSync(envPath)) {
   loadEnvFile(envPath);
 }
 
-const BIDI_MAX_WORKERS = 1;
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  return parsed;
+}
+
+const BIDI_MAX_WORKERS = positiveIntegerEnv("ROXY_BIDI_MAX_WORKERS", 4);
 
 if (process.env.ROXYBROWSER_PROFILE_ID && BIDI_MAX_WORKERS > 1) {
   throw new Error(
