@@ -12,8 +12,8 @@ importers:
         specifier: ^1.30.0
         version: 1.30.0(zod@4.4.3)
       '@roxybrowser/openapi':
-        specifier: ^3.0.1-beta.1
-        version: 3.0.1-beta.1(zod@4.4.3)
+        specifier: ^3.0.1-beta.2
+        version: 3.0.1-beta.2(zod@4.4.3)
       chrome-remote-interface:
         specifier: ^0.34.0
         version: 0.34.0
@@ -509,8 +509,8 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@roxybrowser/openapi@3.0.1-beta.1':
-    resolution: {integrity: sha512-lUUvMJUwbyT+I7qPuDsjBPoUyOjfViwd7Rh8SxbGU8RqAOjxi0JkzsDcrWBGCJx1OgudxbP0HG9qLJTtMmGcfA==}
+  '@roxybrowser/openapi@3.0.1-beta.2':
+    resolution: {integrity: sha512-kd+FIucXlln9bWJnEmWltZr6dXDzli099sJEdudDYfJ8KsqQiF/cy8CxJZFJoq3zxQGe1CxdUIPgfmIh1ZFmOQ==}
     engines: {node: ^20.19.0 || ^22.18.0 || >=24.11.0}
     hasBin: true
 
@@ -2262,7 +2262,7 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@roxybrowser/openapi@3.0.1-beta.1(zod@4.4.3)':
+  '@roxybrowser/openapi@3.0.1-beta.2(zod@4.4.3)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.0(zod@4.4.3)
       commander: 14.0.3
