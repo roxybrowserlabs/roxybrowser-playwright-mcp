@@ -33,6 +33,11 @@ export {
   resolveFirefoxExecutableCandidates
 } from "./protocol/bidi/backend.js";
 export {
+  resetFirefoxBidiSessionRegistryForTests,
+  setFirefoxBidiProcessAliveForTests,
+  setFirefoxBidiSessionRegistryPathForTests
+} from "./protocol/bidi/sessionRegistry.js";
+export {
   resetBidiClientFactoryForTests,
   setBidiClientFactoryForTests,
   WebSocketBidiClient

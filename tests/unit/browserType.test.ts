@@ -204,6 +204,63 @@ describe("RoxyBrowserType", () => {
     expect(cdpFactory.create).not.toHaveBeenCalled();
   });
 
+  it("disconnectAll() closes all currently tracked firefox connections", async () => {
+    const cdpFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const firstSession = createBrowserSessionStub();
+    const secondSession = createBrowserSessionStub();
+    const firstAdapter = createBrowserAdapterStub();
+    firstAdapter.browser = vi.fn(async () => firstSession);
+    const secondAdapter = createBrowserAdapterStub();
+    secondAdapter.browser = vi.fn(async () => secondSession);
+    const bidiFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+        .mockReturnValueOnce(firstAdapter)
+        .mockReturnValueOnce(secondAdapter)
+    };
+    const browserType = new RoxyBrowserType("firefox", {
+      cdp: cdpFactory,
+      bidi: bidiFactory
+    });
+
+    const firstBrowser = await browserType.connect("ws://127.0.0.1:9222");
+    const secondBrowser = await browserType.connect("ws://127.0.0.1:9223");
+
+    await browserType.disconnectAll();
+
+    expect(firstSession.close).toHaveBeenCalledTimes(1);
+    expect(secondSession.close).toHaveBeenCalledTimes(1);
+    expect(firstAdapter.close).toHaveBeenCalledTimes(1);
+    expect(secondAdapter.close).toHaveBeenCalledTimes(1);
+    expect(firstBrowser.isConnected()).toBe(false);
+    expect(secondBrowser.isConnected()).toBe(false);
+    expect(cdpFactory.create).not.toHaveBeenCalled();
+  });
+
+  it("disconnectAll() forgets browsers that were already closed", async () => {
+    const cdpFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn()
+    };
+    const session = createBrowserSessionStub();
+    const adapter = createBrowserAdapterStub();
+    adapter.browser = vi.fn(async () => session);
+    const bidiFactory: ProtocolBrowserAdapterFactory = {
+      create: vi.fn(() => adapter)
+    };
+    const browserType = new RoxyBrowserType("firefox", {
+      cdp: cdpFactory,
+      bidi: bidiFactory
+    });
+
+    const browser = await browserType.connect("ws://127.0.0.1:9222");
+    await browser.close();
+    await browserType.disconnectAll();
+
+    expect(session.close).toHaveBeenCalledTimes(1);
+    expect(adapter.close).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the explicit firefox connect endpoint even if options contain wsEndpoint", async () => {
     const cdpFactory: ProtocolBrowserAdapterFactory = {
       create: vi.fn()

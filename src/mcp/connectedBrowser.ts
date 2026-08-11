@@ -18,6 +18,10 @@ import type { BidiProtocolClient } from "../protocol/bidi/client.js";
 import { getBidiClientFactory } from "../protocol/bidi/client.js";
 import { BIDI_INSERT_TEXT_SOURCE } from "../protocol/bidi/insertText.js";
 import {
+  cleanupStaleFirefoxBidiSessions,
+  registerOwnedFirefoxBidiSession
+} from "../protocol/bidi/sessionRegistry.js";
+import {
   parseSerializedEvaluationResult,
   wrapWithSerializedEvaluationResult
 } from "../protocol/evaluationSerializer.js";
@@ -4780,6 +4784,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
   private readonly initScriptPreloadScripts = new Set<string>();
   private activeTabId: string | undefined;
   private ownsSession = false;
+  private unregisterOwnedSession: (() => Promise<void>) | undefined;
   private readonly tempDir: string;
   private currentMousePosition = { x: 0, y: 0 };
   private hasMouseEnteredViewport = false;
@@ -4811,6 +4816,12 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       );
     }
 
+    const isExternallyOwnedSession =
+      !!args.sessionId || isSessionSpecificFirefoxBidiEndpoint(args.endpoint);
+    if (!isExternallyOwnedSession) {
+      await cleanupStaleFirefoxBidiSessions(getBidiClientFactory(), args.endpoint);
+    }
+
     const client = await getBidiClientFactory()({
       browserName: "firefox",
       webSocketUrl: normalizeFirefoxBidiEndpoint(args.endpoint, args.sessionId)
@@ -4823,7 +4834,9 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
       args.redactText,
       args.testIdAttribute
     );
-    session.ownsSession = await ensureMcpBiDiSession(client, args.endpoint, args.sessionId);
+    const sessionResult = await ensureMcpBiDiSession(client, args.endpoint, args.sessionId);
+    session.ownsSession = sessionResult.ownsSession;
+    session.unregisterOwnedSession = sessionResult.unregisterOwnedSession;
     await session.initialize();
     const tabs = await session.refreshTabs();
     await Promise.all(tabs.map(async (tab) => {
@@ -5586,8 +5599,12 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
     this.initScriptPreloadScripts.clear();
     if (this.ownsSession) {
-      await this.client.sessionEnd({}).catch(() => {});
+      const ended = await this.client.sessionEnd({}).then(() => true, () => false);
+      if (ended) {
+        await this.unregisterOwnedSession?.().catch(() => {});
+      }
     }
+    this.unregisterOwnedSession = undefined;
     this.client.close();
   }
 
@@ -6723,16 +6740,19 @@ async function ensureMcpBiDiSession(
   client: BidiProtocolClient,
   endpoint: string,
   sessionId?: string
-): Promise<boolean> {
+): Promise<{
+  ownsSession: boolean;
+  unregisterOwnedSession?: () => Promise<void>;
+}> {
   await client.sessionStatus({});
 
   if (sessionId || isSessionSpecificFirefoxBidiEndpoint(endpoint)) {
-    return false;
+    return { ownsSession: false };
   }
 
   try {
     await client.browsingContextGetTree({});
-    return false;
+    return { ownsSession: false };
   } catch (error) {
     const message = String(error instanceof Error ? error.message : error);
     if (
@@ -6745,14 +6765,21 @@ async function ensureMcpBiDiSession(
   }
 
   try {
-    await client.sessionNew({
+    const result = await client.sessionNew({
       capabilities: {
         alwaysMatch: {
           acceptInsecureCerts: true
         }
       }
     });
-    return true;
+    const unregisterOwnedSession = await registerOwnedFirefoxBidiSession({
+      endpoint,
+      sessionId: result.sessionId
+    }).catch(() => undefined);
+    return {
+      ownsSession: true,
+      ...(unregisterOwnedSession ? { unregisterOwnedSession } : {})
+    };
   } catch (error) {
     const message = String(error instanceof Error ? error.message : error);
     if (message.includes("Maximum number of active sessions")) {

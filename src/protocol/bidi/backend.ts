@@ -98,6 +98,10 @@ import {
 } from "../../processCleanup.js";
 import type { BidiProtocolClient } from "./client.js";
 import { getBidiClientFactory } from "./client.js";
+import {
+  cleanupStaleFirefoxBidiSessions,
+  registerOwnedFirefoxBidiSession
+} from "./sessionRegistry.js";
 
 const BIDI_CAPABILITIES: ProtocolCapabilities = {
   protocol: "bidi",
@@ -726,6 +730,7 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
 
   private client: BidiProtocolClient | undefined;
   private ownsSession = false;
+  private unregisterOwnedSession: (() => Promise<void>) | undefined;
   private spawnedProcess: ReturnType<typeof spawn> | undefined;
   private unregisterTestBrowserProcess: (() => void) | undefined;
   private userDataDir: string | undefined;
@@ -748,6 +753,7 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
       );
       this.client = connection.client;
       this.ownsSession = connection.ownsSession;
+      this.unregisterOwnedSession = connection.unregisterOwnedSession;
       return;
     }
 
@@ -755,11 +761,13 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
       client,
       ownsSession,
       process: proc,
+      unregisterOwnedSession,
       unregisterTestBrowserProcess,
       userDataDir
     } = await launchFirefoxBidi(this.options);
     this.client = client;
     this.ownsSession = ownsSession;
+    this.unregisterOwnedSession = unregisterOwnedSession;
     this.spawnedProcess = proc;
     this.unregisterTestBrowserProcess = unregisterTestBrowserProcess;
     this.userDataDir = userDataDir;
@@ -770,13 +778,14 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
       throw new Error("BiDi browser adapter is not connected.");
     }
 
-    return new BidiBrowserSession(this.client, this.ownsSession);
+    return new BidiBrowserSession(this.client, this.ownsSession, this.unregisterOwnedSession);
   }
 
   async close(): Promise<void> {
     const client = this.client;
     this.client = undefined;
     this.ownsSession = false;
+    this.unregisterOwnedSession = undefined;
 
     try {
       if (client) {
@@ -800,7 +809,8 @@ class BidiBrowserAdapter implements ProtocolBrowserAdapter {
 class BidiBrowserSession implements ProtocolBrowserSession {
   constructor(
     private readonly client: BidiProtocolClient,
-    private readonly ownsSession: boolean
+    private readonly ownsSession: boolean,
+    private readonly unregisterOwnedSession?: () => Promise<void>
   ) {}
 
   async version(): Promise<string> {
@@ -825,6 +835,7 @@ class BidiBrowserSession implements ProtocolBrowserSession {
   async close(): Promise<void> {
     if (this.ownsSession) {
       await this.client.sessionEnd({});
+      await this.unregisterOwnedSession?.().catch(() => {});
     }
   }
 }
@@ -4911,6 +4922,10 @@ async function connectBidiFromWsEndpoint(
   wsEndpoint: string,
   sessionId?: string
 ): Promise<BidiConnectionResult> {
+  if (!sessionId && !isSessionSpecificFirefoxBidiEndpoint(wsEndpoint)) {
+    await cleanupStaleFirefoxBidiSessions(getBidiClientFactory(), wsEndpoint);
+  }
+
   const bidiEndpoint = buildFirefoxBidiEndpoint(wsEndpoint, sessionId);
   // Firefox BiDi endpoints are direct WebSocket connections and do not expose
   // CDP-style discovery endpoints such as /json/version.
@@ -4920,10 +4935,13 @@ async function connectBidiFromWsEndpoint(
   });
 
   try {
-    const ownsSession = await ensureBiDiSession(client, sessionId, wsEndpoint);
+    const sessionResult = await ensureBiDiSession(client, sessionId, wsEndpoint);
     return {
       client,
-      ownsSession
+      ownsSession: sessionResult.ownsSession,
+      ...(sessionResult.unregisterOwnedSession
+        ? { unregisterOwnedSession: sessionResult.unregisterOwnedSession }
+        : {})
     };
   } catch (error) {
     client.close();
@@ -4935,6 +4953,7 @@ interface FirefoxLaunchResult {
   client: BidiProtocolClient;
   process: ReturnType<typeof spawn> | undefined;
   unregisterTestBrowserProcess?: () => void;
+  unregisterOwnedSession?: () => Promise<void>;
   ownsSession: boolean;
   userDataDir: string;
 }
@@ -4942,6 +4961,12 @@ interface FirefoxLaunchResult {
 interface BidiConnectionResult {
   client: BidiProtocolClient;
   ownsSession: boolean;
+  unregisterOwnedSession?: () => Promise<void>;
+}
+
+interface EnsureBidiSessionResult {
+  ownsSession: boolean;
+  unregisterOwnedSession?: () => Promise<void>;
 }
 
 async function launchFirefoxBidi(options: BrowserConnectOptions): Promise<FirefoxLaunchResult> {
@@ -5181,16 +5206,16 @@ async function ensureBiDiSession(
   client: BidiProtocolClient,
   sessionId: string | undefined,
   wsEndpoint: string
-): Promise<boolean> {
+): Promise<EnsureBidiSessionResult> {
   await client.sessionStatus({});
 
   if (sessionId || isSessionSpecificFirefoxBidiEndpoint(wsEndpoint)) {
-    return false;
+    return { ownsSession: false };
   }
 
   try {
     await client.browsingContextGetTree({});
-    return false;
+    return { ownsSession: false };
   } catch (error) {
     if (!String(error instanceof Error ? error.message : error).includes("session does not exist")) {
       throw error;
@@ -5198,14 +5223,21 @@ async function ensureBiDiSession(
   }
 
   try {
-    await client.sessionNew({
+    const result = await client.sessionNew({
       capabilities: {
         alwaysMatch: {
           acceptInsecureCerts: true
         }
       }
     });
-    return true;
+    const unregisterOwnedSession = await registerOwnedFirefoxBidiSession({
+      endpoint: wsEndpoint,
+      sessionId: result.sessionId
+    }).catch(() => undefined);
+    return {
+      ownsSession: true,
+      ...(unregisterOwnedSession ? { unregisterOwnedSession } : {})
+    };
   } catch (error) {
     const message = String(error instanceof Error ? error.message : error);
     if (message.includes("Maximum number of active sessions")) {

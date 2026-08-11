@@ -3,8 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BidiBrowserAdapterFactory,
   buildFirefoxLaunchArgs,
+  resetFirefoxBidiSessionRegistryForTests,
   resolveFirefoxExecutableCandidates,
   RoxyBrowser,
+  setFirefoxBidiProcessAliveForTests,
+  setFirefoxBidiSessionRegistryPathForTests,
   resetBidiClientFactoryForTests,
   setBidiClientFactoryForTests,
   WebSocketBidiClient
@@ -115,6 +118,7 @@ describe("BidiBrowserAdapterFactory", () => {
   afterEach(() => {
     createClient.mockReset();
     resetBidiClientFactoryForTests();
+    resetFirefoxBidiSessionRegistryForTests();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -219,6 +223,57 @@ describe("BidiBrowserAdapterFactory", () => {
     expect(sessionEnd).toHaveBeenCalledWith({});
     await adapter.close();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans stale owned BiDi sessions before connecting a root websocket endpoint", async () => {
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const registryPath = join(tmpdir(), `roxy-stale-bidi-session-${process.pid}.jsonl`);
+    setFirefoxBidiSessionRegistryPathForTests(registryPath);
+    setFirefoxBidiProcessAliveForTests(() => false);
+    const { writeFile, rm } = await import("node:fs/promises");
+    await rm(registryPath, { force: true }).catch(() => {});
+    await writeFile(
+      registryPath,
+      `${JSON.stringify({
+        pid: 999_999,
+        endpoint: "ws://127.0.0.1:53453",
+        sessionId: "stale-session"
+      })}\n`,
+      "utf8"
+    );
+
+    const staleSessionEnd = vi.fn(async () => {});
+    const staleClose = vi.fn();
+    const activeClient = createBidiClientStub();
+    createClient
+      .mockResolvedValueOnce({
+        ...createBidiClientStub({
+          sessionEnd: staleSessionEnd,
+          close: staleClose
+        })
+      })
+      .mockResolvedValueOnce(activeClient);
+
+    const adapter = new BidiBrowserAdapterFactory().create({
+      browserName: "firefox",
+      protocol: "bidi",
+      wsEndpoint: "ws://127.0.0.1:53453"
+    });
+    setBidiClientFactoryForTests(createClient);
+
+    await adapter.connect();
+
+    expect(createClient).toHaveBeenNthCalledWith(1, {
+      webSocketUrl: "ws://127.0.0.1:53453/session/stale-session",
+      browserName: "firefox"
+    });
+    expect(staleSessionEnd).toHaveBeenCalledWith({});
+    expect(staleClose).toHaveBeenCalledTimes(1);
+    expect(createClient).toHaveBeenNthCalledWith(2, {
+      webSocketUrl: "ws://127.0.0.1:53453/session",
+      browserName: "firefox"
+    });
   });
 
   it("still closes a spawned Firefox process when the BiDi client is already gone", async () => {

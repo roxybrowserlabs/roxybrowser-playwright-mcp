@@ -16,6 +16,8 @@ import type {
 } from "./types/options.js";
 
 export class RoxyBrowserType implements BrowserType {
+  private readonly connectedBrowsers = new Set<Browser>();
+
   constructor(
     private readonly browserName: NonNullable<BrowserConnectOptions["browserName"]>,
     private readonly adapterFactories: Record<SupportedProtocol, ProtocolBrowserAdapterFactory>
@@ -121,7 +123,19 @@ export class RoxyBrowserType implements BrowserType {
       await browser.newContext({ reuseDefaultUserContext: true });
     }
 
+    this.connectedBrowsers.add(browser);
+    browser.once("disconnected", () => {
+      this.connectedBrowsers.delete(browser);
+    });
+
     return browser;
+  }
+
+  async disconnectAll(): Promise<void> {
+    const browsers = Array.from(this.connectedBrowsers);
+    await Promise.all(browsers.map(async (browser) => {
+      await browser.close().catch(() => {});
+    }));
   }
 
   name(): string {
@@ -129,12 +143,16 @@ export class RoxyBrowserType implements BrowserType {
   }
 }
 
+type FirefoxBrowserType = BrowserType & {
+  disconnectAll(): Promise<void>;
+};
+
 export const chromium: BrowserType = new RoxyBrowserType("chromium", {
   cdp: new CdpBrowserAdapterFactory(),
   bidi: new BidiBrowserAdapterFactory()
 });
 
-export const firefox: BrowserType = new RoxyBrowserType("firefox", {
+export const firefox: FirefoxBrowserType = new RoxyBrowserType("firefox", {
   cdp: new CdpBrowserAdapterFactory(),
   bidi: new BidiBrowserAdapterFactory()
 });

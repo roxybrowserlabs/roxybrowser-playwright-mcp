@@ -4,8 +4,8 @@ import { CURSOR_VISUALIZATION_INSTALL_SOURCE, getBubbleCursorInstallSource } fro
 
 describe("cursor visualization install source", () => {
   it("uses the configured body and outline colors", () => {
-    expect(getBubbleCursorInstallSource("arrow")).toContain('fill=\\"#EE46BC\\"');
-    expect(getBubbleCursorInstallSource("arrow")).toContain('fill=\\"#FFFFFF\\"');
+    expect(getBubbleCursorInstallSource("arrow")).toContain("innerPath.setAttribute('fill', '#EE46BC');");
+    expect(getBubbleCursorInstallSource("arrow")).toContain("outerPath.setAttribute('fill', '#FFFFFF');");
     expect(getBubbleCursorInstallSource("bubble")).toContain("context.fillStyle = '#EE46BC';");
     expect(getBubbleCursorInstallSource("bubble")).toContain("context.strokeStyle = '#FFFFFF';");
   });
@@ -35,6 +35,40 @@ describe("cursor visualization install source", () => {
     expect((cursor as HTMLElement).style.transformOrigin).toBe("50% 0%");
     expect((cursor as HTMLElement).style.left).toBe("-10px");
     expect((cursor as HTMLElement).style.top).toBe("0px");
+
+    dom.window.close();
+  });
+
+  it("installs the arrow cursor when Trusted Types blocks innerHTML strings", () => {
+    const dom = new JSDOM("<!doctype html><html><body></body></html>", {
+      pretendToBeVisual: true,
+      runScripts: "outside-only",
+      url: "https://example.test/"
+    });
+    Object.defineProperty(dom.window.document, "readyState", {
+      configurable: true,
+      value: "interactive"
+    });
+    Object.defineProperty(dom.window, "matchMedia", {
+      configurable: true,
+      value: () => ({ matches: false })
+    });
+    Object.defineProperty(dom.window.HTMLDivElement.prototype, "innerHTML", {
+      configurable: true,
+      set: () => {
+        throw new TypeError("This document requires TrustedHTML assignment.");
+      }
+    });
+
+    expect(() => dom.window.eval(getBubbleCursorInstallSource("arrow"))).not.toThrow();
+
+    const cursor = dom.window.document.querySelector(".curzr");
+    expect(cursor).toBeInstanceOf(dom.window.HTMLElement);
+    expect(cursor?.querySelector("svg")).toBeInstanceOf(dom.window.SVGSVGElement);
+    expect(
+      (dom.window as unknown as { __roxyBubbleCursor?: { installed?: boolean } }).__roxyBubbleCursor
+        ?.installed
+    ).toBe(true);
 
     dom.window.close();
   });
