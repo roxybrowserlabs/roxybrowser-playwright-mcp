@@ -67,6 +67,7 @@ export interface LocatorSelector {
   labelRegexFlags?: string;
   pick?: LocatorPick;
   visible?: boolean;
+  includeHidden?: boolean;
 }
 
 export type LocatorPick =

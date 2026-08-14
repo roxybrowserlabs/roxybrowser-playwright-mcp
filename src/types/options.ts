@@ -290,6 +290,7 @@ export interface GetByPlaceholderOptions extends ExactTextLocatorOptions {}
 
 export interface GetByRoleOptions {
   exact?: boolean;
+  includeHidden?: boolean;
   name?: string | RegExp;
 }
 

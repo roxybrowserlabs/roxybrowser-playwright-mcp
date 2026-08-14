@@ -80,6 +80,7 @@ export function createRoleLocatorSelector(
     strategy: "role",
     value: role,
     ...(options?.exact !== undefined ? { exact: options.exact } : {}),
+    ...(options?.includeHidden !== undefined ? { includeHidden: options.includeHidden } : {}),
     ...(typeof options?.name === "string" ? { name: options.name } : {}),
     ...(options?.name instanceof RegExp
       ? {

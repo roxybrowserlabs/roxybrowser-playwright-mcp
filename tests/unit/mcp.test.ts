@@ -2184,7 +2184,15 @@ describe("MCP server", () => {
       arguments: {}
     });
     expect(beforeConnect.isError).toBe(true);
-    expect(textFromResult(beforeConnect)).toContain("[not_connected]");
+    const beforeConnectText = textFromResult(beforeConnect);
+    expect(beforeConnectText).toContain("### Error");
+    expect(beforeConnectText).toContain("Code: `not_connected`");
+    expect(beforeConnectText).toContain("No RoxyBrowser browser is connected.");
+    expect(beforeConnectText).toContain(
+      "Connect to an existing RoxyBrowser browser or launch one from RoxyBrowser first."
+    );
+    expect(beforeConnectText).not.toContain("roxy_browser_connect");
+    expect(beforeConnectText).not.toContain("roxy_browser_launch");
 
     const connected = await client.callTool({
       name: "roxy_browser_connect",
@@ -2211,7 +2219,7 @@ describe("MCP server", () => {
       }
     });
     expect(hoverResult.isError).toBe(true);
-    expect(textFromResult(hoverResult)).toContain("[stale_ref]");
+    expect(textFromResult(hoverResult)).toContain("Code: `stale_ref`");
   });
 
   it("installs cursor visualization after roxy_browser_connect succeeds", async () => {
@@ -2829,7 +2837,7 @@ describe("MCP server", () => {
     });
 
     expect(invalidSelect.isError).toBe(true);
-    expect(textFromResult(invalidSelect)).toContain("[invalid_tab_index]");
+    expect(textFromResult(invalidSelect)).toContain("Code: `invalid_tab_index`");
   });
 
   it("omits generated code when Playwright MCP codegen is disabled", async () => {
@@ -3127,7 +3135,7 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBe(true);
-      expect(textFromResult(result)).toContain("[stale_ref]");
+      expect(textFromResult(result)).toContain("Code: `stale_ref`");
       // Message text aligns with Playwright's wording.
       expect(textFromResult(result)).toContain(
         "Ref e999 not found in the current page snapshot. Try capturing new snapshot."
@@ -4377,7 +4385,7 @@ describe("MCP server", () => {
       const result = await client.callTool({ name: "browser_type", arguments: { target: "e999", text: "hi" } });
 
       expect(result.isError).toBe(true);
-      expect(textFromResult(result)).toContain("[stale_ref]");
+      expect(textFromResult(result)).toContain("Code: `stale_ref`");
     });
   });
 

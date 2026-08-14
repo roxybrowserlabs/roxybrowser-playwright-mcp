@@ -34,7 +34,7 @@ interface CreateRoxyBrowserMcpServerInternalOptions {
 
 function toolErrorResult(error: unknown): CallToolResult {
   if (isMcpToolError(error)) {
-    return textResult(`[${error.code}] ${error.message}`, true);
+    return textResult(`### Error\nCode: \`${error.code}\`\n\n${error.message}`, true);
   }
 
   const message = error instanceof Error ? error.message : String(error);

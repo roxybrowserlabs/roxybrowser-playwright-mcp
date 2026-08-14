@@ -197,7 +197,7 @@ async function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     return matchesPattern(textForSelector(element), selector, "value");
   };
 
-  type CssTextPseudoName = "text" | "text-is" | "text-matches" | "has-text";
+  type CssTextPseudoName = "text" | "text-is" | "text-matches" | "has-text" | "visible";
   type CssTextPseudo = {
     name: CssTextPseudoName;
     args: string[];
@@ -212,6 +212,13 @@ async function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
     immediateTextNodesForSelector(element);
 
   const elementMatchesCssTextPseudoSelf = (element: Element, pseudo: CssTextPseudo): boolean => {
+    if (pseudo.name === "visible") {
+      if (pseudo.args.length !== 0) {
+        throw new Error(`"visible" engine expects no arguments`);
+      }
+      return isVisible(element);
+    }
+
     if (shouldSkipTextSelectorElement(element)) {
       return false;
     }
@@ -539,6 +546,22 @@ async function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         continue;
       }
 
+      const visibleMatch = /^:visible\b/.exec(head.selector.slice(index));
+      if (visibleMatch) {
+        const start = index;
+        const end = index + visibleMatch[0].length;
+        pseudos.push({
+          name: "visible",
+          args: [],
+          start,
+          end
+        });
+        replacement += head.selector.slice(cursor, index);
+        cursor = end;
+        index = end - 1;
+        continue;
+      }
+
       const nameMatch = /^:(text-is|text-matches|has-text|text)\s*\(/.exec(head.selector.slice(index));
       if (!nameMatch) {
         continue;
@@ -619,6 +642,13 @@ async function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         continue;
       }
       if (bracketDepth === 0 && parenDepth === 0 && char === ":") {
+        const visibleMatch = /^:visible\b/.exec(selector.slice(index));
+        if (visibleMatch) {
+          firstPseudoEnd = index + visibleMatch[0].length;
+          index = firstPseudoEnd - 1;
+          continue;
+        }
+
         const nameMatch = /^:(text-is|text-matches|has-text|text)\s*\(/.exec(selector.slice(index));
         if (nameMatch) {
           const argsStart = index + nameMatch[0].length;
@@ -1065,7 +1095,11 @@ async function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       }
 
       if (selector.name === undefined && !selector.nameIsRegex) {
-        return true;
+        return selector.includeHidden === true || !isHiddenForRole(element);
+      }
+
+      if (selector.includeHidden !== true && isHiddenForRole(element)) {
+        return false;
       }
 
       return matchesPattern(accessibleName(element), selector, "name");
@@ -1258,6 +1292,15 @@ async function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
       return !shouldSkipTextSelectorElement(element) && matchesTextSelector(element, selector);
     }
     return candidatesFromRoot(element, selector, true).includes(element);
+  };
+
+  const isHiddenForRole = (element: Element): boolean => {
+    for (let current: Element | null = element; current; current = current.parentElement) {
+      if (current.getAttribute("aria-hidden") === "true") {
+        return true;
+      }
+    }
+    return !isVisible(element);
   };
 
   const reviveArgument = (value: unknown): unknown => {

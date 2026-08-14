@@ -1749,7 +1749,8 @@ function formatLocatorSelector(selector: LocatorSelector): string | null {
   if (selector.strategy === "role") {
     const options = formatLocatorOptions([
       formatMaybeRegexOption("name", selector.name, selector.nameIsRegex, selector.nameRegexFlags),
-      typeof selector.name === "string" && selector.exact ? "exact: true" : null
+      typeof selector.name === "string" && selector.exact ? "exact: true" : null,
+      selector.includeHidden ? "includeHidden: true" : null
     ]);
     return `getByRole(${quote(selector.value)}${options})`;
   }

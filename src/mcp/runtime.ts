@@ -1298,7 +1298,7 @@ export class McpRuntime {
     if (!this.connection) {
       throw new McpToolError(
         "not_connected",
-        'No browser is connected. Call "roxy_browser_connect" first.'
+        "No RoxyBrowser browser is connected. Connect to an existing RoxyBrowser browser or launch one from RoxyBrowser first."
       );
     }
     return this.connection.session;
