@@ -692,6 +692,46 @@ describe("CDP coverage", () => {
     await session.close();
   });
 
+  it("rejects background tab creation before Chromium 145 without changing focus", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browserClient = createCdpClientStub();
+    const pageClient = createCdpClientStub();
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "tab-1",
+          type: "page",
+          title: "Ready",
+          url: "https://example.test/"
+        }
+      ]
+    });
+    chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+      if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+        return browserClient;
+      }
+      return pageClient;
+    });
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/144.0.7559.97",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    const session = await module.CdpConnectedBrowserSession.connect({
+      browser: "chromium",
+      protocol: "cdp",
+      endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    await expect(
+      session.newTab("https://background.test/", { activate: false })
+    ).rejects.toMatchObject({ code: "background_tab_unsupported" });
+    expect(browserClient.Target.createTarget).not.toHaveBeenCalled();
+    expect(browserClient.Target.activateTarget).not.toHaveBeenCalled();
+
+    await session.close();
+  });
+
   it("fills MCP CDP text through selection plus protocol text insertion", async () => {
     const module = await import("../../src/mcp/connectedBrowser.js");
     const browserClient = createCdpClientStub();
@@ -749,7 +789,51 @@ describe("CDP coverage", () => {
     await session.close();
   });
 
-  it("still activates a tab when MCP explicitly selects it", async () => {
+  it("keeps CDP tab operations in the background when activation is disabled", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browserClient = createCdpClientStub();
+    const pageClient = createCdpClientStub();
+    browserClient.Target.getTargets.mockResolvedValue({
+      targetInfos: [
+        {
+          targetId: "tab-1",
+          type: "page",
+          title: "Ready",
+          url: "https://example.test/"
+        }
+      ]
+    });
+    chromeRemoteInterfaceMock.mockImplementation(async (options?: { target?: string }) => {
+      if (options?.target === "ws://127.0.0.1:9222/devtools/browser/example") {
+        return browserClient;
+      }
+      return pageClient;
+    });
+    chromeRemoteInterfaceMock.Version.mockResolvedValue({
+      Browser: "Chrome/145.0.0.0",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    const session = await module.CdpConnectedBrowserSession.connect({
+      browser: "chromium",
+      protocol: "cdp",
+      endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
+    });
+
+    await session.newTab("https://background.test/", { activate: false });
+    await session.selectTab("tab-1", { activate: false });
+    await session.closeTab("tab-1", { activate: false });
+
+    expect(browserClient.Target.createTarget).toHaveBeenCalledWith({
+      url: "https://background.test/",
+      background: true
+    });
+    expect(browserClient.Target.activateTarget).not.toHaveBeenCalled();
+
+    await session.close();
+  });
+
+  it("still activates a CDP tab when activation is explicit", async () => {
     const module = await import("../../src/mcp/connectedBrowser.js");
     const browserClient = createCdpClientStub();
     const pageClient = createCdpClientStub();
@@ -780,12 +864,56 @@ describe("CDP coverage", () => {
       endpoint: "ws://127.0.0.1:9222/devtools/browser/example"
     });
 
-    await session.selectTab("tab-1");
+    await session.selectTab("tab-1", { activate: true });
 
     expect(browserClient.Target.activateTarget).toHaveBeenCalledOnce();
     expect(browserClient.Target.activateTarget).toHaveBeenCalledWith({ targetId: "tab-1" });
 
     await session.close();
+  });
+
+  it("keeps BiDi tab operations in the background when activation is disabled", async () => {
+    const module = await import("../../src/mcp/connectedBrowser.js");
+    const browsingContextCreate = vi.fn(async () => ({ context: "tab-2" }));
+    const browsingContextActivate = vi.fn(async () => ({}));
+    const session = Object.create(module.BidiConnectedBrowserSession.prototype) as {
+      client: {
+        browsingContextCreate: typeof browsingContextCreate;
+        browsingContextActivate: typeof browsingContextActivate;
+        browsingContextNavigate: ReturnType<typeof vi.fn>;
+        browsingContextGetTree: ReturnType<typeof vi.fn>;
+        emulationSetNetworkConditions: ReturnType<typeof vi.fn>;
+      };
+      activeTabId: string | undefined;
+      offline: boolean;
+      titleForContext(tabId: string): Promise<string>;
+      newTab(url?: string, options?: { activate?: boolean }): Promise<unknown>;
+      selectTab(tabId: string, options?: { activate?: boolean }): Promise<unknown>;
+    };
+    session.client = {
+      browsingContextCreate,
+      browsingContextActivate,
+      browsingContextNavigate: vi.fn(async () => ({})),
+      browsingContextGetTree: vi.fn(async () => ({
+        contexts: [
+          { context: "tab-1", url: "https://example.test/", children: [] },
+          { context: "tab-2", url: "https://background.test/", children: [] }
+        ]
+      })),
+      emulationSetNetworkConditions: vi.fn(async () => ({}))
+    };
+    session.activeTabId = "tab-1";
+    session.offline = false;
+    session.titleForContext = async (tabId) => tabId;
+
+    await session.newTab("https://background.test/", { activate: false });
+    await session.selectTab("tab-1", { activate: false });
+
+    expect(browsingContextCreate).toHaveBeenCalledWith({
+      type: "tab",
+      background: true
+    });
+    expect(browsingContextActivate).not.toHaveBeenCalled();
   });
 
   it("orders initially discovered pages by page event order like Playwright", async () => {

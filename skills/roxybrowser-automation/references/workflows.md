@@ -79,7 +79,8 @@ For external file or MIME data drag/drop, use `browser_drop` instead.
 1. `browser_tabs` with `action: "list"`.
 2. Select by index only after confirming the list.
 3. For new pages, use `browser_tabs` with `action: "new"` and optional `url`.
-4. Always call `browser_snapshot` after selecting or creating a tab unless the tool response already includes enough state.
+4. Pass `activate: false` when the operation should stay in the background. Leave it unset when the browser UI should retain its existing foreground behavior.
+5. Always call `browser_snapshot` after selecting or creating a tab unless the tool response already includes enough state.
 
 ## Large Result Capture
 

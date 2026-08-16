@@ -21,6 +21,7 @@ import type {
   BrowserSnapshot,
   BrowserSnapshotRequest,
   BrowserTab,
+  BrowserTabActivationOptions,
   ClickTarget,
   ConnectedBrowserSession,
   RoxyBrowserConnectArgs,
@@ -45,6 +46,10 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
   private dialogOpen = false;
   private contentHtml = "";
   private globals = new Map<string, unknown>();
+  readonly tabActivationCalls: Array<{
+    action: "new" | "select" | "close";
+    activate: boolean | undefined;
+  }> = [];
 
   constructor(private readonly args: RoxyBrowserConnectArgs) {
     this.protocol = args.protocol;
@@ -75,7 +80,11 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     return this.tabs.map((tab) => ({ ...tab }));
   }
 
-  async newTab(url = "about:blank"): Promise<BrowserTab[]> {
+  async newTab(
+    url = "about:blank",
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
+    this.tabActivationCalls.push({ action: "new", activate: options.activate });
     const id = `tab-${this.nextTabId++}`;
     this.tabs = this.tabs.map((tab) => ({ ...tab, active: false }));
     this.tabs.push({
@@ -87,7 +96,11 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     return this.listTabs();
   }
 
-  async selectTab(tabId: string): Promise<BrowserTab[]> {
+  async selectTab(
+    tabId: string,
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
+    this.tabActivationCalls.push({ action: "select", activate: options.activate });
     this.tabs = this.tabs.map((tab) => ({
       ...tab,
       active: tab.id === tabId
@@ -95,7 +108,11 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     return this.listTabs();
   }
 
-  async closeTab(tabId: string): Promise<BrowserTab[]> {
+  async closeTab(
+    tabId: string,
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
+    this.tabActivationCalls.push({ action: "close", activate: options.activate });
     const index = this.tabs.findIndex((tab) => tab.id === tabId);
     this.tabs = this.tabs.filter((tab) => tab.id !== tabId);
     if (this.tabs.length > 0) {
@@ -2838,6 +2855,59 @@ describe("MCP server", () => {
 
     expect(invalidSelect.isError).toBe(true);
     expect(textFromResult(invalidSelect)).toContain("Code: `invalid_tab_index`");
+  });
+
+  it("supports background browser tab operations without changing the default", async () => {
+    let capturedSession: FakeConnectedBrowserSession | undefined;
+    const bundle = await createRoxyBrowserMcpInMemory({
+      sessionFactory: async (args) => {
+        capturedSession = new FakeConnectedBrowserSession(args);
+        return capturedSession;
+      }
+    });
+    cleanupCallbacks.push(async () => bundle.close());
+
+    const client = createClient();
+    cleanupCallbacks.push(async () => client.close());
+    await client.connect(bundle.clientTransport);
+    await client.callTool({
+      name: "roxy_browser_connect",
+      arguments: { endpoint: "ws://background-tabs.invalid/devtools/browser/1" }
+    });
+
+    await client.callTool({
+      name: "browser_tabs",
+      arguments: { action: "new", url: "https://example.test/foreground" }
+    });
+    await client.callTool({
+      name: "browser_tabs",
+      arguments: { action: "select", index: 0 }
+    });
+    await client.callTool({
+      name: "browser_tabs",
+      arguments: { action: "close", index: 1 }
+    });
+    await client.callTool({
+      name: "browser_tabs",
+      arguments: { action: "new", url: "https://example.test/background", activate: false }
+    });
+    await client.callTool({
+      name: "browser_tabs",
+      arguments: { action: "select", index: 0, activate: false }
+    });
+    await client.callTool({
+      name: "browser_tabs",
+      arguments: { action: "close", index: 1, activate: false }
+    });
+
+    expect(capturedSession?.tabActivationCalls).toEqual([
+      { action: "new", activate: true },
+      { action: "select", activate: true },
+      { action: "close", activate: true },
+      { action: "new", activate: false },
+      { action: "select", activate: false },
+      { action: "close", activate: false }
+    ]);
   });
 
   it("omits generated code when Playwright MCP codegen is disabled", async () => {

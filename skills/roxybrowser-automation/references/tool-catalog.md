@@ -13,7 +13,7 @@ Use this file when choosing between RoxyBrowser MCP tools.
 ## Tabs And Viewport
 
 `browser_tabs`
-: List, create, select, or close tabs. Use `action: "list"` to confirm tab indexes before selecting or closing.
+: List, create, select, or close tabs. Use `action: "list"` to confirm tab indexes before selecting or closing. Tab operations activate the browser UI by default for compatibility; pass `activate: false` for background automation. Background tab creation requires Chromium 145 or newer; older builds return `background_tab_unsupported` before creating a tab.
 
 `browser_resize`
 : Resize the active page viewport when responsive behavior matters.

@@ -255,12 +255,15 @@ export class McpRuntime {
     await this.requireConnected().ensureActiveCursorVisualization();
   }
 
-  async newTab(url?: string): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
+  async newTab(
+    url?: string,
+    activate = true
+  ): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
     const session = this.requireConnected();
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;
-    this.tabs = await session.newTab(url);
+    this.tabs = await session.newTab(url, { activate });
     if (this.snapshotMode === "none") {
       return {
         tabs: this.tabs
@@ -279,7 +282,10 @@ export class McpRuntime {
         };
   }
 
-  async selectTab(index: number): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
+  async selectTab(
+    index: number,
+    activate = true
+  ): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
     const session = this.requireConnected();
     const tabs = await this.listTabs();
     const tab = tabs[index];
@@ -289,7 +295,7 @@ export class McpRuntime {
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;
-    this.tabs = await session.selectTab(tab.id);
+    this.tabs = await session.selectTab(tab.id, { activate });
     if (this.snapshotMode === "none") {
       return {
         tabs: this.tabs
@@ -302,7 +308,10 @@ export class McpRuntime {
     };
   }
 
-  async closeTab(index: number): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
+  async closeTab(
+    index: number,
+    activate = true
+  ): Promise<{ tabs: BrowserTab[]; snapshot?: BrowserSnapshot }> {
     const session = this.requireConnected();
     const tabs = await this.listTabs();
     const tab = tabs[index];
@@ -312,7 +321,7 @@ export class McpRuntime {
     this.invalidateSnapshot();
     this.pendingFileUploadTarget = undefined;
     this.fileUploadPending = false;
-    this.tabs = await session.closeTab(tab.id);
+    this.tabs = await session.closeTab(tab.id, { activate });
     if (this.snapshotMode === "none") {
       return {
         tabs: this.tabs
