@@ -232,6 +232,7 @@ export interface ProtocolPageAdapter {
   screenshot(options?: ScreenshotOptions): Promise<Buffer>;
   pdf(options?: PdfOptions): Promise<Buffer>;
   viewportSize(): ViewportSize | null;
+  workers?(): Worker[];
   setViewportSize(viewportSize: ViewportSize): Promise<void>;
   dispatchEvent(selector: LocatorSelector[], type: string, eventInit?: unknown, options?: DispatchEventOptions): Promise<void>;
   requestGC(): Promise<void>;

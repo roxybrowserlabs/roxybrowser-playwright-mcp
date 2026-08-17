@@ -34,7 +34,85 @@ import type {
   SessionTypeOptions
 } from "../../src/mcp/index.js";
 import type { CreateRoxyBrowserMcpServerOptions } from "../../src/mcp/types.js";
+import type { Page } from "../../src/types/api.js";
 import type { BrowserContextOptions } from "../../src/types/options.js";
+
+class FakeRunCodePage {
+  private contextObject = {
+    newPage: async () => {
+      const tabs = await this.session.newTab();
+      const activeTab = tabs.find((tab) => tab.active)!;
+      return new FakeRunCodePage(this.session, activeTab.id, this.contextObject);
+    },
+    pages: () => []
+  };
+
+  constructor(
+    private readonly session: FakeConnectedBrowserSession,
+    private readonly tabId = "tab-1",
+    contextObject?: object
+  ) {
+    if (contextObject) {
+      this.contextObject = contextObject as typeof this.contextObject;
+    }
+  }
+
+  context() {
+    return this.contextObject;
+  }
+
+  async goto(url: string): Promise<null> {
+    await this.session.selectTab(this.tabId);
+    await this.session.navigate(url);
+    return null;
+  }
+
+  url(): string {
+    return this.session.tabUrl(this.tabId);
+  }
+
+  async title(): Promise<string> {
+    return this.session.tabTitle(this.tabId);
+  }
+
+  async evaluate(pageFunction: string | Function): Promise<unknown> {
+    return typeof pageFunction === "function"
+      ? pageFunction.toString()
+      : `evaluated:${pageFunction}`;
+  }
+
+  async close(): Promise<void> {
+    await this.session.closeTab(this.tabId);
+  }
+
+  async waitForTimeout(): Promise<void> {}
+
+  mainFrame() {
+    return {
+      waitForLoadState: async () => {}
+    };
+  }
+
+  on(): this {
+    return this;
+  }
+
+  off(): this {
+    return this;
+  }
+
+  getByRole(role: string, options: { name?: string } = {}) {
+    return {
+      click: async () => {
+        const snapshot = await this.session.snapshot();
+        const ref = Object.keys(snapshot.refs)[0]!;
+        await this.session.click({ nodeToken: snapshot.refs[ref]! }, { clickHoldMs: 0 });
+        void role;
+        void options;
+      }
+    };
+  }
+}
 
 
 class FakeConnectedBrowserSession implements ConnectedBrowserSession {
@@ -106,6 +184,18 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
       }));
     }
     return this.listTabs();
+  }
+
+  tabUrl(tabId: string): string {
+    return this.tabs.find((tab) => tab.id === tabId)?.url ?? "about:blank";
+  }
+
+  tabTitle(tabId: string): string {
+    return this.tabs.find((tab) => tab.id === tabId)?.title ?? "";
+  }
+
+  async playwrightPage(): Promise<Page> {
+    return new FakeRunCodePage(this) as unknown as Page;
   }
 
   async snapshot(request: BrowserSnapshotRequest = {}): Promise<BrowserSnapshot> {
@@ -674,7 +764,7 @@ class FakeConnectedBrowserSession implements ConnectedBrowserSession {
     this.waitForRequestResponseCalls.push({ requestId, timeoutMs });
   }
 
-  async runCodeUnsafe(code: string): Promise<unknown> {
+  async runCodeUnsafe(code: string | undefined): Promise<unknown> {
     return `ran:${code}`;
   }
 
@@ -6547,11 +6637,14 @@ describe("MCP server", () => {
 
       const result = await client.callTool({
         name: "browser_run_code_unsafe",
-        arguments: { filename }
+        arguments: { filename: "snippet.js" },
+        _meta: { cwd: dir }
       });
 
       expect(result.isError).toBeUndefined();
-      expect(textFromResult(result)).toContain('"ran:async page => page.url()"');
+      const text = textFromResult(result);
+      expect(text).toContain('"ws://tools-test.invalid/devtools/browser/1/home"');
+      expect(text).toContain("### Code\n```js\nawait (async page => page.url())(page);\n```");
     });
 
     it("prefers filename over inline code", async () => {
@@ -6570,10 +6663,81 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBeUndefined();
-      expect(textFromResult(result)).toContain("\"ran:async page => 'from-file'\"");
+      expect(textFromResult(result)).toContain("\"from-file\"");
     });
 
-    it("requires either code or filename", async () => {
+    it("matches Playwright MCP result formatting for undefined", async () => {
+      const { client } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_run_code_unsafe",
+        arguments: {
+          code: "async page => { await page.title(); }"
+        }
+      });
+
+      const text = textFromResult(result);
+      expect(result.isError).toBeUndefined();
+      expect(text).not.toContain("### Result");
+      expect(text).toContain("### Code\n```js\nawait (async page => { await page.title(); })(page);\n```");
+    });
+
+    it("supports Playwright-style getByRole locators", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_run_code_unsafe",
+        arguments: {
+          code: `async (page) => {
+            await page.getByRole("button", { name: "ws://tools-test.invalid/devtools/browser/1 home" }).click();
+            return { clicked: true };
+          }`
+        }
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(textFromResult(result)).toContain('{"clicked":true}');
+      expect(getSession().clickCalls[0]?.target).toEqual({ nodeToken: "tab-1:node-1" });
+    });
+
+    it("provides a Playwright-style page context that can create pages", async () => {
+      const { client, getSession } = await setupTrackingClient();
+
+      const result = await client.callTool({
+        name: "browser_run_code_unsafe",
+        arguments: {
+          code: `async (page) => {
+            const context = page.context();
+            const popup = await context.newPage();
+            await popup.goto("https://example.test/detail", { waitUntil: "domcontentloaded", timeout: 45000 });
+            const info = {
+              openerUrl: page.url(),
+              popupUrl: popup.url(),
+              popupTitle: await popup.title(),
+              evaluateResult: await popup.evaluate(() => document.title),
+              contextStable: popup.context() === context
+            };
+            await popup.close();
+            return info;
+          }`
+        }
+      });
+
+      expect(result.isError).toBeUndefined();
+      const resultJson = textFromResult(result)
+        .replace(/^### Result\n/, "")
+        .replace(/\n\n### Code[\s\S]*$/, "");
+      expect(JSON.parse(resultJson)).toEqual({
+        openerUrl: "ws://tools-test.invalid/devtools/browser/1/home",
+        popupUrl: "https://example.test/detail",
+        popupTitle: "https://example.test/detail",
+        evaluateResult: expect.stringContaining("document.title"),
+        contextStable: true
+      });
+      expect(getSession().navigateCalls).toEqual(["https://example.test/detail"]);
+    });
+
+    it("matches Playwright MCP missing-code execution error", async () => {
       const { client } = await setupTrackingClient();
 
       const result = await client.callTool({
@@ -6582,7 +6746,9 @@ describe("MCP server", () => {
       });
 
       expect(result.isError).toBe(true);
-      expect(textFromResult(result)).toContain("Either code or filename is required");
+      const text = textFromResult(result);
+      expect(text).toContain("__fn__ is not a function");
+      expect(text).not.toContain("### Code");
     });
   });
 

@@ -27,7 +27,16 @@ export type SnapshotPage = Page & {
   resolveAriaRef(ref: string): Promise<ResolvedAriaRef>;
 };
 
+export interface TestBrowserConnection {
+  browser: Browser;
+  endpoint: string;
+}
+
 export async function connectTestBrowser(options: LaunchOptions = {}): Promise<Browser> {
+  return (await connectTestBrowserWithEndpoint(options)).browser;
+}
+
+export async function connectTestBrowserWithEndpoint(options: LaunchOptions = {}): Promise<TestBrowserConnection> {
   configureCurrentWorkerTestBrowserCleanup();
   let lastError: unknown;
   for (let attempt = 0; attempt < TEST_LAUNCH_RETRIES; attempt += 1) {
@@ -80,7 +89,7 @@ function isRetriableLaunchError(error: unknown): boolean {
   return String(error instanceof Error ? error.message : error).includes("Browser exited before exposing CDP endpoint.");
 }
 
-async function connectTestBrowserOnce(options: LaunchOptions): Promise<Browser> {
+async function connectTestBrowserOnce(options: LaunchOptions): Promise<TestBrowserConnection> {
   const userDataDir = await mkdtemp(join(tmpdir(), "roxybrowser-cdp-"));
   const [chromePath] = resolveExecutableCandidates(options);
   if (!chromePath) {
@@ -99,7 +108,10 @@ async function connectTestBrowserOnce(options: LaunchOptions): Promise<Browser> 
       TEST_BROWSER_STARTUP_TIMEOUT_MS
     );
     const browser = await chromium.connect(wsEndpoint);
-    return wrapBrowserCleanup(browser, chromeProcess, userDataDir, unregisterTestBrowserProcess);
+    return {
+      browser: wrapBrowserCleanup(browser, chromeProcess, userDataDir, unregisterTestBrowserProcess),
+      endpoint: wsEndpoint
+    };
   } catch (error) {
     unregisterTestBrowserProcess();
     await terminateProcessTree(chromeProcess, { timeoutMs: 500 });

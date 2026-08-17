@@ -863,7 +863,8 @@ const INTERNAL_RECORDED_EVENTS = [
   "request",
   "requestfailed",
   "requestfinished",
-  "response"
+  "response",
+  "worker"
 ] as const satisfies ReadonlyArray<Extract<PageEventName, RawPageEventName>>;
 
 function isAdapterBackedPageEvent(event: PageEventName): event is Extract<PageEventName, RawPageEventName> {
@@ -3102,7 +3103,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
   }
 
   workers(): Array<Worker> {
-    return [...this.pageWorkers];
+    return Array.from(new Set([...this.pageWorkers, ...(this.adapter.workers?.() ?? [])]));
   }
 
   async textContent(selector: string, options?: { signal?: AbortSignal; strict?: boolean; timeout?: number; }): Promise<null|string>;
@@ -4851,6 +4852,10 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
           }
           if (event === "framenavigated" && this.isRawMainFrameNavigation(payload)) {
             this.resetHistorySinceNavigation();
+          }
+          if (event === "worker" && payload) {
+            this.attachWorker(payload as Worker);
+            return;
           }
         if (event === "frameattached" || event === "framedetached" || event === "framenavigated") {
           await this.refreshFrameSnapshots().catch(() => {});
@@ -6676,6 +6681,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         resolvedOutcome = handledOutcome;
       } catch (error) {
         if (!entry.ignoreExceptions) {
+          this.browserContext?._notifyUnhandledError(error);
           throw error;
         }
         resolvedOutcome = routeOutcome;
@@ -6821,6 +6827,7 @@ export class RoxyPage implements Page, ElementHandleFrameResolver {
         resolvedOutcome = handledOutcome;
       } catch (error) {
         if (!entry.ignoreExceptions) {
+          this.browserContext?._notifyUnhandledError(error);
           throw error;
         }
         resolvedOutcome = routeOutcome;

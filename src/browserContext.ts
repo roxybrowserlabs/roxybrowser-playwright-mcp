@@ -61,6 +61,10 @@ interface InternalPageAdapterMetadata {
   __roxyTargetId?: string;
 }
 
+interface InternalPageMetadata {
+  __roxyTargetId?: string;
+}
+
 interface WebSocketRouteHandlerEntry {
   matcher: string | RegExp | URLPattern | ((url: URL) => boolean);
   handler: (websocketroute: import("./types/api.js").WebSocketRoute) => Promise<any> | any;
@@ -86,6 +90,7 @@ export class RoxyBrowserContext implements BrowserContext {
   private readonly pageEventDisposers = new WeakMap<RoxyPage, Array<() => void>>();
   private readonly routeHandlers: RouteHandlerEntry[] = [];
   private readonly websocketRouteHandlers: WebSocketRouteHandlerEntry[] = [];
+  private readonly unhandledErrorListeners = new Set<(error: Error) => void>();
   private readonly initScripts = new Set<ContextInitScriptEntry>();
   private readonly routeMatcherIds = new WeakMap<object, string>();
   private readonly disposeAdapterPageListener: (() => void) | null;
@@ -286,6 +291,20 @@ export class RoxyBrowserContext implements BrowserContext {
 
   pages(): Page[] {
     return Array.from(this.pageSet);
+  }
+
+  _onUnhandledError(listener: (error: Error) => void): () => void {
+    this.unhandledErrorListeners.add(listener);
+    return () => {
+      this.unhandledErrorListeners.delete(listener);
+    };
+  }
+
+  _notifyUnhandledError(error: unknown): void {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    for (const listener of Array.from(this.unhandledErrorListeners)) {
+      listener(normalized);
+    }
   }
 
   serviceWorkers(): Worker[] {
@@ -629,6 +648,10 @@ export class RoxyBrowserContext implements BrowserContext {
 
   private async createPage(pageAdapter: ProtocolPageAdapter): Promise<RoxyPage> {
     const page = new RoxyPage(pageAdapter, undefined, this, this.options);
+    const targetId = this.targetIdOf(pageAdapter);
+    if (targetId !== undefined) {
+      (page as RoxyPage & InternalPageMetadata).__roxyTargetId = targetId;
+    }
     this.pageSet.add(page);
     this.pageByAdapter.set(pageAdapter, page);
     this.adapterByPage.set(page, pageAdapter);
@@ -1126,6 +1149,7 @@ export class RoxyBrowserContext implements BrowserContext {
         resolvedOutcome = handledOutcome;
       } catch (error) {
         if (!entry.ignoreExceptions) {
+          this._notifyUnhandledError(error);
           throw error;
         }
         resolvedOutcome = routeOutcome;

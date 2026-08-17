@@ -3058,7 +3058,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     await waitForResponseAvailable(state, requestId, timeoutMs).catch(() => undefined);
   }
 
-  async runCodeUnsafe(code: string): Promise<unknown> {
+  async runCodeUnsafe(code: string | undefined): Promise<unknown> {
     const pageClient = await this.getActivePageClient();
     const contextId = await this.getActiveUtilityContextId(pageClient);
     return evaluateCdp<unknown>(
@@ -3124,18 +3124,24 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
       })
       .map((targetInfo) => ({
         id: targetInfo.targetId,
-        title: targetInfo.title,
-        url: targetInfo.url
+        title: targetInfo.url.startsWith("chrome://crash") ? "" : targetInfo.title,
+        url: targetInfo.url.startsWith("chrome://crash") ? "about:blank" : targetInfo.url,
+        crashed: targetInfo.url.startsWith("chrome://crash")
       }));
 
     if (!this.activeTabId) {
       this.activeTabId = chooseInitialTab(tabs);
     }
 
-    return tabs.map((tab) => ({
-      ...tab,
-      active: tab.id === this.activeTabId
-    }));
+    return tabs.map((tab) => {
+      const { crashed, ...rest } = tab;
+      const active = tab.id === this.activeTabId;
+      return {
+        ...rest,
+        active,
+        ...(crashed && !active ? { crashed: true } : {})
+      };
+    });
   }
 
   private async getActiveTabId(): Promise<string> {
@@ -6138,7 +6144,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     return networkResponseBodyResult(request);
   }
 
-  async runCodeUnsafe(code: string): Promise<unknown> {
+  async runCodeUnsafe(code: string | undefined): Promise<unknown> {
     return this.evaluate(`async () => {
       const fn = eval(${JSON.stringify(`(${code})`)});
       if (typeof fn !== 'function') throw new Error('Code must evaluate to a function.');

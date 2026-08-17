@@ -2,7 +2,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { connectBrowserSession } from "./connectedBrowser.js";
 import { McpToolError } from "./errors.js";
+import { runPlaywrightCodeUnsafe } from "./runCode.js";
 import { AssetManager } from "../assets/manager.js";
+import { chromium, firefox } from "../browserType.js";
 import type {
   BrowserConsoleEntry,
   BrowserConsoleSummary,
@@ -13,6 +15,7 @@ import type {
   BrowserNetworkRequest,
   BrowserNetworkResponseBody,
   BrowserSessionFactory,
+  RoxyBrowserConnectArgs,
   BrowserSnapshot,
   BrowserSnapshotRequest,
   BrowserSnapshotToolArgs,
@@ -29,6 +32,7 @@ import type {
   SnapshotCacheEntry,
   SnapshotMode
 } from "./types.js";
+import type { Browser, BrowserContext, Page } from "../types/api.js";
 import type { BrowserContextOptions } from "../types/options.js";
 import { resolveHumanizationOptions, jitter } from "../human/profile.js";
 import type { AssetOptions } from "../assets/types.js";
@@ -83,6 +87,9 @@ export class McpRuntime {
   private connection:
     | {
         session: Awaited<ReturnType<BrowserSessionFactory>>;
+        args: RoxyBrowserConnectArgs;
+        runCodeBrowser?: Browser;
+        runCodeContext?: BrowserContext;
       }
     | undefined;
   private tabs: BrowserTab[] = [];
@@ -191,7 +198,11 @@ export class McpRuntime {
       ...(this.testIdAttribute !== undefined ? { testIdAttribute: this.testIdAttribute } : {})
     });
     this.connection = {
-      session
+      session,
+      args: {
+        ...args,
+        browser: args.browser ?? (args.protocol === "cdp" ? "chromium" : "firefox")
+      }
     };
     this.tabs = await session.listTabs();
     this.recordStorageOrigins(this.tabs);
@@ -236,7 +247,6 @@ export class McpRuntime {
       this.recordStorageOrigins(state.origins.map((originState) => ({ url: originState.origin })));
       return;
     }
-    this.connection = { session };
     await this.setStorageState(state);
   }
 
@@ -1212,12 +1222,17 @@ export class McpRuntime {
     await session.waitForRequestResponse?.(requestId, timeoutMs);
   }
 
-  async runCodeUnsafe(code: string): Promise<unknown> {
-    const session = this.requireConnected();
-    const result = await session.runCodeUnsafe(code);
-    this.invalidateSnapshot();
-    this.pendingFileUploadTarget = undefined;
-    return result;
+  async runCodeUnsafe(code: string | undefined): Promise<unknown> {
+    const connection = this.requireConnection();
+    try {
+      return await runPlaywrightCodeUnsafe(await this.runCodePage(connection), code);
+    } finally {
+      await connection.runCodeBrowser?.close().catch(() => {});
+      delete connection.runCodeBrowser;
+      delete connection.runCodeContext;
+      this.invalidateSnapshot();
+      this.pendingFileUploadTarget = undefined;
+    }
   }
 
   async waitFor(
@@ -1289,19 +1304,98 @@ export class McpRuntime {
       return;
     }
 
-    const session = this.connection.session;
+    const { session, runCodeBrowser } = this.connection;
     this.connection = undefined;
+    await runCodeBrowser?.close().catch(() => {});
     await session.close();
   }
 
-  requireConnected() {
+  private requireConnection() {
     if (!this.connection) {
       throw new McpToolError(
         "not_connected",
         "No RoxyBrowser browser is connected. Connect to an existing RoxyBrowser browser or launch one from RoxyBrowser first."
       );
     }
-    return this.connection.session;
+    return this.connection;
+  }
+
+  requireConnected() {
+    return this.requireConnection().session;
+  }
+
+  private async runCodePage(connection: NonNullable<McpRuntime["connection"]>): Promise<Page> {
+    if (connection.session.playwrightPage) {
+      return connection.session.playwrightPage();
+    }
+
+    if (!connection.args.endpoint) {
+      throw new Error("browser_run_code_unsafe requires an endpoint-backed browser connection.");
+    }
+
+    const activeTab = (await connection.session.listTabs()).find((tab) => tab.active);
+    if (!activeTab) {
+      throw new McpToolError("no_active_tab", "No active tab is available.");
+    }
+
+    const context = await this.runCodeContext(connection);
+    const page = this.findRunCodePage(context, activeTab);
+    if (page) {
+      return page;
+    }
+
+    await connection.runCodeBrowser?.close().catch(() => {});
+    delete connection.runCodeBrowser;
+    delete connection.runCodeContext;
+
+    const refreshedContext = await this.runCodeContext(connection);
+    const refreshedPage = this.findRunCodePage(refreshedContext, activeTab);
+    if (refreshedPage) {
+      return refreshedPage;
+    }
+
+    throw new Error(`Unable to resolve active tab ${activeTab.id} to a Playwright page.`);
+  }
+
+  private async runCodeContext(connection: NonNullable<McpRuntime["connection"]>): Promise<BrowserContext> {
+    if (connection.runCodeContext) {
+      return connection.runCodeContext;
+    }
+
+    const browserType = connection.args.browser === "firefox" || connection.args.protocol === "bidi"
+      ? firefox
+      : chromium;
+    const browser = await browserType.connect(connection.args.endpoint, {
+      ...(this.contextOptions !== undefined ? this.contextOptions : {}),
+      artifactsDir: this.assetManager.roots.artifactsDir,
+      downloadsDir: this.assetManager.roots.downloadsDir,
+      screenshotsDir: this.assetManager.roots.screenshotsDir,
+      snapshotsDir: this.assetManager.roots.snapshotsDir,
+      tracesDir: this.assetManager.roots.tracesDir,
+      videosDir: this.assetManager.roots.videosDir,
+      networkDir: this.assetManager.roots.networkDir,
+      consoleDir: this.assetManager.roots.consoleDir,
+      storageDir: this.assetManager.roots.storageDir,
+      scriptsDir: this.assetManager.roots.scriptsDir,
+      tempDir: this.assetManager.roots.tempDir,
+      allowAbsoluteAssetPaths: true
+    });
+    const context = browser.contexts()[0];
+    if (!context) {
+      await browser.close().catch(() => {});
+      throw new Error("Unable to create Playwright context for browser_run_code_unsafe.");
+    }
+
+    connection.runCodeBrowser = browser;
+    connection.runCodeContext = context;
+    return context;
+  }
+
+  private findRunCodePage(context: BrowserContext, activeTab: BrowserTab): Page | undefined {
+    return context.pages().find((page) => {
+      const targetId = targetIdForPage(page);
+      return targetId === activeTab.id || (!targetId && page.url() === activeTab.url);
+    });
   }
 
   requireActiveTab(): BrowserTab {
@@ -1461,6 +1555,10 @@ function isDirectValueFillMetadata(metadata: { tagName: string; inputType?: stri
   return new Set(["color", "date", "time", "datetime-local", "month", "range", "week"]).has(
     metadata.inputType ?? ""
   );
+}
+
+function targetIdForPage(page: Page): string | undefined {
+  return (page as Page & { __roxyTargetId?: string }).__roxyTargetId;
 }
 
 function storageOriginFromUrl(url: string): string | undefined {

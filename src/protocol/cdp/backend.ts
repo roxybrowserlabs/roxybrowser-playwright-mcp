@@ -2834,6 +2834,9 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         })
       );
     });
+    client.Inspector?.targetCrashed?.(() => {
+      this.emit("crash", undefined);
+    });
     client.on("Runtime.bindingCalled", (event: {
       executionContextId?: number;
       name?: string;
@@ -3677,7 +3680,12 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     });
 
     client.Fetch?.requestPaused?.((event) => {
-      void this.handleFetchRequestPaused(event);
+      void this.handleFetchRequestPaused(event).catch(() => {
+        void this.options.client.Fetch.failRequest({
+          requestId: event.requestId,
+          errorReason: "Failed"
+        }).catch(() => {});
+      });
     });
 
     const onRequestSettled = (requestId?: string) => {
@@ -3896,6 +3904,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       }).catch(() => {})),
       initializeCommand(client.Page.setLifecycleEventsEnabled({ enabled: true }).catch(() => {})),
       initializeCommand(client.Runtime.enable()),
+      initializeCommand(client.Inspector?.enable?.().catch(() => {})),
       initializeCommand(client.Log?.enable?.().catch(() => {})),
       initializeCommand(client.DOM.enable({})),
       initializeCommand(client.Network.enable({})),
@@ -3937,6 +3946,91 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     this.maybeResolveInitialAboutBlankLifecycle();
     this.maybeArmNetworkIdleTimer();
     await this.applyContextOptions();
+    await this.discoverExistingWorkers();
+  }
+
+  private async discoverExistingWorkers(): Promise<void> {
+    const targetDomain = this.options.client.Target as typeof this.options.client.Target & {
+      getTargets?(): Promise<{
+        targetInfos: Array<{
+          openerId?: string;
+          parentId?: string;
+          parentFrameId?: string;
+          targetId: string;
+          type: string;
+          url?: string;
+        }>;
+      }>;
+    };
+    const browserTargetDomain = this.options.browserClient.Target as typeof this.options.browserClient.Target & {
+      attachToTarget?(params: { targetId: string; flatten?: boolean }): Promise<{ sessionId: string }>;
+    };
+    const targets = await targetDomain.getTargets?.().catch(() => undefined);
+    if (!targets) {
+      return;
+    }
+    for (const targetInfo of targets.targetInfos) {
+      if (
+        targetInfo.type !== "worker" ||
+        this.workersByTargetId.has(targetInfo.targetId) ||
+        !this.workerBelongsToThisPage(targetInfo)
+      ) {
+        continue;
+      }
+      const attachResult = await browserTargetDomain.attachToTarget?.({
+        targetId: targetInfo.targetId,
+        flatten: true
+      }).catch(() => undefined);
+      if (!attachResult) {
+        continue;
+      }
+      this.attachDiscoveredWorkerTarget({
+        sessionId: attachResult.sessionId,
+        targetInfo
+      });
+    }
+  }
+
+  private workerBelongsToThisPage(targetInfo: { openerId?: string; parentId?: string; parentFrameId?: string }): boolean {
+    if (targetInfo.openerId === this.options.targetId || targetInfo.parentId === this.options.targetId) {
+      return true;
+    }
+    if (!targetInfo.parentFrameId) {
+      return false;
+    }
+    return targetInfo.parentFrameId === this.mainFrameId || this.nativeFrames.has(targetInfo.parentFrameId);
+  }
+
+  workers(): Worker[] {
+    return Array.from(this.workersByTargetId.values(), ({ worker }) => worker);
+  }
+
+  private attachDiscoveredWorkerTarget(event: {
+    sessionId: string;
+    targetInfo: {
+      parentFrameId?: string;
+      targetId: string;
+      url?: string;
+    };
+  }): void {
+    if (this.workersByTargetId.has(event.targetInfo.targetId)) {
+      return;
+    }
+    const workerClient = createSessionTargetClient(this.options.browserClient, event.sessionId);
+    const delegate = new CdpWorkerDelegate(this, workerClient, event.sessionId, event.targetInfo.url ?? "");
+    const worker = new RoxyWorker(event.targetInfo.url ?? "", delegate);
+    this.workersByTargetId.set(event.targetInfo.targetId, {
+      delegate,
+      sessionId: event.sessionId,
+      worker
+    });
+    this.emit("worker", worker);
+    const sessionClient = this.options.client as typeof this.options.client & {
+      send(method: string, params?: Record<string, never>, sessionId?: string): Promise<unknown>;
+    };
+    void sessionClient.send("Network.enable", {}, event.sessionId).catch(() => {});
+    void sessionClient.send("Runtime.enable", {}, event.sessionId).catch(() => {});
+    void sessionClient.send("Runtime.runIfWaitingForDebugger", {}, event.sessionId).catch(() => {});
   }
 
   private async installPopupFallbackBridge(): Promise<string | null> {

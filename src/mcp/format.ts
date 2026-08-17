@@ -8,7 +8,7 @@ export function formatTabs(tabs: BrowserTab[]): string {
   const lines = ["### Open tabs"];
   for (const [index, tab] of tabs.entries()) {
     lines.push(
-      `- ${index}: ${tab.active ? "(current) " : ""}[${tab.title || "(untitled)"}](${tab.url || "about:blank"})`
+      `- ${index}: ${tab.active ? "(current) " : ""}[${tab.title || "(untitled)"}](${tab.url || "about:blank"})${tab.crashed ? " [crashed]" : ""}`
     );
   }
 

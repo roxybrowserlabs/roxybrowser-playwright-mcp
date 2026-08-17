@@ -866,17 +866,31 @@ async function applyBidiDownloadBehavior(
 
 class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
   private readonly pages = new Set<BidiPageAdapter>();
+  private readonly pageListeners = new Set<(page: ProtocolPageAdapter) => void | Promise<void>>();
   private readonly initScripts = new Set<{
     source: string;
     pageDisposables: WeakMap<BidiPageAdapter, Disposable>;
     scriptId: string | undefined;
   }>();
+  private targetDiscoveryReady: Promise<void> | undefined;
 
   constructor(
     private readonly client: BidiProtocolClient,
     private readonly userContext: string | undefined,
     private readonly options: BrowserContextOptions
   ) {}
+
+  async ready(): Promise<void> {
+    this.targetDiscoveryReady ??= this.discoverExistingPages();
+    await this.targetDiscoveryReady;
+  }
+
+  onPage(listener: (page: ProtocolPageAdapter) => void | Promise<void>): () => void {
+    this.pageListeners.add(listener);
+    return () => {
+      this.pageListeners.delete(listener);
+    };
+  }
 
   async newPage(): Promise<ProtocolPageAdapter> {
     const response = await this.client.browsingContextCreate(
@@ -892,8 +906,36 @@ class BidiBrowserContextAdapter implements ProtocolBrowserContextAdapter {
           }
     );
 
+    const page = await this.createPage(response.context);
+    return page;
+  }
+
+  private async discoverExistingPages(): Promise<void> {
+    const result = await this.client.browsingContextGetTree({}).catch(() => undefined);
+    const contexts = Array.isArray((result as { contexts?: unknown[] } | undefined)?.contexts)
+      ? (result as { contexts: Array<Record<string, unknown>> }).contexts
+      : [];
+    for (const context of contexts) {
+      if (typeof context.context !== "string" || context.parent !== null) {
+        continue;
+      }
+      if (this.userContext && context.userContext !== this.userContext) {
+        continue;
+      }
+      if (!this.userContext && typeof context.userContext === "string" && context.userContext !== "default") {
+        continue;
+      }
+      if (Array.from(this.pages).some((page) => page.__roxyTargetId === context.context)) {
+        continue;
+      }
+      const page = await this.createPage(context.context);
+      await Promise.all(Array.from(this.pageListeners, async (listener) => listener(page)));
+    }
+  }
+
+  private async createPage(contextId: string): Promise<BidiPageAdapter> {
     let page!: BidiPageAdapter;
-    page = await BidiPageAdapter.create(this.client, response.context, this.options, () => {
+    page = await BidiPageAdapter.create(this.client, contextId, this.options, () => {
       this.pages.delete(page);
     });
     for (const entry of this.initScripts) {
@@ -1240,6 +1282,7 @@ function isLocalHostname(hostname: string): boolean {
 }
 
 class BidiPageAdapter implements ProtocolPageAdapter {
+  readonly __roxyTargetId: string;
   private readonly closePromise: Promise<void>;
   private resolveClosePromise!: () => void;
   private closePromiseResolved = false;
@@ -1285,6 +1328,7 @@ class BidiPageAdapter implements ProtocolPageAdapter {
     private readonly contextOptions: BrowserContextOptions,
     private readonly onClosed?: () => void
   ) {
+    this.__roxyTargetId = contextId;
     this.closePromise = new Promise<void>((resolve) => {
       this.resolveClosePromise = resolve;
     });

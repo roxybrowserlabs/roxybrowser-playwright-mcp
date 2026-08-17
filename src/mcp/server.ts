@@ -86,7 +86,7 @@ export function createRoxyBrowserMcpServer(
         description: tool.schema.description,
         inputSchema: tool.schema.inputSchema.shape
       },
-      async (args: Record<string, unknown>, extra: { sessionId?: string; signal: AbortSignal }) => {
+      async (args: Record<string, unknown>, extra: { sessionId?: string; signal: AbortSignal; _meta?: Record<string, unknown> }) => {
         try {
           lastSessionId = extra.sessionId;
           const runtime = runtimeManager.getRuntime(extra.sessionId);
@@ -106,10 +106,11 @@ export function createRoxyBrowserMcpServer(
         description: tool.schema.description,
         inputSchema: tool.schema.inputSchema.shape
       },
-      async (args: Record<string, unknown>, extra: { sessionId?: string; signal: AbortSignal }) => {
+      async (args: Record<string, unknown>, extra: { sessionId?: string; signal: AbortSignal; _meta?: Record<string, unknown> }) => {
         try {
           lastSessionId = extra.sessionId;
           const runtime = runtimeManager.getRuntime(extra.sessionId);
+          const cwd = typeof extra._meta?.cwd === "string" ? extra._meta.cwd : undefined;
           const context = new Context(runtime, {
             ...assetOptions,
             ...(options.imageResponses !== undefined ? { imageResponses: options.imageResponses } : {}),
@@ -130,7 +131,9 @@ export function createRoxyBrowserMcpServer(
                 }
               : {})
           });
-          const response = new Response(context, tool.schema.name, args);
+          const response = new Response(context, tool.schema.name, args, {
+            ...(cwd !== undefined ? { relativeTo: cwd } : {})
+          });
           await tool.handle(context, args, response, extra.signal);
           return await response.serialize();
         } catch (error) {

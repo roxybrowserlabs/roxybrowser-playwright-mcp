@@ -4,6 +4,7 @@ import type { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdi
 import type { Server as HttpServer } from "node:http";
 import type { Readable, Writable } from "node:stream";
 import type { AssetOptions, AssetRoots } from "../assets/types.js";
+import type { Page } from "../types/api.js";
 import type { BrowserContextOptions } from "../types/options.js";
 
 export type RoxyMcpProtocol = "cdp" | "bidi";
@@ -62,6 +63,7 @@ export interface BrowserTab {
   title: string;
   url: string;
   active: boolean;
+  crashed?: boolean;
 }
 
 export interface BrowserSnapshot {
@@ -292,8 +294,9 @@ export interface ConnectedBrowserSession {
   waitForMainFrameLoad?(timeoutMs: number): Promise<void>;
   waitForRequestFinished?(requestId: string, timeoutMs: number): Promise<void>;
   waitForRequestResponse?(requestId: string, timeoutMs: number): Promise<void>;
+  playwrightPage?(): Promise<Page>;
   ensureActiveCursorVisualization(): Promise<void>;
-  runCodeUnsafe(code: string): Promise<unknown>;
+  runCodeUnsafe(code: string | undefined): Promise<unknown>;
   close(): Promise<void>;
 }
 

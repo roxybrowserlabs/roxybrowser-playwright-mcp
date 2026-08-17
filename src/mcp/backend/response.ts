@@ -26,8 +26,13 @@ export class Response {
   constructor(
     private readonly context: Context,
     readonly toolName: string,
-    readonly toolArgs: Record<string, unknown>
+    readonly toolArgs: Record<string, unknown>,
+    private readonly options: { relativeTo?: string } = {}
   ) {}
+
+  async resolveClientFilename(filename: string): Promise<string> {
+    return path.resolve(this.options.relativeTo ?? process.cwd(), filename);
+  }
 
   addTextResult(text: string): void {
     this.results.push(text);
