@@ -45,6 +45,7 @@ export interface SelectorRuntimePayload {
     | "checkedStateDetails"
     | "count"
     | "createHandle"
+    | "createHandles"
     | "domClick"
     | "dispatchEvent"
     | "evaluate"
@@ -1946,6 +1947,18 @@ async function selectorRuntimeOperation(payload: SelectorRuntimePayload) {
         globalState.__roxyHandleStore![handleId] = firstNode;
         return {
           handleId
+        };
+      }
+    case "createHandles":
+      {
+        const handleIds: string[] = [];
+        for (const node of resolvedElements) {
+          const handleId = `handle:${++globalState.__roxyNextHandleId!}`;
+          globalState.__roxyHandleStore![handleId] = node;
+          handleIds.push(handleId);
+        }
+        return {
+          handleIds
         };
       }
     case "evaluate":

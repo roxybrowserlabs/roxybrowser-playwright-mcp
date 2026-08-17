@@ -2365,6 +2365,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   private mainFrameId: string | undefined;
   private readonly defaultExecutionContextByFrameId = new Map<string, number>();
   private readonly defaultExecutionContextSessionByFrameId = new Map<string, string | undefined>();
+  private readonly defaultExecutionContextFrameByContextKey = new Map<string, {
+    frameId: string;
+    sessionId?: string;
+  }>();
   private readonly workersByTargetId = new Map<string, {
     delegate: CdpWorkerDelegate;
     sessionId: string;
@@ -2962,6 +2966,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       this.frameLifecycleStates.delete(event.frameId);
       this.settleRequestsForDetachedFrame(event.frameId);
       this.frameSessionIds.delete(event.frameId);
+      this.deleteDefaultExecutionContextForFrame(event.frameId);
+      this.rejectDefaultExecutionContextWaiters(
+        event.frameId,
+        new Error(`Frame execution context is not available for frame "${event.frameId}".`)
+      );
       this.removeNativeFrame(event.frameId);
       this.emit("framedetached", { frameId: event.frameId });
       this.flushWaiters();
@@ -3336,6 +3345,11 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         this.frameSessionIds.delete(targetId);
         this.loadingFrameIds.delete(targetId);
         this.frameLifecycleStates.delete(targetId);
+        this.deleteDefaultExecutionContextForFrame(targetId);
+        this.rejectDefaultExecutionContextWaiters(
+          targetId,
+          new Error(`Frame execution context is not available for frame "${targetId}".`)
+        );
         return;
       }
       const worker = this.workersByTargetId.get(targetId);
@@ -3367,8 +3381,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         if (sessionId) {
           this.frameSessionIds.set(frameId, sessionId);
         }
-        this.defaultExecutionContextByFrameId.set(frameId, event.context.id);
-        this.defaultExecutionContextSessionByFrameId.set(frameId, sessionId);
+        this.setDefaultExecutionContextForFrame(frameId, event.context.id, sessionId);
         const waiters = this.pendingDefaultExecutionContextWaiters.get(frameId);
         if (waiters) {
           this.pendingDefaultExecutionContextWaiters.delete(frameId);
@@ -3400,6 +3413,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
         id: number;
       };
     }, sessionId?: string) => onExecutionContextCreated(event, sessionId));
+
+    const onExecutionContextDestroyed = (event: {
+      executionContextId?: number;
+    }, sessionId?: string) => {
+      if (event.executionContextId === undefined) {
+        return;
+      }
+      this.deleteDefaultExecutionContext(event.executionContextId, sessionId);
+    };
+
+    client.Runtime.executionContextDestroyed?.((event: {
+      executionContextId?: number;
+    }) => onExecutionContextDestroyed(event));
+    client.on?.("Runtime.executionContextDestroyed", (event: {
+      executionContextId?: number;
+    }, sessionId?: string) => onExecutionContextDestroyed(event, sessionId));
 
     const onExecutionContextsCleared = (sessionId?: string) => {
       this.clearDefaultExecutionContexts(sessionId);
@@ -5370,18 +5399,10 @@ class CdpPageAdapter implements ProtocolPageAdapter {
   }
 
   async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
-    const count = await this.countSelector({
+    const references = await this.createHandleReferences({
       chain: selector
     });
-    const handles: ProtocolElementHandleAdapter[] = [];
-    for (let index = 0; index < count; index += 1) {
-      const reference = await this.createHandleReference({
-        chain: selector,
-        pick: { kind: "nth", index }
-      });
-      handles.push(new CdpElementHandleAdapter(this, reference));
-    }
-    return handles;
+    return references.map((reference) => new CdpElementHandleAdapter(this, reference));
   }
 
   async evalOnSelector<TResult>(
@@ -6979,6 +7000,22 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     };
   }
 
+  async createHandleReferences(
+    reference: ProtocolElementHandleReference
+  ): Promise<ProtocolElementHandleReference[]> {
+    const result = await this.runSelectorOperation<{ handleIds: string[] }>({
+      operation: "createHandles",
+      reference
+    });
+    return result.handleIds.map((handleId) => ({
+      chain: [],
+      handleId,
+      ...(reference.protocolFrameId ? { protocolFrameId: reference.protocolFrameId } : {}),
+      ...(reference.protocolObjectId ? { protocolObjectId: reference.protocolObjectId } : {}),
+      ...(reference.protocolSessionId ? { protocolSessionId: reference.protocolSessionId } : {})
+    }));
+  }
+
   async evaluateOnReferenceAll<TResult>(
     reference: ProtocolElementHandleReference,
     expression: string,
@@ -7665,6 +7702,52 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     throw new Error(`Frame execution context is not available for frame "${frameId}".`);
   }
 
+  private defaultExecutionContextKey(contextId: number, sessionId: string | undefined): string {
+    return `${sessionId ?? ""}:${contextId}`;
+  }
+
+  private setDefaultExecutionContextForFrame(
+    frameId: string,
+    contextId: number,
+    sessionId: string | undefined
+  ): void {
+    this.deleteDefaultExecutionContextForFrame(frameId);
+    this.defaultExecutionContextByFrameId.set(frameId, contextId);
+    this.defaultExecutionContextSessionByFrameId.set(frameId, sessionId);
+    this.defaultExecutionContextFrameByContextKey.set(
+      this.defaultExecutionContextKey(contextId, sessionId),
+      {
+        frameId,
+        ...(sessionId !== undefined ? { sessionId } : {})
+      }
+    );
+  }
+
+  private deleteDefaultExecutionContext(contextId: number, sessionId: string | undefined): void {
+    const key = this.defaultExecutionContextKey(contextId, sessionId);
+    const current = this.defaultExecutionContextFrameByContextKey.get(key);
+    if (!current) {
+      return;
+    }
+    if (this.defaultExecutionContextByFrameId.get(current.frameId) === contextId) {
+      this.defaultExecutionContextByFrameId.delete(current.frameId);
+      this.defaultExecutionContextSessionByFrameId.delete(current.frameId);
+    }
+    this.defaultExecutionContextFrameByContextKey.delete(key);
+  }
+
+  private deleteDefaultExecutionContextForFrame(frameId: string): void {
+    const contextId = this.defaultExecutionContextByFrameId.get(frameId);
+    const sessionId = this.defaultExecutionContextSessionByFrameId.get(frameId);
+    this.defaultExecutionContextByFrameId.delete(frameId);
+    this.defaultExecutionContextSessionByFrameId.delete(frameId);
+    if (contextId !== undefined) {
+      this.defaultExecutionContextFrameByContextKey.delete(
+        this.defaultExecutionContextKey(contextId, sessionId)
+      );
+    }
+  }
+
   private clearDefaultExecutionContexts(sessionId?: string): void {
     if (sessionId === undefined && this.pendingRunBeforeUnloadCloseCount > 0 && !this.closed) {
       return;
@@ -7672,6 +7755,7 @@ class CdpPageAdapter implements ProtocolPageAdapter {
     if (sessionId === undefined) {
       this.defaultExecutionContextByFrameId.clear();
       this.defaultExecutionContextSessionByFrameId.clear();
+      this.defaultExecutionContextFrameByContextKey.clear();
       return;
     }
 
@@ -7679,8 +7763,19 @@ class CdpPageAdapter implements ProtocolPageAdapter {
       if (contextSessionId !== sessionId) {
         continue;
       }
-      this.defaultExecutionContextSessionByFrameId.delete(frameId);
-      this.defaultExecutionContextByFrameId.delete(frameId);
+      this.deleteDefaultExecutionContextForFrame(frameId);
+    }
+  }
+
+  private rejectDefaultExecutionContextWaiters(frameId: string, error: Error): void {
+    const waiters = this.pendingDefaultExecutionContextWaiters.get(frameId);
+    if (!waiters) {
+      return;
+    }
+    this.pendingDefaultExecutionContextWaiters.delete(frameId);
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
     }
   }
 
@@ -9521,21 +9616,12 @@ class CdpLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async elementHandles(): Promise<ProtocolElementHandleAdapter[]> {
-    const count = await this.page.countSelector({
+    const references = await this.page.createHandleReferences({
       chain: this.state.chain,
       ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
       ...(this.state.pick ? { pick: this.state.pick } : {})
     });
-    const handles: ProtocolElementHandleAdapter[] = [];
-    for (let index = 0; index < count; index += 1) {
-      const reference: ProtocolElementHandleReference = {
-        chain: this.state.chain,
-        ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {}),
-        pick: { kind: "nth", index }
-      };
-      handles.push(this.page.createHandle(await this.page.createHandleReference(reference)));
-    }
-    return handles;
+    return references.map((reference) => this.page.createHandle(reference));
   }
 }
 
@@ -9577,15 +9663,8 @@ class CdpElementHandleAdapter implements ProtocolElementHandleAdapter {
       scope: this.reference(),
       chain: selector
     };
-    const count = await this.page.countSelector(reference);
-    const handles: ProtocolElementHandleAdapter[] = [];
-    for (let index = 0; index < count; index += 1) {
-      handles.push(new CdpElementHandleAdapter(this.page, await this.page.createHandleReference({
-        ...reference,
-        pick: { kind: "nth", index }
-      })));
-    }
-    return handles;
+    const references = await this.page.createHandleReferences(reference);
+    return references.map((handleReference) => new CdpElementHandleAdapter(this.page, handleReference));
   }
 
   async evalOnSelector<TResult>(

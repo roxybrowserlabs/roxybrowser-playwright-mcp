@@ -79,6 +79,9 @@ function createCdpClientStub() {
       javascriptDialogOpening: vi.fn(),
       navigatedWithinDocument: vi.fn(),
       frameNavigated: vi.fn(),
+      frameAttached: vi.fn(),
+      frameStartedLoading: vi.fn(),
+      frameDetached: vi.fn(),
       frameStoppedLoading: vi.fn(),
       loadEventFired: vi.fn(),
       bringToFront: vi.fn(async () => ({})),
@@ -94,6 +97,9 @@ function createCdpClientStub() {
           value: "about:blank"
         }
       })),
+      executionContextCreated: vi.fn(),
+      executionContextDestroyed: vi.fn(),
+      executionContextsCleared: vi.fn(),
       exceptionThrown: vi.fn()
     },
     DOM: {
@@ -270,6 +276,145 @@ describe("CDP coverage", () => {
     await page.bringToFront();
 
     expect(browserClient.Target.activateTarget).toHaveBeenCalledOnce();
+  });
+
+  it("resolves locator element handles with a single selector operation like Playwright", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+    pageClient.emit("Runtime.executionContextCreated", {
+      context: {
+        auxData: {
+          frameId: "frame-1",
+          isDefault: true
+        },
+        id: 101
+      }
+    });
+    pageClient.send = vi.fn(async (method: string, params?: { arguments?: Array<{ value?: unknown }> }) => {
+      if (method !== "Runtime.callFunctionOn") {
+        return {};
+      }
+      expect(params?.arguments?.[1]?.value).toEqual(expect.objectContaining({
+        o: expect.arrayContaining([
+          {
+            k: "operation",
+            v: "createHandles"
+          }
+        ])
+      }));
+      return {
+        result: {
+          type: "object",
+          value: {
+            o: [
+              {
+                k: "handleIds",
+                v: {
+                  a: [
+                    { v: "handle:1" },
+                    { v: "handle:2" }
+                  ],
+                  id: 1
+                }
+              }
+            ],
+            id: 2
+          }
+        }
+      };
+    });
+
+    const handles = await page.locator(".item").elementHandles();
+
+    expect(handles).toHaveLength(2);
+    expect(pageClient.send).toHaveBeenCalledTimes(1);
+    expect(pageClient.send).toHaveBeenCalledWith(
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        executionContextId: 101
+      }),
+      undefined
+    );
+  });
+
+  it("rejects pending CDP frame context waits when the frame detaches", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+    const frameId = "frame-1";
+    const pending = page.locatorInFrame!(frameId, { strategy: "css", value: ".item" }).elementHandles().then(
+      () => "resolved",
+      (error: Error) => error.message
+    );
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    pageClient.Page.frameDetached.mock.calls[0]?.[0]({
+      frameId,
+      reason: "remove"
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    await expect(Promise.race([pending, Promise.resolve("still pending")])).resolves.toContain(
+      'Frame execution context is not available for frame "frame-1".'
+    );
+  });
+
+  it("waits for a new CDP frame context after the previous context is destroyed", async () => {
+    const { page, pageClient } = await createCdpPageClients();
+    pageClient.emit("Runtime.executionContextCreated", {
+      context: {
+        auxData: {
+          frameId: "frame-1",
+          isDefault: true
+        },
+        id: 101
+      }
+    });
+    pageClient.emit("Runtime.executionContextDestroyed", {
+      executionContextId: 101
+    });
+    pageClient.send = vi.fn(async (method: string, params?: { executionContextId?: number }) => {
+      if (method !== "Runtime.callFunctionOn") {
+        return {};
+      }
+      expect(params?.executionContextId).toBe(102);
+      return {
+        result: {
+          type: "object",
+          value: {
+            o: [
+              {
+                k: "handleIds",
+                v: {
+                  a: [
+                    { v: "handle:1" }
+                  ],
+                  id: 1
+                }
+              }
+            ],
+            id: 2
+          }
+        }
+      };
+    });
+
+    const pending = page.locatorInFrame!("frame-1", { strategy: "css", value: ".item" }).elementHandles();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(pageClient.send).not.toHaveBeenCalledWith(
+      "Runtime.callFunctionOn",
+      expect.objectContaining({ executionContextId: 101 }),
+      undefined
+    );
+
+    pageClient.emit("Runtime.executionContextCreated", {
+      context: {
+        auxData: {
+          frameId: "frame-1",
+          isDefault: true
+        },
+        id: 102
+      }
+    });
+
+    await expect(pending).resolves.toHaveLength(1);
   });
 
   it("emits requestheaders when CDP request extra-info arrives after request fallback", async () => {

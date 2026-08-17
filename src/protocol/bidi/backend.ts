@@ -2390,15 +2390,10 @@ class BidiPageAdapter implements ProtocolPageAdapter {
   }
 
   async queryAll(selector: LocatorSelector[]): Promise<ProtocolElementHandleAdapter[]> {
-    const count = await this.countSelector({
+    const references = await this.createHandleReferences({
       chain: selector
     });
-    return Array.from({ length: count }, (_value, index) => {
-      return new BidiElementHandleAdapter(this, {
-        chain: selector,
-        pick: { kind: "nth", index }
-      });
-    });
+    return references.map((reference) => new BidiElementHandleAdapter(this, reference));
   }
 
   async evalOnSelector<TResult>(
@@ -3104,6 +3099,19 @@ class BidiPageAdapter implements ProtocolPageAdapter {
       chain: [],
       handleId: result.handleId
     };
+  }
+
+  async createHandleReferences(
+    reference: ProtocolElementHandleReference
+  ): Promise<ProtocolElementHandleReference[]> {
+    const result = await this.runSelectorOperation<{ handleIds: string[] }>({
+      operation: "createHandles",
+      reference
+    });
+    return result.handleIds.map((handleId) => ({
+      chain: [],
+      handleId
+    }));
   }
 
   async evaluateOnReferenceAll<TResult>(
@@ -4317,17 +4325,8 @@ class BidiLocatorAdapter implements ProtocolLocatorAdapter {
   }
 
   async elementHandles(): Promise<ProtocolElementHandleAdapter[]> {
-    const count = await this.page.countSelector(referenceFromBidiLocatorState(this.state));
-    const handles: ProtocolElementHandleAdapter[] = [];
-    for (let index = 0; index < count; index += 1) {
-      const reference: ProtocolElementHandleReference = {
-        chain: this.state.chain,
-        pick: { kind: "nth", index },
-        ...(this.state.protocolFrameId ? { protocolFrameId: this.state.protocolFrameId } : {})
-      };
-      handles.push(this.page.createHandle(await this.page.createHandleReference(reference)));
-    }
-    return handles;
+    const references = await this.page.createHandleReferences(referenceFromBidiLocatorState(this.state));
+    return references.map((reference) => this.page.createHandle(reference));
   }
 }
 
@@ -4366,13 +4365,8 @@ class BidiElementHandleAdapter implements ProtocolElementHandleAdapter {
       scope: this.reference(),
       chain: selector
     };
-    const count = await this.page.countSelector(reference);
-    return Array.from({ length: count }, (_value, index) => {
-      return new BidiElementHandleAdapter(this.page, {
-        ...reference,
-        pick: { kind: "nth", index }
-      });
-    });
+    const references = await this.page.createHandleReferences(reference);
+    return references.map((handleReference) => new BidiElementHandleAdapter(this.page, handleReference));
   }
 
   async evalOnSelector<TResult>(
