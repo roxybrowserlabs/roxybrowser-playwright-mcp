@@ -94,6 +94,16 @@ Before other MCP tools can act on a page, attach the session to a running browse
 
 Endpoints typically come from the RoxyBrowser desktop app's local API, which opens a profile and returns a debugging endpoint. Once connected, the standard `browser_*` tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`, and so on) operate on the active tab.
 
+`browser_tabs` preserves its existing foreground behavior by default. Pass
+`activate: false` on its `new`, `select`, or `close` actions to update the MCP
+session's current tab without activating the browser UI, so background
+automation does not steal OS focus. Pass `activate: true` (or leave it unset)
+when the browser tab should be brought to the foreground.
+Background tab creation requires Chromium 145 or newer because older Chromium
+builds activate the application even when CDP receives `background: true`.
+On an older build, `new` fails with `background_tab_unsupported` before creating
+anything; background `select` remains available.
+
 ### In-memory launch-and-connect
 
 `roxy_browser_launch` is a special convenience tool for `createRoxyBrowserMcpInMemory()` only. The stdio and HTTP MCP servers keep exposing `roxy_browser_connect` and do not register `roxy_browser_launch` by default.

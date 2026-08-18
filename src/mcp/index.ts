@@ -14,6 +14,7 @@ export type {
   BrowserSnapshotToolArgs,
   BrowserStorageState,
   BrowserTab,
+  BrowserTabActivationOptions,
   ClickTarget,
   ConnectedBrowserSession,
   CreateRoxyBrowserMcpServerOptions,

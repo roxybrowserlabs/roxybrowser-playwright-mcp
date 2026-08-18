@@ -10,6 +10,7 @@ export class McpToolError extends Error {
       | "no_dialog"
       | "no_file_chooser"
       | "unsupported_protocol_input"
+      | "background_tab_unsupported"
       | "not_supported"
       | "action_failed"
       | "timeout",

@@ -57,6 +57,7 @@ import type {
   BrowserSnapshotRequest,
   BrowserStorageItem,
   BrowserTab,
+  BrowserTabActivationOptions,
   ClickTarget,
   ConsoleMessageLevel,
   ConnectedBrowserSession,
@@ -473,7 +474,7 @@ type CdpClient = {
   };
   Target: {
     getTargets(): Promise<{ targetInfos: CdpTargetInfo[] }>;
-    createTarget(options: { url: string }): Promise<{ targetId: string }>;
+    createTarget(options: { url: string; background?: boolean }): Promise<{ targetId: string }>;
     activateTarget(options: { targetId: string }): Promise<void>;
     closeTarget(options: { targetId: string }): Promise<void>;
   };
@@ -1578,6 +1579,19 @@ function chooseInitialTab(tabs: Array<{ id: string; url: string }>): string | un
   return tabs.find((tab) => tab.url && tab.url !== "about:blank")?.id ?? tabs[0]?.id;
 }
 
+// Chromium 144 still activates the app for background targets. Fixed by
+// https://chromium.googlesource.com/chromium/src/+/e1038b9bad5489dfe2d0c8d700d2043e6154a90a
+const MIN_CHROMIUM_BACKGROUND_TARGET_VERSION = 145;
+
+function chromiumMajorVersion(version: string): number | undefined {
+  const value = /(?:Chrome|Chromium)\/(\d+)/.exec(version)?.[1];
+  if (!value) {
+    return undefined;
+  }
+  const major = Number.parseInt(value, 10);
+  return Number.isFinite(major) ? major : undefined;
+}
+
 export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
   readonly protocol = "cdp" as const;
   readonly browserName = "chromium" as const;
@@ -1668,24 +1682,51 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
     return this.refreshTabs();
   }
 
-  async newTab(url = "about:blank"): Promise<BrowserTab[]> {
-    const response = await this.browserClient.Target.createTarget({ url });
+  async newTab(
+    url = "about:blank",
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
+    const activate = options.activate ?? true;
+    const browserMajorVersion = chromiumMajorVersion(this.versionString);
+    if (
+      !activate &&
+      (browserMajorVersion === undefined || browserMajorVersion < MIN_CHROMIUM_BACKGROUND_TARGET_VERSION)
+    ) {
+      throw new McpToolError(
+        "background_tab_unsupported",
+        `Creating a tab without focusing the browser requires Chromium ${MIN_CHROMIUM_BACKGROUND_TARGET_VERSION} or newer. Connected browser: ${this.versionString}.`
+      );
+    }
+    const response = await this.browserClient.Target.createTarget({
+      url,
+      ...(!activate ? { background: true } : {})
+    });
     this.activeTabId = response.targetId;
-    await this.browserClient.Target.activateTarget({
-      targetId: response.targetId
-    });
+    if (activate) {
+      await this.browserClient.Target.activateTarget({
+        targetId: response.targetId
+      });
+    }
     return this.refreshTabs();
   }
 
-  async selectTab(tabId: string): Promise<BrowserTab[]> {
+  async selectTab(
+    tabId: string,
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
     this.activeTabId = tabId;
-    await this.browserClient.Target.activateTarget({
-      targetId: tabId
-    });
+    if (options.activate ?? true) {
+      await this.browserClient.Target.activateTarget({
+        targetId: tabId
+      });
+    }
     return this.refreshTabs();
   }
 
-  async closeTab(tabId: string): Promise<BrowserTab[]> {
+  async closeTab(
+    tabId: string,
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
     const tabsBeforeClose = await this.refreshTabs();
     const index = tabsBeforeClose.findIndex((tab) => tab.id === tabId);
     await this.browserClient.Target.closeTarget({
@@ -1715,7 +1756,7 @@ export class CdpConnectedBrowserSession implements ConnectedBrowserSession {
 
     const fallbackIndex = index >= 0 ? Math.min(index, tabsAfterClose.length - 1) : 0;
     this.activeTabId = tabsAfterClose[fallbackIndex]?.id;
-    if (this.activeTabId) {
+    if (this.activeTabId && (options.activate ?? true)) {
       await this.browserClient.Target.activateTarget({
         targetId: this.activeTabId
       });
@@ -4860,14 +4901,21 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     return this.refreshTabs();
   }
 
-  async newTab(url = "about:blank"): Promise<BrowserTab[]> {
+  async newTab(
+    url = "about:blank",
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
+    const activate = options.activate ?? true;
     const response = await this.client.browsingContextCreate({
-      type: "tab"
+      type: "tab",
+      ...(!activate ? { background: true } : {})
     });
     this.activeTabId = response.context;
-    await this.client.browsingContextActivate({
-      context: response.context
-    });
+    if (activate) {
+      await this.client.browsingContextActivate({
+        context: response.context
+      });
+    }
     await this.applyNetworkState([response.context]);
     if (url && url !== "about:blank") {
       await this.client.browsingContextNavigate({
@@ -4879,15 +4927,23 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     return this.refreshTabs();
   }
 
-  async selectTab(tabId: string): Promise<BrowserTab[]> {
+  async selectTab(
+    tabId: string,
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
     this.activeTabId = tabId;
-    await this.client.browsingContextActivate({
-      context: tabId
-    });
+    if (options.activate ?? true) {
+      await this.client.browsingContextActivate({
+        context: tabId
+      });
+    }
     return this.refreshTabs();
   }
 
-  async closeTab(tabId: string): Promise<BrowserTab[]> {
+  async closeTab(
+    tabId: string,
+    options: BrowserTabActivationOptions = {}
+  ): Promise<BrowserTab[]> {
     const tabsBeforeClose = await this.refreshTabs();
     const index = tabsBeforeClose.findIndex((tab) => tab.id === tabId);
     await this.client.browsingContextClose({
@@ -4909,7 +4965,7 @@ export class BidiConnectedBrowserSession implements ConnectedBrowserSession {
     }
     const fallbackIndex = index >= 0 ? Math.min(index, tabsAfterClose.length - 1) : 0;
     this.activeTabId = tabsAfterClose[fallbackIndex]?.id;
-    if (this.activeTabId) {
+    if (this.activeTabId && (options.activate ?? true)) {
       await this.client.browsingContextActivate({
         context: this.activeTabId
       });

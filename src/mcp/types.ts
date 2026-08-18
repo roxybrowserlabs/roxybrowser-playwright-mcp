@@ -66,6 +66,10 @@ export interface BrowserTab {
   crashed?: boolean;
 }
 
+export interface BrowserTabActivationOptions {
+  activate?: boolean;
+}
+
 export interface BrowserSnapshot {
   text: string;
   refs: Record<string, string>;
@@ -215,9 +219,9 @@ export interface ConnectedBrowserSession {
   readonly browserName: "chromium" | "firefox";
   version(): Promise<string>;
   listTabs(): Promise<BrowserTab[]>;
-  newTab(url?: string): Promise<BrowserTab[]>;
-  selectTab(tabId: string): Promise<BrowserTab[]>;
-  closeTab(tabId: string): Promise<BrowserTab[]>;
+  newTab(url?: string, options?: BrowserTabActivationOptions): Promise<BrowserTab[]>;
+  selectTab(tabId: string, options?: BrowserTabActivationOptions): Promise<BrowserTab[]>;
+  closeTab(tabId: string, options?: BrowserTabActivationOptions): Promise<BrowserTab[]>;
   snapshot(request?: BrowserSnapshotRequest): Promise<BrowserSnapshot>;
   ariaSnapshot(request?: BrowserSnapshotRequest): Promise<string>;
   consoleMessages(level?: ConsoleMessageLevel, all?: boolean): Promise<BrowserConsoleEntry[]>;
